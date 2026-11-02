@@ -1,0 +1,532 @@
+{
+  "schema": "crystalhd.issue529.separable-reference-observation.v1",
+  "status": "BOTH_DECLARED_FIXED_MODELS_MEASURED",
+  "base": "3b693eea2cc0917e7d8aa8729c7f670d18bf2a7c",
+  "source_changes_to_external_code_or_binaries": false,
+  "new_hardware_decode_or_external_conversion": false,
+  "primary_old_failure": "The old full-axis Lanczos reference checker22 remains FAIL against unchanged target3. These are additional predeclared arithmetic models, not relabelled old results.",
+  "hypothesis_sequence": [
+    "Fixed source-only x/y masks localize prior whole-grid checker maxima to x2/y20/xy22, interior0.",
+    "The prior independently calibrated fixed clamped half-up vertical3:1 formula matches every scored no-x-support native sample exactly.",
+    "Before any full-model result, declare normalized horizontal float64 Lanczos3 at j-0.25 and BOTH H8→V8 and V8→H8; preserve both byte-quantized orders."
+  ],
+  "horizontal_rule": "normalized float64 Lanczos3 at j-0.25; six integer source taps with |distance|<3; clamp each tap index; floor(value+0.5) then clip0..255",
+  "vertical_rule": "q=y//2; adjacent=clamp(q-1) for even y else clamp(q+1); value=(3*source[q,x]+source[adjacent,x]+2)//4",
+  "controls": {
+    "axis": 22,
+    "vertical31": 19,
+    "separable": 12,
+    "independent_scalar_oracles": true,
+    "scalar_vector_max_control_error": 8.526512829121202e-14
+  },
+  "cases": [
+    {
+      "fixture": "horizontal30",
+      "frames": 30,
+      "all_native_Y_exact": true,
+      "raw_order_not_PTS": true,
+      "inputs": {
+        "native": {
+          "bytes": 6082560,
+          "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-card.yuy2",
+          "preflight_and_final_sha256_match": true,
+          "sha256": "43cccc91ca563438099e3cace5f85ce07ecc7403c0a581cab9431e39e69659f5",
+          "stat": {
+            "ctime_ns": 1791131015587806080,
+            "dev": 2049,
+            "ino": 8539357,
+            "mtime_ns": 1791131015587806080,
+            "size": 6082560
+          },
+          "unchanged_during_read": true
+        },
+        "planar": {
+          "bytes": 4561920,
+          "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-sw.yuv420",
+          "preflight_and_final_sha256_match": true,
+          "sha256": "ad92fdbf6ba95e5abf5f0966d17dea209ed5af24f48e46bd96677d77530b0980",
+          "stat": {
+            "ctime_ns": 1791131015823808075,
+            "dev": 2049,
+            "ino": 8539358,
+            "mtime_ns": 1791131015823808075,
+            "size": 4561920
+          },
+          "unchanged_during_read": true
+        }
+      },
+      "previous_fixed_Lanczos_axis_maxima": {
+        "Cb": {
+          "interior": 0,
+          "x": 1,
+          "y": 0,
+          "xy": 0
+        },
+        "Cr": {
+          "interior": 0,
+          "x": 1,
+          "y": 0,
+          "xy": 0
+        }
+      },
+      "prior_vertical31_y_only": {
+        "Cb": {
+          "primary": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 0,
+            "signed_sum": 0
+          },
+          "interior_control": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1244160,
+            "signed_sum": 0
+          }
+        },
+        "Cr": {
+          "primary": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 0,
+            "signed_sum": 0
+          },
+          "interior_control": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1244160,
+            "signed_sum": 0
+          }
+        }
+      },
+      "both_full_grid_models": {
+        "H8_then_V8": {
+          "component_totals": {
+            "Cb": {
+              "absolute_sum": 17280,
+              "changed": 17280,
+              "maximum_absolute_error": 1,
+              "negative": 8640,
+              "positive": 8640,
+              "samples": 1520640,
+              "signed_sum": 0
+            },
+            "Cr": {
+              "absolute_sum": 25920,
+              "changed": 25920,
+              "maximum_absolute_error": 1,
+              "negative": 0,
+              "positive": 25920,
+              "samples": 1520640,
+              "signed_sum": 25920
+            }
+          },
+          "component_axis_maxima": {
+            "Cb": {
+              "interior": 0,
+              "x": 1,
+              "y": 0,
+              "xy": 0
+            },
+            "Cr": {
+              "interior": 0,
+              "x": 1,
+              "y": 0,
+              "xy": 0
+            }
+          },
+          "minimum_H_rounding_margin": 0.027790664946593324,
+          "H_samples_within_1e_minus_10_rounding_warning": 0
+        },
+        "V8_then_H8": {
+          "component_totals": {
+            "Cb": {
+              "absolute_sum": 17280,
+              "changed": 17280,
+              "maximum_absolute_error": 1,
+              "negative": 8640,
+              "positive": 8640,
+              "samples": 1520640,
+              "signed_sum": 0
+            },
+            "Cr": {
+              "absolute_sum": 25920,
+              "changed": 25920,
+              "maximum_absolute_error": 1,
+              "negative": 0,
+              "positive": 25920,
+              "samples": 1520640,
+              "signed_sum": 25920
+            }
+          },
+          "component_axis_maxima": {
+            "Cb": {
+              "interior": 0,
+              "x": 1,
+              "y": 0,
+              "xy": 0
+            },
+            "Cr": {
+              "interior": 0,
+              "x": 1,
+              "y": 0,
+              "xy": 0
+            }
+          },
+          "minimum_H_rounding_margin": 0.027790664946593324,
+          "H_samples_within_1e_minus_10_rounding_warning": 0
+        }
+      }
+    },
+    {
+      "fixture": "checker90",
+      "frames": 90,
+      "all_native_Y_exact": true,
+      "raw_order_not_PTS": true,
+      "inputs": {
+        "native": {
+          "bytes": 18247680,
+          "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-card.yuy2",
+          "preflight_and_final_sha256_match": true,
+          "sha256": "be2038ece6a8a3cabd5d008639ee590ca5bfee24eacb92273c918a36b3cd0763",
+          "stat": {
+            "ctime_ns": 1791131146088919509,
+            "dev": 2049,
+            "ino": 8539363,
+            "mtime_ns": 1791131146088919509,
+            "size": 18247680
+          },
+          "unchanged_during_read": true
+        },
+        "planar": {
+          "bytes": 13685760,
+          "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-sw.yuv420",
+          "preflight_and_final_sha256_match": true,
+          "sha256": "ef67756b670d1dd577fbf371baa08aed5c55ee488149e9325e77d110a9311741",
+          "stat": {
+            "ctime_ns": 1791131053345126162,
+            "dev": 2049,
+            "ino": 8539361,
+            "mtime_ns": 1791131053345126162,
+            "size": 13685760
+          },
+          "unchanged_during_read": true
+        }
+      },
+      "previous_fixed_Lanczos_axis_maxima": {
+        "Cb": {
+          "interior": 0,
+          "x": 2,
+          "y": 20,
+          "xy": 22
+        },
+        "Cr": {
+          "interior": 0,
+          "x": 2,
+          "y": 20,
+          "xy": 22
+        }
+      },
+      "prior_vertical31_y_only": {
+        "Cb": {
+          "primary": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1105920,
+            "signed_sum": 0
+          },
+          "interior_control": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1382400,
+            "signed_sum": 0
+          }
+        },
+        "Cr": {
+          "primary": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1105920,
+            "signed_sum": 0
+          },
+          "interior_control": {
+            "absolute_sum": 0,
+            "changed": 0,
+            "maximum_absolute_error": 0,
+            "negative": 0,
+            "positive": 0,
+            "samples": 1382400,
+            "signed_sum": 0
+          }
+        }
+      },
+      "both_full_grid_models": {
+        "H8_then_V8": {
+          "component_totals": {
+            "Cb": {
+              "absolute_sum": 878400,
+              "changed": 756000,
+              "maximum_absolute_error": 2,
+              "negative": 259200,
+              "positive": 496800,
+              "samples": 4561920,
+              "signed_sum": 360000
+            },
+            "Cr": {
+              "absolute_sum": 878400,
+              "changed": 756000,
+              "maximum_absolute_error": 2,
+              "negative": 259200,
+              "positive": 496800,
+              "samples": 4561920,
+              "signed_sum": 360000
+            }
+          },
+          "component_axis_maxima": {
+            "Cb": {
+              "interior": 0,
+              "x": 2,
+              "y": 0,
+              "xy": 2
+            },
+            "Cr": {
+              "interior": 0,
+              "x": 2,
+              "y": 0,
+              "xy": 2
+            }
+          },
+          "minimum_H_rounding_margin": 0.0833719948398084,
+          "H_samples_within_1e_minus_10_rounding_warning": 0
+        },
+        "V8_then_H8": {
+          "component_totals": {
+            "Cb": {
+              "absolute_sum": 871200,
+              "changed": 748800,
+              "maximum_absolute_error": 2,
+              "negative": 252000,
+              "positive": 496800,
+              "samples": 4561920,
+              "signed_sum": 367200
+            },
+            "Cr": {
+              "absolute_sum": 871200,
+              "changed": 748800,
+              "maximum_absolute_error": 2,
+              "negative": 252000,
+              "positive": 496800,
+              "samples": 4561920,
+              "signed_sum": 367200
+            }
+          },
+          "component_axis_maxima": {
+            "Cb": {
+              "interior": 0,
+              "x": 2,
+              "y": 0,
+              "xy": 2
+            },
+            "Cr": {
+              "interior": 0,
+              "x": 2,
+              "y": 0,
+              "xy": 2
+            }
+          },
+          "minimum_H_rounding_margin": 0.0833719948398084,
+          "H_samples_within_1e_minus_10_rounding_warning": 0
+        }
+      }
+    }
+  ],
+  "bounds_scope": {
+    "unchanged_project_local_target": 3,
+    "new_horizontal_Cb_Cr_max": [
+      1,
+      1
+    ],
+    "new_checker_Cb_Cr_max": [
+      2,
+      2
+    ],
+    "both_orders_retained": true,
+    "quality_or_production_MPEG1_PASS": false,
+    "actual_firmware_coefficients_order_or_cause": "NOT_ESTABLISHED",
+    "original_historical_recipe": "NOT_RECOVERED",
+    "native_PTS_EOS_association": "NOT_RECOVERED",
+    "source_bit_exact_release_oracles_changed": false
+  },
+  "sources": [
+    {
+      "path": "tests/mpeg1-axis-topology.py",
+      "measured_source_name": "issue529-axis-topology.py",
+      "bytes": 21736,
+      "sha256": "cfb9fc9c453771f3b463a8af5505f524469fa4273d6a8387cef2518f98a2ac6c",
+      "published_bytes_identical": true
+    },
+    {
+      "path": "tests/mpeg1-vertical31-reference.py",
+      "measured_source_name": "issue529-vertical31-model.py",
+      "bytes": 18671,
+      "sha256": "c82ea8c4b26b21a553e6daeaf3962b2d1bf034f764e5d9e6dd3c64cf16f56b34",
+      "published_bytes_identical": true
+    },
+    {
+      "path": "tests/mpeg1-separable-reference.py",
+      "measured_source_name": "issue529-separable-model.py",
+      "bytes": 14258,
+      "sha256": "eef2893be8e42fb0e635eb36ec8b2a7b4327c164c76afbaebb4ecb1875d51418",
+      "published_bytes_identical": true
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "issue529-axis-topology-preregistered-source.json",
+      "bytes": 715,
+      "sha256": "e183204e7395b3a3b64104201ec1a0c9ad9219391a02b820f24eb3fa841b084a"
+    },
+    {
+      "name": "issue529-vertical31-preregistered-source.json",
+      "bytes": 719,
+      "sha256": "51e78be76fba342a39564cb15a18d3ea11dbcb66334260ea34b7e98c1a2e2460"
+    },
+    {
+      "name": "issue529-separable-preregistered-source.json",
+      "bytes": 717,
+      "sha256": "a280e8475f2c629518b22c7f8822bf1f6092b9a94cf7c627e6e0c52d0667c399"
+    },
+    {
+      "name": "issue529-axis-topology-01/report.json",
+      "bytes": 4515,
+      "sha256": "782a522fdab23fcab16af2dff81c35c2859e1c73d00e0072eb50e3b77a007e5f"
+    },
+    {
+      "name": "issue529-axis-topology-01/horizontal30.topology.json",
+      "bytes": 881073,
+      "sha256": "3ff11cd56b4437aef1c8b4b127d47cbcfc243083ddd316c4b75c38c9f5dbc18b"
+    },
+    {
+      "name": "issue529-axis-topology-01/checker90.topology.json",
+      "bytes": 5398719,
+      "sha256": "4f8e8b24a60d452914866e524ae4038f6941d5f7a7507d8bdf4c5955bc3fdc12"
+    },
+    {
+      "name": "issue529-vertical31-01/report.json",
+      "bytes": 16546,
+      "sha256": "18c174981407079e87d77c83355ce50268b58662aa2c9146c7806b5dde341dbc"
+    },
+    {
+      "name": "issue529-vertical31-01/horizontal30.vertical31.json",
+      "bytes": 177008,
+      "sha256": "e621188e31b19ac676ebb8c40f5b702b7a6f62131979abf5001a74c30b6ff31a"
+    },
+    {
+      "name": "issue529-vertical31-01/checker90.vertical31.json",
+      "bytes": 520435,
+      "sha256": "cd9a112b51a47f865f567f4e0b7bd26e696daf6187c62cea8914887433953147"
+    },
+    {
+      "name": "issue529-separable-01/report.json",
+      "bytes": 141602,
+      "sha256": "8f368d3f181d5b06e1359eea0fce9146d710cbe4f9f7f005156da8deeced1f0a"
+    },
+    {
+      "name": "issue529-separable-01/horizontal30.separable.json",
+      "bytes": 1926999,
+      "sha256": "11a6cc376227626106ec54d114dbd3934879a205700eb84413efaab19b1ba077"
+    },
+    {
+      "name": "issue529-separable-01/checker90.separable.json",
+      "bytes": 7165970,
+      "sha256": "3dfcb02d870675c839179c7663b0020963fce5f8bf9e050a4396600c30584b9f"
+    },
+    {
+      "name": "axis-controls.log",
+      "bytes": 922,
+      "sha256": "c0bd75072dc228b7621aeb5886d7a11c84b45ec9765e525bfe4fd97d5fd5add3"
+    },
+    {
+      "name": "vertical31-controls.log",
+      "bytes": 1053,
+      "sha256": "61a19fc78172e67aef7a1fc6529f54142410c932ebeb3b5a329df4623a6a8919"
+    },
+    {
+      "name": "separable-controls.log",
+      "bytes": 603,
+      "sha256": "e18cc9d3cc542530e9c07d1e99da8243b6b56bb857a2cddb184af4719d750cf4"
+    },
+    {
+      "name": "published-model-controls.log",
+      "bytes": 1452,
+      "sha256": "e85421e5cc054bcf708096a11eebbc827edff0134eb7ab1f9fa6b88f1646b5e5"
+    }
+  ],
+  "synthetic_runner": {
+    "path": "tests/mpeg1-reference-models.test.py",
+    "sha256": "02c344682d87d7c46234070f5abd4851487c70b375a08f75456e2d27b73e706b",
+    "total_controls": 53,
+    "actual_publication_copy_execution": "PASS",
+    "product_NumPy_dependency_added": false,
+    "CI_NumPy_test_dependency_only": true
+  },
+  "semantic_negative_controls": {
+    "status": "PASS_ALL_FOUR_FIXED_SEMANTIC_MUTATIONS_REJECTED",
+    "isolated_copies_only": true,
+    "results": [
+      {
+        "mutation": "axis-radius",
+        "source": "mpeg1-axis-topology.py",
+        "old": "RADIUS = 3",
+        "new": "RADIUS = 2",
+        "exit": 1,
+        "rejected_by": "AssertionError: control failed: x_step_literal_partition_counts"
+      },
+      {
+        "mutation": "vertical-weights",
+        "source": "mpeg1-vertical31-reference.py",
+        "old": "(3 * wide + previous + 2) // 4",
+        "new": "(wide + 3 * previous + 2) // 4",
+        "exit": 1,
+        "rejected_by": "AssertionError: control failed: literal_low_border_parity_half_up"
+      },
+      {
+        "mutation": "horizontal-phase",
+        "source": "mpeg1-separable-reference.py",
+        "old": "distance = -0.25 - offsets.astype(np.float64)",
+        "new": "distance = 0.25 - offsets.astype(np.float64)",
+        "exit": 1,
+        "rejected_by": "AssertionError: control failed: six_finite_normalized_signed_weights"
+      },
+      {
+        "mutation": "aliased-orders",
+        "source": "mpeg1-separable-reference.py",
+        "old": "ORDERS[1]: (second_h, vh_meta)",
+        "new": "ORDERS[1]: (vertical.vertical31(first_h, axis), h_meta)",
+        "exit": 1,
+        "rejected_by": "AssertionError: control failed: literal_operation_order_difference_retained"
+      }
+    ]
+  }
+}

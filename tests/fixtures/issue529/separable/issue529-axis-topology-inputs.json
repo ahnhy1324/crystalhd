@@ -1,0 +1,65 @@
+{
+  "schema": "crystalhd.issue529.fixed-axis-topology-inputs.v1",
+  "status": "FROZEN_SOURCE_ONLY_NOT_EXECUTED_BY_AUTHOR",
+  "mask_rule": "both-sided adjacent-byte gradients; valid-grid Chebyshev-radius3 dilation; output row y maps to source row y//2",
+  "protocol": "Read the unchanged retained I420/native and already-declared center-to-left Lanczos post6507 bytes. No new resampling or fitting. Input bytes/hashes come from the completed receipts; root must preflight all exact identities before measurement. Masks are fixed before the new topology results are read.",
+  "cases": [
+    {
+      "fixture": "horizontal30",
+      "role": "horizontal-only pattern control; exact decoded grids, not idealized GEQ reconstruction",
+      "width": 352,
+      "height": 288,
+      "frames": 30,
+      "previous_fixed_reference_maximum_Cb_Cr": [1, 1],
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-card.yuy2",
+        "bytes": 6082560,
+        "sha256": "43cccc91ca563438099e3cace5f85ce07ecc7403c0a581cab9431e39e69659f5"
+      },
+      "reference": {
+        "path": "/home/mache/.cache/crystalhd-all-work-20261031/issue529-filter-matrix-01/lanczos-post6507-horizontal30-center-to-left.yuyv",
+        "bytes": 6082560,
+        "sha256": "0a2777918d10f08e04b17c75bb45630be6301ca8e31e245709b6bb46289b7584"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-sw.yuv420",
+        "bytes": 4561920,
+        "sha256": "ad92fdbf6ba95e5abf5f0966d17dea209ed5af24f48e46bd96677d77530b0980"
+      }
+    },
+    {
+      "fixture": "checker90",
+      "role": "primary full90-picture checker residual diagnostic",
+      "width": 352,
+      "height": 288,
+      "frames": 90,
+      "previous_fixed_reference_maximum_Cb_Cr": [22, 22],
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-card.yuy2",
+        "bytes": 18247680,
+        "sha256": "be2038ece6a8a3cabd5d008639ee590ca5bfee24eacb92273c918a36b3cd0763"
+      },
+      "reference": {
+        "path": "/home/mache/.cache/crystalhd-all-work-20261031/issue529-filter-matrix-01/lanczos-post6507-checker90-center-to-left.yuyv",
+        "bytes": 18247680,
+        "sha256": "35cf6db3ed0e974aaae531e26bcf78060c105fe42a9dba2bad804458eaee48b3"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-sw.yuv420",
+        "bytes": 13685760,
+        "sha256": "ef67756b670d1dd577fbf371baa08aed5c55ee488149e9325e77d110a9311741"
+      }
+    }
+  ],
+  "interpretation": {
+    "all_inputs_are_read_only": true,
+    "original_raw_order_is_preserved": true,
+    "native_tokens_are_not_PTS": true,
+    "quality_pass_claim": false,
+    "source_support_is_a_topology_label_only": true,
+    "endpoint_bytes_are_not_stage_specific_clipping_proof": true,
+    "no_original_historical_recipe_recovery_claim": true,
+    "no_hardware_firmware_filter_or_external_bug_attribution": true,
+    "no_register_write_or_new_capture_or_decode_or_conversion": true
+  }
+}

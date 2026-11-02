@@ -1,0 +1,340 @@
+{
+  "schema": "crystalhd-private-v13-admission-qualification-v1",
+  "qualification_snapshot": "2026-11-01T01:20:51.611277+00:00",
+  "status": "PASS_SCOPED_PRIVATE_CANDIDATE_NOT_RELEASED",
+  "scope": "Portable projection of the completed c48fe3a runtime/artifact checkpoint. Later prose/receipt commits are not a new hardware run or newly packaged source.",
+  "source": {
+    "head": "c48fe3a12d4f0443dc444df27c0b6c35be2b3ced",
+    "tree": "32c5b89104fd7b9641c0039760894baa3b926ead",
+    "base": "ab5b9e68edb00f0e875f4db39965978493bd8f4d",
+    "test_merge": "48f1a33fcc3a40281c52d23b6af018c2f96aa377",
+    "test_tree": "32c5b89104fd7b9641c0039760894baa3b926ead",
+    "test_parents": [
+      "ab5b9e68edb00f0e875f4db39965978493bd8f4d",
+      "c48fe3a12d4f0443dc444df27c0b6c35be2b3ced"
+    ],
+    "run_id": 41259036128,
+    "pr": 615
+  },
+  "integration": {
+    "pr": 615,
+    "url": "https://github.com/ahnhy1324/crystalhd/pull/615",
+    "merged": true,
+    "merge_commit": "1b17fd9ec1128c56bb55fef1dd79cf1865de3d10",
+    "head": "c48fe3a12d4f0443dc444df27c0b6c35be2b3ced",
+    "base": "ab5b9e68edb00f0e875f4db39965978493bd8f4d",
+    "tree": "32c5b89104fd7b9641c0039760894baa3b926ead",
+    "test_merge": "48f1a33fcc3a40281c52d23b6af018c2f96aa377",
+    "test_tree": "32c5b89104fd7b9641c0039760894baa3b926ead",
+    "target_branch": "research/issue513-xv-lifecycle-20261031",
+    "master_unchanged": "04fb4654924717617cccba367ee3bab49114f30a"
+  },
+  "publication": "PRIVATE_ONLY_NO_MASTER_TAG_OR_RELEASE",
+  "bundle_version": "1.3.0-dev.1",
+  "artifacts": [
+    {
+      "bytes": 6812906,
+      "name": "crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz",
+      "sha256": "26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb"
+    },
+    {
+      "bytes": 20502,
+      "name": "script.crystalhd.settings-0.1.0.zip",
+      "sha256": "1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a"
+    }
+  ],
+  "manifest": {
+    "filename": "candidate-manifest.json",
+    "sha256": "461004ff9df5ab426603c6e6bee4f632a09dd3f954ad2642b28e0e7ce53aed0e",
+    "bytes": 1000,
+    "qualification_at_generation": "NOT_RUN_FOR_THESE_ARTIFACTS",
+    "post_build_receipt_meaning": "The four reproducible package files retain packaging-time NOT_RUN_FOR_THESE_ARTIFACTS. This separate hash-bound receipt records the completed subsequent qualification."
+  },
+  "host": {
+    "cpu": "Core2 Duo T8100",
+    "architecture": "x86_64",
+    "card": "BCM70015",
+    "graphics": "Intel965",
+    "loaded_module": "3.10.13",
+    "loaded_srcversion": "F76E163690F147B91495DDD",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a"
+  },
+  "inputs": {
+    "local_sintel_sha256": "e818103becb581d7022e4ffc1757e5e88a14d4054a3c29976ece46e61fef2158",
+    "local_frames": 698,
+    "last_frame_pts": 699,
+    "software_luma_reference_sha256": "4d6973254ad1c25b9d27bab32641f1af592f3d6d1bc6ead1464f8659aa37eae7",
+    "reporter_sintel_sha256": "72acf53d33746912eb1edc570c3ce9267245c41e1afacaa39b39d31d3d51c02a",
+    "exact_reporter_bytes_available": false,
+    "seek_fixture_sha256": "b787658ca33f29940a1d1a7199e31c94a334dd751af7cd13954d759702a704bc"
+  },
+  "default_policy": "CONFIG_DISABLE=1 DEBUG=1; LIVE_H264/LOW_LATENCY_H264/READY/TRACE unset; default bounded history; no limits or pacing overrides",
+  "unfixed_baseline": {
+    "source": "c488f01468c701e6de18e8f5fa82804b6cdcf3a9",
+    "submit_attempts_including_rejected": 549,
+    "accepted_before_rejected": 548,
+    "rejected_incoming_bytes": 40316,
+    "logged_bytes_including_rejected": 24792515,
+    "accepted_assembled_bytes_before_rejected": 24752199,
+    "successful_prior_DIL_returns": 36,
+    "accepted_minus_prior_outputs": 512,
+    "frame_count": 548,
+    "EndPicture_errors": 150,
+    "note": "Unfixed Debug submit runs before Append, so its final line is an admission attempt, not accepted input. Total assembled log bytes are not cached bytes."
+  },
+  "fixed_null": [
+    {
+      "name": "null-default-1",
+      "exit": 0,
+      "frames": 698,
+      "EndPicture_errors": 0,
+      "admission_waits": 150
+    },
+    {
+      "name": "null-default-2",
+      "exit": 0,
+      "frames": 698,
+      "EndPicture_errors": 0,
+      "admission_waits": 149
+    },
+    {
+      "name": "null-threads1",
+      "exit": 0,
+      "frames": 698,
+      "EndPicture_errors": 0,
+      "admission_waits": 156
+    }
+  ],
+  "fixed_readback": [
+    {
+      "name": "readback-luma",
+      "exit": 0,
+      "frames": 698,
+      "software_luma_pts_equal": true,
+      "frames_sha256": "4d6973254ad1c25b9d27bab32641f1af592f3d6d1bc6ead1464f8659aa37eae7"
+    },
+    {
+      "name": "readback-nv12-default",
+      "exit": 0,
+      "frames": 698,
+      "software_luma_pts_equal": false,
+      "frames_sha256": "bd23af922f02b29ea5fa621dd90ec1670d2e48d3a6bf19056a3b081bbdd18893"
+    },
+    {
+      "name": "readback-nv12-threads1",
+      "exit": 0,
+      "frames": 698,
+      "software_luma_pts_equal": false,
+      "frames_sha256": "bd23af922f02b29ea5fa621dd90ec1670d2e48d3a6bf19056a3b081bbdd18893"
+    }
+  ],
+  "whole_nv12_repeat_equal": true,
+  "native_admission_bounds": [
+    {
+      "case": "null-default-1",
+      "samples": 150,
+      "max_cached_pictures": 512,
+      "max_cached_bytes": 22810247,
+      "max_outstanding": 205,
+      "max_incoming_bytes": 128596
+    },
+    {
+      "case": "null-default-2",
+      "samples": 149,
+      "max_cached_pictures": 512,
+      "max_cached_bytes": 22810247,
+      "max_outstanding": 205,
+      "max_incoming_bytes": 128596
+    },
+    {
+      "case": "null-threads1",
+      "samples": 156,
+      "max_cached_pictures": 512,
+      "max_cached_bytes": 22810247,
+      "max_outstanding": 203,
+      "max_incoming_bytes": 128596
+    }
+  ],
+  "lifecycle": {
+    "native_seek_reopen_retained_picture": "PASS",
+    "retained_old_frames": 8,
+    "native_command_flags": [
+      "--lookahead",
+      "8",
+      "--export-prime",
+      "--retain-old-frames"
+    ],
+    "unit_cases": [
+      "real context destruction",
+      "generation reset",
+      "surface rebinding",
+      "concurrent Terminate"
+    ],
+    "scope": "real context destroy, generation reset, rebinding and concurrent Terminate; native seek/reopen plus8 retained exact PTS/SHA256 frames"
+  },
+  "checks": [
+    {
+      "name": "admission-final",
+      "exit": 0,
+      "scope": "own CPU/client compatibility"
+    },
+    {
+      "name": "replay-final",
+      "exit": 0,
+      "scope": "own CPU/client compatibility"
+    },
+    {
+      "name": "vpp-final",
+      "exit": 0,
+      "scope": "own CPU/client compatibility"
+    },
+    {
+      "name": "replay-contract-final",
+      "exit": 0,
+      "scope": "own CPU/client compatibility"
+    },
+    {
+      "name": "compat-final",
+      "exit": 0,
+      "scope": "own CPU/client compatibility"
+    },
+    {
+      "name": "source32-final",
+      "exit": 0,
+      "scope": "i386 source parsing"
+    },
+    {
+      "name": "source32-legacy-final",
+      "exit": 0,
+      "scope": "i386 source parsing"
+    }
+  ],
+  "sanitizers": [
+    {
+      "name": "sanitizer-build",
+      "exit": 0,
+      "seconds": 139.91957163397456
+    },
+    {
+      "name": "sanitizer-focused",
+      "exit": 0,
+      "seconds": 0.512299066002015
+    },
+    {
+      "name": "sanitizer-full",
+      "exit": 0,
+      "seconds": 8.487668630026747
+    }
+  ],
+  "sanitizer_scope": "Focused/full own replay ASan/UBSan/leak detection only; no native-i386 sanitizer, all-DIL or race-free claim.",
+  "i386_scope": "Normal and no-SSE legacy production source parsing; physical Atom/i386 admission NOT RUN.",
+  "archive": {
+    "status": "PASS_SCOPED_UPDATED_ARCHIVE_BUILD_INSTALL_REMOVE_RECOVERY",
+    "source_identity": "archive:c48fe3a12d4f0443dc444df27c0b6c35be2b3ced",
+    "reproducibility": "all four package files independently byte-identical; ZIP equals earlier actual stock-Kodi installed ZIP",
+    "checks": [
+      {
+        "name": "archive-package-replay",
+        "exit": 0
+      },
+      {
+        "name": "archive-config-install-contracts",
+        "exit": 0
+      },
+      {
+        "name": "archive-userspace-build",
+        "exit": 0
+      },
+      {
+        "name": "archive-replay-import-build",
+        "exit": 0
+      },
+      {
+        "name": "archive-replay-focused",
+        "exit": 0
+      },
+      {
+        "name": "archive-replay-full",
+        "exit": 0
+      },
+      {
+        "name": "archive-real-DRM-import",
+        "exit": 0
+      },
+      {
+        "name": "archive-runtime-settings-install",
+        "exit": 0
+      },
+      {
+        "name": "archive-remove",
+        "exit": 0
+      },
+      {
+        "name": "archive-repeat-remove",
+        "exit": 0
+      },
+      {
+        "name": "archive-recovery",
+        "exit": 0
+      }
+    ],
+    "binary_bytes_equal_hardware_tested_checkout": {
+      "filters/vaapi/crystalhd_drv_video.so": {
+        "archive": "13ee2e9be667d0c28bdd6fb7b86e7c55996466573ed06f0759ad5c1bb83aeb83",
+        "hardware_tested_checkout": "13ee2e9be667d0c28bdd6fb7b86e7c55996466573ed06f0759ad5c1bb83aeb83"
+      },
+      "linux_lib/libcrystalhd/libcrystalhd.so.3.6": {
+        "archive": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+        "hardware_tested_checkout": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9"
+      }
+    },
+    "user_configuration_preserved": true,
+    "remove_repeat_and_reinstall_exact_payload": true
+  },
+  "ci": {
+    "run_id": 41259036128,
+    "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128",
+    "conclusion": "success",
+    "successful_jobs": 15,
+    "skipped_jobs": [
+      "Packed scaler (${{ matrix.os }})"
+    ],
+    "test_merge": "48f1a33fcc3a40281c52d23b6af018c2f96aa377"
+  },
+  "resource_boundaries": {
+    "restored": true,
+    "module_refcount": 0,
+    "before_after_equal": true,
+    "maximum_native_temperature_mC": 66000,
+    "qualifying_simple_graph_kernel_AER_errors": 0
+  },
+  "diagnostic_graph_failure": {
+    "hardware_split_graph_exit": -11,
+    "software_split_graph_exit": -11,
+    "disposition": "split graph SIGSEGV reproduces with software-only decode; separate simple output graphs qualify content; no external edits",
+    "note": "Original diagnostic execution result remains FAIL; only separately completed null/simple-readback/lifecycle cases are PASS."
+  },
+  "inherited_finite_loop_scope": {
+    "source": "c488f01468c701e6de18e8f5fa82804b6cdcf3a9",
+    "evidence_url": "https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6545813841",
+    "stream_loop_fields": 296,
+    "expected_fields": 300,
+    "continuous_concat_fields": 300,
+    "disposition": "Selected field-rate stream_loop remains unsupported for lossless looping at the observed caller EOF/graph-free boundary. No external edit or unrequested-field synthesis."
+  },
+  "limits_of_evidence": [
+    "Local Core2/x86_64 BCM70015 only; exact reporter bytes and physical Atom/i386 unavailable.",
+    "No native FFmpeg research runtime/public release promotion.",
+    "No added whole-player display, A/V, performance or broader #429 matrix claim.",
+    "No new hardware run or newly regenerated package for the later documentation/proposal revision.",
+    "Independent clean OS, public native FFmpeg distribution and broader source/GPU/physical presentation remain unqualified.",
+    "#538 stays open; original shutdown heap-abort follow-up/reason remains excluded."
+  ],
+  "private_evidence": {
+    "receipt_filename": "v1.3-admission-qualification.json",
+    "receipt_sha256": "18b0ec3c48cee5ac234d77b013332ff478800a07d86466ca350ee2f218aec38f",
+    "bound_evidence_files": 80,
+    "availability": "Retained locally; raw logs, binaries and media are not included in this portable projection."
+  }
+}

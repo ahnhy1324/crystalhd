@@ -20,15 +20,19 @@ def crc8(values):
             value = (value << 1 ^ (7 if value & 128 else 0)) & 255
     return value
 
-def case_id(width):
+def case_id(width, source_case=None):
     if not width in (1280, 1920):
         raise ValueError('invalid fixture input')
+    if source_case is not None:
+        if not isinstance(source_case, int) or not 1 <= source_case <= 255:
+            raise ValueError('invalid declared source case')
+        return source_case
     return 1 if width == 1280 else 2
 
-def code_bytes(width, ordinal):
+def code_bytes(width, ordinal, *, source_case=None):
     if not 0 <= ordinal < FRAMES:
         raise ValueError('invalid fixture input')
-    data = [MAGIC >> 8, MAGIC & 255, case_id(width), ordinal]
+    data = [MAGIC >> 8, MAGIC & 255, case_id(width, source_case), ordinal]
     return bytes(data + [ordinal ^ 255, crc8(data)])
 
 def cells(width):
@@ -60,16 +64,17 @@ def base_frame(width, height):
                 result[q:q + 16] = bytes([128]) * 16
     return result
 
-def frame(width, height, ordinal, base=None):
+def frame(width, height, ordinal, base=None, *, source_case=None):
     geometry(width, height)
     result = bytearray(base if base is not None else base_frame(width, height))
-    bits = [value >> shift & 1 for value in code_bytes(width, ordinal) for shift in range(7, -1, -1)]
+    bits = [value >> shift & 1 for value in code_bytes(width, ordinal, source_case=source_case)
+            for shift in range(7, -1, -1)]
     for (x, y, w, h), bit in zip(cells(width), bits * 2):
         for row in range(y, y + h):
             result[row * width + x:row * width + x + w] = bytes([235 if bit else 16]) * w
     return result
 
-def decode(width, height, data, kind):
+def decode(width, height, data, kind, *, source_case=None):
     geometry(width, height)
     if not kind in ('yuv420p', 'yuyv', 'bgra'):
         raise ValueError('invalid fixture input')
@@ -101,7 +106,7 @@ def decode(width, height, data, kind):
     decoded = bytes((sum((bits[i + j] << 7 - j for j in range(8))) for i in range(0, 48, 8)))
     if not int.from_bytes(decoded[:2], 'big') == MAGIC:
         raise ValueError('barcode magic mismatch')
-    if not decoded[2] == case_id(width):
+    if not decoded[2] == case_id(width, source_case):
         raise ValueError('barcode source-case mismatch')
     if not decoded[3] ^ decoded[4] == 255:
         raise ValueError('barcode complement mismatch')
@@ -120,25 +125,30 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--width', type=int, choices=(1280, 1920), required=True)
+    parser.add_argument('--source-case', type=int,
+                        help='source identity declared before capture; default is the original width case')
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--generate-yuv420p', help='new file, or - for stdout; all180 frames')
     action.add_argument('--decode', type=Path, help='unmodified tightly packed capture')
     parser.add_argument('--format', choices=('yuv420p', 'yuyv', 'bgra'), default='bgra')
     args = parser.parse_args()
     height = 720 if args.width == 1280 else 1080
+    case_id(args.width, args.source_case)
     if args.decode:
         extent = args.width * height * {'yuv420p': 3, 'yuyv': 4, 'bgra': 8}[args.format] // 2
         if args.decode.stat().st_size != extent:
             raise ValueError('barcode extent mismatch')
-        ordinal = decode(args.width, height, args.decode.read_bytes(), args.format)
+        ordinal = decode(args.width, height, args.decode.read_bytes(), args.format,
+                         source_case=args.source_case)
         print(json.dumps(dict(width=args.width, height=height, source_ordinal=ordinal,
+                              source_case=case_id(args.width, args.source_case),
                               scope='source content only; no DRM-object or display timestamp')))
     else:
         output = sys.stdout.buffer if args.generate_yuv420p == '-' else open(args.generate_yuv420p, 'xb')
         try:
             base = base_frame(args.width, height)
             for ordinal in range(FRAMES):
-                output.write(frame(args.width, height, ordinal, base))
+                output.write(frame(args.width, height, ordinal, base, source_case=args.source_case))
         finally:
             if args.generate_yuv420p != '-':
                 output.close()

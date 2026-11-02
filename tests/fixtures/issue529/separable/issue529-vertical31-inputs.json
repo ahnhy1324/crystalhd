@@ -1,0 +1,71 @@
+{
+  "schema": "crystalhd.issue529.fixed-vertical31-inputs.v1",
+  "status": "PREREGISTERED_SOURCE_ONLY_NOT_EXECUTED_BY_AUTHOR",
+  "formula": "q=y//2; adjacent=clamp(q-1) for even y else clamp(q+1); value=(3*source[q,x]+source[adjacent,x]+2)//4",
+  "mask_rule": "both-sided adjacent-byte gradients; valid-grid Chebyshev-radius3 dilation; output row y maps to source row y//2",
+  "axis_helper": {
+    "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-axis-topology.py",
+    "bytes": 21736,
+    "sha256": "cfb9fc9c453771f3b463a8af5505f524469fa4273d6a8387cef2518f98a2ac6c"
+  },
+  "formula_provenance": {
+    "kind": "existing independently calibrated own H264 hypothesis; not a MPEG1 fit",
+    "source_path": "/home/mache/.cache/crystalhd-mpeg1-chroma-reference-20261031/tests/h264-reference-lifecycle.py",
+    "function": "packed_yuy2",
+    "prior_receipt_path": "/home/mache/.cache/crystalhd-mpeg1-chroma-reference-20261031/tests/fixtures/issue92/native-coded-reference.json",
+    "prior_producer_commit": "656b12a09e733f04b081b727dfadda278c030b25",
+    "prior_producer_source_sha256": "7f6b15ca7ba1169bf5fe2754e12a7dbae65f2d185029a24f39600ca00f337ac8",
+    "prior_geometry": [256, 96],
+    "prior_180_picture_planar_sha256": "e68e26f2a6cf0cd8219858411cc45fcc13ea702042822940e205104db42ae327",
+    "prior_180_picture_packed_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+    "scope": "half-up/clamped same-column vertical3:1 only; not universal MFD/SCL or horizontal resiting proof"
+  },
+  "cases": [
+    {
+      "fixture": "horizontal30",
+      "role": "horizontal-only control; y-only primary population may legitimately be empty",
+      "width": 352,
+      "height": 288,
+      "frames": 30,
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-card.yuy2",
+        "bytes": 6082560,
+        "sha256": "43cccc91ca563438099e3cace5f85ce07ecc7403c0a581cab9431e39e69659f5"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-sw.yuv420",
+        "bytes": 4561920,
+        "sha256": "ad92fdbf6ba95e5abf5f0966d17dea209ed5af24f48e46bd96677d77530b0980"
+      }
+    },
+    {
+      "fixture": "checker90",
+      "role": "primary full90-picture y-only comparison with interior control",
+      "width": 352,
+      "height": 288,
+      "frames": 90,
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-card.yuy2",
+        "bytes": 18247680,
+        "sha256": "be2038ece6a8a3cabd5d008639ee590ca5bfee24eacb92273c918a36b3cd0763"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-sw.yuv420",
+        "bytes": 13685760,
+        "sha256": "ef67756b670d1dd577fbf371baa08aed5c55ee488149e9325e77d110a9311741"
+      }
+    }
+  ],
+  "interpretation": {
+    "preregistered_before_this_model_comparison": true,
+    "mask_selected_without_native_or_Lanczos_residuals": true,
+    "primary_classes": ["interior", "y"],
+    "x_xy_status": "NOT_QUALIFIED_FOR_HORIZONTAL_MODEL",
+    "native_PTS": "NOT_RECOVERED",
+    "quality_pass_claim": false,
+    "project_local_target_unchanged": 3,
+    "no_filter_fit_or_option_search": true,
+    "no_existing_Lanczos_input_is_used": true,
+    "no_hardware_or_external_source_change": true
+  }
+}

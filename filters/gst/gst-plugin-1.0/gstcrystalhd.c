@@ -24,6 +24,8 @@
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
 #include "gstcrystalhd-diqos.h"
+#include "gstcrystalhd-stage-trace.h"
+#include "gstcrystalhd-finish-trace.h"
 
 /* Older libcrystalhd.so.3 installations need not provide this additive API. */
 extern BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
@@ -44,7 +46,8 @@ G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
 
 enum {
   PROP_0,
-  PROP_SCALE_WIDTH
+  PROP_SCALE_WIDTH,
+  PROP_FINISH_TRACE_LIMIT
 };
 
 typedef struct {
@@ -78,6 +81,8 @@ typedef struct _GstCrystalHdDec {
    * immutable snapshot used by one PAUSED/PLAYING decoder session. */
   guint scale_width;
   guint active_scale_width;
+  GstCrystalHdFinishTrace *finish_trace;
+  GstCrystalHdFinishTrace *active_finish_trace;
   guint64 next_hardware_timestamp;
   guint64 recovery_generation_seen;
   gboolean recovery_needs_sync;
@@ -130,6 +135,21 @@ G_DEFINE_TYPE(GstCrystalHdDec, gst_crystalhd_dec, GST_TYPE_VIDEO_DECODER)
 GST_DEBUG_CATEGORY_STATIC(gst_crystalhd_debug);
 #define GST_CAT_DEFAULT gst_crystalhd_debug
 
+#ifdef GST_CRYSTALHD_MPEG1_EXPERIMENTAL
+/* Separately built, explicitly selected, rank-NONE experimental plugin. */
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
+    "sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS(
+        "video/mpeg, mpegversion=(int)1, systemstream=(boolean)false, "
+        "parsed=(boolean)true, width=(int)352, height=(int)288, "
+        "framerate=(fraction)25/1, interlace-mode=(string)progressive"));
+#elif defined(GST_CRYSTALHD_PRIVATE_MPEG1_RESEARCH)
+/* Only the separately named tests/mpeg1-research-decoder.c build. */
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
+    "sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS(
+        "video/mpeg, mpegversion=(int)1, systemstream=(boolean)false, "
+        "parsed=(boolean)true, width=(int)[2,1920], height=(int)[2,1088], "
+        "interlace-mode=(string)progressive"));
+#else
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
     "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
     GST_STATIC_CAPS(
@@ -148,6 +168,7 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
         "stream-format=(string)asf, header-format=(string)asf; "
         "video/x-wmv, wmvversion=(int)3, format=(string)WMV3, "
         "stream-format=(string){frame-layer,asf}, header-format=(string)asf"));
+#endif
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
     "src", GST_PAD_SRC, GST_PAD_ALWAYS,
@@ -353,6 +374,31 @@ gst_crystalhd_set_property(GObject *object, guint property_id,
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(object);
 
   switch (property_id) {
+    case PROP_FINISH_TRACE_LIMIT: {
+      GstCrystalHdFinishTrace *next, *previous = NULL;
+      guint capacity = g_value_get_uint(value);
+      gboolean mutable;
+      next = gst_crystalhd_finish_trace_new(capacity);
+      if (capacity && !next) {
+        GST_WARNING_OBJECT(self, "could not allocate bounded finish-frame trace");
+        break;
+      }
+      GST_OBJECT_LOCK(self);
+      mutable = GST_STATE(self) <= GST_STATE_READY &&
+                GST_STATE_PENDING(self) == GST_STATE_VOID_PENDING;
+      if (mutable) {
+        previous = self->finish_trace;
+        self->finish_trace = next;
+      }
+      GST_OBJECT_UNLOCK(self);
+      if (!mutable) {
+        gst_crystalhd_finish_trace_unref(next);
+        GST_WARNING_OBJECT(self, "finish-trace-limit can only change in NULL or READY");
+      } else {
+        gst_crystalhd_finish_trace_unref(previous);
+      }
+      break;
+    }
     case PROP_SCALE_WIDTH: {
       gboolean mutable;
 
@@ -383,6 +429,11 @@ gst_crystalhd_get_property(GObject *object, guint property_id,
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(object);
 
   switch (property_id) {
+    case PROP_FINISH_TRACE_LIMIT:
+      GST_OBJECT_LOCK(self);
+      g_value_set_uint(value, gst_crystalhd_finish_trace_capacity(self->finish_trace));
+      GST_OBJECT_UNLOCK(self);
+      break;
     case PROP_SCALE_WIDTH:
       GST_OBJECT_LOCK(self);
       g_value_set_uint(value, self->scale_width);
@@ -392,6 +443,19 @@ gst_crystalhd_get_property(GObject *object, guint property_id,
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
       break;
   }
+}
+
+static gchar *
+gst_crystalhd_finish_trace_snapshot_action(GstCrystalHdDec *self)
+{
+  GstCrystalHdFinishTrace *trace;
+  gchar *snapshot;
+  GST_OBJECT_LOCK(self);
+  trace = gst_crystalhd_finish_trace_ref(self->finish_trace);
+  GST_OBJECT_UNLOCK(self);
+  snapshot = gst_crystalhd_finish_trace_snapshot(trace);
+  gst_crystalhd_finish_trace_unref(trace);
+  return snapshot;
 }
 
 static gboolean
@@ -1373,6 +1437,8 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   gboolean activity = FALSE;
   gboolean recovery_active = FALSE;
   gboolean recovery_changed = FALSE;
+  GstCrystalHdFinishTraceContext finish_context;
+  GstCrystalHdFinishTrace *finish_trace;
 
   GST_VIDEO_DECODER_STREAM_LOCK(decoder);
   flow = gst_crystalhd_reconcile_recovery(self, NULL, &recovery_active,
@@ -1430,13 +1496,26 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   } else {
     self->recovery_abort_started_us = 0;
   }
+  finish_trace = self->active_finish_trace;
+  if (completed != NULL && finish_trace != NULL) {
+    finish_context = (GstCrystalHdFinishTraceContext){
+        (guint64)(guintptr)self, self->generation, self->recovery_generation_seen,
+        completed->system_frame_number, completed->pts, completed->duration};
+  }
   GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
 
   /* finish_frame drops only its own recursive stream-lock level around
    * downstream delivery. Entering with an outer level would block input,
    * including the demuxed audio required to complete video preroll. */
-  if (completed != NULL)
-    flow = gst_video_decoder_finish_frame(decoder, completed);
+  if (completed != NULL) {
+    /* OFF is a pointer branch: no diagnostic clock, TID, lock or allocation.
+     * The active collector survives until stop() has joined this sole worker. */
+    if (finish_trace != NULL)
+      flow = gst_crystalhd_finish_trace_call(finish_trace,
+                                            decoder, completed, &finish_context);
+    else
+      flow = gst_video_decoder_finish_frame(decoder, completed);
+  }
 
   GST_VIDEO_DECODER_STREAM_LOCK(decoder);
   if (completed != NULL && flow == GST_FLOW_OK)
@@ -1721,6 +1800,14 @@ gst_crystalhd_start(GstVideoDecoder *decoder)
   GST_OBJECT_LOCK(self);
   self->active_scale_width = self->scale_width;
   GST_OBJECT_UNLOCK(self);
+#ifdef GST_CRYSTALHD_MPEG1_EXPERIMENTAL
+  if (!gst_crystalhd_mpeg1_scale_allowed(self->active_scale_width)) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+        ("Experimental MPEG-1 requires native 352x288 output"),
+        ("Hardware scaling is outside the qualified experimental scope"));
+    return FALSE;
+  }
+#endif
   if (gst_crystalhd_close_device(self) != BC_STS_SUCCESS)
     return FALSE;
   if (self->output_control_fd < 0)
@@ -1733,6 +1820,9 @@ gst_crystalhd_start(GstVideoDecoder *decoder)
   self->output_eos = FALSE;
   self->last_delivery_us = 0;
   self->generation++;
+  GST_OBJECT_LOCK(self);
+  self->active_finish_trace = gst_crystalhd_finish_trace_ref(self->finish_trace);
+  GST_OBJECT_UNLOCK(self);
   self->output_thread = g_thread_new("crystalhd-output",
                                      gst_crystalhd_output_thread, self);
   gst_video_decoder_set_packetized(decoder, TRUE);
@@ -1757,6 +1847,7 @@ gst_crystalhd_stop(GstVideoDecoder *decoder)
     g_thread_join(self->output_thread);
     self->output_thread = NULL;
   }
+  g_clear_pointer(&self->active_finish_trace, gst_crystalhd_finish_trace_unref);
   GST_VIDEO_DECODER_STREAM_LOCK(decoder);
   self->generation++;
   status = gst_crystalhd_close_device(self);
@@ -1941,6 +2032,14 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   if (status != BC_STS_SUCCESS)
     goto fail_status;
   self->is_70012 = version.device == 0;
+#ifdef GST_CRYSTALHD_MPEG1_EXPERIMENTAL
+  if (!gst_crystalhd_mpeg1_device_allowed(version.device)) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+        ("Experimental MPEG-1 requires BCM70015"),
+        ("DtsCrystalHDVersion device selector was %u", version.device));
+    goto fail;
+  }
+#endif
   if (subtype == BC_MSUBTYPE_DIVX && self->is_70012) {
     GST_ELEMENT_ERROR(self, STREAM, FORMAT,
                       ("MPEG-4 Part 2 requires BCM70015"),
@@ -2174,6 +2273,20 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
 
   data = map.data;
   size = map.size;
+#ifdef GST_CRYSTALHD_MPEG1_EXPERIMENTAL
+  {
+    const gchar *reason = NULL;
+    if (!gst_crystalhd_mpeg1_access_unit_valid(data, size, &reason)) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+          ("Experimental MPEG-1 rejected the compressed access unit"),
+          ("%s; no picture bytes submitted to DIL",
+           reason ? reason : "invalid MPEG-1 framing"));
+      gst_buffer_unmap(frame->input_buffer, &map);
+      gst_video_decoder_drop_frame(decoder, frame);
+      return GST_FLOW_ERROR;
+    }
+  }
+#endif
   payload = gst_crystalhd_codec_payload(&self->codec, &data, &size);
   if (payload == CRYSTALHD_PAYLOAD_INVALID) {
     gst_buffer_unmap(frame->input_buffer, &map);
@@ -2681,6 +2794,8 @@ gst_crystalhd_finalize(GObject *object)
     close(self->output_poll_fd);
   if (self->output_control_fd >= 0)
     close(self->output_control_fd);
+  g_clear_pointer(&self->active_finish_trace, gst_crystalhd_finish_trace_unref);
+  g_clear_pointer(&self->finish_trace, gst_crystalhd_finish_trace_unref);
   g_cond_clear(&self->output_cond);
   g_mutex_clear(&self->output_lock);
   G_OBJECT_CLASS(gst_crystalhd_dec_parent_class)->finalize(object);
@@ -2706,9 +2821,30 @@ gst_crystalhd_dec_class_init(GstCrystalHdDecClass *klass)
           0, G_MAXUINT, 0,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
 
+  g_object_class_install_property(
+      object_class, PROP_FINISH_TRACE_LIMIT,
+      g_param_spec_uint("finish-trace-limit", "Finish-frame trace limit",
+          "Development first-N finish-frame spans (0 disables; no media policy change)",
+          0, GST_CRYSTALHD_FINISH_TRACE_MAX, 0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
+  g_signal_new_class_handler("finish-trace-snapshot", G_TYPE_FROM_CLASS(klass),
+      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
+      G_CALLBACK(gst_crystalhd_finish_trace_snapshot_action),
+      NULL, NULL, NULL, G_TYPE_STRING, 0);
+
   gst_element_class_set_static_metadata(
+#ifdef GST_CRYSTALHD_MPEG1_EXPERIMENTAL
+      element_class, "CrystalHD experimental MPEG-1 decoder",
+      "Codec/Decoder/Video/Hardware",
+      "Explicit BCM70015 MPEG-1 352x288 progressive 25fps experiment; algorithm 1",
+#elif defined(GST_CRYSTALHD_PRIVATE_MPEG1_RESEARCH)
+      element_class, "CrystalHD private MPEG-1 research decoder",
+      "Codec/Decoder/Video/Hardware",
+      "Explicit test-only MPEG-1 input through the existing algorithm-1 transport",
+#else
       element_class, "CrystalHD hardware decoder", "Codec/Decoder/Video/Hardware",
       "Decodes video with Broadcom BCM70012/BCM70015 hardware",
+#endif
       "CrystalHD contributors");
   gst_element_class_add_static_pad_template(element_class, &sink_template);
   gst_element_class_add_static_pad_template(element_class, &src_template);
@@ -2741,6 +2877,7 @@ gst_crystalhd_dec_init(GstCrystalHdDec *self)
   gst_video_decoder_set_packetized(GST_VIDEO_DECODER(self), TRUE);
 }
 
+#if !defined(GST_CRYSTALHD_PRIVATE_MPEG1_RESEARCH) && !defined(GST_CRYSTALHD_MPEG1_EXPERIMENTAL)
 static gboolean
 plugin_init(GstPlugin *plugin)
 {
@@ -2749,7 +2886,9 @@ plugin_init(GstPlugin *plugin)
   return gst_element_register(plugin, "crystalhddec", GST_RANK_PRIMARY + 1,
                               GST_TYPE_CRYSTALHD_DEC) &&
       gst_element_register(plugin, "crystalhddiqos", GST_RANK_NONE,
-                            GST_TYPE_CRYSTALHD_DI_QOS);
+                            GST_TYPE_CRYSTALHD_DI_QOS) &&
+      gst_element_register(plugin, "crystalhdstagetrace", GST_RANK_NONE,
+                            GST_TYPE_CRYSTALHD_STAGE_TRACE);
 }
 
 #ifndef PACKAGE
@@ -2760,3 +2899,4 @@ GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, crystalhd,
                   "Broadcom CrystalHD hardware video decoder", plugin_init,
                   "3.10.0", "LGPL", "crystalhd",
                   "https://github.com/ahnhy1324/crystalhd")
+#endif

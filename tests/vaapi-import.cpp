@@ -715,16 +715,22 @@ int main(int argc, char **argv) {
   }
   if (vpp_success &&
       (caps.input_pixel_format == nullptr || caps.num_input_pixel_formats != 1 ||
-       caps.output_pixel_format == nullptr || caps.num_output_pixel_formats != 2 ||
+       caps.output_pixel_format == nullptr || caps.num_output_pixel_formats != 3 ||
        !ContainsFormat(caps.input_pixel_format, caps.num_input_pixel_formats,
                        VA_FOURCC_NV12) ||
        !ContainsFormat(caps.output_pixel_format, caps.num_output_pixel_formats,
                        VA_FOURCC_NV12) ||
        !ContainsFormat(caps.output_pixel_format, caps.num_output_pixel_formats,
-                       VA_FOURCC_ARGB))) {
-    fprintf(stderr, "video processor formats are incomplete\n");
+                       VA_FOURCC_ARGB) ||
+       !ContainsFormat(caps.output_pixel_format, caps.num_output_pixel_formats,
+                       VA_FOURCC_BGRA))) {
+    fprintf(stderr, "video processor formats are incomplete: expected NV12 input "
+                    "and NV12/ARGB/BGRA outputs (1/3); got %u/%u\n",
+            caps.num_input_pixel_formats, caps.num_output_pixel_formats);
     vpp_success = false;
   }
+  if (vpp_success)
+    printf("VPP public formats: NV12 input and NV12/ARGB/BGRA outputs (1/3)\n");
 
   VARectangle source_region = {0, 0, width, height};
   VARectangle output_region = {0, 0, width, height};

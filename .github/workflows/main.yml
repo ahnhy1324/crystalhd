@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.plan.outputs.heavy }}
+      packed: ${{ steps.plan.outputs.packed }}
+      xv: ${{ steps.plan.outputs.xv }}
+      kernel: ${{ steps.plan.outputs.kernel }}
       contracts: ${{ steps.plan.outputs.contracts }}
     steps:
       - uses: actions/checkout@v7
@@ -48,11 +51,104 @@ jobs:
           CI_CONTRACTS: ${{ needs.classify.outputs.contracts }}
         run: python3 -B tests/ci-plan.py docs
 
+  packed:
+    needs: classify
+    if: needs.classify.outputs.packed == 'true'
+    name: Packed scaler (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packed scaler dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config python3 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base
+
+      - name: Record packed scaler toolchain versions
+        shell: bash
+        run: |
+          {
+            printf '### Packed scaler toolchain\n\n```text\n'
+            . /etc/os-release
+            printf 'OS: %s\n' "$PRETTY_NAME"
+            printf 'Runner image: %s (%s)\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'C compiler: '
+            gcc -dumpfullversion
+            python3 --version
+            for library in gstreamer-1.0 gstreamer-video-1.0 gstreamer-app-1.0; do
+              library_version=$(pkg-config --modversion "$library")
+              printf '%s: %s\n' "$library" "$library_version"
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build optional packed scaler and check CPU contracts
+        run: make -C filters/gst/packed-upscale check
+
+      - name: Sanitize optional packed scaler CPU contracts
+        run: |
+          python3 -B tests/packed-sanitizer-loader.test.py
+          make -C filters/gst/packed-upscale check-sanitized
+
+  xv:
+    needs: classify
+    if: needs.classify.outputs.xv == 'true'
+    name: Xv output (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Xv output dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config python3 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxcb-shm0-dev libxcb-xv0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base
+
+      - name: Record Xv output toolchain versions
+        shell: bash
+        run: |
+          {
+            printf '### Xv output toolchain\n\n```text\n'
+            . /etc/os-release
+            printf 'OS: %s\n' "$PRETTY_NAME"
+            printf 'Runner image: %s (%s)\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'C compiler: '
+            gcc -dumpfullversion
+            python3 --version
+            for library in gstreamer-1.0 gstreamer-video-1.0 gstreamer-app-1.0 xcb xcb-shm xcb-xv; do
+              library_version=$(pkg-config --modversion "$library")
+              printf '%s: %s\n' "$library" "$library_version"
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build optional Xv output and check device-free contracts
+        run: make -C filters/gst/xv-output check
+
   build:
     needs: classify
     if: needs.classify.outputs.heavy == 'true'
-    # Keep the older supported GStreamer API in the userspace release gate.
-    runs-on: ubuntu-24.04
+    name: Userspace (${{ matrix.os }})
+    # Keep the older supported API while checking the newer userspace stack.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
 
     steps:
       - name: Checkout
@@ -62,21 +158,72 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential autoconf gcc-multilib g++-multilib qemu-user \
+            build-essential autoconf gettext gcc-multilib g++-multilib qemu-user \
             linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxcb-shm0-dev libxcb-xv0-dev libxcb1-dev libegl-dev libgles-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
-            python3-gi gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
+            python3-gi python3-numpy gir1.2-gtk-3.0 xvfb xauth desktop-file-utils dbus-daemon \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             libva-dev libdrm-dev libgbm-dev \
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             nodejs node-ws
 
+      - name: Record userspace toolchain versions
+        shell: bash
+        run: |
+          {
+            printf '### Userspace toolchain\n\n```text\n'
+            . /etc/os-release
+            printf 'OS: %s\n' "$PRETTY_NAME"
+            printf 'Runner image: %s (%s)\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'C compiler: '
+            gcc -dumpfullversion
+            printf 'C++ compiler: '
+            g++ -dumpfullversion
+            python3 --version
+            ffmpeg -version | sed -n '1p'
+            for library in gstreamer-1.0 gstreamer-video-1.0 libavcodec libavformat libavutil libswscale libva; do
+              library_version=$(pkg-config --modversion "$library")
+              printf '%s: %s\n' "$library" "$library_version"
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Validate optional settings window without hardware
         run: |
+          make settings-l10n-check
           xvfb-run -a make settings-ui-check
           desktop-file-validate share/applications/crystalhd-settings.desktop
+
+      - name: Check Kodi settings adapter and private candidate packaging without hardware
+        run: make kodi-settings-check candidate-package-check
+
+      - name: Build optional Xv output and check device-free contracts
+        run: make -C filters/gst/xv-output check
+
+      - name: Build optional packed scaler and check CPU contracts
+        # Full userspace selection skips the standalone packed matrix.
+        run: make -C filters/gst/packed-upscale check
+
+      - name: Sanitize optional packed scaler CPU contracts
+        run: |
+          python3 -B tests/packed-sanitizer-loader.test.py
+          make -C filters/gst/packed-upscale check-sanitized
+
+      - name: Sanitize selected VA ownership and buffer handle contracts
+        run: make -C filters/vaapi check-ownership-sanitized
+
+      - name: Sanitize selected DIL ring and pixel-copy contracts
+        run: |
+          python3 -B tests/library-selected-sanitizer.test.py
+          make library-check-sanitized
+
+      - name: Check private VPP payload observer without hardware
+        run: make -C filters/vaapi check-payload-observer
+      - name: Check MPEG-1 reference model synthetic controls without hardware
+        run: make mpeg1-reference-model-check
 
       - name: Select packaged kernel headers
         run: |
@@ -103,9 +250,18 @@ jobs:
           node -e 'require("ws")'
           make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
+      - name: Check optional experimental MPEG-1 decoder without hardware
+        run: make -C filters/gst/gst-plugin-1.0 check-experimental-mpeg1
+
+      - name: Build and check explicit field GPU output without hardware
+        run: make -C filters/gst/field-output check
+
       - name: Verify optional V4L2 module integration
         shell: bash
         run: |
+          make v4l2-node-check
+          python3 -B tests/native-picture-fixture.test.py
+          python3 -O -B tests/native-picture-fixture.test.py
           v4l2_imports=$(nm -u driver/linux/crystalhd.ko)
           if grep -q 'v4l2_device_' <<< "$v4l2_imports"; then
             echo 'unexpected V4L2 import in the default module' >&2
@@ -213,6 +369,9 @@ jobs:
 
       - name: Verify MPEG-1 research admission without hardware
         run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/mpeg1-chroma-convert.c \
+            -ldl -o "$RUNNER_TEMP/mpeg1-chroma-convert"
+          python3 -B tests/mpeg1-chroma-reference.py --help > /dev/null
           ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
             -f lavfi -i "nullsrc=size=352x288:rate=25,geq=lum='16+7*N':cb=128:cr=128" \
             -frames:v 30 -an -pix_fmt yuv420p -c:v mpeg1video \
@@ -312,7 +471,7 @@ jobs:
 
   upstream-kernel-api:
     needs: classify
-    if: needs.classify.outputs.heavy == 'true'
+    if: needs.classify.outputs.kernel == 'true'
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
@@ -380,6 +539,16 @@ jobs:
           git clone --quiet --depth 1 --branch "v$KERNEL_VERSION" \
             "$KERNEL_REPOSITORY" "$KERNEL_DIR"
           make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" defconfig
+          # Select the framework dependencies through ordinary Kconfig users;
+          # their drivers are not built or loaded by this header/API check.
+          "$KERNEL_DIR/scripts/config" --file "$KERNEL_DIR/.config" \
+            --enable MEDIA_SUPPORT --disable MEDIA_SUPPORT_FILTER \
+            --enable MEDIA_PCI_SUPPORT --enable SND --enable V4L_TEST_DRIVERS \
+            --module VIDEO_VIM2M --module VIDEO_TW686X
+          make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" olddefconfig
+          for native_config in VIDEO_DEV V4L2_MEM2MEM_DEV VIDEOBUF2_DMA_SG; do
+            grep -Eq "^CONFIG_${native_config}=[ym]$" "$KERNEL_DIR/.config"
+          done
           make -s -j2 -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" modules_prepare
 
       - name: Compile CrystalHD kernel API
@@ -392,11 +561,15 @@ jobs:
             ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
             CRYSTALHD_FW_RESEARCH=1 W=1 crystalhd.o
+          make -C "$KERNEL_DIR" \
+            ARCH="${{ matrix.arch }}" \
+            M="$GITHUB_WORKSPACE/driver/linux" \
+            CRYSTALHD_FW_RESEARCH=0 CRYSTALHD_V4L2=1 W=1 crystalhd.o
 
   ci:
     name: CI gate
     if: always()
-    needs: [classify, docs, build, upstream-kernel-api]
+    needs: [classify, docs, build, packed, xv, upstream-kernel-api]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

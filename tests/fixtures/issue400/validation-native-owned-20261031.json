@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "scope": "GTK-owned accessible lifetime and persistent remote validation; no spoken Orca claim",
+  "receipts": [
+    {
+      "name": "native-owned-source-validation",
+      "retained_report": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/native-owned-source-validation.json",
+      "sha256": "95dde35fddbb083ac259bc6ac0e4ba53d1d725ecb7a2f2a98266fef716aee8d6",
+      "status": "PASS_SCOPED_ATSPI_VALIDATION",
+      "actions": 19,
+      "fresh_observer": {
+        "pid": 1274462,
+        "name": "Card width value",
+        "invalid": true
+      },
+      "cleanup": {
+        "gui": {
+          "id": 20,
+          "closed": true,
+          "workers_retired": true,
+          "config_exists": false,
+          "errors": []
+        },
+        "child_exit": 0,
+        "config_absent": true
+      }
+    },
+    {
+      "name": "native-owned-installed-korean-validation",
+      "retained_report": "/home/mache/.cache/crystalhd-v13-packaging-run-20261031/native-owned-installed-korean-validation.json",
+      "sha256": "1123f63db701c0a735b10d94687c46a4f4f1865bf96343c89dc6da1918b90a42",
+      "status": "PASS_SCOPED_ATSPI_VALIDATION",
+      "actions": 19,
+      "fresh_observer": {
+        "pid": 1274534,
+        "name": "\uce74\ub4dc \ub108\ube44 \uac12(A)",
+        "invalid": true
+      },
+      "cleanup": {
+        "gui": {
+          "id": 20,
+          "closed": true,
+          "workers_retired": true,
+          "config_exists": false,
+          "errors": []
+        },
+        "child_exit": 0,
+        "config_absent": true
+      }
+    }
+  ],
+  "source_files": {
+    "scripts/crystalhd-settings.py": "50dea02b2b406d73828f9e6841604465d2c9b0170267086ed0a8f30c62543851",
+    "tests/crystalhd-settings-gtk.test.py": "77716878279e1a1dbd3a987f8f6d3dbcee1ca942464cc477e3b7b2d3039c6ef0",
+    "tests/crystalhd-settings-atspi.test.py": "787e487f177fb9b9e181a29bcb4ef3795fb2a693ae6ac9960d0090f8f1aff291"
+  },
+  "ownership_change": "Configure own Entry accessible type before first instance; GTK creates/initializes/retains/disposes it. No Python do_get_accessible override, parallel cache, manual initialize or destroy handler.",
+  "retained_regression": {
+    "head": "51d4be2bee2ed8e93e0acf790325b2725da91ed4",
+    "workflow_run": 41205834435,
+    "ubuntu24_job": 124550660835,
+    "observation": "GTK31 assertion suite OK then process exit SIGSEGV; old candidate not qualified",
+    "exact_finalizer_backtrace": "not observed; no upstream defect attribution"
+  },
+  "current_host_GTK31_and_tray": "PASS and normal exit0",
+  "hosted_matrix_results": "See exact-source results on PR612; local success does not substitute for Ubuntu24 qualification."
+}

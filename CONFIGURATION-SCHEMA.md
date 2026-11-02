@@ -89,8 +89,9 @@ and `player.software_output_size` once before constructing a pipeline. It uses
 the existing secure file reader, preset selection, profile precedence and
 resolver. Each explicitly supplied player flag overrides only its own key;
 an absent flag inherits the saved value. With no files, retain hardware decode,
-native output width and no software resize. `--weave` and subtitles remain
-invocation-only. Other applications and GStreamer pipelines are unaffected.
+native output width and no software resize. `--weave`, subtitles and
+`--video-output` remain invocation-only. Other applications and GStreamer
+pipelines are unaffected.
 
 `--scale-width 0` explicitly requests native card width;
 `--software-output-size native` explicitly removes a saved software resize.
@@ -489,6 +490,15 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12` <!-- schema-boundary:environment:CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=experimental-centered-nv12 --> | Native-only centered NV12 experiment; no canonical key, profile value, preset or manager translation. The VA driver alone validates its exact syntax and context/media eligibility |
 | `crystalhd-play --subtitles` <!-- schema-boundary:player-flag:--subtitles=invocation-only --> | Per-media invocation input, never a saved preset/profile value |
 | `crystalhd-play --weave` <!-- schema-boundary:player-flag:--weave=invocation-only --> | Per-invocation interlaced passthrough selection, never a saved preset/profile value |
+| `crystalhd-play --trace-frames` <!-- schema-boundary:player-flag:--trace-frames=invocation-only --> | Explicit new diagnostic output file for one playback; never a saved preset/profile value |
+| `crystalhd-play --trace-limit` <!-- schema-boundary:player-flag:--trace-limit=invocation-only --> | One playback's bounded record retention; requires explicit trace output |
+| `crystalhd-play --trace-window` <!-- schema-boundary:player-flag:--trace-window=invocation-only --> | One playback's optional rolling capture; requires explicit trace output and is never saved in a preset |
+| `crystalhdstagetrace capacity` <!-- schema-boundary:gst-property:capacity=invocation-only --> | Player-owned diagnostic controller capacity, set before attachment; no managed frontend setting |
+| `crystalhdstagetrace window` <!-- schema-boundary:gst-property:window=invocation-only --> | Player-owned rolling retention, set before attachment; no managed frontend setting |
+| `crystalhddec finish-trace-limit` <!-- schema-boundary:gst-property:finish-trace-limit=invocation-only --> | Explicit own finish-frame diagnostic capacity for one collector; set in NULL/READY, never saved as a managed setting |
+| `crystalhd-play --video-output` <!-- schema-boundary:player-flag:--video-output=invocation-only --> | Per-invocation `auto`, experimental `xv-async` or experimental `field-gpu`; no saved profile/preset key or default promotion |
+| `crystalhd-play --packed-upscale` <!-- schema-boundary:player-flag:--packed-upscale=invocation-only --> | Explicit experimental fused resize for this invocation; no saved profile/preset key or default promotion |
+| `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

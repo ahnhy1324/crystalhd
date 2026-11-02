@@ -1,0 +1,375 @@
+{
+  "A_V_acceptance": {
+    "buffer_arrival_offsets_are_physical_AVoffset": false,
+    "physical_scanout_or_audible_measurement": false,
+    "status": "PASS_NO_DRIFT_DETECTED_IN_SOURCE_QUALIFIED_LOGS",
+    "user_policy": "qualified no-drift logs suffice; calibratedphysical lipsync not required"
+  },
+  "actual_sink_captures": {
+    "PNG_sha256": "77c4c5c8dab1e05b1cf41c5ef763b1ab8be6d041917bd6cc3ee5a49ee5ddf7d5",
+    "RGB_conversion": "same declared limitedBT601 float64 floor+.5/clamp8, same nearesthorizontal repeat forbothpackedplanes",
+    "actual_capture_pad": "video:sink, original default-policy clocked experimental factory playback",
+    "frames": [
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-0.raw",
+        "format": "UYVY",
+        "index": 0,
+        "normalized_YUYV_sha256": "6690325d9949efc10247b599a965ec0ff0fcddd6ff9579e2b7ab8c5cbcbb9ebd",
+        "pts_ns": 0,
+        "raw_sha256": "c0e23317fc06fc57c6fc1d459f688385e13c62783f25fe7a8f0f9d68fa9fe8a4",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-320.raw",
+        "format": "UYVY",
+        "index": 320,
+        "normalized_YUYV_sha256": "87fc09a322b9593b28d96c2cdbcb9b87d8febada0a1b8cbc794e63d524800af7",
+        "pts_ns": 12800000000,
+        "raw_sha256": "ba69c10a8bbcb43ed8c073e2c64179e6575d370ab2e0a421e9796f1476d8e9b9",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-373.raw",
+        "format": "UYVY",
+        "index": 373,
+        "normalized_YUYV_sha256": "393b372f38651dd21bf341520b26bf6f5042de45e551a4dbc8c8373e68cfa5fc",
+        "pts_ns": 14920000000,
+        "raw_sha256": "ed5aaf3287e48eadbf16d79fa6d720c43cc6014dfb4ea80a427e8cd2567a10e2",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-498.raw",
+        "format": "UYVY",
+        "index": 498,
+        "normalized_YUYV_sha256": "8cfb8bbd3303fae85575f6f8673bc7a9bf381225b6fd8128e59ed128e3b8313d",
+        "pts_ns": 19920000000,
+        "raw_sha256": "8ae69f450f597fdb3ca6258ea4f800a4038926c771fddf188f8a539753fe490c",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-582.raw",
+        "format": "UYVY",
+        "index": 582,
+        "normalized_YUYV_sha256": "b6b3338eee16cd212478e62d873c48495b91bda0d7fae44aa6a5268f073f4aef",
+        "pts_ns": 23280000000,
+        "raw_sha256": "5954bcc1c218063bb88c443d403de85c169eada7def6d8c95920d89e07a6a1b7",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-645.raw",
+        "format": "UYVY",
+        "index": 645,
+        "normalized_YUYV_sha256": "dade6ce1cfedeaf2bc61d1356543bf6200e6bc66cab9a5e89d689182ee9c4c63",
+        "pts_ns": 25800000000,
+        "raw_sha256": "4e780660543a7b68c348af7262ed74bae91a463582c1058a2cd1007052a37503",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-813.raw",
+        "format": "UYVY",
+        "index": 813,
+        "normalized_YUYV_sha256": "465bef32a8d0f7996827d6a2171af13df725966f0bb01900b04f352ce5460bfc",
+        "pts_ns": 32520000000,
+        "raw_sha256": "91908d542c2ca823c12ad1415519982ea70ac8897f219d1afc3a4e638d55c319",
+        "source_stride": 704
+      },
+      {
+        "all_202752_active_bytes_match_source_ordinal": true,
+        "bytes": 202752,
+        "duration_ns": 40000000,
+        "file": "frame-849.raw",
+        "format": "UYVY",
+        "index": 849,
+        "normalized_YUYV_sha256": "de0e315edac92ea3a5174d5cd8443135a6d48a54f6443c14e82a42a3a02731cc",
+        "pts_ns": 33960000000,
+        "raw_sha256": "d55286214b1d53a9e4541a3a604ed099780eb37f3853f15b1a9ad426ec0ad011",
+        "source_stride": 704
+      }
+    ],
+    "scope": "Actual frontend buffer captures, not physical scanout screenshots. Eight nativebyte identities match the full captured corpus; no decoder/display policy or acceptance-model selection changed.",
+    "status": "PASS_ALL8_ACTUAL_VIDEO_SINK_PIXELS_PTS_AND_NATIVE_IDENTITY",
+    "visual_reference_order_only": "H8_then_V8; both originalmodelorders remain in numericacceptance"
+  },
+  "admission_all_actual_AUs": {
+    "accepted": 1250,
+    "actual_codec_data_hex": "000001b316012013ffffe018",
+    "actual_codec_data_valid": true,
+    "actual_packet_count": 1250,
+    "device_calls": 0,
+    "frozen_header_unchanged": true,
+    "header_sha256": "510611cbcf1af576167f508e3105faaf6a8cdbdfcd6a3d1d65d509eb2efc176e",
+    "rejected": [],
+    "schema": "crystalhd.issue606.actual-AU-admission.v1",
+    "source_sha256": "f5701684aa89117952c860cd97504696a7fba0c1c7c80627907582997c64f3bb"
+  },
+  "all_frame_residuals": "Original observation and fullhistograms retained unchanged: frozenmodelCb/Crmax2/2, Ymax3/five samples. No reference replacement or fitted model.",
+  "build_sources": {
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.c": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd-mpeg1-experimental.c": "33b1c7b4a46c128c491fee5960d80a15fdaeb66c454260e17dac55487d325047",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd-mpeg1-input.h": "510611cbcf1af576167f508e3105faaf6a8cdbdfcd6a3d1d65d509eb2efc176e",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/filters/gst/gst-plugin-1.0/gstcrystalhd.c": "2150e53c6aa77e8402d3bcd1638072a441ae134a37b8202da093bb1eaa68dc38",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/tests/mpeg1-natural-playback.c": "0aed7200e3319cff0e373164ee10566a493222ddfa3f9dd3a0565c11634879bb",
+    "/home/mache/.cache/crystalhd-natural-mpeg1-research-20261031/tests/mpeg1-research-decoder.c": "9ff1d6c18da2cf7a8c9d5ae81ae65679696ca55a2a891bf61c758cbf031882d5"
+  },
+  "compiled_plugin": {
+    "artifact": "native-build-02/libgstcrystalhdmpeg1experimental.so",
+    "bytes": 119968,
+    "sha256": "be36b2299e8e5fbe0782ad7855b3c8badcbd992ae7eabf22b8d8410eb336c192"
+  },
+  "date": "2026-10-31",
+  "decision": "GO_SCOPED_OPTIONAL_EXPERIMENTAL_GSTREAMER_ONLY",
+  "hardware_playback": {
+    "QoS_messages": 0,
+    "actual_DIL_and_plugin_mappings": {
+      "/home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6": {
+        "identity": {
+          "bytes": 295320,
+          "path": "/home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "stat": {
+            "st_ctime_ns": 1793419363407781805,
+            "st_dev": 2049,
+            "st_ino": 9314745,
+            "st_mtime_ns": 1793419363406693646,
+            "st_size": 295320
+          }
+        },
+        "map_rows": [
+          "763113c26000-763113c2d000 r--p 00000000 08:01 9314745                    /home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "763113c2d000-763113c5a000 r-xp 00007000 08:01 9314745                    /home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "763113c5a000-763113c64000 r--p 00034000 08:01 9314745                    /home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "763113c64000-763113c65000 r--p 0003d000 08:01 9314745                    /home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "763113c65000-763113c66000 rw-p 0003e000 08:01 9314745                    /home/mache/.cache/crystalhd-all-integration-20261031/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+        ]
+      },
+      "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so": {
+        "identity": {
+          "bytes": 119968,
+          "path": "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so",
+          "sha256": "be36b2299e8e5fbe0782ad7855b3c8badcbd992ae7eabf22b8d8410eb336c192",
+          "stat": {
+            "st_ctime_ns": 1793442912935780950,
+            "st_dev": 2049,
+            "st_ino": 9452733,
+            "st_mtime_ns": 1793442912935780950,
+            "st_size": 119968
+          }
+        },
+        "map_rows": [
+          "7631132cc000-7631132d0000 r--p 00000000 08:01 9452733                    /home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so",
+          "7631132d0000-7631132e0000 r-xp 00004000 08:01 9452733                    /home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so",
+          "7631132e0000-7631132e5000 r--p 00014000 08:01 9452733                    /home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so",
+          "7631132e5000-7631132e6000 r--p 00018000 08:01 9452733                    /home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so",
+          "7631132e6000-7631132e7000 rw-p 00019000 08:01 9452733                    /home/mache/.cache/crystalhd-natural-mpeg1-20261031/experimental-stage-01/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhdmpeg1experimental.so"
+        ]
+      }
+    },
+    "actual_device_owner_observed": true,
+    "actual_process_exit": 0,
+    "audio_covers_video_originalPTS": true,
+    "audio_nonzero_buffers": 2345,
+    "cleanup_NULL_complete": true,
+    "dropped": 0,
+    "elapsed_to_natural_EOS_s": 50.879456,
+    "original_1250_picture_PTS_census": "PASS0..49.96s by40ms",
+    "peak_temp_mC": 54000,
+    "post_boundaries": {
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null
+    },
+    "rendered": 1250,
+    "selected_actual_clock": "GstPulseSinkClock/GstAudioClock",
+    "status": "EXPERIMENTAL_FRONTEND_SESSION_QUALIFIED",
+    "stderr": "Running DIL (3.22.0) Version\nDtsDeviceOpen: Opening HW in mode 0\nEnable single threaded mode\nScaling command param 0x0,ctx_scal:0x0\nFlush called with opcode 0\nFound EOS \nDtsProcOutput: No Active Channels\n",
+    "stdout": "MPEG1_RESEARCH input=/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.mkv expected=1250 factory=crystalhdmpeg1experimentaldec source-codec=mpeg1video internal-algorithm=1 external-caps-relabelled=no queues=defaults sink-policy=defaults\nelement name=decoder factory=crystalhdmpeg1experimentaldec type=GstCrystalHdMpeg1ExperimentalDec\nproperty element=decoder name=qos value=TRUE\nelement name=video factory=xvimagesink type=GstXvImageSink\nproperty element=video name=sync value=TRUE\nproperty element=video name=qos value=TRUE\nproperty element=video name=max-lateness value=5000000\nproperty element=video name=processing-deadline value=15000000\nproperty element=video name=render-delay value=0\nproperty element=video name=ts-offset value=0\nelement name=audio factory=pulsesink type=GstPulseSink\nproperty element=audio name=sync value=TRUE\nproperty element=audio name=qos value=FALSE\nproperty element=audio name=max-lateness value=-1\nproperty element=audio name=processing-deadline value=20000000\nproperty element=audio name=render-delay value=0\nproperty element=audio name=ts-offset value=0\nproperty element=audio name=buffer-time value=200000\nproperty element=audio name=latency-time value=10000\nproperty element=audio name=provide-clock value=TRUE\npipeline-state old=NULL current=READY pending=PLAYING\npipeline-state old=READY current=PAUSED pending=PLAYING\nbus-new-clock name=GstPulseSinkClock type=GstAudioClock\npipeline-state old=PAUSED current=PLAYING pending=VOID_PENDING\nprogress elapsed=5.057 input=135 decoded=107 video=107 audio=206\nprogress elapsed=10.064 input=260 decoded=232 video=232 audio=440\nprogress elapsed=15.072 input=385 decoded=357 video=357 audio=674\nprogress elapsed=20.078 input=510 decoded=482 video=482 audio=910\nprogress elapsed=25.087 input=635 decoded=608 video=608 audio=1144\nprogress elapsed=30.096 input=760 decoded=732 video=732 audio=1378\nprogress elapsed=35.103 input=886 decoded=858 video=858 audio=1614\nprogress elapsed=40.111 input=1011 decoded=983 video=983 audio=1848\nprogress elapsed=45.117 input=1135 decoded=1108 video=1108 audio=2082\nprogress elapsed=50.125 input=1250 decoded=1233 video=1233 audio=2318\nbus-eos source=pipeline0 natural=yes elapsed=50.879456\nterminal-clock name=GstPulseSinkClock type=GstAudioClock pulse-audio-clock=yes\nvideo-stats-before-null application/x-gst-base-sink-stats, average-rate=(double)0.075585080162151527, dropped=(guint64)0, rendered=(guint64)1250;\nstream name=decoder:sink-mpeg1-input buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=416 segments=1 eos=1 clock-samples=1224 arrival-offset-first-ns=-1000000000 arrival-offset-last-ns=-1142982000 arrival-offset-min-ns=-1265970000 arrival-offset-max-ns=-1000000000 arrival-offset-change-ns=-142982000 nonzero-audio-payload-seen=no caps=video/mpeg, systemstream=(boolean)false, mpegversion=(int)1, width=(int)352, height=(int)288, framerate=(fraction)25/1, interlace-mode=(string)progressive, colorimetry=(string)2:4:0:0, parsed=(boolean)true, pixel-aspect-ratio=(fraction)1/1, codec_data=(buffer)000001b316012013ffffe018\nstream name=decoder:src buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=1249 arrival-offset-first-ns=-40000000 arrival-offset-last-ns=-37164000 arrival-offset-min-ns=-40000000 arrival-offset-max-ns=-22685000 arrival-offset-change-ns=2836000 nonzero-audio-payload-seen=no caps=video/x-raw, format=(string)YUY2, width=(int)352, height=(int)288, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:4:0:0, framerate=(fraction)25/1\nstream name=video:sink buffers=1250 first-pts=0 last-pts=49960000000 last-end=50000000000 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=1249 arrival-offset-first-ns=-40000000 arrival-offset-last-ns=-36964000 arrival-offset-min-ns=-40000000 arrival-offset-max-ns=-22440000 arrival-offset-change-ns=3036000 nonzero-audio-payload-seen=no caps=video/x-raw, width=(int)352, height=(int)288, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, framerate=(fraction)25/1, format=(string)UYVY, colorimetry=(string)2:4:0:0\nstream name=audio:sink buffers=2345 first-pts=0 last-pts=50005000000 last-end=50026333333 missing-pts=0 missing-duration=0 backwards-pts=0 segments=1 eos=1 clock-samples=2344 arrival-offset-first-ns=-21000000 arrival-offset-last-ns=-150542000 arrival-offset-min-ns=-187039000 arrival-offset-max-ns=-21000000 arrival-offset-change-ns=-129542000 nonzero-audio-payload-seen=yes caps=audio/x-raw, rate=(int)48000, format=(string)F32LE, channels=(int)2, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003\naudio-video-observation pairs=1250 latest-audio-interval-gap-min-ns=-146000000 latest-audio-interval-gap-max-ns=0 audio-covers-video-pts=yes original-pts-set-join=yes\nMPEG1_RESEARCH_RESULT natural-eos=yes expected=1250 rendered=1250 dropped=0 warnings=0 qos-messages=0 result=PASS reason=metadata/count/clock/audio evidence only; no physical display or audible-output claim\ncleanup set=1 wait=1 state=NULL pending=VOID_PENDING complete=yes\nMPEG1_CAPTURE_RESULT captured=8 expected=8 active-bytes=1622016 result=PASS reason=actual video:sink bytes; saved after NULL\nMPEG1_RESEARCH_EXIT status=0\n",
+    "warnings": 0
+  },
+  "limitations": [
+    "One independently licensed50s natural clip; not generalized MPEG1conformance.",
+    "Structuraladmission is not a complete entropy/reference decoder or securityproof.",
+    "BCM70012, other resolutions/rates/interlacing and chips remain rejected/unqualified.",
+    "Actual video:sink buffer captures are not physical scanout screenshots.",
+    "Stagedprivate installation test is not a public binary distribution."
+  ],
+  "native_frontend": {
+    "artifact": "native-build-03/mpeg1-natural-playback",
+    "bytes": 430984,
+    "sha256": "78574962c69d2106af2f0d8428b76283cd76a588f75a65fac04dd588f79a215a"
+  },
+  "preserved_failures": [
+    "native-build-02/frontend-compile.log: ownstrictC11 O_CLOEXEC featuredeclaration missing; fixedbeforeheaders withPOSIX2008; native-build-03 compiles withoutwarning.",
+    "All original captureobserver/offlinepredicate failures remain in priorreceipts, no relabeling."
+  ],
+  "retained_artifacts": [
+    {
+      "artifact": "native-playback-02/report.json",
+      "bytes": 134963,
+      "sha256": "03da960170304df34e0cbe67df082988b8711dac92f93e6aaccad3297f797f2a"
+    },
+    {
+      "artifact": "native-playback-02/native-playback.stdout",
+      "bytes": 5736,
+      "sha256": "795d0270893766e1255e6c77846c81a921b0fdbe0424a4d54a72f83c5e935149"
+    },
+    {
+      "artifact": "native-playback-02/native-playback.stderr",
+      "bytes": 204,
+      "sha256": "e77291e87f80bed9b41de4fefe9341325d469d36c4e61e3195b9e8df5165dc62"
+    },
+    {
+      "artifact": "native-playback-02/frames/frames.json",
+      "bytes": 1178,
+      "sha256": "7c081a7de3631a66c61616c06e7e603d9d65f924f292c5040ddee62a460c25e6"
+    },
+    {
+      "artifact": "run-experimental-playback.py",
+      "bytes": 7147,
+      "sha256": "fc0c0c60df3d7efb28746e30dfd0e43ac2f83e2aff84088329720eb52b5e1345"
+    },
+    {
+      "artifact": "native-build-03/frontend-compile.json",
+      "bytes": 2626,
+      "sha256": "9ab92582c35de40d5f80c1f4ab5d0a9849639df5a5406c3315f623a5458d3a5e"
+    },
+    {
+      "artifact": "admission-preflight-01/report.json",
+      "bytes": 449,
+      "sha256": "b19307b24dcc90891cf2d9b80cbb86c6c49da9c555b14df493085f7d0f8b8cd3"
+    },
+    {
+      "artifact": "visual-02-real-playback/report.json",
+      "bytes": 4266,
+      "sha256": "e3b643189c2495f76bcf290571e655b6f364ab4f8a3e688fb8f1935b7cc39e44"
+    },
+    {
+      "artifact": "visual-02-real-playback/side-by-side.png",
+      "bytes": 1021771,
+      "sha256": "77c4c5c8dab1e05b1cf41c5ef763b1ab8be6d041917bd6cc3ee5a49ee5ddf7d5"
+    },
+    {
+      "artifact": "rollback-01/report.json",
+      "bytes": 349,
+      "sha256": "47ae22046dadada6549ca04f2156d71ba5fb1d9505f49f7cc03411eac93b5d5c"
+    },
+    {
+      "artifact": "experimental-sanitizer-01/report.json",
+      "bytes": 1161,
+      "sha256": "d8bda42889e485484b3061a4655772609bcfe85695d73982ed01ca1230047ecb"
+    },
+    {
+      "artifact": "experimental-sanitizer-01/frontend-report.json",
+      "bytes": 1175,
+      "sha256": "1bc6bb4957577687cffa806bade8efcad59c2e9ab7e6d3bd150854050b9af3f4"
+    },
+    {
+      "artifact": "native-build-02/ordinary-lifecycle-results.json",
+      "bytes": 1569,
+      "sha256": "6fc7e176f43f3d7344a042ac8e9612442abd3e671ee57ffcfa40fbf192425b70"
+    },
+    {
+      "artifact": "mpeg2-after-experimental-01/report.json",
+      "bytes": 13818,
+      "sha256": "2eb6797284e60afae70546a0b532c9631b740c7e092924936d2fc073fed4a46b"
+    },
+    {
+      "artifact": "h264-after-experimental-01/report.json",
+      "bytes": 15509,
+      "sha256": "9bba53e8335e0d26884b197b65b322bdd9dfe691507338c7e17685c58708ac96"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-0.raw",
+      "bytes": 202752,
+      "sha256": "c0e23317fc06fc57c6fc1d459f688385e13c62783f25fe7a8f0f9d68fa9fe8a4"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-320.raw",
+      "bytes": 202752,
+      "sha256": "ba69c10a8bbcb43ed8c073e2c64179e6575d370ab2e0a421e9796f1476d8e9b9"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-373.raw",
+      "bytes": 202752,
+      "sha256": "ed5aaf3287e48eadbf16d79fa6d720c43cc6014dfb4ea80a427e8cd2567a10e2"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-498.raw",
+      "bytes": 202752,
+      "sha256": "8ae69f450f597fdb3ca6258ea4f800a4038926c771fddf188f8a539753fe490c"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-582.raw",
+      "bytes": 202752,
+      "sha256": "5954bcc1c218063bb88c443d403de85c169eada7def6d8c95920d89e07a6a1b7"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-645.raw",
+      "bytes": 202752,
+      "sha256": "4e780660543a7b68c348af7262ed74bae91a463582c1058a2cd1007052a37503"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-813.raw",
+      "bytes": 202752,
+      "sha256": "91908d542c2ca823c12ad1415519982ea70ac8897f219d1afc3a4e638d55c319"
+    },
+    {
+      "artifact": "native-playback-02/frames/frame-849.raw",
+      "bytes": 202752,
+      "sha256": "d55286214b1d53a9e4541a3a604ed099780eb37f3853f15b1a9ad426ec0ad011"
+    }
+  ],
+  "rollback": {
+    "fresh_registry_probe_exit": 255,
+    "ordinary_h264_recovery": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "ordinary_mpeg2_recovery": "973193e8a9d8cc9937a32f971cf2767f1d635587f4b058f1ca1d6294f24b3e4a",
+    "plugin_removed": true,
+    "stderr": "No such element or plugin 'crystalhdmpeg1experimentaldec'\n",
+    "stdout": ""
+  },
+  "schema": "crystalhd.issue606.experimental-codec.v1",
+  "scope": {
+    "DIL_driver_firmware_external_code_changes": false,
+    "codec": "MPEG1 progressive352x288/25",
+    "device": "BCM70015 only",
+    "external_codec_identity_and_bytes_PTS_preserved": true,
+    "factory": "crystalhdmpeg1experimentaldec",
+    "internal_transport": "MPEG2VIDEO selects existingalgorithm1",
+    "master_release_default_promotion": false,
+    "official_vendor_general_conformance_or_Kodi_VA_claim": false,
+    "ordinary_caps_default_unchanged": true,
+    "rank": "NONE"
+  },
+  "tests": {
+    "ASan_UBSan_leak_checks": "PASS85 +frontend20, detect_leaks1/abort_on_error1/halt_on_error1",
+    "fixed_reference_models": 53,
+    "mapping_controls": 38,
+    "metric_controls": 10,
+    "optional_header_caps_device_scale_type_checks": 85,
+    "ordinary_Gst_lifecycle_tests": 100,
+    "ordinary_poll_fallback_tests": 91,
+    "private_admission_negative_caps": 20
+  }
+}

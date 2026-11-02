@@ -1,0 +1,1077 @@
+{
+  "schema": 1,
+  "issue": 530,
+  "date": "2026-10-27",
+  "final_runtime_source": "20201fe759b522601f1541162a2190f1c8010865",
+  "scope": "Experimental rank-NONE source-build window sink only; no install/default/VA ABI/Kick/module/PM/firmware change.",
+  "environment": {
+    "os": "Ubuntu26.04.1LTS",
+    "kernel": "7.0.0-38-generic",
+    "gst": "1.28.2",
+    "mesa": "26.0.8",
+    "gpu": "Intel965GM",
+    "coded_input": "1920x1080i25 H264/AAC30.037s",
+    "card_output": "1280x720 paired YUY2",
+    "fullscreen_client": "1024x768@60Hz,aspect-fit video rectangle1024x576",
+    "audio": "Real PulseSink/GstPulseSinkClock; benchmark stream muted, no system volume change"
+  },
+  "decoder_library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+  "power": "AC online throughout matched BAAB; no power/energy measurement",
+  "stage_measurement": "Worst-event stages use existing media-clock reads plus monotonic timestamps; no per-field logging. Per-picture preparation includes retirement and applies to both fields, not two independent preparations. GPU submission/swap return is not scanout.",
+  "control": {
+    "method": "diagnostic",
+    "source_sha": "71e31f266890a0656343b0680c888a8c89e4ce9e",
+    "result": {
+      "label": "stages",
+      "fullscreen": true,
+      "eos": true,
+      "audio_buffers": 1408,
+      "audio_stream_muted": true,
+      "clock": "GstPulseSinkClock",
+      "audio_clock": "GstPulseSinkClock",
+      "same_audio_clock": true,
+      "peak_mC": 59000,
+      "sizes": [
+        [
+          1024,
+          768
+        ]
+      ],
+      "verified_initial_size": [
+        1024,
+        768
+      ],
+      "sink_buffers": 750,
+      "sink_fields": 1500,
+      "qos_sources": {},
+      "base_sink_before_null": {
+        "average-rate": -1.0,
+        "dropped": 0,
+        "rendered": 750
+      },
+      "code": 0,
+      "decoded": 750,
+      "health_error": null,
+      "elapsed_s": 31.70411855099519,
+      "cpu_s": 8.333452999999999,
+      "max_rss_kib": 275276,
+      "start_mC": 56000,
+      "field_stats": {
+        "pictures": 750,
+        "fields": 1282,
+        "prerolls": 1,
+        "redraws": 0,
+        "swaps": 1283,
+        "cancelled": 0,
+        "clipped": 0,
+        "failures": 0,
+        "clocked-fields": 1282,
+        "late-fields": 284,
+        "max-age-ns": 54071000,
+        "early-fields": 106,
+        "max-early-ns": 15000000,
+        "dropped-fields": 218,
+        "prepare-ns": 9355789621,
+        "draw-ns": 365157800,
+        "wait-ns": 892542655,
+        "swap-ns": 18067472059,
+        "retire-ns": 8128429919,
+        "retirements": 750,
+        "worst-field-pts": 5500000000,
+        "worst-field-index": 1,
+        "worst-parity": 1,
+        "worst-prepare-ns": 10625392,
+        "worst-retire-ns": 9356280,
+        "worst-draw-ns": 116288,
+        "worst-wait-ns": 11943,
+        "worst-swap-ns": 52929657,
+        "worst-head-age-ns": -8546000,
+        "worst-preswap-age-ns": -8411000,
+        "worst-monotonic-elapsed-ns": 53065571,
+        "worst-clock-elapsed-ns": 62617000,
+        "allocations": 0,
+        "images": 0,
+        "retained-buffers": 0
+      },
+      "whole_buffer_drops": 0,
+      "pass": true
+    },
+    "decision": "Measured control; actual SwapBuffers call stalls for52.929657ms in the worst-age event."
+  },
+  "screening": {
+    "runs_per_policy": 1,
+    "order": [
+      "diagnostic",
+      "per-field-fence",
+      "rgb-cache",
+      "independent-source-slots"
+    ],
+    "policy_results": [
+      {
+        "method": "per-field-fence",
+        "source_sha": "8a3713e2a195f1522c942e7ed214ade7375573b0",
+        "result": {
+          "label": "8a3713e",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 61000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 0,
+            "rendered": 750
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.69124524700601,
+          "cpu_s": 9.270446999999999,
+          "max_rss_kib": 276204,
+          "start_mC": 57000,
+          "field_stats": {
+            "pictures": 750,
+            "fields": 1135,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1136,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1135,
+            "late-fields": 11,
+            "max-age-ns": 20304000,
+            "early-fields": 58,
+            "max-early-ns": 14749000,
+            "dropped-fields": 365,
+            "prepare-ns": 2042116977,
+            "draw-ns": 547385422,
+            "wait-ns": 361515107,
+            "swap-ns": 2442659256,
+            "retire-ns": 507415880,
+            "retirements": 750,
+            "worst-field-pts": 12400000000,
+            "worst-field-index": 0,
+            "worst-parity": 0,
+            "worst-prepare-ns": 2008265,
+            "worst-retire-ns": 95475,
+            "worst-draw-ns": 441059,
+            "worst-wait-ns": 26052,
+            "worst-swap-ns": 9934675,
+            "worst-head-age-ns": 2936000,
+            "worst-preswap-age-ns": 10355000,
+            "worst-monotonic-elapsed-ns": 17354235,
+            "worst-clock-elapsed-ns": 17368000,
+            "worst-gpu-wait-ns": 6890569,
+            "fence-supported": 1,
+            "fences-created": 1501,
+            "fences-destroyed": 1501,
+            "fences-live": 0,
+            "fence-wait-ns": 23182688314,
+            "gpu-expired-fields": 365,
+            "finish-fallbacks": 0,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 0,
+          "pass": true
+        },
+        "decision": "REJECTED: lower age accompanies more omitted fields and more client CPU. Reverted by d3ea621.",
+        "pixel_lifetime_proof": {
+          "summaries": [
+            {
+              "type": "window-pixel-summary",
+              "comparisons": 36,
+              "pass": true
+            },
+            {
+              "type": "retirement-pixels",
+              "generations": 5,
+              "comparisons": 10,
+              "native_fence": true,
+              "fallback_checked": true,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 0,
+              "fields": 24,
+              "prerolls": 1,
+              "cancelled": 0,
+              "stop_ms": 5.992,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 1,
+              "fields": 24,
+              "prerolls": 2,
+              "cancelled": 0,
+              "stop_ms": 6.42,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 2,
+              "fields": 24,
+              "prerolls": 3,
+              "cancelled": 0,
+              "stop_ms": 17.775,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": true,
+              "run": 0,
+              "fields": 1,
+              "prerolls": 1,
+              "cancelled": 1,
+              "stop_ms": 8.022,
+              "resources_after_null": 0,
+              "pass": true
+            }
+          ],
+          "maximum_rgb_error": 1,
+          "exit_status": 0
+        }
+      },
+      {
+        "method": "rgb-cache",
+        "source_sha": "b3d66f6c4e38fe170163b1a9d1872f3c6a3e3782",
+        "result": {
+          "label": "b3d66f6",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 62000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 1,
+            "rendered": 749
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.706468284995935,
+          "cpu_s": 8.276709,
+          "max_rss_kib": 275640,
+          "start_mC": 60000,
+          "field_stats": {
+            "pictures": 749,
+            "fields": 1045,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1046,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1045,
+            "late-fields": 294,
+            "max-age-ns": 76182000,
+            "early-fields": 34,
+            "max-early-ns": 14766000,
+            "dropped-fields": 453,
+            "prepare-ns": 15070776165,
+            "draw-ns": 258199170,
+            "wait-ns": 449999636,
+            "swap-ns": 13018190200,
+            "retire-ns": 13725998167,
+            "retirements": 749,
+            "worst-field-pts": 21980000000,
+            "worst-field-index": 1,
+            "worst-parity": 1,
+            "worst-prepare-ns": 7836176,
+            "worst-retire-ns": 6424019,
+            "worst-draw-ns": 119361,
+            "worst-wait-ns": 11315,
+            "worst-swap-ns": 61928392,
+            "worst-head-age-ns": 54000,
+            "worst-preswap-age-ns": 193000,
+            "worst-monotonic-elapsed-ns": 62066192,
+            "worst-clock-elapsed-ns": 76128000,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 1,
+          "pass": true
+        },
+        "decision": "REJECTED: more omissions and worse maximum age; reverted by eed7cea.",
+        "pixel_lifetime_proof": {
+          "summaries": [
+            {
+              "type": "window-pixel-summary",
+              "cached": false,
+              "comparisons": 36,
+              "pass": true
+            },
+            {
+              "type": "window-pixel-summary",
+              "cached": true,
+              "comparisons": 36,
+              "pass": true
+            },
+            {
+              "type": "retirement-pixels",
+              "cached": false,
+              "generations": 4,
+              "comparisons": 8,
+              "pass": true
+            },
+            {
+              "type": "retirement-pixels",
+              "cached": true,
+              "generations": 4,
+              "comparisons": 8,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 0,
+              "fields": 24,
+              "prerolls": 1,
+              "cancelled": 0,
+              "stop_ms": 6.277,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 1,
+              "fields": 24,
+              "prerolls": 2,
+              "cancelled": 0,
+              "stop_ms": 7.013,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 2,
+              "fields": 24,
+              "prerolls": 3,
+              "cancelled": 0,
+              "stop_ms": 6.025,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": true,
+              "run": 0,
+              "fields": 1,
+              "prerolls": 1,
+              "cancelled": 1,
+              "stop_ms": 7.612,
+              "resources_after_null": 0,
+              "pass": true
+            }
+          ],
+          "maximum_rgb_error": 1,
+          "exit_status": 0
+        }
+      },
+      {
+        "method": "independent-source-slots",
+        "source_sha": "8d530b8b3b39de8b74da48b1286e4305ef2125af",
+        "result": {
+          "label": "8d530b8",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 64000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 0,
+            "rendered": 750
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.67312314499577,
+          "cpu_s": 8.656543,
+          "max_rss_kib": 278036,
+          "start_mC": 61000,
+          "field_stats": {
+            "pictures": 750,
+            "fields": 1280,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1281,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1280,
+            "late-fields": 1188,
+            "max-age-ns": 56676000,
+            "early-fields": 15,
+            "max-early-ns": 15000000,
+            "dropped-fields": 220,
+            "prepare-ns": 1688661087,
+            "draw-ns": 494385477,
+            "wait-ns": 232204520,
+            "swap-ns": 26660647784,
+            "retire-ns": 75461464,
+            "retirements": 750,
+            "worst-field-pts": 20820000000,
+            "worst-field-index": 1,
+            "worst-parity": 1,
+            "worst-prepare-ns": 6450211,
+            "worst-retire-ns": 88351,
+            "worst-draw-ns": 274274,
+            "worst-wait-ns": 22349,
+            "worst-swap-ns": 40232506,
+            "worst-head-age-ns": 16173000,
+            "worst-preswap-age-ns": 16477000,
+            "worst-monotonic-elapsed-ns": 40537232,
+            "worst-clock-elapsed-ns": 40503000,
+            "fence-supported": 1,
+            "fences-created": 751,
+            "fences-destroyed": 751,
+            "fences-live": 0,
+            "retire-ready": 750,
+            "retire-waits": 0,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 0,
+          "pass": true
+        },
+        "decision": "REJECTED: all750 retirement fences are ready, but wait moves to SwapBuffers; count and CPU do not improve,1188 submissions are late. Removed in20201fe.",
+        "pixel_lifetime_proof": {
+          "summaries": [
+            {
+              "type": "window-pixel-summary",
+              "comparisons": 36,
+              "pass": true
+            },
+            {
+              "type": "retirement-pixels",
+              "generations": 4,
+              "comparisons": 8,
+              "pass": true
+            },
+            {
+              "type": "slot-retirement-pixels",
+              "fence_supported": true,
+              "forced_fallback": false,
+              "comparisons": 8,
+              "resources_after_close": 0,
+              "pass": true
+            },
+            {
+              "type": "slot-retirement-pixels",
+              "fence_supported": false,
+              "forced_fallback": true,
+              "comparisons": 8,
+              "resources_after_close": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 0,
+              "fields": 24,
+              "prerolls": 1,
+              "cancelled": 0,
+              "stop_ms": 6.01,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 1,
+              "fields": 24,
+              "prerolls": 2,
+              "cancelled": 0,
+              "stop_ms": 8.389,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": false,
+              "run": 2,
+              "fields": 24,
+              "prerolls": 3,
+              "cancelled": 0,
+              "stop_ms": 14.973,
+              "resources_after_null": 0,
+              "pass": true
+            },
+            {
+              "type": "pipeline",
+              "synthetic": true,
+              "cancel": true,
+              "run": 0,
+              "fields": 1,
+              "prerolls": 1,
+              "cancelled": 1,
+              "stop_ms": 14.416,
+              "resources_after_null": 0,
+              "pass": true
+            }
+          ],
+          "maximum_rgb_error": 1,
+          "exit_status": 0
+        },
+        "implementation_sha": "97c394f0c73d9384156680ae833db994f4834451",
+        "retained_compile_failure": "97c394f plugin Werror build PASS; static harness Werror FAIL (-Wdangling-reference in make_pair initializer list). Corrected in8d530b8 before pixel/native tests."
+      }
+    ],
+    "interpretation": "Exploratory sequential discriminators, not counterbalanced effect estimates. Raw pass flags check EOS/decoded count/audio clock/resources, not lossless cadence; performance rejections remain explicit."
+  },
+  "matched_baab": {
+    "order": "BAAB",
+    "runs": [
+      {
+        "arm": "B1",
+        "source_sha": "20201fe759b522601f1541162a2190f1c8010865",
+        "start_utc": "2026-10-27T00:53:00.045197+00:00",
+        "end_utc": "2026-10-27T00:53:33.857805+00:00",
+        "result": "border-B1.json",
+        "fields": 1323,
+        "expired": 177,
+        "whole_buffer_drops": 0,
+        "non_submitted": 177,
+        "cpu_s": 8.152703,
+        "max_age_ms": 51.034,
+        "start_mC": 61000,
+        "peak_mC": 64000,
+        "measurement": {
+          "label": "20201fe759b522601f1541162a2190f1c8010865",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 64000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 0,
+            "rendered": 750
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.661827931995504,
+          "cpu_s": 8.152703,
+          "max_rss_kib": 275252,
+          "start_mC": 61000,
+          "field_stats": {
+            "pictures": 750,
+            "fields": 1323,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1324,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1323,
+            "late-fields": 321,
+            "max-age-ns": 51034000,
+            "early-fields": 113,
+            "max-early-ns": 15000000,
+            "dropped-fields": 177,
+            "prepare-ns": 8445036164,
+            "draw-ns": 447323788,
+            "wait-ns": 853823914,
+            "swap-ns": 18837344514,
+            "retire-ns": 7258475054,
+            "retirements": 750,
+            "worst-field-pts": 3940000000,
+            "worst-field-index": 1,
+            "worst-parity": 1,
+            "worst-prepare-ns": 8734127,
+            "worst-retire-ns": 7573767,
+            "worst-draw-ns": 114821,
+            "worst-wait-ns": 11454,
+            "worst-swap-ns": 54162621,
+            "worst-head-age-ns": -3422000,
+            "worst-preswap-age-ns": -3290000,
+            "worst-monotonic-elapsed-ns": 54295601,
+            "worst-clock-elapsed-ns": 54456000,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 0,
+          "pass": true
+        }
+      },
+      {
+        "arm": "A1",
+        "source_sha": "678351cb904acce9860281a09e8d9db585b5d85d",
+        "start_utc": "2026-10-27T00:53:33.863864+00:00",
+        "end_utc": "2026-10-27T00:54:07.612543+00:00",
+        "result": "border-A1.json",
+        "fields": 1281,
+        "expired": 217,
+        "whole_buffer_drops": 1,
+        "non_submitted": 219,
+        "cpu_s": 8.168659000000002,
+        "max_age_ms": 68.167,
+        "start_mC": 64000,
+        "peak_mC": 66000,
+        "measurement": {
+          "label": "678351cb904acce9860281a09e8d9db585b5d85d",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 66000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 1,
+            "rendered": 749
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.670944354998937,
+          "cpu_s": 8.168659000000002,
+          "max_rss_kib": 275768,
+          "start_mC": 64000,
+          "field_stats": {
+            "pictures": 749,
+            "fields": 1281,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1282,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1281,
+            "late-fields": 298,
+            "max-age-ns": 68167000,
+            "early-fields": 126,
+            "max-early-ns": 15000000,
+            "dropped-fields": 217,
+            "prepare-ns": 9672737611,
+            "draw-ns": 375899000,
+            "wait-ns": 1104999993,
+            "swap-ns": 17365344349,
+            "retire-ns": 8448498399,
+            "retirements": 749,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 1,
+          "pass": true
+        }
+      },
+      {
+        "arm": "A2",
+        "source_sha": "678351cb904acce9860281a09e8d9db585b5d85d",
+        "start_utc": "2026-10-27T00:54:07.615349+00:00",
+        "end_utc": "2026-10-27T00:54:41.380162+00:00",
+        "result": "border-A2.json",
+        "fields": 1281,
+        "expired": 219,
+        "whole_buffer_drops": 0,
+        "non_submitted": 219,
+        "cpu_s": 8.155809999999999,
+        "max_age_ms": 53.754,
+        "start_mC": 66000,
+        "peak_mC": 67000,
+        "measurement": {
+          "label": "678351cb904acce9860281a09e8d9db585b5d85d",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 67000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 0,
+            "rendered": 750
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.639089693999267,
+          "cpu_s": 8.155809999999999,
+          "max_rss_kib": 275416,
+          "start_mC": 66000,
+          "field_stats": {
+            "pictures": 750,
+            "fields": 1281,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1282,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1281,
+            "late-fields": 293,
+            "max-age-ns": 53754000,
+            "early-fields": 94,
+            "max-early-ns": 15000000,
+            "dropped-fields": 219,
+            "prepare-ns": 9580517164,
+            "draw-ns": 371870722,
+            "wait-ns": 864213538,
+            "swap-ns": 17746421171,
+            "retire-ns": 8419918132,
+            "retirements": 750,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 0,
+          "pass": true
+        }
+      },
+      {
+        "arm": "B2",
+        "source_sha": "20201fe759b522601f1541162a2190f1c8010865",
+        "start_utc": "2026-10-27T00:54:41.386660+00:00",
+        "end_utc": "2026-10-27T00:55:15.210163+00:00",
+        "result": "border-B2.json",
+        "fields": 1320,
+        "expired": 180,
+        "whole_buffer_drops": 0,
+        "non_submitted": 180,
+        "cpu_s": 8.323343,
+        "max_age_ms": 52.711,
+        "start_mC": 67000,
+        "peak_mC": 68000,
+        "measurement": {
+          "label": "20201fe759b522601f1541162a2190f1c8010865",
+          "fullscreen": true,
+          "eos": true,
+          "audio_buffers": 1408,
+          "audio_stream_muted": true,
+          "clock": "GstPulseSinkClock",
+          "audio_clock": "GstPulseSinkClock",
+          "same_audio_clock": true,
+          "peak_mC": 68000,
+          "sizes": [
+            [
+              1024,
+              768
+            ]
+          ],
+          "verified_initial_size": [
+            1024,
+            768
+          ],
+          "sink_buffers": 750,
+          "sink_fields": 1500,
+          "qos_sources": {},
+          "base_sink_before_null": {
+            "average-rate": -1.0,
+            "dropped": 0,
+            "rendered": 750
+          },
+          "code": 0,
+          "decoded": 750,
+          "health_error": null,
+          "elapsed_s": 31.730745834996924,
+          "cpu_s": 8.323343,
+          "max_rss_kib": 275372,
+          "start_mC": 67000,
+          "field_stats": {
+            "pictures": 750,
+            "fields": 1320,
+            "prerolls": 1,
+            "redraws": 0,
+            "swaps": 1321,
+            "cancelled": 0,
+            "clipped": 0,
+            "failures": 0,
+            "clocked-fields": 1320,
+            "late-fields": 329,
+            "max-age-ns": 52711000,
+            "early-fields": 97,
+            "max-early-ns": 15000000,
+            "dropped-fields": 180,
+            "prepare-ns": 8564697069,
+            "draw-ns": 457896745,
+            "wait-ns": 933517868,
+            "swap-ns": 18480944639,
+            "retire-ns": 7290787551,
+            "retirements": 750,
+            "worst-field-pts": 21900000000,
+            "worst-field-index": 1,
+            "worst-parity": 1,
+            "worst-prepare-ns": 6704034,
+            "worst-retire-ns": 5443588,
+            "worst-draw-ns": 143875,
+            "worst-wait-ns": 10966,
+            "worst-swap-ns": 53201971,
+            "worst-head-age-ns": -597000,
+            "worst-preswap-age-ns": -437000,
+            "worst-monotonic-elapsed-ns": 53363586,
+            "worst-clock-elapsed-ns": 53308000,
+            "allocations": 0,
+            "images": 0,
+            "retained-buffers": 0
+          },
+          "whole_buffer_drops": 0,
+          "pass": true
+        }
+      }
+    ],
+    "completed": true,
+    "summary": {
+      "A": {
+        "fields": 1281,
+        "non_submitted": 219,
+        "cpu_s": 8.1622345,
+        "non_submitted_percent": 14.6,
+        "worst_observed_swap_return_age_ms": 68.167
+      },
+      "B": {
+        "fields": 1321.5,
+        "non_submitted": 178.5,
+        "cpu_s": 8.238023,
+        "non_submitted_percent": 11.9,
+        "worst_observed_swap_return_age_ms": 52.711
+      }
+    },
+    "changes_percent": {
+      "fields": 3.1615925058547933,
+      "non_submitted": -18.493150684931503,
+      "cpu_s": 0.9285263735071547
+    }
+  },
+  "final_pixel_and_cleanup_proof": {
+    "summaries": [
+      {
+        "type": "window-pixel-summary",
+        "comparisons": 36,
+        "pass": true
+      },
+      {
+        "type": "retirement-pixels",
+        "generations": 4,
+        "comparisons": 8,
+        "pass": true
+      },
+      {
+        "type": "window-borders",
+        "rectangles": 3,
+        "pass": true
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 0,
+        "fields": 24,
+        "prerolls": 1,
+        "cancelled": 0,
+        "stop_ms": 6.13,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 1,
+        "fields": 24,
+        "prerolls": 2,
+        "cancelled": 0,
+        "stop_ms": 6.048,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": false,
+        "run": 2,
+        "fields": 24,
+        "prerolls": 3,
+        "cancelled": 0,
+        "stop_ms": 6.152,
+        "resources_after_null": 0,
+        "pass": true
+      },
+      {
+        "type": "pipeline",
+        "synthetic": true,
+        "cancel": true,
+        "run": 0,
+        "fields": 1,
+        "prerolls": 1,
+        "cancelled": 1,
+        "stop_ms": 24.177,
+        "resources_after_null": 0,
+        "pass": true
+      }
+    ],
+    "maximum_rgb_error": 1,
+    "exit_status": 0
+  },
+  "final_boundary": {
+    "version": "3.10.13",
+    "refcnt": "0",
+    "parameters/force_l0s_off": "Y",
+    "parameters/session_l0s_off": "N",
+    "global_pin_counters": {
+      "nr_foll_pin_acquired": 93848207,
+      "nr_foll_pin_released": 93848207
+    },
+    "global_pin_difference": 0,
+    "aer": {
+      "0000:02:00.0": {
+        "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0",
+        "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0",
+        "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0",
+        "runtime_status": "active",
+        "link_control": "0042"
+      },
+      "0000:00:1c.0": {
+        "runtime_status": "active",
+        "link_control": "0042"
+      }
+    },
+    "kernel_scan": {
+      "command_exit": 0,
+      "start_local": "2026-10-27 09:15:00+09:00",
+      "matches": []
+    }
+  },
+  "limitations": [
+    "Remaining52.711ms worst swap-return age is not solved. Timing localizes the blocking API, not a proven GPU-ALU, display-server or vblank root cause.",
+    "Only two30-second repetitions per matched version on one Intel965GM host. Small client CPU change is not evidence of a CPU saving or regression.",
+    "Physical A/V for20201fe NOT RUN; previous physical PASS belongs to915e819. No scanout/numeric A/V/E2E/power claim.",
+    "All expected originals decode; field expiry and whole-buffer omissions remain explicit. Counted swaps are not verified displayed fields.",
+    "No native32-bit, unsupported-GPU, long-endurance or live-handle-replacement qualification.",
+    "Nonempty V4L2 STOP/START remains FAIL in #533; this display investigation changes no firmware/decoder policy."
+  ],
+  "references": [
+    {
+      "title": "EGL fence specification",
+      "url": "https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_fence_sync.txt"
+    },
+    {
+      "title": "Prior field retirement qualification",
+      "path": "field-retirement-20261027.json"
+    }
+  ]
+}

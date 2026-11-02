@@ -1,0 +1,2813 @@
+{
+  "schema": 1,
+  "status": "PASS_SCOPED_ORIGINAL300S_FHD_AFTER_OWN_OPT_IN_REPAIR",
+  "runtime_source_commit": "073d5dbfa2e09bd658418c7b069addb26c4144a7",
+  "claim": "Constructive witness that the permitted original300s PCM/FHD50 profile is possible with own exact packed enlargement and completion-controlled output. No hardware impossibility or universal/endurance theorem.",
+  "profile": {
+    "input_sha256": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+    "counts": {
+      "pictures": 7500,
+      "progressive_fields": 15000,
+      "duration_ns": 300000000000,
+      "picture_duration_ns": 40000000,
+      "field_duration_ns": 20000000
+    },
+    "argv": [
+      "--hardware",
+      "--scale-width",
+      "1280",
+      "--video-output",
+      "xv-async",
+      "--packed-upscale",
+      "--software-output-size",
+      "1920x1080",
+      "--trace-frames",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.trace.json",
+      "--trace-limit",
+      "16384",
+      "--trace-window",
+      "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv"
+    ],
+    "measured_stages": [
+      "decoder",
+      "deinterlace",
+      "output-scale",
+      "sink"
+    ],
+    "geometry": "card1280x720YUY2 -> unchangedBob50 -> fusedmethod4/two-thread1920x1080UYVY -> unchangedownXv ring3/pool6",
+    "policy": "originalPTS/Pulseclock/sync+QoStrue/lateness5ms/deadline15ms/queues/priorities; AC/<75C",
+    "meaning": "FHD buffer dimensions, not physical panel scanout"
+  },
+  "qualification": {
+    "schema": 1,
+    "case": "pcm-fhd-packed-02",
+    "qualified": true,
+    "status": "PASS_SCOPED_FROZEN_PROFILE_NATURAL_EOS_METADATA",
+    "media_metadata_qualified": true,
+    "artifacts": {
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.boundary.json": "d98f553b97782fb110b1d922842842e1fc976257651f53023e36e42ff7aa892c",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.result.json": "6f6abf8d6e02f6e30ed0fdd5b046a4e0afcfd39040fe160c1dcc775058d31c8a",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.trace.json": "75b5bd1138ed3e7669d71482351a38813acece2e91d0b8df0d5ec52a2327f0b9"
+    },
+    "scope": "One natural300s fixed-source profile; full7500 native original-picture grid, whole four-stage counts/EOS and own retirement, plus only common retained pad-PTS interval. No full output-field PTS census, physical scanout, A/V, universal endurance or causal proof."
+  },
+  "actual": {
+    "natural_eos": true,
+    "closed": true,
+    "health_frames": 7500,
+    "sink_stats": [
+      {
+        "sink": "crystalhdxvsink",
+        "rendered": 15000,
+        "dropped": 0
+      }
+    ],
+    "xv_stats": [
+      {
+        "phase": "BEFORE_PIPELINE_NULL",
+        "monotonic_ns": 364219660767563,
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+        "available": true,
+        "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+        "pipeline_state": [
+          "1",
+          "PLAYING",
+          "VOID_PENDING"
+        ],
+        "stats": {
+          "submitted": 15001,
+          "acknowledged": 15001,
+          "video-submitted": 15001,
+          "redraw-submitted": 0,
+          "retained-picture": true,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 15001,
+          "pending": 0,
+          "images": 6,
+          "bytes": 24883200,
+          "allocated": 6,
+          "freed": 0,
+          "failed": false,
+          "closed": false,
+          "quarantined": false
+        }
+      },
+      {
+        "phase": "AFTER_PIPELINE_NULL",
+        "monotonic_ns": 364220782855951,
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "path": "/GstCrystalHdXv:crystalhd-video-output",
+        "available": true,
+        "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+        "pipeline_state": [
+          "1",
+          "NULL",
+          "VOID_PENDING"
+        ],
+        "stats": {
+          "submitted": 15001,
+          "acknowledged": 15001,
+          "video-submitted": 15001,
+          "redraw-submitted": 0,
+          "retained-picture": false,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 15001,
+          "pending": 0,
+          "images": 0,
+          "bytes": 0,
+          "allocated": 6,
+          "freed": 6,
+          "failed": false,
+          "closed": true,
+          "quarantined": false
+        }
+      }
+    ],
+    "device_fds_after_close": [],
+    "observer_errors": [],
+    "snapshots": [
+      {
+        "why": "first-playing",
+        "monotonic_ns": 363919630979676,
+        "base_time_ns": 0,
+        "clock_time_ns": 3913000,
+        "clock_name": "GstPulseSinkClock",
+        "clock_type": "GstAudioClock",
+        "elements": [
+          {
+            "factory": "capsfilter",
+            "name": "capsfilter0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCapsFilter:capsfilter0",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false"
+            }
+          },
+          {
+            "factory": "crystalhddec",
+            "name": "crystalhddec0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCrystalHdDec:crystalhddec0",
+            "properties": {
+              "qos": "True"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "deinterlace",
+            "name": "deinterlace",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstDeinterlace:deinterlace",
+            "properties": {
+              "method": "4",
+              "mode": "0",
+              "fields": "0",
+              "locking": "0",
+              "tff": "0"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "vdconv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstVideoConvert:vdconv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv2",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv2",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoscale",
+            "name": "scale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoScale:scale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "capsfilter",
+            "name": "crystalhd-upscale-caps",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCapsFilter:crystalhd-upscale-caps",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdpackedscale",
+            "name": "crystalhd-packed-upscale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCrystalHdPackedScale:crystalhd-packed-upscale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "2",
+              "method": "4",
+              "simd-active": "True",
+              "frames": "4"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "filter-convert",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstVideoConvert:filter-convert",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdxvsink",
+            "name": "crystalhd-video-output",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+            "properties": {
+              "qos": "True",
+              "sync": "True",
+              "max-lateness": "5000000",
+              "processing-deadline": "15000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "enable-last-sample": "True"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "pulsesink",
+            "name": "audiosink-actual-sink-pulse",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstAutoAudioSink:audiosink/GstPulseSink:audiosink-actual-sink-pulse",
+            "properties": {
+              "qos": "False",
+              "sync": "True",
+              "max-lateness": "-1",
+              "processing-deadline": "20000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "buffer-time": "200000",
+              "latency-time": "10000",
+              "enable-last-sample": "False"
+            },
+            "caps": {
+              "sink": "audio/x-raw, format=(string)F32LE, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003, channels=(int)2, rate=(int)48000"
+            }
+          }
+        ],
+        "output_packing_selected": null
+      },
+      {
+        "why": "eos-before-null",
+        "monotonic_ns": 364219652237361,
+        "base_time_ns": 0,
+        "clock_time_ns": 300012769000,
+        "clock_name": "GstPulseSinkClock",
+        "clock_type": "GstAudioClock",
+        "elements": [
+          {
+            "factory": "capsfilter",
+            "name": "capsfilter0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCapsFilter:capsfilter0",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false"
+            }
+          },
+          {
+            "factory": "crystalhddec",
+            "name": "crystalhddec0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCrystalHdDec:crystalhddec0",
+            "properties": {
+              "qos": "True"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "deinterlace",
+            "name": "deinterlace",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstDeinterlace:deinterlace",
+            "properties": {
+              "method": "4",
+              "mode": "0",
+              "fields": "0",
+              "locking": "0",
+              "tff": "0"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "vdconv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstVideoConvert:vdconv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv2",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv2",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoscale",
+            "name": "scale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoScale:scale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "capsfilter",
+            "name": "crystalhd-upscale-caps",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCapsFilter:crystalhd-upscale-caps",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdpackedscale",
+            "name": "crystalhd-packed-upscale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCrystalHdPackedScale:crystalhd-packed-upscale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "2",
+              "method": "4",
+              "simd-active": "True",
+              "frames": "15000"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "filter-convert",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstVideoConvert:filter-convert",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdxvsink",
+            "name": "crystalhd-video-output",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+            "properties": {
+              "qos": "True",
+              "sync": "True",
+              "max-lateness": "5000000",
+              "processing-deadline": "15000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "enable-last-sample": "True"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "pulsesink",
+            "name": "audiosink-actual-sink-pulse",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstAutoAudioSink:audiosink/GstPulseSink:audiosink-actual-sink-pulse",
+            "properties": {
+              "qos": "False",
+              "sync": "True",
+              "max-lateness": "-1",
+              "processing-deadline": "20000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "buffer-time": "200000",
+              "latency-time": "10000",
+              "enable-last-sample": "False"
+            },
+            "caps": {
+              "sink": "audio/x-raw, format=(string)F32LE, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003, channels=(int)2, rate=(int)48000"
+            }
+          }
+        ],
+        "output_packing_selected": null
+      },
+      {
+        "why": "close-before-null",
+        "monotonic_ns": 364219660566415,
+        "base_time_ns": 0,
+        "clock_time_ns": 300021100000,
+        "clock_name": "GstPulseSinkClock",
+        "clock_type": "GstAudioClock",
+        "elements": [
+          {
+            "factory": "capsfilter",
+            "name": "capsfilter0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCapsFilter:capsfilter0",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false"
+            }
+          },
+          {
+            "factory": "crystalhddec",
+            "name": "crystalhddec0",
+            "path": "/GstPlayBin:crystalhd-player/GstURIDecodeBin:uridecodebin0/GstDecodeBin:decodebin0/GstCrystalHdDec:crystalhddec0",
+            "properties": {
+              "qos": "True"
+            },
+            "caps": {
+              "sink": "video/x-h264, level=(string)4, profile=(string)main, stream-format=(string)byte-stream, alignment=(string)au, width=(int)1920, height=(int)1080, framerate=(fraction)25/1, interlace-mode=(string)interleaved, field-order=(string)top-field-first, colorimetry=(string)2:0:0:0, chroma-site=(string)mpeg2, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)field, chroma-format=(string)4:2:0, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)8, parsed=(boolean)true, lcevc=(boolean)false",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "deinterlace",
+            "name": "deinterlace",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstDeinterlace:deinterlace",
+            "properties": {
+              "method": "4",
+              "mode": "0",
+              "fields": "0",
+              "locking": "0",
+              "tff": "0"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "vdconv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vdbin/GstVideoConvert:vdconv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)mixed, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)25/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv2",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv2",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoscale",
+            "name": "scale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoScale:scale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "conv",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstPlaySinkVideoConvert:vconv/GstVideoConvert:conv",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "capsfilter",
+            "name": "crystalhd-upscale-caps",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCapsFilter:crystalhd-upscale-caps",
+            "properties": {
+              "qos": "False"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdpackedscale",
+            "name": "crystalhd-packed-upscale",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstBin:crystalhd-packed-software-upscale/GstCrystalHdPackedScale:crystalhd-packed-upscale",
+            "properties": {
+              "qos": "True",
+              "n-threads": "2",
+              "method": "4",
+              "simd-active": "True",
+              "frames": "15000"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "videoconvert",
+            "name": "filter-convert",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstVideoConvert:filter-convert",
+            "properties": {
+              "qos": "True",
+              "n-threads": "1",
+              "method": "1"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+              "src": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "crystalhdxvsink",
+            "name": "crystalhd-video-output",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+            "properties": {
+              "qos": "True",
+              "sync": "True",
+              "max-lateness": "5000000",
+              "processing-deadline": "15000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "enable-last-sample": "True"
+            },
+            "caps": {
+              "sink": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+            }
+          },
+          {
+            "factory": "pulsesink",
+            "name": "audiosink-actual-sink-pulse",
+            "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:abin/GstAutoAudioSink:audiosink/GstPulseSink:audiosink-actual-sink-pulse",
+            "properties": {
+              "qos": "False",
+              "sync": "True",
+              "max-lateness": "-1",
+              "processing-deadline": "20000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "buffer-time": "200000",
+              "latency-time": "10000",
+              "enable-last-sample": "False"
+            },
+            "caps": {
+              "sink": "audio/x-raw, format=(string)F32LE, layout=(string)interleaved, channel-mask=(bitmask)0x0000000000000003, channels=(int)2, rate=(int)48000"
+            }
+          }
+        ],
+        "output_packing_selected": null
+      }
+    ],
+    "entry_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "runtime_final_pins_equal": true,
+    "initial_temp_mC": [
+      53000,
+      43000
+    ],
+    "final_temp_mC": [
+      69000,
+      56000
+    ],
+    "max_temp_mC": 69000,
+    "thermal_samples": 62
+  },
+  "acceptance": {
+    "qualified": true,
+    "checks": [
+      {
+        "name": "fixed expected source declaration",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "actual natural EOS exit0/closed/no errors",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "health7500",
+        "passed": true,
+        "kind": "integrity",
+        "observed": 7500,
+        "expected": 7500
+      },
+      {
+        "name": "explicit packed profile declared with four measured stages",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one actual negotiated own fused scaler",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "actual method4 two-thread SIMD path unchanged",
+        "passed": true,
+        "kind": "integrity",
+        "observed": {
+          "qos": "True",
+          "n-threads": "2",
+          "method": "4",
+          "simd-active": "True",
+          "frames": "4"
+        }
+      },
+      {
+        "name": "actual fused input is original720pYUY2 progressive50Hz",
+        "passed": true,
+        "kind": "integrity",
+        "observed": "video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+      },
+      {
+        "name": "actual fused output is1080pUYVY progressive50Hz",
+        "passed": true,
+        "kind": "integrity",
+        "observed": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1"
+      },
+      {
+        "name": "fused engine completed15000 frames atEOS",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "first-playing exactly one policy snapshot",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "first-playing original sink policy",
+        "passed": true,
+        "kind": "integrity",
+        "observed": [
+          {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "enable-last-sample": "True"
+          }
+        ]
+      },
+      {
+        "name": "first-playing original deinterlace policy",
+        "passed": true,
+        "kind": "integrity",
+        "observed": [
+          {
+            "method": "4",
+            "mode": "0",
+            "fields": "0",
+            "locking": "0",
+            "tff": "0"
+          }
+        ]
+      },
+      {
+        "name": "eos-before-null exactly one policy snapshot",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "eos-before-null original sink policy",
+        "passed": true,
+        "kind": "integrity",
+        "observed": [
+          {
+            "qos": "True",
+            "sync": "True",
+            "max-lateness": "5000000",
+            "processing-deadline": "15000000",
+            "render-delay": "0",
+            "ts-offset": "0",
+            "enable-last-sample": "True"
+          }
+        ]
+      },
+      {
+        "name": "eos-before-null original deinterlace policy",
+        "passed": true,
+        "kind": "integrity",
+        "observed": [
+          {
+            "method": "4",
+            "mode": "0",
+            "fields": "0",
+            "locking": "0",
+            "tff": "0"
+          }
+        ]
+      },
+      {
+        "name": "actual EOS bus event and complete event history",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one configured native finish collector",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native snapshot after NULL and worker join",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native enabled first-N monotonic collector",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "configured 8192 finish capacity",
+        "passed": true,
+        "kind": "integrity",
+        "observed": 8192,
+        "expected": 8192
+      },
+      {
+        "name": "native retained/observed accounting",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native no saturation or omitted calls",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native inflight scope and count",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native full expected source count",
+        "passed": true,
+        "kind": "native_census",
+        "observed": 7500,
+        "expected": 7500
+      },
+      {
+        "name": "native all expected calls returned",
+        "passed": true,
+        "kind": "native_census"
+      },
+      {
+        "name": "native entry sequence contiguous from one",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one native instance/session/recovery epoch",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native system frame numbers contiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native original PTS and picture-duration grid",
+        "passed": true,
+        "kind": "native_census"
+      },
+      {
+        "name": "native paired TID/timestamps/elapsed",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native all completed flows OK",
+        "passed": true,
+        "kind": "native_census",
+        "observed": {
+          "0": 7500
+        },
+        "expected": {
+          "0": 7500
+        }
+      },
+      {
+        "name": "native same-TID completed spans nonoverlapping",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "native trace closed without structural loss/ambiguity",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "one attachment for each required stage",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "whole-invocation stage counts equal expected source picture/field counts",
+        "passed": true,
+        "kind": "stage_census",
+        "observed": {
+          "output-scale": 15000,
+          "sink": 15000,
+          "decoder": 7500,
+          "deinterlace": 15000
+        },
+        "expected": {
+          "decoder": 7500,
+          "deinterlace": 15000,
+          "output-scale": 15000,
+          "sink": 15000
+        }
+      },
+      {
+        "name": "one actual EOS per attachment",
+        "passed": true,
+        "kind": "stage_census",
+        "observed": {
+          "output-scale": 1,
+          "sink": 1,
+          "decoder": 1,
+          "deinterlace": 1
+        },
+        "expected": {
+          "decoder": 1,
+          "deinterlace": 1,
+          "output-scale": 1,
+          "sink": 1
+        }
+      },
+      {
+        "name": "no missing PTS/list ambiguity in full attachment counters",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "attachment counters nonnegative integers",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained record accounting",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained record order contiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "retained observed buffer metadata unambiguous",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "exact separate pre/post NULL Xv snapshots",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "matching explicit sink factory/name and compatible pre/post NULL leaf paths",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "Xv phase timestamps ordered",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "actual post phase state is NULL",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL available exact typed statistics",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL submission decomposition",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL ACK/terminal/pending conservation",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "BEFORE_PIPELINE_NULL pool/free bounds",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL available exact typed statistics",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL submission decomposition",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL ACK/terminal/pending conservation",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "AFTER_PIPELINE_NULL pool/free bounds",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "pre/post cumulative fields do not reset",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "all own submitted requests acknowledged without terminal/error",
+        "passed": true,
+        "kind": "request_completion"
+      },
+      {
+        "name": "post-stop own image snapshot completely retired",
+        "passed": true,
+        "kind": "resource_snapshot"
+      },
+      {
+        "name": "one pre-NULL BaseSink statistic snapshot",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "pre-NULL rendered/dropped source-field census",
+        "passed": true,
+        "kind": "stage_census",
+        "observed": {
+          "rendered": 15000,
+          "dropped": 0
+        },
+        "expected": {
+          "rendered": 15000,
+          "dropped": 0
+        }
+      },
+      {
+        "name": "complete retained common interval exact grid required",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "no known counted-loss trigger or observer-control errors",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "exact six-image pool retired",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "all own submissions use negotiated pool without sink row copy",
+        "passed": true,
+        "kind": "integrity"
+      },
+      {
+        "name": "video requests15000 or one ordinary preroll duplicate only",
+        "passed": true,
+        "kind": "integrity",
+        "observed": 15001,
+        "expected": [
+          15000,
+          15001
+        ]
+      }
+    ],
+    "section_errors": [],
+    "expected_source": {
+      "pictures": 7500,
+      "progressive_fields": 15000,
+      "picture_duration_ns": 40000000,
+      "field_duration_ns": 20000000,
+      "duration_ns": 300000000000
+    },
+    "native_finish": {
+      "collector": {
+        "schema": 1,
+        "enabled": true,
+        "clock": "CLOCK_MONOTONIC",
+        "retention": "first",
+        "inflight_scope": "retained_records_only",
+        "capacity": 8192,
+        "observed": 7500,
+        "retained": 7500,
+        "omitted": 0,
+        "inflight": 0,
+        "counters_saturated": false
+      },
+      "records": 7500,
+      "complete": 7500,
+      "first_system_frame_number": 0,
+      "first_pts_ns": 0,
+      "last_pts_ns": 299960000000,
+      "identities": [
+        [
+          136999323602416,
+          2,
+          0
+        ]
+      ],
+      "emitter_tids": [
+        1145495
+      ],
+      "flow_counts": {
+        "0": 7500
+      },
+      "last_call": {
+        "call_id": 7500,
+        "instance": 136999323602416,
+        "generation": 2,
+        "recovery_epoch": 0,
+        "frame_number": 7499,
+        "pts": 299960000000,
+        "duration": 40000000,
+        "enter_ns": 364219507519921,
+        "return_ns": 364219543928016,
+        "enter_tid": 1145495,
+        "return_tid": 1145495,
+        "complete": true,
+        "flow": 0,
+        "elapsed_ns": 36408095,
+        "monotonic_order_valid": true
+      }
+    },
+    "whole_stage_counters": {
+      "counts": {
+        "output-scale": 15000,
+        "sink": 15000,
+        "decoder": 7500,
+        "deinterlace": 15000
+      },
+      "expected": {
+        "decoder": 7500,
+        "deinterlace": 15000,
+        "output-scale": 15000,
+        "sink": 15000
+      },
+      "EOS_counts": {
+        "output-scale": 1,
+        "sink": 1,
+        "decoder": 1,
+        "deinterlace": 1
+      },
+      "attachments": [
+        {
+          "id": 0,
+          "stage": "output-scale",
+          "token": 1,
+          "active": false,
+          "buffers": 15000,
+          "events": 15003,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 1,
+          "qos_count": 14999,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 1,
+          "stage": "sink",
+          "token": 2,
+          "active": false,
+          "buffers": 15000,
+          "events": 15003,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 1,
+          "qos_count": 14999,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 2,
+          "stage": "decoder",
+          "token": 3,
+          "active": false,
+          "buffers": 7500,
+          "events": 15003,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 1,
+          "qos_count": 14999,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        },
+        {
+          "id": 3,
+          "stage": "deinterlace",
+          "token": 4,
+          "active": false,
+          "buffers": 15000,
+          "events": 15003,
+          "buffer_lists": 0,
+          "list_items": 0,
+          "list_missing_pts": 0,
+          "buffer_list_ambiguity": false,
+          "missing_pts": 0,
+          "eos_count": 1,
+          "qos_count": 14999,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0,
+          "segment_valid": true,
+          "flushing": false
+        }
+      ],
+      "arithmetic": {
+        "two_decoder_minus_DI": 0,
+        "DI_minus_fused_scale": 0,
+        "scale_minus_sink_input": 0
+      },
+      "scope": "Cumulative counters and actual EOS; this does not establish full pad PTS-set equality."
+    },
+    "retained_common_interval": {
+      "census_qualified": true,
+      "no_loss_in_qualified_interval": true,
+      "interval_ns": [
+        256400000000,
+        300000000000
+      ],
+      "stage_counts": {
+        "decoder": 1090,
+        "deinterlace": 2180,
+        "output-scale": 2180,
+        "sink": 2180
+      },
+      "missing_expected_PTS": {
+        "decoder": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "deinterlace": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "output-scale": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "sink": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        }
+      },
+      "extra_PTS": {
+        "decoder": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "deinterlace": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "output-scale": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        },
+        "sink": {
+          "count": 0,
+          "first_100_ns": [],
+          "values_truncated": false
+        }
+      },
+      "whole_source_pad_PTS_census_qualified": false,
+      "integrity": {
+        "PTS_known": true,
+        "unique": true,
+        "ordinals_contiguous": true,
+        "PTS_ordered": true,
+        "epochs_stable": true,
+        "boundary_context_known": true
+      },
+      "epochs": {
+        "decoder": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "deinterlace": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "output-scale": [
+          [
+            1,
+            1,
+            0
+          ]
+        ],
+        "sink": [
+          [
+            1,
+            1,
+            0
+          ]
+        ]
+      },
+      "retention": "window",
+      "truncated": true,
+      "omitted_or_overwritten_trace_records": 96137,
+      "window": {
+        "triggered": false,
+        "trigger_seqnum": null,
+        "trigger_order": null,
+        "post_target": 4096,
+        "post_retained": 0,
+        "complete": false,
+        "overwritten": 96137,
+        "unretained_after_window": 0,
+        "context_before_order": 96138
+      },
+      "scope": "Only the common retained interval is compared. No whole PTS inference from capped records."
+    },
+    "xv_output": {
+      "snapshots": [
+        {
+          "phase": "BEFORE_PIPELINE_NULL",
+          "monotonic_ns": 364219660767563,
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+          "available": true,
+          "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+          "pipeline_state": [
+            "1",
+            "PLAYING",
+            "VOID_PENDING"
+          ],
+          "stats": {
+            "submitted": 15001,
+            "acknowledged": 15001,
+            "video-submitted": 15001,
+            "redraw-submitted": 0,
+            "retained-picture": true,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 15001,
+            "pending": 0,
+            "images": 6,
+            "bytes": 24883200,
+            "allocated": 6,
+            "freed": 0,
+            "failed": false,
+            "closed": false,
+            "quarantined": false
+          }
+        },
+        {
+          "phase": "AFTER_PIPELINE_NULL",
+          "monotonic_ns": 364220782855951,
+          "factory": "crystalhdxvsink",
+          "name": "crystalhd-video-output",
+          "path": "/GstCrystalHdXv:crystalhd-video-output",
+          "available": true,
+          "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+          "pipeline_state": [
+            "1",
+            "NULL",
+            "VOID_PENDING"
+          ],
+          "stats": {
+            "submitted": 15001,
+            "acknowledged": 15001,
+            "video-submitted": 15001,
+            "redraw-submitted": 0,
+            "retained-picture": false,
+            "terminal-retired": 0,
+            "copied-bytes": 0,
+            "pool-submitted": 15001,
+            "pending": 0,
+            "images": 0,
+            "bytes": 0,
+            "allocated": 6,
+            "freed": 6,
+            "failed": false,
+            "closed": true,
+            "quarantined": false
+          }
+        }
+      ],
+      "BaseSink_preNULL": [
+        {
+          "sink": "crystalhdxvsink",
+          "rendered": 15000,
+          "dropped": 0
+        }
+      ],
+      "sink_identity_scope": {
+        "factory": "crystalhdxvsink",
+        "name": "crystalhd-video-output",
+        "before_path": "/GstPlayBin:crystalhd-player/GstPlaySink:playsink/GstBin:vbin/GstCrystalHdXv:crystalhd-video-output",
+        "after_path": "/GstCrystalHdXv:crystalhd-video-output",
+        "compatible_leaf_paths": true,
+        "object_pointer_token_captured": false,
+        "source_fact": "Both frozen entry snapshots read the pipeline video-sink property. The frozen Player sets the explicit sink once during construction; the entry close path does not replace that property.",
+        "limit": "Factory/name and compatible leaf paths are source-consistent observations, not an independently captured stable object pointer/token. NULL may unparent the sink and remove its pipeline ancestry."
+      },
+      "own_requests_all_acknowledged": true,
+      "post_stop_resource_snapshot_retired": true,
+      "sink_row_copy_bytes_observed": 0,
+      "no_sink_row_copy_observed": true,
+      "video_submissions_minus_preNULL_rendered": 1,
+      "scope": "Request deltas may include preroll/redraw and differ in phase; never a unique displayed-picture count."
+    },
+    "video_submission_source_explanation": "Own GstVideoSink show_frame accounts ordinary preroll/render requests as video-submitted; redraw-submitted is separate.15001 allows the one ordinary preroll request in addition to15000BaseSink renders, not an extra source picture or physical-display claim.",
+    "full_field_PTS_census_claimed": false,
+    "limits": [
+      "One exact frozen-source natural-EOS invocation only; no universal endurance/scanout/AV/timing-cause proof.",
+      "Full7500native original-picture PTS grid and all whole-stage counts are distinct from capped/window pad records.",
+      "Only independently qualified common retained interval gets an output-field PTS-set claim.",
+      "SHM requests/ACK and preroll/redraw are not unique displayed pictures; copied-bytes is sink-only."
+    ]
+  },
+  "loaded_own_images": [
+    {
+      "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+      "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+      "size": 295320,
+      "device": "8:1",
+      "inode": 9211045,
+      "role": "own-library",
+      "realpath": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+    },
+    {
+      "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+      "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+      "size": 41784,
+      "device": "8:1",
+      "inode": 9306914,
+      "role": "own-packed-scale",
+      "realpath": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so"
+    },
+    {
+      "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+      "sha256": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+      "size": 139224,
+      "device": "8:1",
+      "inode": 9208888,
+      "role": "own-plugin",
+      "realpath": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so"
+    },
+    {
+      "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so",
+      "sha256": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+      "size": 62848,
+      "device": "8:1",
+      "inode": 9209438,
+      "role": "own-xv-output",
+      "realpath": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so"
+    }
+  ],
+  "frozen_plan": {
+    "status": "FROZEN_ROOT_APPROVED",
+    "worktree": "/home/mache/.cache/crystalhd-packed-upscale-20261031",
+    "revision": "073d5dbfa2e09bd658418c7b069addb26c4144a7",
+    "cases": [
+      {
+        "case": "pcm-fhd-packed-02",
+        "fhd": true
+      }
+    ],
+    "pins": {
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-cause.py": "692ad7a429f94348ee884c389c967622d765a24b71bc2e04bfba73bba457a3d2",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-minimal.py": "114499e98222cc99757be0287900ce132452a977d0f9b24ff776c5ce95fcb1fc",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/sample-cause.py": "331a33ebeb5e507724d6eb39c6e02978dc73538899c891856b6e734a2f3b353e",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/owned-budget.py": "fdb2fcc6787cdf8b972f82333aa7f2fbd3cc47c5aa098a96f4c9dde4868b45f8",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/scripts/crystalhd-player.py": "ef38e563c80ee3c2c19f53bfe661ab3744fe80523b8149ae76e559fcaf765b43",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd.c": "eaaa44539bc193b26651849368f0b252f4e890f5ec59dccf1572bfba7952de9a",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c": "fb9c44d96521e0656043b42b25eee4c78348d35283ea0754cace6e1fdb4b02dd",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.h": "1f84e8883a7d37d1d3f797d24f9700254ad46400021de5d9413e59d65c3cf4be",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.c": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.h": "08abd91a2ba8758ef4540d5e173ca3d1940bd35e7db25962def6cd34797019ad",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+      "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/tests/kernel-log-check.sh": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7",
+      "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+      "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue5-preparation.json": "2987e7cecef1235e9a0227a8d3a9c823c3a6280c02d47e45b396517dba1c1522",
+      "/home/mache/.cache/crystalhd-player-fhd-runtime-20261030/boundary.py": "f326729eefa31afc823752e2c9cb73b25e4ffa727ce926fcaa1f843081d9206e",
+      "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0": "3cc1aeae827f436a296ec488b80e6c45c150dccfb4525e7db275cc08772d322f",
+      "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0": "3961ca8c22e53125d29f14420f412a005317d518fd8395a4c7999d5d97f9c335",
+      "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0": "908ea355fb43fa1c6474f720de5e070650db6cbab4267bd5b11312290d6ebb2f",
+      "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so": "e8c1d305183306595f5b83d46e398b3dc365349c8b03b200deefb57a9069d185",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-integration.py": "c76555f2a6f7804fd175b8b3cbedceb8d21ed07a2caa4bc5b58c14b14f3ad168",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py": "baf77f433ff54144bd31715e30a29552008b34fb9dafa80f87e162bb4c88f974",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-detailed.py": "9770f8f2ef04c5f75be4f69b45b226266568f836f086b25f60d9191978cfaa18",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/integration-source-test-qualification.json": "4413dc1def2269fd008b95c67218ebbb194e7332c134d012e09c9a32402597fa",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/scripts/crystalhd-player.py": "a2c0d983c357651153f1f54eeeea88f13e486d767b94cd4bc8a39cacdcb0688a",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/gstcrystalhdxv.c": "bef6e6a9b72d6572698f4c071b6ba22251c1625181cf04c40857d7d1c8b56d2c",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/Makefile": "3a5c89f22754b51ec99ffaf19851abc1735265d3197c45cbc055f469da9d2e95",
+      "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/tests/gst-xv-output.c": "dbedac616f42246cbbca38de3dc64372952c19fed4ff0da65d339de58df52199",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-repair-qualification.py": "1c3a5bbe1e06bea8a66073b5a569f6a2ce2f4d9953cbb82fe8686914481f32bc",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-repair-qualification.py": "635427bb9118ccb0fd5b4efdd0f40ed68c2169c62348f2cf7f953eef0fa0fc58",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native-v2.py": "7ab333716e978b156a40905f253df0688b37891eff0fc7916292579fed38c6fb",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp": "3b7718060f259d5777b6bebcae05741a2766b193d313bc3df45318d188af862b",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwcmds.h": "8aee281a115a78829ac60bacb1bbeaa2543b846d6eee0360db2f26e8797480e7",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_raw_frame.h": "61084bda6babce83f7b314ee83cd01b16c9d3e6c0048fc15409a4a3fc55608b4",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_if.cpp": "2d8cbd69ab86ba85ea843b4e06fa69a13a99b9985e620c880afa0a8406307a93",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp": "1b1d98bd808c12c2dcc03e1713de997553475e1c02c4c6c17e7438dd78672f64",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_if.h": "6ddc32fa6a518618eb27aa3d0234ba11e81cff34f0868b2c4efe0efb7eead478",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_priv.cpp": "24edafc953c1b94e3388f71f676db8725e41283d4da63ffe412a22d949025424",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwload_if.h": "137615b22338ac61ef203ea14fc3644c1655b64ec2830ced213bd4a9778292d5",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_parser.cpp": "0f210cc63fe63777674e5693d8c38515528df2bb066a3280d3869a725c7e5422",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp": "94584a95e9f46c44b8e5147d4bb5cc9573664c6e53d796265f621e0039f1f105",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_priv.h": "5baeaf2791998abedc36c2a55e3071fadeedd21a5961595d0b7d089a85c3f5cb",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.h": "7f7a96cd8c09b1e439dc35ab6bd67b7bb183b004b421ddd66a011df52f2387eb",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_parser.h": "f7e9b7a7cf451f13b3d4ce2fbcb15e29a7b065fbac928239de69ecdc3eb0ad5c",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_int_if.h": "e859ece1734ab5524f7522e56445fa91ec0e69716cf37507c2fa4369d3175ba4",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/Makefile": "b4cc7fa93e848ee8ff79ce24f85a8d8eee6e66d4b179fa6f845787f61b67c0d1",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp": "ace01287b120c6553db761972d0ae0febb27536b5c60a4af26c877993494fc21",
+      "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp": "07b347d5b09f58135a0f139e776f0b3bfb6df3aa6bacef19d6e1830adf6ebb86",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-packed-qualification.py": "b3c218564cafd1e9fb3a11734c4812bbfef0496f2e6a6031388d154af0761eef",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-packed-qualification.py": "e8a4cb6392cdf41ba09cb317cc5bc3398f8529c47ec01aff9cf0e15b0750812b",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-packed-native-v1.py": "3f191558183b9156824860aa415b73fb43b76678a9dd958c94bbf55b5e2e86ad",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-cpu01.json": "682c8fe96448674012bfec92807afe8c71421358e8918ec28e8b21888666d5e0",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer01.json": "42a4b60c27f9aa1ab2f52e2b29931b75d6ffa53f79a6eda0e372cb1f63af7acc",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer02.json": "da50848d6d41bd24b644f109038cc50fd80fcc5d492111f2cde8fcfc545230f9",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-x11-pool01.json": "9e8138eacd84732f6f5da68e65d7f97087520adbe6e335dc04507b2530f4e938",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/scripts/crystalhd-player.py": "f297bbf48df12c844019d6b81b2748fcff2badf3f0ebe32232ac42830437b5bc",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/cpu.mk": "c90e76a0e6303ba6374c56d2e42fda58ffec3671bbbe69d63ca9963216e03f5b",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/include/crystalhd_legacy.h": "520c4623f8551cab567e8bc75e6591bc0c64f305c20a33f1297b13a8a120a64c",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/README.md": "de8d7ed491fcec3818fc7bee3a841c78476034ba372905c268ae4abc8dd82a6f",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-x11-contract.c": "57fff79d370fe84ddcac17de0d92f18affa9dbb3353bad81820685f0d848d4aa",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/horizontal-simd.h": "a49b6c6a7d27c56ae85917c8012c6aadd6d4083120d34c873530d14b0bea7f4b",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/gstcrystalhdpackedscale.c": "08ccf8af50d3b4b379c036bc0b25f80b7581d23f7e1e69e67d38da59999d1a00",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-test.c": "a0e9fa51d967aa8943e5bd13d369c19de1f9c555a749ee3384db6fdd8f29d1fb",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-engine.c": "b5d72a31876ae9c0aa7855691652cfa711f77dd3c6c6ccddc6e04e242161688c",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-engine.h": "470057ce33399ef0f28fa14b18ddd1b369d5f039934e9cff208480d1ce37181d",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/check.sh": "dbbfd09c2468238955502f5ed43be32b1024a87b2f3d84dc7fd9c989e85f61e0",
+      "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/Makefile": "24186b2894b8fb923476f6b0af55acb2a0f320822f1cb40bb002a7e3998ad8fc",
+      "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04.json": "cff4a9d4d326bf873aca081c03dda5ff712f9dd4db0b19e5c75060a31fd9952d",
+      "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04-independent-review.json": "fded1f7923edf06234616607afc2c490e802f3559ec06ded72c4a2aa94fa2cc6",
+      "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/inert-plan-v4.json": "dd3ae3a0b56fca93f5999dfd139fe3938ddd3d74c93a5ff03666027589a7dacb",
+      "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/compare-v4.c": "95fbbb5a1e8f2097d33003e1467a08a7d582f035b06258bb1047bc6c38ac488e",
+      "/home/mache/.cache/crystalhd-packed-simd-design-20261031/horizontal-guard01.json": "ddaac90278bff2631b9def0139c1ed693673a02f48acf9694cc79c63acdc160d",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-packed-qualification-v2.py": "c77177dc59f9e0f297337a6d20f7b69fce49a2f9d7bcbd3e23875829014ebe30",
+      "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-packed-qualification-v2.py": "b73b96eeeb910a7ddd15b0a378673d7771c2a3988b791031cd16563fc078778d"
+    },
+    "probe_libraries": [
+      "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0",
+      "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0",
+      "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0",
+      "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so"
+    ],
+    "finish_property": "finish-trace-limit",
+    "finish_limit": 8192,
+    "finish_snapshot_signal": "finish-trace-snapshot",
+    "stop_after_s": null,
+    "protocol": "One new natural300s originalPCM/FHD invocation after own exact fused2tap CPU reduction,335sdeadline, original75C/AC/driver guards. Explicit --packed-upscale +xv-async, sameoldnative decoder1ee/DILfixed332/ownXv428 unchanged. Method4/two compute threads, samePTS/QoS/sync/lateness5ms/deadline15ms/priority/queues/ring3/pool6. FourREALmeasured stages decoder/DI/fusedscale/sink; no output-pack intermediate. Nativewindow16384/finish8192/procsampler500ms, noBPF/perf. Preserve all failures; no rerun unchanged media untilPASS.",
+    "rationale": "Prior fixedDIL nativeonly run had0counteddrops butfailed75C at247.712534s. New OWNfusedpacking/enlargement eliminates full720p intermediate/genericHtap gather, exactpubliccoeff/Q6rounding and unchangedpublicV. Finite stock+scalaroracle/ABBA measured40.1071%CPU/32.3020%elapsed reduction for same2compute threads only; not actualthermal or causalspeedup proof. Live qualification now required; external sources/binaries untouched.",
+    "decoder_worktree": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030",
+    "decoder_revision": "1ee0f9fba18aac7e22c346f3d1f9ac4c9cb51f94",
+    "video_output": "xv-async",
+    "natural_eos_required": true,
+    "playback_deadline_s": 335,
+    "library_worktree": "/home/mache/.cache/crystalhd-fhd-repair-20261030",
+    "library_revision": "33219f5685d76b5e229e9b6ccae94d7291b47f5e",
+    "CLI": "CRYSTALHD_FINISH_PLAN=THIS_PLAN /usr/bin/python3 -B run-packed-qualification-v2.py --case pcm-fhd-packed-02 --fhd --plan THIS_PLAN",
+    "expected_acceptance": {
+      "original_pictures": 7500,
+      "native_finish_count": 7500,
+      "native_original_PTS_step_ns": 40000000,
+      "native_flow": 0,
+      "whole_stage_buffers": {
+        "decoder": 7500,
+        "deinterlace": 15000,
+        "output-scale": 15000,
+        "sink": 15000
+      },
+      "each_stage_EOS_count": 1,
+      "whole_missing_PTS_and_list_ambiguity": 0,
+      "health_frames": 7500,
+      "BaseSink_rendered": 15000,
+      "BaseSink_dropped": 0,
+      "actual_EOS_exit": 0,
+      "closed": true,
+      "own_submitted_equals_ACK": true,
+      "terminal_retired": 0,
+      "allocated_images": 6,
+      "freed_images": 6,
+      "pending_images": 0,
+      "remaining_images": 0,
+      "failed": false,
+      "quarantined": false,
+      "video_submitted_allowed": [
+        15000,
+        15001
+      ],
+      "source_explanation_for_one_extra": "GstVideoSink ordinary preroll and subsequent render invoke own show_frame; own video-submitted counts requests, redraw-submitted separately. No new source picture/display claim.",
+      "retained_common_interval": "Independent exact source-grid check required; capped/window records cannot establish all15000 output PTS.",
+      "fused_method": 4,
+      "fused_compute_threads": 2,
+      "fused_simd_active": true,
+      "fused_engine_frames": 15000,
+      "all_submissions_from_pool": true,
+      "sink_copied_bytes": 0
+    },
+    "qualification_scope": [
+      "Root reviews/freezes one fresh case only. Source prep made no execution/build/proc/sys/display/media/device access.",
+      "Same Player428/a2, olddecoder1ee/7f, ownasyncf8; only loaded own DIL becomes fixed332/e5b7. Three worktree git roles are checked independently. Oldloaded9e2DIL is rejected by entry mapping identity.",
+      "Original Pulse-clock/profile,5ms max-lateness/15ms processing-deadline,method4/two scalerthreads/one packingthread,quality/QoS/PTS,pool6/ring3 unchanged; no loss-ready marker,BPF/API/perf or extra observer.",
+      "Original500ms sample-cause/OwnedBudget plus nativewindow16384/finish8192 only;75C/AC5second guard and exact stable boundary/kernel remain. NaturalEOS300s with335s failure cap and normal owned SIGTERM cleanup.",
+      "Only after close/NULL/workerjoin, the runner calls existing pinned pure audit helper sections and adds strict health/pool/preroll/common-window requirements. This does not change live playback or add per-frame work.",
+      "Runtime .qualification.json combines actualEOS/exit0, guard/pin/kernel status and strict saved native/stage/Xv checks. All failed or incomplete invocations stay failed. This is bounded profile qualification, not universal losslessness or cause attribution."
+    ],
+    "frozen_utc": "2026-10-30T15:30:00.543877+00:00",
+    "root_review": "One natural300s fixedDIL qualification after untriggered180s diagnostic; sameclock/quality/QoS/lateness5ms/deadline15ms/threads2/PTS/ring3/pool6. Nativeand500ms ownproc only, noBPF/perf/otherCPUwork duringplayback. Original75C guard and335cap unchanged, no rerununtilPASS. Allwholecounts/EOS and sourcegrid/retainedinterval/ownership checks fixedbeforeplayback.",
+    "packed_plugin_sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+    "packed_upscale": true,
+    "measured_stages": [
+      "decoder",
+      "deinterlace",
+      "output-scale",
+      "sink"
+    ],
+    "required_mapped_libraries": [
+      "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0",
+      "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0",
+      "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0"
+    ],
+    "predecessor": "pcm-fhd-packed-01 FAILED BEFORE_READY/GO: mapped_libraries incorrectly required obsolete stockvideoconvertscale image beforePLAYING; no input frames/decoder instance. Original frozen sources/plan/results intact. v2 requires actual core runtime mappings and verifies any source-pinned optional image if loaded; static freeze still includes original external file. Production073 code unchanged."
+  },
+  "frozen_plan_sha256": "752d64ea3212ed9fbc174dafada69083628432e44dbf6a871ceab29a20d2bdaf",
+  "test_artifacts": {
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-cpu01.json": "682c8fe96448674012bfec92807afe8c71421358e8918ec28e8b21888666d5e0",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer01.json": "42a4b60c27f9aa1ab2f52e2b29931b75d6ffa53f79a6eda0e372cb1f63af7acc",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer02.json": "da50848d6d41bd24b644f109038cc50fd80fcc5d492111f2cde8fcfc545230f9",
+    "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-x11-pool01.json": "9e8138eacd84732f6f5da68e65d7f97087520adbe6e335dc04507b2530f4e938",
+    "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu03.json": "25d94d5a1c347cb7e450d7a9879db9f4daf0a650fd2d5b412545dee9bc2b7608",
+    "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu03-independent-review.json": "77e524d34349cf269394b40cd1bd2cf31ba3ef43588c7a35366dfee968819d23",
+    "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04.json": "cff4a9d4d326bf873aca081c03dda5ff712f9dd4db0b19e5c75060a31fd9952d",
+    "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04-independent-review.json": "fded1f7923edf06234616607afc2c490e802f3559ec06ded72c4a2aa94fa2cc6",
+    "/home/mache/.cache/crystalhd-packed-simd-design-20261031/horizontal-guard01.json": "ddaac90278bff2631b9def0139c1ed693673a02f48acf9694cc79c63acdc160d"
+  },
+  "CPU_comparison": {
+    "result": {
+      "event": "RESULT",
+      "oracle_frames": 12,
+      "expected_oracle_frames": 12,
+      "oracle_equal_stock": true,
+      "stock_resolved_caps_equal": true,
+      "post_timing_frames": 12,
+      "post_timing_equal": true,
+      "timing_complete": true,
+      "A_elapsed_ns": 657997853,
+      "A_process_cpu_ns": 1147795115,
+      "B_elapsed_ns": 445451197,
+      "B_process_cpu_ns": 687448020,
+      "planned_timed_frames_each_arm": 96,
+      "ok": true,
+      "scope": "finiteCPU2thread SSSE3 direct2tap and scalar shadow equality with isolatedABBA only; no clocked playback/hardware/FHD repair qualification; SD/borders and other geometries remainNOT_QUALIFIED"
+    },
+    "CPU_reduction_percent": 40.1070791,
+    "elapsed_reduction_percent": 32.3020288,
+    "scope": "isolatedABBA96framesperarm, same2compute threads only; not wholepipeline or controlledthermal speedup"
+  },
+  "local_checks": {
+    "Player": 126,
+    "configuration": "fullmakeconfiguration-checkPASS40surfaces/21keys",
+    "plugin_CPU": "36stockpixel/metadata/paddedframes/3restartcycles/flush+segment/EOS/caps+croprejection PASS",
+    "plugin_sanitizer": "ASan/UBSan/leakdetect enabled, same36contracts with requiredplugins-only loader PASS; originaldiscoveryFAILretained",
+    "SIMD_bounds": "4096 guarded front/end/offset/pattern cases + scalar/nonperiodic/rejection PASS",
+    "X11_pool": "24buffers/25requests with ordinarypreroll1; allACK/pool/copy0/free6; syncfalsecomponent-only control",
+    "source_review": "independent review of073 foundno concretequalifiedpathblocker"
+  },
+  "retained_failures": {
+    "fixed_DIL_old_scaler": "pcm-fhd-fixed-dil-01 FAIL75C at247.712534s/noEOS despite0drops",
+    "packed_preflight01": "pcm-fhd-packed-01 FAILBEFOREREADY/GO: obsolete stockconverter mappingrequired. No decodedframes; originalsimmutable. v2checksrequiredcoremaps/anyoptionalmappedimage andretainsallstaticexternalpins.",
+    "sanitizer01": "36CPUframescorrect thenLeakSanitizerFAIL on whole-system discovery; originalkept. Newrequiredplugins-only loader keeps leakdetection enabled, no suppression.",
+    "older_algorithms": "v1SD/borderpixelFAIL andv2CPUincrease retained; notproductionpromoted"
+  },
+  "limits": [
+    "One frozen original300s naturalEOS invocation, no mediaretryafterdrop orraisedthermalguard. FirstpackedattemptfailedBEFOREGO only.",
+    "Full7500native original-picturePTSgrid+wholefourstagecounts/EOS measured; only commonretained[256.4,300)s outputpadPTS compared. No fulloutputfieldPTScensus oractualmedia pixelcensus.",
+    "CPUstockoracle: finite syntheticvaried/holdout/extremeframes; actualmedia receipt: metadata/request/resource scope.",
+    "15001requests includes ordinarypreroll1; ACK is SHM retirement, not unique sourcefield/physicaldisplay/calibratedAV. Sinkcopy0 is local, notE2Ezero-copy.",
+    "Newstart53/43C versusprior57/45C differ;69Cvs75C is not a matchedthermal causalcomparison. No claim everyhistoricaldrop camefromscaling orTXrace.",
+    "Aftercaseclosed, test-onlyfactoryloadassertionadded andCPUcheckrepassed; original073testblobretained. ProductionPlayer/wrapper/engine/SIMD/ELF unchanged.",
+    "No externalcode/binary, module/firmware/defaultbackend or excludedheap changes. No merge/release."
+  ],
+  "independent_actual_audit": {
+    "sha256": "5796b7d7734e379723fb7e0aad94908f25b2ad133e919ec2567bae93f4ccd357",
+    "report": {
+      "schema": 1,
+      "qualified": true,
+      "status": "PASS_SCOPED_NATURAL_300S_PACKED_PROFILE",
+      "case": "pcm-fhd-packed-02",
+      "checks_passed": 82,
+      "checks_total": 82,
+      "checks": [
+        {
+          "name": "exact frozen plan/revision/roles",
+          "passed": true
+        },
+        {
+          "name": "receipt/runtime artifact hashes exact",
+          "passed": true
+        },
+        {
+          "name": "runtime frozen pins and final guard",
+          "passed": true
+        },
+        {
+          "name": "76 source pins independently verified with explicit historical test substitution",
+          "passed": true
+        },
+        {
+          "name": "source/entry/Player identity exact",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init own-plugin",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init own-library",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init own-xv-output",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init own-packed-scale",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init required libglib-2.0.so.0.8800.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init required libgstvideo-1.0.so.0.2802.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init required libgstreamer-1.0.so.0.2802.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_init optional library pins if mapped",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run own-plugin",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run own-library",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run own-xv-output",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run own-packed-scale",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run required libglib-2.0.so.0.8800.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run required libgstvideo-1.0.so.0.2802.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run required libgstreamer-1.0.so.0.2802.0",
+          "passed": true
+        },
+        {
+          "name": "maps_after_run optional library pins if mapped",
+          "passed": true
+        },
+        {
+          "name": "naturalEOS0/closed/health7500/no errors",
+          "passed": true
+        },
+        {
+          "name": "owner readiness/saved sampler bound",
+          "passed": true
+        },
+        {
+          "name": "source declaration exact",
+          "passed": true
+        },
+        {
+          "name": "one postNULL joined native collector",
+          "passed": true
+        },
+        {
+          "name": "native8192firstN/no omitted/inflight/saturation",
+          "passed": true
+        },
+        {
+          "name": "all7500 PTS/duration/frame/call/complete/flow tuples",
+          "passed": true
+        },
+        {
+          "name": "all7500 paired sameTID monotonic spans",
+          "passed": true
+        },
+        {
+          "name": "one native instance/epoch/TID and nonoverlap",
+          "passed": true
+        },
+        {
+          "name": "nativeTID in saved owned tasks",
+          "passed": true
+        },
+        {
+          "name": "exact four measured attachments no fake pack",
+          "passed": true
+        },
+        {
+          "name": "whole7500/15000/15000/15000 EOS1 no missingPTS/listambiguity",
+          "passed": true
+        },
+        {
+          "name": "native trace closed/typed without structural errors",
+          "passed": true
+        },
+        {
+          "name": "retained order/accounting exact",
+          "passed": true
+        },
+        {
+          "name": "decoder exact common PTS grid/ordinal continuity",
+          "passed": true
+        },
+        {
+          "name": "decoder retained epoch/context",
+          "passed": true
+        },
+        {
+          "name": "deinterlace exact common PTS grid/ordinal continuity",
+          "passed": true
+        },
+        {
+          "name": "deinterlace retained epoch/context",
+          "passed": true
+        },
+        {
+          "name": "output-scale exact common PTS grid/ordinal continuity",
+          "passed": true
+        },
+        {
+          "name": "output-scale retained epoch/context",
+          "passed": true
+        },
+        {
+          "name": "sink exact common PTS grid/ordinal continuity",
+          "passed": true
+        },
+        {
+          "name": "sink retained epoch/context",
+          "passed": true
+        },
+        {
+          "name": "common interval independently equals[256.4,300)",
+          "passed": true
+        },
+        {
+          "name": "no counted loss/window trigger/control errors",
+          "passed": true
+        },
+        {
+          "name": "BaseSink15000render0drop",
+          "passed": true
+        },
+        {
+          "name": "first-playing exactly one Pulse-clock snapshot",
+          "passed": true
+        },
+        {
+          "name": "first-playing crystalhddec policy",
+          "passed": true
+        },
+        {
+          "name": "first-playing deinterlace policy",
+          "passed": true
+        },
+        {
+          "name": "first-playing crystalhdpackedscale policy",
+          "passed": true
+        },
+        {
+          "name": "first-playing crystalhdxvsink policy",
+          "passed": true
+        },
+        {
+          "name": "first-playing fused sink format/quality",
+          "passed": true
+        },
+        {
+          "name": "first-playing fused src format/quality",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null exactly one Pulse-clock snapshot",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null crystalhddec policy",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null deinterlace policy",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null crystalhdpackedscale policy",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null crystalhdxvsink policy",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null fused sink format/quality",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null fused src format/quality",
+          "passed": true
+        },
+        {
+          "name": "eos-before-null fused15000frames",
+          "passed": true
+        },
+        {
+          "name": "close-before-null exactly one Pulse-clock snapshot",
+          "passed": true
+        },
+        {
+          "name": "close-before-null crystalhddec policy",
+          "passed": true
+        },
+        {
+          "name": "close-before-null deinterlace policy",
+          "passed": true
+        },
+        {
+          "name": "close-before-null crystalhdpackedscale policy",
+          "passed": true
+        },
+        {
+          "name": "close-before-null crystalhdxvsink policy",
+          "passed": true
+        },
+        {
+          "name": "close-before-null fused sink format/quality",
+          "passed": true
+        },
+        {
+          "name": "close-before-null fused src format/quality",
+          "passed": true
+        },
+        {
+          "name": "close-before-null fused15000frames",
+          "passed": true
+        },
+        {
+          "name": "exact before/afterNULL Xv phases",
+          "passed": true
+        },
+        {
+          "name": "Xv factory/name/compatible unparented path",
+          "passed": true
+        },
+        {
+          "name": "Xv counters conserve requests",
+          "passed": true
+        },
+        {
+          "name": "Xv counters conserve requests",
+          "passed": true
+        },
+        {
+          "name": "15001ACK/pooled/no rowcopy/no redraw/error/terminal",
+          "passed": true
+        },
+        {
+          "name": "six images fully retired afterNULL",
+          "passed": true
+        },
+        {
+          "name": "pre/post cumulative counters do not reset",
+          "passed": true
+        },
+        {
+          "name": "complete event history EOSonce/no clockloss or buffering",
+          "passed": true
+        },
+        {
+          "name": "boundary exact/kernel0/finalpins/no operator errors",
+          "passed": true
+        },
+        {
+          "name": "stable module/idle ownership/firmware/AER",
+          "passed": true
+        },
+        {
+          "name": "all62 recorded AC/temp guards valid max69C",
+          "passed": true
+        },
+        {
+          "name": "saved500ms sampler normal/errors0",
+          "passed": true
+        },
+        {
+          "name": "producer63 acceptance items also PASS",
+          "passed": true
+        },
+        {
+          "name": "old01 preGO failure preserved",
+          "passed": true
+        }
+      ],
+      "frozen_plan_sha256": "752d64ea3212ed9fbc174dafada69083628432e44dbf6a871ceab29a20d2bdaf",
+      "revision": "073d5dbfa2e09bd658418c7b069addb26c4144a7",
+      "native": {
+        "count": 7500,
+        "PTS_grid": [
+          0,
+          299960000000,
+          40000000
+        ],
+        "all_flow_OK": true,
+        "identity": [
+          136999323602416,
+          2,
+          0,
+          1145495
+        ],
+        "saved_owned_emitter": [
+          {
+            "tid": 1145495,
+            "start_ticks": 36391851,
+            "comm": "crystalhd-outpu"
+          }
+        ]
+      },
+      "whole_stage_counts": {
+        "output-scale": 15000,
+        "sink": 15000,
+        "decoder": 7500,
+        "deinterlace": 15000
+      },
+      "each_stage_EOS": {
+        "output-scale": 1,
+        "sink": 1,
+        "decoder": 1,
+        "deinterlace": 1
+      },
+      "retained_common_interval_ns": [
+        256400000000,
+        300000000000
+      ],
+      "retained_common_grids": {
+        "decoder": {
+          "count": 1090,
+          "first": 256400000000,
+          "last": 299960000000
+        },
+        "deinterlace": {
+          "count": 2180,
+          "first": 256400000000,
+          "last": 299980000000
+        },
+        "output-scale": {
+          "count": 2180,
+          "first": 256400000000,
+          "last": 299980000000
+        },
+        "sink": {
+          "count": 2180,
+          "first": 256400000000,
+          "last": 299980000000
+        }
+      },
+      "retention": {
+        "observed": 112521,
+        "retained": 16384,
+        "overwritten": 96137,
+        "scope": "Record eviction is not video loss; no full output-field PTS-array census."
+      },
+      "mapped_own_images": {
+        "maps_after_init": [
+          {
+            "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+            "sha256": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+            "size": 139224,
+            "device": "8:1",
+            "inode": 9208888,
+            "role": "own-plugin",
+            "realpath": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+            "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+            "size": 295320,
+            "device": "8:1",
+            "inode": 9211045,
+            "role": "own-library",
+            "realpath": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so",
+            "sha256": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+            "size": 62848,
+            "device": "8:1",
+            "inode": 9209438,
+            "role": "own-xv-output",
+            "realpath": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+            "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+            "size": 41784,
+            "device": "8:1",
+            "inode": 9306914,
+            "role": "own-packed-scale",
+            "realpath": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so"
+          }
+        ],
+        "maps_after_run": [
+          {
+            "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+            "sha256": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+            "size": 139224,
+            "device": "8:1",
+            "inode": 9208888,
+            "role": "own-plugin",
+            "realpath": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+            "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+            "size": 295320,
+            "device": "8:1",
+            "inode": 9211045,
+            "role": "own-library",
+            "realpath": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so",
+            "sha256": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+            "size": 62848,
+            "device": "8:1",
+            "inode": 9209438,
+            "role": "own-xv-output",
+            "realpath": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so"
+          },
+          {
+            "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+            "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+            "size": 41784,
+            "device": "8:1",
+            "inode": 9306914,
+            "role": "own-packed-scale",
+            "realpath": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so"
+          }
+        ]
+      },
+      "source_pin_evidence": [
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-cause.py",
+          "expected": "692ad7a429f94348ee884c389c967622d765a24b71bc2e04bfba73bba457a3d2",
+          "current": "692ad7a429f94348ee884c389c967622d765a24b71bc2e04bfba73bba457a3d2",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-minimal.py",
+          "expected": "114499e98222cc99757be0287900ce132452a977d0f9b24ff776c5ce95fcb1fc",
+          "current": "114499e98222cc99757be0287900ce132452a977d0f9b24ff776c5ce95fcb1fc",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/sample-cause.py",
+          "expected": "331a33ebeb5e507724d6eb39c6e02978dc73538899c891856b6e734a2f3b353e",
+          "current": "331a33ebeb5e507724d6eb39c6e02978dc73538899c891856b6e734a2f3b353e",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/owned-budget.py",
+          "expected": "fdb2fcc6787cdf8b972f82333aa7f2fbd3cc47c5aa098a96f4c9dde4868b45f8",
+          "current": "fdb2fcc6787cdf8b972f82333aa7f2fbd3cc47c5aa098a96f4c9dde4868b45f8",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/scripts/crystalhd-player.py",
+          "expected": "ef38e563c80ee3c2c19f53bfe661ab3744fe80523b8149ae76e559fcaf765b43",
+          "current": "ef38e563c80ee3c2c19f53bfe661ab3744fe80523b8149ae76e559fcaf765b43",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd.c",
+          "expected": "eaaa44539bc193b26651849368f0b252f4e890f5ec59dccf1572bfba7952de9a",
+          "current": "eaaa44539bc193b26651849368f0b252f4e890f5ec59dccf1572bfba7952de9a",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c",
+          "expected": "fb9c44d96521e0656043b42b25eee4c78348d35283ea0754cace6e1fdb4b02dd",
+          "current": "fb9c44d96521e0656043b42b25eee4c78348d35283ea0754cace6e1fdb4b02dd",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.h",
+          "expected": "1f84e8883a7d37d1d3f797d24f9700254ad46400021de5d9413e59d65c3cf4be",
+          "current": "1f84e8883a7d37d1d3f797d24f9700254ad46400021de5d9413e59d65c3cf4be",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.c",
+          "expected": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+          "current": "d65c23033ede3736394f1ed5a83230e5da9e32b1c18be51e10e36e72b7ac08ef",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/gstcrystalhd-finish-trace.h",
+          "expected": "08abd91a2ba8758ef4540d5e173ca3d1940bd35e7db25962def6cd34797019ad",
+          "current": "08abd91a2ba8758ef4540d5e173ca3d1940bd35e7db25962def6cd34797019ad",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+          "expected": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+          "current": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-decoder-finish-trace-20261030/tests/kernel-log-check.sh",
+          "expected": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7",
+          "current": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv",
+          "expected": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+          "current": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue5-preparation.json",
+          "expected": "2987e7cecef1235e9a0227a8d3a9c823c3a6280c02d47e45b396517dba1c1522",
+          "current": "2987e7cecef1235e9a0227a8d3a9c823c3a6280c02d47e45b396517dba1c1522",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-player-fhd-runtime-20261030/boundary.py",
+          "expected": "f326729eefa31afc823752e2c9cb73b25e4ffa727ce926fcaa1f843081d9206e",
+          "current": "f326729eefa31afc823752e2c9cb73b25e4ffa727ce926fcaa1f843081d9206e",
+          "verified": true
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8800.0",
+          "expected": "3cc1aeae827f436a296ec488b80e6c45c150dccfb4525e7db275cc08772d322f",
+          "current": "3cc1aeae827f436a296ec488b80e6c45c150dccfb4525e7db275cc08772d322f",
+          "verified": true
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2802.0",
+          "expected": "3961ca8c22e53125d29f14420f412a005317d518fd8395a4c7999d5d97f9c335",
+          "current": "3961ca8c22e53125d29f14420f412a005317d518fd8395a4c7999d5d97f9c335",
+          "verified": true
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so.0.2802.0",
+          "expected": "908ea355fb43fa1c6474f720de5e070650db6cbab4267bd5b11312290d6ebb2f",
+          "current": "908ea355fb43fa1c6474f720de5e070650db6cbab4267bd5b11312290d6ebb2f",
+          "verified": true
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so",
+          "expected": "e8c1d305183306595f5b83d46e398b3dc365349c8b03b200deefb57a9069d185",
+          "current": "e8c1d305183306595f5b83d46e398b3dc365349c8b03b200deefb57a9069d185",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-integration.py",
+          "expected": "c76555f2a6f7804fd175b8b3cbedceb8d21ed07a2caa4bc5b58c14b14f3ad168",
+          "current": "c76555f2a6f7804fd175b8b3cbedceb8d21ed07a2caa4bc5b58c14b14f3ad168",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-integration.py",
+          "expected": "baf77f433ff54144bd31715e30a29552008b34fb9dafa80f87e162bb4c88f974",
+          "current": "baf77f433ff54144bd31715e30a29552008b34fb9dafa80f87e162bb4c88f974",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-detailed.py",
+          "expected": "9770f8f2ef04c5f75be4f69b45b226266568f836f086b25f60d9191978cfaa18",
+          "current": "9770f8f2ef04c5f75be4f69b45b226266568f836f086b25f60d9191978cfaa18",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/integration-source-test-qualification.json",
+          "expected": "4413dc1def2269fd008b95c67218ebbb194e7332c134d012e09c9a32402597fa",
+          "current": "4413dc1def2269fd008b95c67218ebbb194e7332c134d012e09c9a32402597fa",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/scripts/crystalhd-player.py",
+          "expected": "a2c0d983c357651153f1f54eeeea88f13e486d767b94cd4bc8a39cacdcb0688a",
+          "current": "a2c0d983c357651153f1f54eeeea88f13e486d767b94cd4bc8a39cacdcb0688a",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/gstcrystalhdxv.c",
+          "expected": "bef6e6a9b72d6572698f4c071b6ba22251c1625181cf04c40857d7d1c8b56d2c",
+          "current": "bef6e6a9b72d6572698f4c071b6ba22251c1625181cf04c40857d7d1c8b56d2c",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "expected": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+          "current": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/Makefile",
+          "expected": "3a5c89f22754b51ec99ffaf19851abc1735265d3197c45cbc055f469da9d2e95",
+          "current": "3a5c89f22754b51ec99ffaf19851abc1735265d3197c45cbc055f469da9d2e95",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/tests/gst-xv-output.c",
+          "expected": "dbedac616f42246cbbca38de3dc64372952c19fed4ff0da65d339de58df52199",
+          "current": "dbedac616f42246cbbca38de3dc64372952c19fed4ff0da65d339de58df52199",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-repair-qualification.py",
+          "expected": "1c3a5bbe1e06bea8a66073b5a569f6a2ce2f4d9953cbb82fe8686914481f32bc",
+          "current": "1c3a5bbe1e06bea8a66073b5a569f6a2ce2f4d9953cbb82fe8686914481f32bc",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-repair-qualification.py",
+          "expected": "635427bb9118ccb0fd5b4efdd0f40ed68c2169c62348f2cf7f953eef0fa0fc58",
+          "current": "635427bb9118ccb0fd5b4efdd0f40ed68c2169c62348f2cf7f953eef0fa0fc58",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-integration-native-v2.py",
+          "expected": "7ab333716e978b156a40905f253df0688b37891eff0fc7916292579fed38c6fb",
+          "current": "7ab333716e978b156a40905f253df0688b37891eff0fc7916292579fed38c6fb",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+          "expected": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "current": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp",
+          "expected": "3b7718060f259d5777b6bebcae05741a2766b193d313bc3df45318d188af862b",
+          "current": "3b7718060f259d5777b6bebcae05741a2766b193d313bc3df45318d188af862b",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwcmds.h",
+          "expected": "8aee281a115a78829ac60bacb1bbeaa2543b846d6eee0360db2f26e8797480e7",
+          "current": "8aee281a115a78829ac60bacb1bbeaa2543b846d6eee0360db2f26e8797480e7",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_raw_frame.h",
+          "expected": "61084bda6babce83f7b314ee83cd01b16c9d3e6c0048fc15409a4a3fc55608b4",
+          "current": "61084bda6babce83f7b314ee83cd01b16c9d3e6c0048fc15409a4a3fc55608b4",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_if.cpp",
+          "expected": "2d8cbd69ab86ba85ea843b4e06fa69a13a99b9985e620c880afa0a8406307a93",
+          "current": "2d8cbd69ab86ba85ea843b4e06fa69a13a99b9985e620c880afa0a8406307a93",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp",
+          "expected": "1b1d98bd808c12c2dcc03e1713de997553475e1c02c4c6c17e7438dd78672f64",
+          "current": "1b1d98bd808c12c2dcc03e1713de997553475e1c02c4c6c17e7438dd78672f64",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_if.h",
+          "expected": "6ddc32fa6a518618eb27aa3d0234ba11e81cff34f0868b2c4efe0efb7eead478",
+          "current": "6ddc32fa6a518618eb27aa3d0234ba11e81cff34f0868b2c4efe0efb7eead478",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_priv.cpp",
+          "expected": "24edafc953c1b94e3388f71f676db8725e41283d4da63ffe412a22d949025424",
+          "current": "24edafc953c1b94e3388f71f676db8725e41283d4da63ffe412a22d949025424",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwload_if.h",
+          "expected": "137615b22338ac61ef203ea14fc3644c1655b64ec2830ced213bd4a9778292d5",
+          "current": "137615b22338ac61ef203ea14fc3644c1655b64ec2830ced213bd4a9778292d5",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_parser.cpp",
+          "expected": "0f210cc63fe63777674e5693d8c38515528df2bb066a3280d3869a725c7e5422",
+          "current": "0f210cc63fe63777674e5693d8c38515528df2bb066a3280d3869a725c7e5422",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.cpp",
+          "expected": "94584a95e9f46c44b8e5147d4bb5cc9573664c6e53d796265f621e0039f1f105",
+          "current": "94584a95e9f46c44b8e5147d4bb5cc9573664c6e53d796265f621e0039f1f105",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_priv.h",
+          "expected": "5baeaf2791998abedc36c2a55e3071fadeedd21a5961595d0b7d089a85c3f5cb",
+          "current": "5baeaf2791998abedc36c2a55e3071fadeedd21a5961595d0b7d089a85c3f5cb",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwdiag_if.h",
+          "expected": "7f7a96cd8c09b1e439dc35ab6bd67b7bb183b004b421ddd66a011df52f2387eb",
+          "current": "7f7a96cd8c09b1e439dc35ab6bd67b7bb183b004b421ddd66a011df52f2387eb",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_parser.h",
+          "expected": "f7e9b7a7cf451f13b3d4ce2fbcb15e29a7b065fbac928239de69ecdc3eb0ad5c",
+          "current": "f7e9b7a7cf451f13b3d4ce2fbcb15e29a7b065fbac928239de69ecdc3eb0ad5c",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_int_if.h",
+          "expected": "e859ece1734ab5524f7522e56445fa91ec0e69716cf37507c2fa4369d3175ba4",
+          "current": "e859ece1734ab5524f7522e56445fa91ec0e69716cf37507c2fa4369d3175ba4",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/Makefile",
+          "expected": "b4cc7fa93e848ee8ff79ce24f85a8d8eee6e66d4b179fa6f845787f61b67c0d1",
+          "current": "b4cc7fa93e848ee8ff79ce24f85a8d8eee6e66d4b179fa6f845787f61b67c0d1",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp",
+          "expected": "ace01287b120c6553db761972d0ae0febb27536b5c60a4af26c877993494fc21",
+          "current": "ace01287b120c6553db761972d0ae0febb27536b5c60a4af26c877993494fc21",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp",
+          "expected": "07b347d5b09f58135a0f139e776f0b3bfb6df3aa6bacef19d6e1830adf6ebb86",
+          "current": "07b347d5b09f58135a0f139e776f0b3bfb6df3aa6bacef19d6e1830adf6ebb86",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-packed-qualification.py",
+          "expected": "b3c218564cafd1e9fb3a11734c4812bbfef0496f2e6a6031388d154af0761eef",
+          "current": "b3c218564cafd1e9fb3a11734c4812bbfef0496f2e6a6031388d154af0761eef",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-packed-qualification.py",
+          "expected": "e8a4cb6392cdf41ba09cb317cc5bc3398f8529c47ec01aff9cf0e15b0750812b",
+          "current": "e8a4cb6392cdf41ba09cb317cc5bc3398f8529c47ec01aff9cf0e15b0750812b",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-packed-native-v1.py",
+          "expected": "3f191558183b9156824860aa415b73fb43b76678a9dd958c94bbf55b5e2e86ad",
+          "current": "3f191558183b9156824860aa415b73fb43b76678a9dd958c94bbf55b5e2e86ad",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-cpu01.json",
+          "expected": "682c8fe96448674012bfec92807afe8c71421358e8918ec28e8b21888666d5e0",
+          "current": "682c8fe96448674012bfec92807afe8c71421358e8918ec28e8b21888666d5e0",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer01.json",
+          "expected": "42a4b60c27f9aa1ab2f52e2b29931b75d6ffa53f79a6eda0e372cb1f63af7acc",
+          "current": "42a4b60c27f9aa1ab2f52e2b29931b75d6ffa53f79a6eda0e372cb1f63af7acc",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-plugin-sanitizer02.json",
+          "expected": "da50848d6d41bd24b644f109038cc50fd80fcc5d492111f2cde8fcfc545230f9",
+          "current": "da50848d6d41bd24b644f109038cc50fd80fcc5d492111f2cde8fcfc545230f9",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/packed-x11-pool01.json",
+          "expected": "9e8138eacd84732f6f5da68e65d7f97087520adbe6e335dc04507b2530f4e938",
+          "current": "9e8138eacd84732f6f5da68e65d7f97087520adbe6e335dc04507b2530f4e938",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/scripts/crystalhd-player.py",
+          "expected": "f297bbf48df12c844019d6b81b2748fcff2badf3f0ebe32232ac42830437b5bc",
+          "current": "f297bbf48df12c844019d6b81b2748fcff2badf3f0ebe32232ac42830437b5bc",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/cpu.mk",
+          "expected": "c90e76a0e6303ba6374c56d2e42fda58ffec3671bbbe69d63ca9963216e03f5b",
+          "current": "c90e76a0e6303ba6374c56d2e42fda58ffec3671bbbe69d63ca9963216e03f5b",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/include/crystalhd_legacy.h",
+          "expected": "520c4623f8551cab567e8bc75e6591bc0c64f305c20a33f1297b13a8a120a64c",
+          "current": "520c4623f8551cab567e8bc75e6591bc0c64f305c20a33f1297b13a8a120a64c",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/README.md",
+          "expected": "de8d7ed491fcec3818fc7bee3a841c78476034ba372905c268ae4abc8dd82a6f",
+          "current": "de8d7ed491fcec3818fc7bee3a841c78476034ba372905c268ae4abc8dd82a6f",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-x11-contract.c",
+          "expected": "57fff79d370fe84ddcac17de0d92f18affa9dbb3353bad81820685f0d848d4aa",
+          "current": "57fff79d370fe84ddcac17de0d92f18affa9dbb3353bad81820685f0d848d4aa",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "expected": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+          "current": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/horizontal-simd.h",
+          "expected": "a49b6c6a7d27c56ae85917c8012c6aadd6d4083120d34c873530d14b0bea7f4b",
+          "current": "a49b6c6a7d27c56ae85917c8012c6aadd6d4083120d34c873530d14b0bea7f4b",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/gstcrystalhdpackedscale.c",
+          "expected": "08ccf8af50d3b4b379c036bc0b25f80b7581d23f7e1e69e67d38da59999d1a00",
+          "current": "08ccf8af50d3b4b379c036bc0b25f80b7581d23f7e1e69e67d38da59999d1a00",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-test.c",
+          "expected": "a0e9fa51d967aa8943e5bd13d369c19de1f9c555a749ee3384db6fdd8f29d1fb",
+          "current": "203148df10bb5ea2453e5061851838754d088574f6f024e52c23adfc97c3a3e0",
+          "verified": true,
+          "historical073_sha256": "a0e9fa51d967aa8943e5bd13d369c19de1f9c555a749ee3384db6fdd8f29d1fb",
+          "scope": "Declared post-close test-only edit; current file is different, frozen073 blob verified. Production images unchanged."
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-engine.c",
+          "expected": "b5d72a31876ae9c0aa7855691652cfa711f77dd3c6c6ccddc6e04e242161688c",
+          "current": "b5d72a31876ae9c0aa7855691652cfa711f77dd3c6c6ccddc6e04e242161688c",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/packed-scale-engine.h",
+          "expected": "470057ce33399ef0f28fa14b18ddd1b369d5f039934e9cff208480d1ce37181d",
+          "current": "470057ce33399ef0f28fa14b18ddd1b369d5f039934e9cff208480d1ce37181d",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/check.sh",
+          "expected": "dbbfd09c2468238955502f5ed43be32b1024a87b2f3d84dc7fd9c989e85f61e0",
+          "current": "dbbfd09c2468238955502f5ed43be32b1024a87b2f3d84dc7fd9c989e85f61e0",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-upscale-20261031/filters/gst/packed-upscale/Makefile",
+          "expected": "24186b2894b8fb923476f6b0af55acb2a0f320822f1cb40bb002a7e3998ad8fc",
+          "current": "24186b2894b8fb923476f6b0af55acb2a0f320822f1cb40bb002a7e3998ad8fc",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04.json",
+          "expected": "cff4a9d4d326bf873aca081c03dda5ff712f9dd4db0b19e5c75060a31fd9952d",
+          "current": "cff4a9d4d326bf873aca081c03dda5ff712f9dd4db0b19e5c75060a31fd9952d",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/rowpack-cpu04-independent-review.json",
+          "expected": "fded1f7923edf06234616607afc2c490e802f3559ec06ded72c4a2aa94fa2cc6",
+          "current": "fded1f7923edf06234616607afc2c490e802f3559ec06ded72c4a2aa94fa2cc6",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/inert-plan-v4.json",
+          "expected": "dd3ae3a0b56fca93f5999dfd139fe3938ddd3d74c93a5ff03666027589a7dacb",
+          "current": "dd3ae3a0b56fca93f5999dfd139fe3938ddd3d74c93a5ff03666027589a7dacb",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-public-scaler-20261030/compare-v4.c",
+          "expected": "95fbbb5a1e8f2097d33003e1467a08a7d582f035b06258bb1047bc6c38ac488e",
+          "current": "95fbbb5a1e8f2097d33003e1467a08a7d582f035b06258bb1047bc6c38ac488e",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-packed-simd-design-20261031/horizontal-guard01.json",
+          "expected": "ddaac90278bff2631b9def0139c1ed693673a02f48acf9694cc79c63acdc160d",
+          "current": "ddaac90278bff2631b9def0139c1ed693673a02f48acf9694cc79c63acdc160d",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/entry-packed-qualification-v2.py",
+          "expected": "c77177dc59f9e0f297337a6d20f7b69fce49a2f9d7bcbd3e23875829014ebe30",
+          "current": "c77177dc59f9e0f297337a6d20f7b69fce49a2f9d7bcbd3e23875829014ebe30",
+          "verified": true
+        },
+        {
+          "path": "/home/mache/.cache/crystalhd-fhd-cause-20261030/run-packed-qualification-v2.py",
+          "expected": "b73b96eeeb910a7ddd15b0a378673d7771c2a3988b791031cd16563fc078778d",
+          "current": "b73b96eeeb910a7ddd15b0a378673d7771c2a3988b791031cd16563fc078778d",
+          "verified": true
+        }
+      ],
+      "producer_acceptance_items": 63,
+      "Xv_preNULL": {
+        "submitted": 15001,
+        "acknowledged": 15001,
+        "video-submitted": 15001,
+        "redraw-submitted": 0,
+        "retained-picture": true,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 15001,
+        "pending": 0,
+        "images": 6,
+        "bytes": 24883200,
+        "allocated": 6,
+        "freed": 0,
+        "failed": false,
+        "closed": false,
+        "quarantined": false
+      },
+      "Xv_postNULL": {
+        "submitted": 15001,
+        "acknowledged": 15001,
+        "video-submitted": 15001,
+        "redraw-submitted": 0,
+        "retained-picture": false,
+        "terminal-retired": 0,
+        "copied-bytes": 0,
+        "pool-submitted": 15001,
+        "pending": 0,
+        "images": 0,
+        "bytes": 0,
+        "allocated": 6,
+        "freed": 6,
+        "failed": false,
+        "closed": true,
+        "quarantined": false
+      },
+      "thermal": {
+        "recorded_samples": 62,
+        "first_mC": [
+          53000,
+          43000
+        ],
+        "max_recorded_mC": 69000,
+        "scope": "Sampled guard temperatures, not continuous maximum. New initial53C versus prior57C; no controlled thermal-causal comparison."
+      },
+      "boundary_before": {
+        "module": "3.10.13",
+        "srcversion": "F76E163690F147B91495DDD",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on",
+        "aer": {
+          "0000:02:00.0": {
+            "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+            "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+            "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+          },
+          "0000:00:1c.0": {}
+        },
+        "links": {
+          "0000:02:00.0": 66,
+          "0000:00:1c.0": 66
+        },
+        "debug_rows": 85,
+        "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+        "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+        "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "video_nodes": []
+      },
+      "kernel_log_summary": "kernel-log validation passed: no matching errors during the test",
+      "artifact_sha256": {
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/frozen-packed-qualification-plan-v2.json": "752d64ea3212ed9fbc174dafada69083628432e44dbf6a871ceab29a20d2bdaf",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.boundary.json": "d98f553b97782fb110b1d922842842e1fc976257651f53023e36e42ff7aa892c",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.result.json": "6f6abf8d6e02f6e30ed0fdd5b046a4e0afcfd39040fe160c1dcc775058d31c8a",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.trace.json": "75b5bd1138ed3e7669d71482351a38813acece2e91d0b8df0d5ec52a2327f0b9",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.qualification.json": "0c637b8d56192aefee6dda08d5bebd59bbfc3cc0c4c0f80f10b43b53a11b9969",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.ready.json": "d517bf76b748ef8c0bbb15e1ac64aa393db9af2d886304a186a31770bd8c5e74",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.proc.json": "820a5e3c934df254c5ebec62230d35853b2859146d0536374da4149636ef23fc",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-01.qualification.json": "af01c9e4043d925b1286042d26f892f052c411f309786a9f1b3ab18beba12a21",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-01.result.json": "edfc9dddf0bd9ccea90f1a09563c673c26af7e138a8f1531a2c12c862a6e9e1b",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.log": "8d60fe34562e94c51b3a5e83249a9bfe3e86f080530163c3cb8ca75df39a56c6",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.sampler.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/pcm-fhd-packed-02.sampler-ready.json": "03e918a33821a60e1560001364c0553a4bc743c3bffd68ce37fbfc6e2b2ecb0a",
+        "/home/mache/.cache/crystalhd-fhd-cause-20261030/audit-packed-native-v1.py": "3f191558183b9156824860aa415b73fb43b76678a9dd958c94bbf55b5e2e86ad"
+      },
+      "limits": [
+        "One exact frozen profile now demonstrates feasibility; not universal endurance, physical scanout, calibratedA/V, all-source output-field PTS census, or proof of the earlier stall cause.",
+        "7500 original-picture metadata grid and whole four-stage counts/EOS are full-invocation; output-field PTS-set equality only[256.4,300).",
+        "15001 video requests versus15000 renders is source-consistent with ordinary preroll; ACK is ownSHM retirement, not unique physical pictures.",
+        "Copied-bytes0 is only the sink row-copy path, not end-to-end zero-copy.",
+        "Mapped identities are recorded point witnesses with frozen file hashes, not continuous mapping history. Saved owned-task start_ticks are not rawfork timestamps.",
+        "Post-run test-only factory check is explicitly different now; original073blob verifies its frozen pin. All production image pins remain exact.",
+        "Artifact-only reviewer used regular files/localgitblob only, no live/proc/sys/build/test/media/remote operations."
+      ]
+    }
+  }
+}

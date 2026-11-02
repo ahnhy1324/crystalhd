@@ -1,0 +1,2916 @@
+{
+  "schema": 1,
+  "status": "PRIVATE_CURRENT_HOST_NATIVE_ACTIVATION_AND_EXACT_PTS_QUALIFICATION",
+  "parent_source": "0ad1926ebf6ae77eec15c281dbb3863e318cec33",
+  "date": "2026-11-01",
+  "issue": 607,
+  "module_selection_correction": {
+    "schema": 1,
+    "correction": "Earlier whole-session module unload/swap prohibition was unsupported. The observed stable configuration lacked the node; normal guarded idle transition to the retained experimental module is supported by repository procedure and prior successful qualification.",
+    "policy_sources": [
+      {
+        "source": "0ad1926ebf6ae77eec15c281dbb3863e318cec33",
+        "path": "BRINGUP.md",
+        "lines": [
+          179,
+          211
+        ],
+        "rule": "Normal idle unload/reload after no owners/ref0; never forced unloading or killing a stuck owner."
+      },
+      {
+        "source": "0ad1926ebf6ae77eec15c281dbb3863e318cec33",
+        "path": "DMA.md",
+        "lines": [
+          72
+        ],
+        "rule": "Do not bypass unretired ownership/module pin with forced unload."
+      }
+    ],
+    "old_observation_remains_valid": "Stable3.10.13/no decoding video node was observed correctly; it is not hardware/native-validation impossibility.",
+    "next_action": "Pinned temporary native module, bounded normal media, exact stable restoration; no installed/external file edits."
+  },
+  "host": "Core2 T8100 / BCM70015 / Intel965 / x86_64 / Linux7.0.0-38-generic; existing host only",
+  "native_module": {
+    "source": "830170b28ad58ad77ff196ef14e039cae2797e4f",
+    "version": "3.10.14",
+    "srcversion": "E3D1535AB4C470BC21D6E32",
+    "sha256": "3bf7c789f2e6d90b37d03e63f24d7e2e0ec0c7ec3855b71160f4f56eb5a644cf",
+    "node": "/dev/video0"
+  },
+  "restored_stable_module": {
+    "version": "3.10.13",
+    "srcversion": "F76E163690F147B91495DDD",
+    "sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+    "node": "/dev/crystalhd; no decoding video node"
+  },
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "kodi": {
+    "source_model": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "binary_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "version_observed": {
+      "major": 22,
+      "minor": 0,
+      "revision": "20260927-28ea2eac-dirty",
+      "tag": "releasecandidate",
+      "tagversion": "1"
+    },
+    "model_does_not_attest_binary_source_correspondence": true
+  },
+  "neutral_package": {
+    "archive_sha256": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+    "archive_bytes": 8017920,
+    "external_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "metadata_sha256": {
+      "files": "aee1eba5bc5d54bf54b6499ad3ffdb94ee8bd89015953c800804ce44e889c11d",
+      "dependencies": "dfbff250c9cd61dfc83beba99bffab30e2d7c2a3af0e3785d021d964feed6b02",
+      "provenance": "7ffd06ad3b22fbf19ae5c4088f5c3d6418ed8dcaca1365957d4cd369d4ea781f"
+    },
+    "actual_mapped_family": {
+      "mapped_members": {
+        "libswscale": {
+          "path": "/native-ffmpeg/libswscale.so.10.1.102",
+          "sha256": "cb3a2ce99376ec2b793c6616aa3dd23595a6a3e77c98adb31af529d793764b43",
+          "inode": 9464265
+        },
+        "libavutil": {
+          "path": "/native-ffmpeg/libavutil.so.61.1.102",
+          "sha256": "942a75fe3715b645ad3183953c6446c85ae8a24f332de95c503a5b4f99af3a04",
+          "inode": 9464257
+        },
+        "libavcodec": {
+          "path": "/native-ffmpeg/libavcodec.so.63.1.102",
+          "sha256": "21c16b84974892e5c1cedf195e87229b8227adcd534c38669c6ed1aecf72d475",
+          "inode": 9464259
+        },
+        "libswresample": {
+          "path": "/native-ffmpeg/libswresample.so.7.1.102",
+          "sha256": "5ea49c11bfdc920c470a957f1f5fd1314957851ca9ab0d855e9e405594a67ca1",
+          "inode": 9464263
+        },
+        "libavformat": {
+          "path": "/native-ffmpeg/libavformat.so.63.1.102",
+          "sha256": "4a0c56833892f9653ece66c21fe3f83bb65bc1bedd6b353d6c4333e99aa95140",
+          "inode": 9464261
+        },
+        "libavfilter": {
+          "path": "/native-ffmpeg/libavfilter.so.12.1.102",
+          "sha256": "94ed874affee0b734dd1463738ad2c9b36b11382a92ddac88f4e1f9c1b7c0c85",
+          "inode": 9464267
+        }
+      },
+      "unused_members": [
+        "libavdevice"
+      ],
+      "scope": "Only observed loaded seven-DSO-family members authenticated; unused members were not forced to load."
+    },
+    "providers": {
+      "status": "PASS_SEVEN_RUNTIME_PROVIDERS_MATCH_PINNED_PLATFORM",
+      "providers": [
+        {
+          "provider": "ld-linux-x86-64.so.2",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+          "inode": 11302531,
+          "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libc.so.6",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+          "inode": 11307995,
+          "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libdrm.so.2.134.0",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+          "inode": 11307604,
+          "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libm.so.6",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+          "inode": 11294667,
+          "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libva-drm.so.2.2400.0",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+          "inode": 11307401,
+          "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libva.so.2.2400.0",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libva.so.2.2400.0",
+          "inode": 11307637,
+          "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487",
+          "same_pinned_Platform_provider": true
+        },
+        {
+          "provider": "libz.so.1.3.1.zlib-ng",
+          "mapped_path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+          "inode": 11307563,
+          "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c",
+          "same_pinned_Platform_provider": true
+        }
+      ],
+      "scope": "Saved actual Kodi mappings tied to immutable bind source inodes and independently pinned file digests; no target execution"
+    }
+  },
+  "independent_pts_policy": {
+    "Kodi_commit": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "demux_source": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp#L986",
+    "codec_source": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp#L406",
+    "timing_constants_source": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/Interface/TimingConstants.h#L12",
+    "DVD_TIME_BASE": 1000000,
+    "AV_TIME_BASE": 1000000,
+    "domain": "Verifiedzero-origin source only",
+    "model": "binary64 seconds=float(pts)*num/den; demux=seconds*1000000; int(demux/1000000*1000000)",
+    "tolerance": 0,
+    "initial_rational_floor_failure_retained": true,
+    "first_actual_case_all360_values_exactly_match_independent_source_and_published_conversion": true
+  },
+  "initial_oracle_failure_preserved": {
+    "path": "initial-oracle-normalization-difference.json",
+    "sha256": "826566b4b3b512c45e76bead804cc5076083e857ce50b4ec39b91fd3429aa9a0",
+    "reason": "Exact rational floor did not model the published caller binary64 conversion; caller and returned agreed. New independently source-derived model has zero tolerance."
+  },
+  "own_reader": {
+    "path": "tools/kodi-route-probe/native-pts-oracle.py",
+    "sha256": "c9f8429b6fb9209b360b4eb1c8d79f97ce4f3178c0b6821a99854cf495e72785",
+    "control_path": "tests/native-runtime-pts-oracle.test.py",
+    "control_sha256": "0c64239863de5ec2edbd35366a697c35a04c90f1b2ec144de5406b24645ff05e",
+    "controls_passed": 21,
+    "hardware_execution": false
+  },
+  "guard_controls_passed_per_controller": 10,
+  "linked_route_controls_passed": 5,
+  "strict_render_gate": {
+    "status": "PASS_STRICT_GATE_DETECTS_ALL_THREE_FAILED_RENDER_CASE_PAIRS",
+    "reader_sha256": "c9f8429b6fb9209b360b4eb1c8d79f97ce4f3178c0b6821a99854cf495e72785",
+    "PTS_matched_all_frames": 6120,
+    "scope": "Gate behavior proven; actual long paused rendering remains FAIL. No runtime/pixel/scanout promotion.",
+    "cases": [
+      {
+        "case": "neutral-720-reopen-01",
+        "exit": 0,
+        "renderer_census_status": "PASS",
+        "deficit": 0,
+        "output_sha256": "c19a2baa0a3a213f9f2a7befadeb13a0ef3ad5e2b0f2edb58bd4d82e16973f97",
+        "input_sha256": {
+          "native_report": "b048fa42525da2dc64fc20bffec0352e6d0907bafba2833666d89ff7f70e6c6d",
+          "source_packets": "5afe04c15f6001f4d52d22c1536327521ef7dd7182fda54270441ce5c12471cf"
+        }
+      },
+      {
+        "case": "neutral-1080-reopen-02",
+        "exit": 0,
+        "renderer_census_status": "PASS",
+        "deficit": 0,
+        "output_sha256": "4ac44b1149b6f7c0ecfbff598ec47983298e1e68bd4d4382ce56fdeaaade1343",
+        "input_sha256": {
+          "native_report": "8e66a01047100cdd3fb711ff01fa32563c4c41425584a1878a9bd0d783542021",
+          "source_packets": "32c6c81ec383f91d8279310a29d78df51859e35e5aed4b190be371899adcdf76"
+        }
+      },
+      {
+        "case": "neutral-720-pause-reopen-02",
+        "exit": 3,
+        "renderer_census_status": "FAIL",
+        "deficit": 2,
+        "output_sha256": "78d9fd5224f8774a8c736b3cc1d84f1314a89d26b80f7de4f8f26ea7133ed30c",
+        "input_sha256": {
+          "native_report": "e31ae8c68ff6414b980a0544ff87479a3301c073b3c1182b30f28f915c86f877",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        }
+      },
+      {
+        "case": "neutral-720-pause-diagnostic-03",
+        "exit": 3,
+        "renderer_census_status": "FAIL",
+        "deficit": 1,
+        "output_sha256": "0c5019d3b534df7ae894053efc9b5e578d3102a0c42f3bdcbbd1a880075cec86",
+        "input_sha256": {
+          "native_report": "4c3494a186ea992b193f10f53b7f3f4cce4756faf83e0cb6c5f73039d14b7e49",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        }
+      },
+      {
+        "case": "neutral-720-pause-reopen-03",
+        "exit": 3,
+        "renderer_census_status": "FAIL",
+        "deficit": 2,
+        "output_sha256": "c567abd79772327400c48aa658af526f0f5779d6a4f011239340cd8326bc0340",
+        "input_sha256": {
+          "native_report": "172b024d9b364e32244056c3b0eb19912f3f6e91a4bdeb4240e5c6352e40590e",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "case": "neutral-720-reopen-01",
+      "report_sha256": "b048fa42525da2dc64fc20bffec0352e6d0907bafba2833666d89ff7f70e6c6d",
+      "harness_status_scope": "CURRENT_HOST_NEUTRAL_NATIVE_EOS_REOPEN_SOURCE_CENSUS_PASS",
+      "width": 1280,
+      "height": 720,
+      "expected_frames_each_cycle": 180,
+      "media_sha256": "9f9d0d5809ea2182efcc95176b0af5e7880d90b033d54475701a1b691759a23b",
+      "source_packets_sha256": "5afe04c15f6001f4d52d22c1536327521ef7dd7182fda54270441ce5c12471cf",
+      "source_streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "time_base": "1/15360",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc62.11.100 libx264"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000",
+          "channels": 1,
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "source_format": {
+        "start_time": "0.000000",
+        "duration": "6.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf62.3.100"
+        }
+      },
+      "offline_pts": {
+        "completed_cycles": 2,
+        "cycles": [
+          {
+            "accepted": 180,
+            "cycle": 0,
+            "returned": 180
+          },
+          {
+            "accepted": 180,
+            "cycle": 1,
+            "returned": 180
+          }
+        ],
+        "input_sha256": {
+          "native_report": "b048fa42525da2dc64fc20bffec0352e6d0907bafba2833666d89ff7f70e6c6d",
+          "source_packets": "5afe04c15f6001f4d52d22c1536327521ef7dd7182fda54270441ce5c12471cf"
+        },
+        "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+        "media_sha256": "9f9d0d5809ea2182efcc95176b0af5e7880d90b033d54475701a1b691759a23b",
+        "native_report_status_observed": "PASS",
+        "rational_vs_binary64_diagnostic": {
+          "examples": [
+            {
+              "caller_pts_us": 4099999,
+              "delta_us": -1,
+              "packet_index": 124,
+              "rational_pts_us": 4100000,
+              "raw_pts": 62976
+            }
+          ],
+          "maximum_delta_us": 0,
+          "minimum_delta_us": -1,
+          "nonzero_delta_packets": 1,
+          "reference": "exact rational conversion truncated toward zero; diagnostic only"
+        },
+        "renderer_census": {
+          "cycles": [
+            {
+              "classification": "FULL",
+              "cycle": 0,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 180,
+              "renderer_acceptances": 180,
+              "status": "PASS"
+            },
+            {
+              "classification": "FULL",
+              "cycle": 1,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 180,
+              "renderer_acceptances": 180,
+              "status": "PASS"
+            }
+          ],
+          "deficit": 0,
+          "excess": 0,
+          "expected_total": 360,
+          "known_deficit": 0,
+          "known_excess": 0,
+          "renderer_acceptances_total": 360,
+          "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+          "status": "PASS",
+          "unknown_cycles": 0
+        },
+        "schema": 1,
+        "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+        "source_video_packets": 180,
+        "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+        "tolerance_us": 0,
+        "video_time_base": "1/15360"
+      },
+      "cycles": [
+        {
+          "cycle": 0,
+          "drm_frame_count": 180,
+          "renderer_acceptances": 180,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 0
+          }
+        },
+        {
+          "cycle": 1,
+          "drm_frame_count": 180,
+          "renderer_acceptances": 180,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 0
+          }
+        }
+      ],
+      "boundary_equal": true,
+      "normal_exit_code": 0,
+      "cleanup": {
+        "remaining_kodi_descendants": [],
+        "kodi_process_retired": true,
+        "remaining_owned_processes": {},
+        "hardware_idle": true
+      },
+      "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN."
+    },
+    {
+      "case": "neutral-1080-reopen-02",
+      "report_sha256": "8e66a01047100cdd3fb711ff01fa32563c4c41425584a1878a9bd0d783542021",
+      "harness_status_scope": "CURRENT_HOST_NEUTRAL_NATIVE_EOS_REOPEN_SOURCE_CENSUS_PASS",
+      "width": 1920,
+      "height": 1080,
+      "expected_frames_each_cycle": 180,
+      "media_sha256": "19989ccfb99318907147fa8ea55ad1ea9776844f7999daf7d6ba3d44a7d8ae96",
+      "source_packets_sha256": "32c6c81ec383f91d8279310a29d78df51859e35e5aed4b190be371899adcdf76",
+      "source_streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1920,
+          "height": 1080,
+          "time_base": "1/15360",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc61.19.101 libx264"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000",
+          "channels": 1,
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "source_format": {
+        "start_time": "0.000000",
+        "duration": "6.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf62.3.100"
+        }
+      },
+      "offline_pts": {
+        "completed_cycles": 2,
+        "cycles": [
+          {
+            "accepted": 180,
+            "cycle": 0,
+            "returned": 180
+          },
+          {
+            "accepted": 180,
+            "cycle": 1,
+            "returned": 180
+          }
+        ],
+        "input_sha256": {
+          "native_report": "8e66a01047100cdd3fb711ff01fa32563c4c41425584a1878a9bd0d783542021",
+          "source_packets": "32c6c81ec383f91d8279310a29d78df51859e35e5aed4b190be371899adcdf76"
+        },
+        "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+        "media_sha256": "19989ccfb99318907147fa8ea55ad1ea9776844f7999daf7d6ba3d44a7d8ae96",
+        "native_report_status_observed": "PASS",
+        "rational_vs_binary64_diagnostic": {
+          "examples": [
+            {
+              "caller_pts_us": 4099999,
+              "delta_us": -1,
+              "packet_index": 122,
+              "rational_pts_us": 4100000,
+              "raw_pts": 62976
+            }
+          ],
+          "maximum_delta_us": 0,
+          "minimum_delta_us": -1,
+          "nonzero_delta_packets": 1,
+          "reference": "exact rational conversion truncated toward zero; diagnostic only"
+        },
+        "renderer_census": {
+          "cycles": [
+            {
+              "classification": "FULL",
+              "cycle": 0,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 180,
+              "renderer_acceptances": 180,
+              "status": "PASS"
+            },
+            {
+              "classification": "FULL",
+              "cycle": 1,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 180,
+              "renderer_acceptances": 180,
+              "status": "PASS"
+            }
+          ],
+          "deficit": 0,
+          "excess": 0,
+          "expected_total": 360,
+          "known_deficit": 0,
+          "known_excess": 0,
+          "renderer_acceptances_total": 360,
+          "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+          "status": "PASS",
+          "unknown_cycles": 0
+        },
+        "schema": 1,
+        "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+        "source_video_packets": 180,
+        "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+        "tolerance_us": 0,
+        "video_time_base": "1/15360"
+      },
+      "cycles": [
+        {
+          "cycle": 0,
+          "drm_frame_count": 180,
+          "renderer_acceptances": 180,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 0
+          }
+        },
+        {
+          "cycle": 1,
+          "drm_frame_count": 180,
+          "renderer_acceptances": 180,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 0
+          }
+        }
+      ],
+      "boundary_equal": true,
+      "normal_exit_code": 0,
+      "cleanup": {
+        "remaining_kodi_descendants": [],
+        "kodi_process_retired": true,
+        "remaining_owned_processes": {},
+        "hardware_idle": true
+      },
+      "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN."
+    },
+    {
+      "case": "neutral-720-pause-reopen-02",
+      "report_sha256": "e31ae8c68ff6414b980a0544ff87479a3301c073b3c1182b30f28f915c86f877",
+      "harness_status_scope": "CURRENT_HOST_NEUTRAL_NATIVE_EOS_REOPEN_SOURCE_CENSUS_PASS",
+      "width": 1280,
+      "height": 720,
+      "expected_frames_each_cycle": 900,
+      "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+      "source_packets_sha256": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8",
+      "source_streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "time_base": "1/15360",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc62.11.100 libx264"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000",
+          "channels": 1,
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "source_format": {
+        "start_time": "0.000000",
+        "duration": "30.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf62.3.100"
+        }
+      },
+      "offline_pts": {
+        "completed_cycles": 2,
+        "cycles": [
+          {
+            "accepted": 900,
+            "cycle": 0,
+            "returned": 900
+          },
+          {
+            "accepted": 900,
+            "cycle": 1,
+            "returned": 900
+          }
+        ],
+        "input_sha256": {
+          "native_report": "e31ae8c68ff6414b980a0544ff87479a3301c073b3c1182b30f28f915c86f877",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        },
+        "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+        "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+        "native_report_status_observed": "PASS",
+        "rational_vs_binary64_diagnostic": {
+          "examples": [
+            {
+              "caller_pts_us": 4099999,
+              "delta_us": -1,
+              "packet_index": 124,
+              "rational_pts_us": 4100000,
+              "raw_pts": 62976
+            },
+            {
+              "caller_pts_us": 8199999,
+              "delta_us": -1,
+              "packet_index": 244,
+              "rational_pts_us": 8200000,
+              "raw_pts": 125952
+            },
+            {
+              "caller_pts_us": 16399999,
+              "delta_us": -1,
+              "packet_index": 491,
+              "rational_pts_us": 16400000,
+              "raw_pts": 251904
+            }
+          ],
+          "maximum_delta_us": 0,
+          "minimum_delta_us": -1,
+          "nonzero_delta_packets": 3,
+          "reference": "exact rational conversion truncated toward zero; diagnostic only"
+        },
+        "renderer_census": {
+          "cycles": [
+            {
+              "classification": "FULL",
+              "cycle": 0,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 900,
+              "status": "PASS"
+            },
+            {
+              "classification": "DEFICIT",
+              "cycle": 1,
+              "deficit": 2,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 898,
+              "status": "FAIL"
+            }
+          ],
+          "deficit": 2,
+          "excess": 0,
+          "expected_total": 1800,
+          "known_deficit": 2,
+          "known_excess": 0,
+          "renderer_acceptances_total": 1798,
+          "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+          "status": "FAIL",
+          "unknown_cycles": 0
+        },
+        "schema": 1,
+        "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+        "source_video_packets": 900,
+        "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+        "tolerance_us": 0,
+        "video_time_base": "1/15360"
+      },
+      "cycles": [
+        {
+          "cycle": 0,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 900,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.11704945401288569,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 0,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.0334911710233428,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 105,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.1057256210478954,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 128,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 1,
+            "video": 0
+          }
+        },
+        {
+          "cycle": 1,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 898,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.12380064401077107,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 105,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.0821067460346967,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 200,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.0119612279813737,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 230,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": null,
+          "video_output_timeouts": null,
+          "video_sync_warnings": [],
+          "diagnostic_routes": null,
+          "retrospective_output_timeout_census": {
+            "audio": 1,
+            "video": 1
+          }
+        }
+      ],
+      "boundary_equal": true,
+      "normal_exit_code": 0,
+      "cleanup": {
+        "remaining_kodi_descendants": [],
+        "kodi_process_retired": true,
+        "remaining_owned_processes": {},
+        "hardware_idle": true
+      },
+      "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN."
+    },
+    {
+      "case": "neutral-720-pause-diagnostic-03",
+      "report_sha256": "4c3494a186ea992b193f10f53b7f3f4cce4756faf83e0cb6c5f73039d14b7e49",
+      "harness_status_scope": "CURRENT_HOST_NEUTRAL_NATIVE_EOS_REOPEN_SOURCE_CENSUS_PASS",
+      "width": 1280,
+      "height": 720,
+      "expected_frames_each_cycle": 900,
+      "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+      "source_packets_sha256": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8",
+      "source_streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "time_base": "1/15360",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc62.11.100 libx264"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000",
+          "channels": 1,
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "source_format": {
+        "start_time": "0.000000",
+        "duration": "30.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf62.3.100"
+        }
+      },
+      "offline_pts": {
+        "completed_cycles": 2,
+        "cycles": [
+          {
+            "accepted": 900,
+            "cycle": 0,
+            "returned": 900
+          },
+          {
+            "accepted": 900,
+            "cycle": 1,
+            "returned": 900
+          }
+        ],
+        "input_sha256": {
+          "native_report": "4c3494a186ea992b193f10f53b7f3f4cce4756faf83e0cb6c5f73039d14b7e49",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        },
+        "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+        "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+        "native_report_status_observed": "PASS",
+        "rational_vs_binary64_diagnostic": {
+          "examples": [
+            {
+              "caller_pts_us": 4099999,
+              "delta_us": -1,
+              "packet_index": 124,
+              "rational_pts_us": 4100000,
+              "raw_pts": 62976
+            },
+            {
+              "caller_pts_us": 8199999,
+              "delta_us": -1,
+              "packet_index": 244,
+              "rational_pts_us": 8200000,
+              "raw_pts": 125952
+            },
+            {
+              "caller_pts_us": 16399999,
+              "delta_us": -1,
+              "packet_index": 491,
+              "rational_pts_us": 16400000,
+              "raw_pts": 251904
+            }
+          ],
+          "maximum_delta_us": 0,
+          "minimum_delta_us": -1,
+          "nonzero_delta_packets": 3,
+          "reference": "exact rational conversion truncated toward zero; diagnostic only"
+        },
+        "renderer_census": {
+          "cycles": [
+            {
+              "classification": "DEFICIT",
+              "cycle": 0,
+              "deficit": 1,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 899,
+              "status": "FAIL"
+            },
+            {
+              "classification": "FULL",
+              "cycle": 1,
+              "deficit": 0,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 900,
+              "status": "PASS"
+            }
+          ],
+          "deficit": 1,
+          "excess": 0,
+          "expected_total": 1800,
+          "known_deficit": 1,
+          "known_excess": 0,
+          "renderer_acceptances_total": 1799,
+          "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+          "status": "FAIL",
+          "unknown_cycles": 0
+        },
+        "schema": 1,
+        "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+        "source_video_packets": 900,
+        "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+        "tolerance_us": 0,
+        "video_time_base": "1/15360"
+      },
+      "cycles": [
+        {
+          "cycle": 0,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 899,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.12775795196648687,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 104,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499463679879446,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.0647047749953344,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 157,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499464783801882,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.069307226978708,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 178,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499467896501291,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": [
+            "2026-11-01 05:55:59.344 T:1357567   error <general>: CDVDAudio::AddPacketsRenderer - timeout adding data to renderer"
+          ],
+          "video_output_timeouts": [],
+          "video_sync_warnings": [],
+          "diagnostic_routes": {
+            "status": "COMPLETE_OBSERVER_LINKAGE",
+            "scope": "Read-only call routing; source PTS comes from AVFrame during GetPicture, not an assumed VideoPicture member offset. DRM descriptor/fd identity is observed; physical presentation is not.",
+            "native_get_picture_count": 900,
+            "native_picture_routes": 900,
+            "add_entry_count": 899,
+            "add_return_count": 899,
+            "original_render_return_count": 899,
+            "output_state_codes": {
+              "0": "NORMAL",
+              "1": "ABORT",
+              "2": "DROPPED",
+              "3": "AGAIN"
+            },
+            "output_returns": {
+              "0": 899,
+              "3": 8
+            },
+            "wait_for_buffer_returns": {
+              "0": 2,
+              "1": 1,
+              "2": 1,
+              "3": 895,
+              "-1": 8
+            },
+            "event_counts": {
+              "DIAG_GET_ENTRY": 1797,
+              "DIAG_GET_RET": 1796,
+              "DIAG_OUTPUT_ENTRY": 907,
+              "DIAG_WAIT_RET": 907,
+              "DIAG_ADD_ENTRY": 899,
+              "DIAG_ADD_RET": 899,
+              "DIAG_OUTPUT_RET": 907
+            },
+            "pending_picture_replacement_count": 1,
+            "pending_picture_replacement_examples": [
+              {
+                "t_ns": 499465273786824,
+                "tid": 1357566,
+                "pic": 99499469591032,
+                "ret": 4,
+                "fresh": 1,
+                "seq": 14,
+                "source_pts": 433333,
+                "descriptor": 126199695174288,
+                "fd": 61,
+                "pending": 1,
+                "pending_seq": 13,
+                "pending_pts": 400000,
+                "replacement": 1
+              }
+            ],
+            "native_pictures_without_add_entry": 1,
+            "without_add_entry_examples": [
+              {
+                "tid": 1357566,
+                "native_sequence": 13,
+                "source_pts_us": 400000,
+                "picture_address": "0x5a7e868a51f8",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3,
+                  3,
+                  3
+                ],
+                "wait_returns": [
+                  -1,
+                  -1,
+                  -1
+                ],
+                "drm_descriptor_address": "0x72c728006450",
+                "dma_buf_fd": 60
+              }
+            ],
+            "native_pictures_without_true_return": 1,
+            "without_true_return_examples": [
+              {
+                "tid": 1357566,
+                "native_sequence": 13,
+                "source_pts_us": 400000,
+                "picture_address": "0x5a7e868a51f8",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3,
+                  3,
+                  3
+                ],
+                "wait_returns": [
+                  -1,
+                  -1,
+                  -1
+                ],
+                "drm_descriptor_address": "0x72c728006450",
+                "dma_buf_fd": 60
+              }
+            ]
+          },
+          "retrospective_output_timeout_census": {
+            "audio": 1,
+            "video": 0
+          }
+        },
+        {
+          "cycle": 1,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 900,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.12675031396793202,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 105,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499499642757243,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.0535524159786291,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 230,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499500747864469,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.1002544939983636,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 251,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499503881294985,
+              "resume_progress_gate": {
+                "enabled": false
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": [
+            "2026-11-01 05:56:35.109 T:1358055   error <general>: CDVDAudio::AddPacketsRenderer - timeout adding data to renderer"
+          ],
+          "video_output_timeouts": [],
+          "video_sync_warnings": [],
+          "diagnostic_routes": {
+            "status": "COMPLETE_OBSERVER_LINKAGE",
+            "scope": "Read-only call routing; source PTS comes from AVFrame during GetPicture, not an assumed VideoPicture member offset. DRM descriptor/fd identity is observed; physical presentation is not.",
+            "native_get_picture_count": 900,
+            "native_picture_routes": 900,
+            "add_entry_count": 900,
+            "add_return_count": 900,
+            "original_render_return_count": 900,
+            "output_state_codes": {
+              "0": "NORMAL",
+              "1": "ABORT",
+              "2": "DROPPED",
+              "3": "AGAIN"
+            },
+            "output_returns": {
+              "0": 900
+            },
+            "wait_for_buffer_returns": {
+              "0": 2,
+              "1": 1,
+              "2": 1,
+              "3": 896
+            },
+            "event_counts": {
+              "DIAG_GET_ENTRY": 1802,
+              "DIAG_GET_RET": 1802,
+              "DIAG_OUTPUT_ENTRY": 900,
+              "DIAG_WAIT_RET": 900,
+              "DIAG_ADD_ENTRY": 900,
+              "DIAG_ADD_RET": 900,
+              "DIAG_OUTPUT_RET": 900
+            },
+            "pending_picture_replacement_count": 0,
+            "pending_picture_replacement_examples": [],
+            "native_pictures_without_add_entry": 0,
+            "without_add_entry_examples": [],
+            "native_pictures_without_true_return": 0,
+            "without_true_return_examples": []
+          },
+          "retrospective_output_timeout_census": {
+            "audio": 1,
+            "video": 0
+          }
+        }
+      ],
+      "boundary_equal": true,
+      "normal_exit_code": 0,
+      "cleanup": {
+        "remaining_kodi_descendants": [],
+        "kodi_process_retired": true,
+        "remaining_owned_processes": {},
+        "hardware_idle": true
+      },
+      "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN."
+    },
+    {
+      "case": "neutral-720-pause-reopen-03",
+      "report_sha256": "172b024d9b364e32244056c3b0eb19912f3f6e91a4bdeb4240e5c6352e40590e",
+      "harness_status_scope": "CURRENT_HOST_NEUTRAL_NATIVE_EOS_REOPEN_SOURCE_CENSUS_PASS",
+      "width": 1280,
+      "height": 720,
+      "expected_frames_each_cycle": 900,
+      "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+      "source_packets_sha256": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8",
+      "source_streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "time_base": "1/15360",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc62.11.100 libx264"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000",
+          "channels": 1,
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "source_format": {
+        "start_time": "0.000000",
+        "duration": "30.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf62.3.100"
+        }
+      },
+      "offline_pts": {
+        "completed_cycles": 2,
+        "cycles": [
+          {
+            "accepted": 900,
+            "cycle": 0,
+            "returned": 900
+          },
+          {
+            "accepted": 900,
+            "cycle": 1,
+            "returned": 900
+          }
+        ],
+        "input_sha256": {
+          "native_report": "172b024d9b364e32244056c3b0eb19912f3f6e91a4bdeb4240e5c6352e40590e",
+          "source_packets": "9f0eb2ed4f9159ec08fd97ec93f37316e088a5b85dbd3e2155d60e39a00bbab8"
+        },
+        "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+        "media_sha256": "7d6b71a5a1a06900bf644020e30bd3eec40e7b3b1f11d8cca3d410f242b871b2",
+        "native_report_status_observed": "PASS",
+        "rational_vs_binary64_diagnostic": {
+          "examples": [
+            {
+              "caller_pts_us": 4099999,
+              "delta_us": -1,
+              "packet_index": 124,
+              "rational_pts_us": 4100000,
+              "raw_pts": 62976
+            },
+            {
+              "caller_pts_us": 8199999,
+              "delta_us": -1,
+              "packet_index": 244,
+              "rational_pts_us": 8200000,
+              "raw_pts": 125952
+            },
+            {
+              "caller_pts_us": 16399999,
+              "delta_us": -1,
+              "packet_index": 491,
+              "rational_pts_us": 16400000,
+              "raw_pts": 251904
+            }
+          ],
+          "maximum_delta_us": 0,
+          "minimum_delta_us": -1,
+          "nonzero_delta_packets": 3,
+          "reference": "exact rational conversion truncated toward zero; diagnostic only"
+        },
+        "renderer_census": {
+          "cycles": [
+            {
+              "classification": "DEFICIT",
+              "cycle": 0,
+              "deficit": 1,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 899,
+              "status": "FAIL"
+            },
+            {
+              "classification": "DEFICIT",
+              "cycle": 1,
+              "deficit": 1,
+              "excess": 0,
+              "expected": 900,
+              "renderer_acceptances": 899,
+              "status": "FAIL"
+            }
+          ],
+          "deficit": 2,
+          "excess": 0,
+          "expected_total": 1800,
+          "known_deficit": 2,
+          "known_excess": 0,
+          "renderer_acceptances_total": 1798,
+          "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+          "status": "FAIL",
+          "unknown_cycles": 0
+        },
+        "schema": 1,
+        "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+        "source_video_packets": 900,
+        "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+        "tolerance_us": 0,
+        "video_time_base": "1/15360"
+      },
+      "cycles": [
+        {
+          "cycle": 0,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 899,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.11924258997896686,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 107,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499546994351843,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 107,
+                "renderer_acceptances_before": 12,
+                "elapsed_s": 0.24431064998498186,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 365,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 365,
+                "renderer_acceptances_after": 18,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499547238672131
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.1434911839896813,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 415,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499548412630330,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 415,
+                "renderer_acceptances_before": 19,
+                "elapsed_s": 0.27435343799879774,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 620,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 620,
+                "renderer_acceptances_after": 26,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499548687065763
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.0186022290145047,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 722,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499551749916442,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 722,
+                "renderer_acceptances_before": 28,
+                "elapsed_s": 0.268283584038727,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 926,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 926,
+                "renderer_acceptances_after": 34,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499552018231316
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": [],
+          "video_output_timeouts": [
+            "2026-11-01 05:57:19.303 T:1358536 warning <general>: OutputPicture - timeout waiting for buffer"
+          ],
+          "video_sync_warnings": [],
+          "diagnostic_routes": {
+            "status": "COMPLETE_OBSERVER_LINKAGE",
+            "scope": "Read-only call routing; source PTS comes from AVFrame during GetPicture, not an assumed VideoPicture member offset. DRM descriptor/fd identity is observed; physical presentation is not.",
+            "native_get_picture_count": 900,
+            "native_picture_routes": 900,
+            "add_entry_count": 899,
+            "add_return_count": 899,
+            "original_render_return_count": 899,
+            "output_state_codes": {
+              "0": "NORMAL",
+              "1": "ABORT",
+              "2": "DROPPED",
+              "3": "AGAIN"
+            },
+            "output_returns": {
+              "0": 899,
+              "3": 7
+            },
+            "wait_for_buffer_returns": {
+              "0": 2,
+              "1": 1,
+              "2": 1,
+              "3": 895,
+              "-1": 7
+            },
+            "event_counts": {
+              "DIAG_GET_ENTRY": 1797,
+              "DIAG_GET_RET": 1796,
+              "DIAG_OUTPUT_ENTRY": 906,
+              "DIAG_WAIT_RET": 906,
+              "DIAG_ADD_ENTRY": 899,
+              "DIAG_ADD_RET": 899,
+              "DIAG_OUTPUT_RET": 906
+            },
+            "pending_picture_replacement_count": 1,
+            "pending_picture_replacement_examples": [
+              {
+                "t_ns": 499547768602606,
+                "tid": 1358536,
+                "pic": 102514840261512,
+                "ret": 4,
+                "fresh": 1,
+                "seq": 21,
+                "source_pts": 666666,
+                "descriptor": 124909192413520,
+                "fd": 26,
+                "pending": 1,
+                "pending_seq": 20,
+                "pending_pts": 633333,
+                "replacement": 1
+              }
+            ],
+            "native_pictures_without_add_entry": 1,
+            "without_add_entry_examples": [
+              {
+                "tid": 1358536,
+                "native_sequence": 20,
+                "source_pts_us": 633333,
+                "picture_address": "0x5d3c98a35388",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3
+                ],
+                "wait_returns": [
+                  -1
+                ],
+                "drm_descriptor_address": "0x719ab008bf50",
+                "dma_buf_fd": 63
+              }
+            ],
+            "native_pictures_without_true_return": 1,
+            "without_true_return_examples": [
+              {
+                "tid": 1358536,
+                "native_sequence": 20,
+                "source_pts_us": 633333,
+                "picture_address": "0x5d3c98a35388",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3
+                ],
+                "wait_returns": [
+                  -1
+                ],
+                "drm_descriptor_address": "0x719ab008bf50",
+                "dma_buf_fd": 63
+              }
+            ]
+          },
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 1
+          }
+        },
+        {
+          "cycle": 1,
+          "drm_frame_count": 900,
+          "renderer_acceptances": 899,
+          "capture_LAST_bytes": [
+            0
+          ],
+          "actual_video_node": true,
+          "actual_legacy_node": false,
+          "audio_null_link": true,
+          "decoder_selection_h264_v4l2m2m": true,
+          "player_exit": true,
+          "decode_fd_retired": true,
+          "controls": [
+            {
+              "requested_gap_s": 0.1,
+              "actual_gap_s": 0.12730107398238033,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 106,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499582987511943,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 106,
+                "renderer_acceptances_before": 11,
+                "elapsed_s": 0.24845560902031139,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 363,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 363,
+                "renderer_acceptances_after": 18,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499583235994580
+              }
+            },
+            {
+              "requested_gap_s": 1.0,
+              "actual_gap_s": 1.1051305609871633,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 445,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499584400927430,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 445,
+                "renderer_acceptances_before": 20,
+                "elapsed_s": 0.2476285959710367,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 649,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 649,
+                "renderer_acceptances_after": 27,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499584648569226
+              }
+            },
+            {
+              "requested_gap_s": 3.0,
+              "actual_gap_s": 3.0927381840301678,
+              "properties": {
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": {
+                  "speed": 0,
+                  "time": {
+                    "hours": 0,
+                    "milliseconds": 701,
+                    "minutes": 0,
+                    "seconds": 0
+                  }
+                }
+              },
+              "actual_node_open": true,
+              "before": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "after": {
+                "CODEC_OPEN": 1,
+                "DECODER_CMD": 1,
+                "STREAM_IOCTL": 2,
+                "CAPTURE_LAST": 0
+              },
+              "resume_command_completed_ns": 499587765699542,
+              "resume_progress_gate": {
+                "enabled": true,
+                "minimum_resume_interval_s": 0.2,
+                "media_time_before_ms": 701,
+                "renderer_acceptances_before": 28,
+                "elapsed_s": 0.25040583399822935,
+                "properties": {
+                  "id": 1,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "speed": 1,
+                    "time": {
+                      "hours": 0,
+                      "milliseconds": 905,
+                      "minutes": 0,
+                      "seconds": 0
+                    }
+                  }
+                },
+                "media_time_after_ms": 905,
+                "renderer_acceptances_after": 34,
+                "clock_advanced": true,
+                "renderer_advanced": true,
+                "passed": true,
+                "completed_ns": 499588016118716
+              }
+            }
+          ],
+          "audio_sync_errors": [],
+          "audio_stalls": [],
+          "audio_output_timeouts": [],
+          "video_output_timeouts": [
+            "2026-11-01 05:57:55.318 T:1358671 warning <general>: OutputPicture - timeout waiting for buffer",
+            "2026-11-01 05:57:56.707 T:1358671 warning <general>: OutputPicture - timeout waiting for buffer"
+          ],
+          "video_sync_warnings": [],
+          "diagnostic_routes": {
+            "status": "COMPLETE_OBSERVER_LINKAGE",
+            "scope": "Read-only call routing; source PTS comes from AVFrame during GetPicture, not an assumed VideoPicture member offset. DRM descriptor/fd identity is observed; physical presentation is not.",
+            "native_get_picture_count": 900,
+            "native_picture_routes": 900,
+            "add_entry_count": 899,
+            "add_return_count": 899,
+            "original_render_return_count": 899,
+            "output_state_codes": {
+              "0": "NORMAL",
+              "1": "ABORT",
+              "2": "DROPPED",
+              "3": "AGAIN"
+            },
+            "output_returns": {
+              "0": 899,
+              "3": 8
+            },
+            "wait_for_buffer_returns": {
+              "0": 2,
+              "1": 1,
+              "2": 1,
+              "3": 895,
+              "-1": 8
+            },
+            "event_counts": {
+              "DIAG_GET_ENTRY": 1798,
+              "DIAG_GET_RET": 1798,
+              "DIAG_OUTPUT_ENTRY": 907,
+              "DIAG_WAIT_RET": 907,
+              "DIAG_ADD_ENTRY": 899,
+              "DIAG_ADD_RET": 899,
+              "DIAG_OUTPUT_RET": 907
+            },
+            "pending_picture_replacement_count": 1,
+            "pending_picture_replacement_examples": [
+              {
+                "t_ns": 499585172652816,
+                "tid": 1358671,
+                "pic": 102514845845192,
+                "ret": 4,
+                "fresh": 1,
+                "seq": 30,
+                "source_pts": 966666,
+                "descriptor": 124909329294160,
+                "fd": 52,
+                "pending": 1,
+                "pending_seq": 29,
+                "pending_pts": 933333,
+                "replacement": 1
+              }
+            ],
+            "native_pictures_without_add_entry": 1,
+            "without_add_entry_examples": [
+              {
+                "tid": 1358671,
+                "native_sequence": 29,
+                "source_pts_us": 933333,
+                "picture_address": "0x5d3c98f886c8",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3
+                ],
+                "wait_returns": [
+                  -1
+                ],
+                "drm_descriptor_address": "0x719ab8230a90",
+                "dma_buf_fd": 51
+              }
+            ],
+            "native_pictures_without_true_return": 1,
+            "without_true_return_examples": [
+              {
+                "tid": 1358671,
+                "native_sequence": 29,
+                "source_pts_us": 933333,
+                "picture_address": "0x5d3c98f886c8",
+                "get_picture_successes": 1,
+                "add_entries": 0,
+                "add_true": 0,
+                "add_false": 0,
+                "output_returns": [
+                  3
+                ],
+                "wait_returns": [
+                  -1
+                ],
+                "drm_descriptor_address": "0x719ab8230a90",
+                "dma_buf_fd": 51
+              }
+            ]
+          },
+          "retrospective_output_timeout_census": {
+            "audio": 0,
+            "video": 2
+          }
+        }
+      ],
+      "boundary_equal": true,
+      "normal_exit_code": 0,
+      "cleanup": {
+        "remaining_kodi_descendants": [],
+        "kodi_process_retired": true,
+        "remaining_owned_processes": {},
+        "hardware_idle": true
+      },
+      "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN."
+    }
+  ],
+  "sessions": [
+    {
+      "case_root": "root/",
+      "report_sha256": "5deb184c1aaebfd925866481c6403a8471786575f4bf9840e992fd4dc284f25b",
+      "status": "PASS",
+      "stable_restored": true,
+      "module_inventory_equal": true,
+      "kernel_check": 0,
+      "continuous_kernel_errors": false,
+      "maximum_temperature_mC": 53000,
+      "controller_sha256": "4dadbfd0571f143dafe3628fe3ed0d197659c62fc34c41db2a32f2d509e96180",
+      "harness_sha256": {
+        "kodi-archive-reopen.py": "774d2bb737c0581ed4f9b284457894d5f27541d557079881562b22ab27ede0e6",
+        "namespace607.py": "b4911f390cd86ada75049ed4780d826f975b0526c15fb5d915df300542b466ff",
+        "probes_controls_final.py": "35586fe936aad284e0e83aa491e2b16c80d2c6f3afd2c0299e1c87b7319e8d0b",
+        "offsets.private.json": "7409aed4248c0bcf0f1788e6756980ffb06690c5cc62965fca481b17e46d6165"
+      }
+    },
+    {
+      "case_root": "suite-02/",
+      "report_sha256": "46ab7b8ca05cf327168057350322493b04bc8d7f0f02613e79883f77c40a3aac",
+      "status": "PASS",
+      "stable_restored": true,
+      "module_inventory_equal": true,
+      "kernel_check": 0,
+      "continuous_kernel_errors": false,
+      "maximum_temperature_mC": 55000,
+      "controller_sha256": "f419f828017f50ead3e24589cf2ad6bea66e05893e75b4e6798c20da9ca2cd99",
+      "harness_sha256": {
+        "kodi-archive-reopen.py": "774d2bb737c0581ed4f9b284457894d5f27541d557079881562b22ab27ede0e6",
+        "namespace607.py": "b4911f390cd86ada75049ed4780d826f975b0526c15fb5d915df300542b466ff",
+        "probes_controls_final.py": "35586fe936aad284e0e83aa491e2b16c80d2c6f3afd2c0299e1c87b7319e8d0b",
+        "offsets.private.json": "7409aed4248c0bcf0f1788e6756980ffb06690c5cc62965fca481b17e46d6165"
+      }
+    },
+    {
+      "case_root": "suite-03/",
+      "report_sha256": "a311f2034c888f913156d80e85a86d095571ac3b2668f20bda9b07fee2ebb5ce",
+      "status": "PASS",
+      "stable_restored": true,
+      "module_inventory_equal": true,
+      "kernel_check": 0,
+      "continuous_kernel_errors": false,
+      "maximum_temperature_mC": 60000,
+      "controller_sha256": "ca80d337f9b2dcd9abf4632b55ae7942dc0ebaeb1db3460b4850ccc71c46e600",
+      "harness_sha256": {
+        "kodi-archive-reopen.py": "47300b955b82c1ad86ed58bed489d4e5b7b8747b0dcfd6bf52f124dd9c7e4b65",
+        "namespace607.py": "b4911f390cd86ada75049ed4780d826f975b0526c15fb5d915df300542b466ff",
+        "probes_controls_final.py": "1658b9c6843c536055b9f24cd5cef9a7c04b6cc7025aabb942b88ba0d6fd0807",
+        "offsets.private.json": "7409aed4248c0bcf0f1788e6756980ffb06690c5cc62965fca481b17e46d6165"
+      }
+    }
+  ],
+  "limits": [
+    "PTS success never promotes a renderer deficit.",
+    "Headless Wayland real Intel965 GL and clocked AAC isolated null sink; no physical scanout/pixel readback/calibrated physical lip-sync claim.",
+    "Current-host subset; independent booted clean OS/Atom/i386/BCM70012 unavailable.",
+    "External code/binary and installed module/firmware bytes unchanged; no forced recovery, excluded heap investigation, master merge, tag/release/public binary upload.",
+    "D3 complete acquisition/build burden and D5 reproducible compilation/source-notices/maintenance/public-distribution remain open."
+  ],
+  "local_checks": [
+    {
+      "name": "package-check",
+      "command": [
+        "make",
+        "kodi-package-check"
+      ],
+      "exit": 0,
+      "seconds": 14.314985487028025
+    },
+    {
+      "name": "ci-plan-controls",
+      "command": [
+        "python3",
+        "-B",
+        "tests/ci-plan.test.py"
+      ],
+      "exit": 0,
+      "seconds": 7.553974226990249
+    },
+    {
+      "name": "configuration-inventory",
+      "command": [
+        "python3",
+        "-B",
+        "tests/configuration-inventory.test.py"
+      ],
+      "exit": 0,
+      "seconds": 0.26690593402599916
+    },
+    {
+      "name": "configuration-schema",
+      "command": [
+        "python3",
+        "-B",
+        "tests/configuration-schema.test.py"
+      ],
+      "exit": 0,
+      "seconds": 0.23342218599282205
+    },
+    {
+      "name": "package-check-final",
+      "exit": 0,
+      "tests": 21,
+      "seconds": 13.78669269499369,
+      "source_sha256": {
+        "tools/kodi-route-probe/native-pts-oracle.py": "c9f8429b6fb9209b360b4eb1c8d79f97ce4f3178c0b6821a99854cf495e72785",
+        "tests/native-runtime-pts-oracle.test.py": "0c64239863de5ec2edbd35366a697c35a04c90f1b2ec144de5406b24645ff05e"
+      }
+    }
+  ],
+  "preservation": {
+    "preexisting_worktrees": 194,
+    "preexisting_dirty_trees": 8,
+    "frozen_prior_evidence_files": 194,
+    "audit_sha256": "81a6e0afceeaabebc73a1316bc0f7376895e210303f2476c41497f4bc45faf98"
+  },
+  "renderer_diagnostic": {
+    "cases": [
+      {
+        "case": "neutral-720-pause-diagnostic-03",
+        "cycles": [
+          {
+            "audio_output_timeouts": [
+              "2026-11-01 05:55:59.344 T:1357567   error <general>: CDVDAudio::AddPacketsRenderer - timeout adding data to renderer"
+            ],
+            "audio_stall_count": 0,
+            "audio_sync_error_count": 0,
+            "caller_returned_exact": true,
+            "cycle": 0,
+            "generic_get_entry_count": 1797,
+            "generic_get_return_count": 1796,
+            "missing_pictures": [
+              {
+                "add_entries": 0,
+                "add_false": 0,
+                "add_true": 0,
+                "dma_buf_fd": 60,
+                "drm_descriptor_address": "0x72c728006450",
+                "native_sequence": 13,
+                "output_returns": [
+                  3,
+                  3,
+                  3
+                ],
+                "picture_address": "0x5a7e868a51f8",
+                "replacement_fresh_native": true,
+                "replacement_get_picture_return": 4,
+                "replacement_monotonic_ns": 499465273786824,
+                "replacement_native_sequence": 14,
+                "replacement_source_pts_us": 433333,
+                "source_pts_us": 400000,
+                "tid": 1357566,
+                "wait_for_buffer_returns": [
+                  -1,
+                  -1,
+                  -1
+                ]
+              }
+            ],
+            "native_picture_routes": 900,
+            "native_returned_pictures": 900,
+            "observer_linkage_status": "COMPLETE_OBSERVER_LINKAGE",
+            "pending_picture_replacements": 1,
+            "renderer_add_entries": 899,
+            "renderer_add_returns": 899,
+            "renderer_deficit": 1,
+            "renderer_expected": 900,
+            "renderer_full_census": "FAIL",
+            "renderer_true_returns": 899,
+            "resume_gates_enabled": 0,
+            "resume_gates_passed": 0,
+            "source_caller_packets": 900,
+            "successful_native_get_picture_count": 900,
+            "trace_events": "suite-03/harness/neutral-720-pause-diagnostic-03/cycle-0.trace-events.private.txt",
+            "video_output_timeouts": []
+          },
+          {
+            "audio_output_timeouts": [
+              "2026-11-01 05:56:35.109 T:1358055   error <general>: CDVDAudio::AddPacketsRenderer - timeout adding data to renderer"
+            ],
+            "audio_stall_count": 0,
+            "audio_sync_error_count": 0,
+            "caller_returned_exact": true,
+            "cycle": 1,
+            "generic_get_entry_count": 1802,
+            "generic_get_return_count": 1802,
+            "missing_pictures": [],
+            "native_picture_routes": 900,
+            "native_returned_pictures": 900,
+            "observer_linkage_status": "COMPLETE_OBSERVER_LINKAGE",
+            "pending_picture_replacements": 0,
+            "renderer_add_entries": 900,
+            "renderer_add_returns": 900,
+            "renderer_deficit": 0,
+            "renderer_expected": 900,
+            "renderer_full_census": "PASS",
+            "renderer_true_returns": 900,
+            "resume_gates_enabled": 0,
+            "resume_gates_passed": 0,
+            "source_caller_packets": 900,
+            "successful_native_get_picture_count": 900,
+            "trace_events": "suite-03/harness/neutral-720-pause-diagnostic-03/cycle-1.trace-events.private.txt",
+            "video_output_timeouts": []
+          }
+        ],
+        "native_report_status_observed": "PASS",
+        "report": "suite-03/harness/neutral-720-pause-diagnostic-03/result.private.json",
+        "report_sha256": "4c3494a186ea992b193f10f53b7f3f4cce4756faf83e0cb6c5f73039d14b7e49",
+        "resume_progress_required": false
+      },
+      {
+        "case": "neutral-720-pause-reopen-03",
+        "cycles": [
+          {
+            "audio_output_timeouts": [],
+            "audio_stall_count": 0,
+            "audio_sync_error_count": 0,
+            "caller_returned_exact": true,
+            "cycle": 0,
+            "generic_get_entry_count": 1797,
+            "generic_get_return_count": 1796,
+            "missing_pictures": [
+              {
+                "add_entries": 0,
+                "add_false": 0,
+                "add_true": 0,
+                "dma_buf_fd": 63,
+                "drm_descriptor_address": "0x719ab008bf50",
+                "native_sequence": 20,
+                "output_returns": [
+                  3
+                ],
+                "picture_address": "0x5d3c98a35388",
+                "replacement_fresh_native": true,
+                "replacement_get_picture_return": 4,
+                "replacement_monotonic_ns": 499547768602606,
+                "replacement_native_sequence": 21,
+                "replacement_source_pts_us": 666666,
+                "source_pts_us": 633333,
+                "tid": 1358536,
+                "wait_for_buffer_returns": [
+                  -1
+                ]
+              }
+            ],
+            "native_picture_routes": 900,
+            "native_returned_pictures": 900,
+            "observer_linkage_status": "COMPLETE_OBSERVER_LINKAGE",
+            "pending_picture_replacements": 1,
+            "renderer_add_entries": 899,
+            "renderer_add_returns": 899,
+            "renderer_deficit": 1,
+            "renderer_expected": 900,
+            "renderer_full_census": "FAIL",
+            "renderer_true_returns": 899,
+            "resume_gates_enabled": 3,
+            "resume_gates_passed": 3,
+            "source_caller_packets": 900,
+            "successful_native_get_picture_count": 900,
+            "trace_events": "suite-03/harness/neutral-720-pause-reopen-03/cycle-0.trace-events.private.txt",
+            "video_output_timeouts": [
+              "2026-11-01 05:57:19.303 T:1358536 warning <general>: OutputPicture - timeout waiting for buffer"
+            ]
+          },
+          {
+            "audio_output_timeouts": [],
+            "audio_stall_count": 0,
+            "audio_sync_error_count": 0,
+            "caller_returned_exact": true,
+            "cycle": 1,
+            "generic_get_entry_count": 1798,
+            "generic_get_return_count": 1798,
+            "missing_pictures": [
+              {
+                "add_entries": 0,
+                "add_false": 0,
+                "add_true": 0,
+                "dma_buf_fd": 51,
+                "drm_descriptor_address": "0x719ab8230a90",
+                "native_sequence": 29,
+                "output_returns": [
+                  3
+                ],
+                "picture_address": "0x5d3c98f886c8",
+                "replacement_fresh_native": true,
+                "replacement_get_picture_return": 4,
+                "replacement_monotonic_ns": 499585172652816,
+                "replacement_native_sequence": 30,
+                "replacement_source_pts_us": 966666,
+                "source_pts_us": 933333,
+                "tid": 1358671,
+                "wait_for_buffer_returns": [
+                  -1
+                ]
+              }
+            ],
+            "native_picture_routes": 900,
+            "native_returned_pictures": 900,
+            "observer_linkage_status": "COMPLETE_OBSERVER_LINKAGE",
+            "pending_picture_replacements": 1,
+            "renderer_add_entries": 899,
+            "renderer_add_returns": 899,
+            "renderer_deficit": 1,
+            "renderer_expected": 900,
+            "renderer_full_census": "FAIL",
+            "renderer_true_returns": 899,
+            "resume_gates_enabled": 3,
+            "resume_gates_passed": 3,
+            "source_caller_packets": 900,
+            "successful_native_get_picture_count": 900,
+            "trace_events": "suite-03/harness/neutral-720-pause-reopen-03/cycle-1.trace-events.private.txt",
+            "video_output_timeouts": [
+              "2026-11-01 05:57:55.318 T:1358671 warning <general>: OutputPicture - timeout waiting for buffer",
+              "2026-11-01 05:57:56.707 T:1358671 warning <general>: OutputPicture - timeout waiting for buffer"
+            ]
+          }
+        ],
+        "native_report_status_observed": "PASS",
+        "report": "suite-03/harness/neutral-720-pause-reopen-03/result.private.json",
+        "report_sha256": "172b024d9b364e32244056c3b0eb19912f3f6e91a4bdeb4240e5c6352e40590e",
+        "resume_progress_required": true
+      }
+    ],
+    "causal_boundary": {
+      "established_layer": "Pending caller picture between DRM PRIME GetPicture and renderer submission; caller/decoder PTS census remains intact.",
+      "exact_intervening_message_type": "NOT_RECORDED_UNPROVEN",
+      "exclusive_external_defect": "NOT_ESTABLISHED",
+      "observed": "A native picture returned by successful GetPicture receives WaitForBuffer -1 and OutputPicture AGAIN. Before any AddVideoPicture entry for that picture, a new successful GetPicture replaces it with the next native picture on the same TID and VideoPicture address.",
+      "source_references": [
+        {
+          "lines": [
+            315,
+            329,
+            331,
+            341,
+            460,
+            496,
+            552,
+            565,
+            587,
+            713,
+            881,
+            896,
+            905
+          ],
+          "path": "xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp",
+          "url": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp"
+        },
+        {
+          "line": 617,
+          "path": "xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp",
+          "url": "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp#L617"
+        }
+      ],
+      "source_supported_mechanism": "Pending AGAIN retry is in the MSGQ_TIMEOUT branch. GetMessage clears transient onlyPrioMsgs; priority message handling can allow a subsequent ordinary packet. The packet path calls AddData then ProcessDecoderOutput/GetPicture without an independent pending-AGAIN guard. This is a compatible source path, not a traced identification of the exact intervening message."
+    },
+    "future_action_within_scope": [
+      "Keep renderer full-census FAIL distinct from exact PTS and accepted no-drift-log evidence; strict renderer CLI gate must fail on these deficits.",
+      "Preserve pending-picture replacement witnesses and the unsuccessful pacing hypothesis. Do not claim paused native full-render acceptance, a pacing repair, or public runtime qualification.",
+      "No additional hardware run or external source patch is proposed by this summary."
+    ],
+    "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "missing_source_pts_us": [
+      400000,
+      633333,
+      933333
+    ],
+    "observer_limits": "VideoPicture member offsets were not guessed. PTS and DRM descriptor/fd come from the qualified AVFrame ABI and are linked by TID/native sequence. COMPLETE_OBSERVER_LINKAGE means all 900 successful native pictures and renderer entry/return counts are linked, not that every VC_BUFFER/EOF call pair is wholly inside each cycle byte window.",
+    "own_missed_checks": [
+      "The original harness accepted renderer_acceptances > 0; that did not enforce a complete per-picture renderer census.",
+      "Resume clock/render progress checks aggregate progress and do not prove conservation of every pending picture."
+    ],
+    "pacing_hypothesis": {
+      "conclusion": "All six clock/render progress gates passed, but both paced cycles still lost one renderer submission. Pacing alone does not repair this path.",
+      "paced_renderer_deficit": 2,
+      "resume_gates_passed": 6,
+      "resume_gates_requested": 6,
+      "status": "NOT_A_REPAIR"
+    },
+    "schema": 1,
+    "scope": "Existing current-host diagnostic records only. Source/caller/returned PTS success, renderer full census, audio diagnostics and public readiness remain separate. No external code changes, new execution or exclusive component-fault attribution.",
+    "session": {
+      "continuous_kernel_errors": false,
+      "kernel_check": 0,
+      "maximum_temperature_mC": 60000,
+      "module_inventory_equal": true,
+      "receipt": "suite-03/session-result.json",
+      "receipt_sha256": "a311f2034c888f913156d80e85a86d095571ac3b2668f20bda9b07fee2ebb5ce",
+      "restored": true,
+      "status": "PASS"
+    },
+    "status": "DIAGNOSTIC_ONLY_RENDER_CENSUS_FAIL",
+    "suite03_renderer_census": {
+      "deficit": 3,
+      "expected": 3600,
+      "observed_true": 3597,
+      "status": "FAIL"
+    }
+  }
+}

@@ -1,0 +1,594 @@
+{
+  "schema": 1,
+  "issue": 533,
+  "authority": "https://github.com/ahnhy1324/crystalhd/issues/533#issuecomment-6434700798",
+  "date": "2026-10-27",
+  "scope": "Separate ordinary input-only idle/resume discriminator, not complete-drain G2 or V4L2 STOP/START. Original full-AU bytes, POC and timestamp values retained.",
+  "measured_final_probe": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+  "environment": {
+    "kernel": "7.0.0-38-generic",
+    "loaded_module": {
+      "version": "3.10.13",
+      "srcversion": "F76E163690F147B91495DDD"
+    },
+    "library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "geometry": [640,360],
+    "output": "YUYV422; full bytes compared to retained fresh native oracle",
+    "original_fixture_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+    "input_sha256": {
+      "original20.packets": "f342053c60031361a4bdbdebb32ebeaa836c53602c950eb1c4daf9da85a7845c",
+      "prefix.h264": "957a3359c7dd66e35f7ece4608f46f268be1d60a80b283412dc3af6b979abdb3",
+      "kick4.h264": "71c808f6451e11aea7577649eaf28a73192a7878c9d178ba3c5c840e91663338",
+      "kick5.h264": "6747e2bb824b872efe50cff14090aabae518bb18e5dd34f53e16600c53d60641"
+    }
+  },
+  "software_transport_checks": [
+    {
+      "name": "coded-candidate",
+      "frames": 25,
+      "private": 5,
+      "all20_original_bytes_order_match": true,
+      "status": "PASS"
+    },
+    {
+      "name": "actual-raw-transport",
+      "frames": 25,
+      "private": 5,
+      "all20_original_bytes_order_match": true,
+      "status": "PASS"
+    },
+    {
+      "name": "extra-resume-prefix",
+      "frames": 25,
+      "private": 5,
+      "all20_original_bytes_order_match": true,
+      "status": "PASS"
+    }
+  ],
+  "prior_52_case_screen": "Reused explicitly from dummy-progress-20261027.json; not rerun or reattributed.",
+  "summary": {
+    "native_sessions": 22,
+    "full20_reference_controls": 10,
+    "strict_positive_continuations": 4,
+    "timestamp_failures_preserved": 7,
+    "precondition_abort_preserved": 1,
+    "all_boundary_checks_pass": true,
+    "all_actual_card_library_observations_pass": true,
+    "peak_mC": 69000,
+    "whole_turn_kernel": {
+      "since": "2026-10-27 05:48:57 UTC",
+      "basis": "birth time of the first controller log, created before any native process",
+      "kernel_exit": 0
+    },
+    "physical_av": "NOT RUN",
+    "payload_age": "NOT MEASURED"
+  },
+  "reference_columns": ["source","campaign","name","originals","full_order","all_bytes_flags_tokens_equal_retained","exit"],
+  "references": [
+    ["9bf19cb141c596e246cd62599b9dce3bf4b4b5b2","raw","reference-before",20,true,true,0],
+    ["552476b7d25156af29b41e62053cd93d3bb397ef","raw-forensic","reference-before",20,true,true,0],
+    ["552476b7d25156af29b41e62053cd93d3bb397ef","raw-forensic","reference-after",20,true,true,0],
+    ["31ea18a3c5ead7b931efc263cbe5a57edeb38b5a","early-prefix-precondition-control","reference-before",20,true,true,0],
+    ["a6c70942a440d6b6cb0eaac1bd207bcac76ad2f5","late-untimed-prefix","reference-before",20,true,true,0],
+    ["a6c70942a440d6b6cb0eaac1bd207bcac76ad2f5","late-untimed-prefix","reference-after",20,true,true,0],
+    ["4ac643c96d4c1af85a367f0e5e6e5a0596eba7c7","late-timed-prefix","reference-before",20,true,true,0],
+    ["55d8149d0e6a122d3469e61f4ce422da27e2593e","late-repeated-PTS","reference-before",20,true,true,0],
+    ["3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2","final-controls","reference-before",20,true,true,0],
+    ["3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2","final-controls","reference-after",20,true,true,0]
+  ],
+  "experiments": [
+    {
+      "source": "9bf19cb141c596e246cd62599b9dce3bf4b4b5b2",
+      "experiment": "five-100ms",
+      "transport": "raw",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 3,
+      "terminal_known_real": 19,
+      "terminal_private": 5,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 101.075,
+        "input_gap_ms": 701.958
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": null,
+          "matched_reference_token": null,
+          "matched_reference_flags": null
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.122],
+        ["after-private-settle",18,5,18,3,21,21,true,false,602.215],
+        ["after-input-idle",18,5,18,3,21,21,true,false,703.338],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,733.658],
+        ["after-terminal-eos",20,5,19,5,25,25,true,true,750.692]
+      ]
+    },
+    {
+      "source": "552476b7d25156af29b41e62053cd93d3bb397ef",
+      "experiment": "five-100ms-forensic",
+      "transport": "raw-forensic",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 3,
+      "terminal_known_real": 19,
+      "terminal_private": 5,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.687,
+        "input_gap_ms": 701.736
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.23],
+        ["after-private-settle",18,5,18,3,21,21,true,false,602.715],
+        ["after-input-idle",18,5,18,3,21,21,true,false,703.46],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,734.201],
+        ["after-terminal-eos",20,5,19,5,25,25,true,true,751.016]
+      ]
+    },
+    {
+      "source": "31ea18a3c5ead7b931efc263cbe5a57edeb38b5a",
+      "experiment": "five-100ms",
+      "transport": "early-prefix-precondition-control",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "PRECONDITION CHANGED; continuation NOT RUN",
+      "exit": 1,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 4,
+      "terminal_known_real": null,
+      "terminal_private": null,
+      "unknown_outputs": null,
+      "G2": "FAIL",
+      "continuation_run": false,
+      "pause": null,
+      "unknown_diagnostics": [],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 68000,
+      "precondition_failure": "Early AU19 prefix changed18/3 into18/4; original guard aborted before continuation. Later final-controls declares the new18/4 condition explicitly.",
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.353],
+        ["after-private-settle",18,5,18,4,22,22,true,false,601.896]
+      ]
+    },
+    {
+      "source": "a6c70942a440d6b6cb0eaac1bd207bcac76ad2f5",
+      "experiment": "five-100ms-forensic",
+      "transport": "late-untimed-prefix",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 3,
+      "terminal_known_real": 19,
+      "terminal_private": 5,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.321,
+        "input_gap_ms": 701.298
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 68000,
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.099],
+        ["after-private-settle",18,5,18,3,21,21,true,false,602.338],
+        ["after-input-idle",18,5,18,3,21,21,true,false,702.706],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,734.043],
+        ["after-terminal-eos",20,5,19,5,25,25,true,true,751.802]
+      ]
+    },
+    {
+      "source": "4ac643c96d4c1af85a367f0e5e6e5a0596eba7c7",
+      "experiment": "five-100ms",
+      "transport": "late-timed-prefix",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 3,
+      "terminal_known_real": 19,
+      "terminal_private": 5,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.988,
+        "input_gap_ms": 701.488
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 69000,
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.099],
+        ["after-private-settle",18,5,18,3,21,21,true,false,601.809],
+        ["after-input-idle",18,5,18,3,21,21,true,false,702.876],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,733.284],
+        ["after-terminal-eos",20,5,19,5,25,25,true,true,752.849]
+      ]
+    },
+    {
+      "source": "55d8149d0e6a122d3469e61f4ce422da27e2593e",
+      "experiment": "five-100ms",
+      "transport": "late-repeated-PTS",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 18,
+      "pre_idle_private": 3,
+      "terminal_known_real": 19,
+      "terminal_private": 5,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.039,
+        "input_gap_ms": 700.172
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 68000,
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.093],
+        ["after-private-settle",18,5,18,3,21,21,true,false,601.448],
+        ["after-input-idle",18,5,18,3,21,21,true,false,701.528],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,733.021],
+        ["after-terminal-eos",20,5,19,5,25,25,true,true,752.746]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "zero-1000ms",
+      "transport": "raw",
+      "private_count": 0,
+      "private_token_base": 2020000,
+      "status": "PASS strict original identity/pixels/flags/order",
+      "exit": 0,
+      "strict_pass": true,
+      "pre_idle_real": 14,
+      "pre_idle_private": 0,
+      "terminal_known_real": 20,
+      "terminal_private": 0,
+      "unknown_outputs": 0,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 1000,
+        "observed_ms": 1000.671,
+        "input_gap_ms": 1601.216
+      },
+      "unknown_diagnostics": [],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000,1900000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.291],
+        ["after-private-settle",18,0,14,0,14,14,true,false,601.81],
+        ["after-input-idle",18,0,14,0,14,14,true,false,1602.519],
+        ["after-real-continuation",20,0,15,0,15,15,true,false,1633.736],
+        ["after-terminal-eos",20,0,20,0,20,20,true,true,1656.914]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "four-disjoint-1000ms",
+      "transport": "raw",
+      "private_count": 4,
+      "private_token_base": 2020000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 17,
+      "pre_idle_private": 2,
+      "terminal_known_real": 19,
+      "terminal_private": 4,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 1000,
+        "observed_ms": 1000.814,
+        "input_gap_ms": 1601.545
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.409],
+        ["after-private-settle",18,4,17,2,19,19,true,false,602.316],
+        ["after-input-idle",18,4,17,2,19,19,true,false,1603.168],
+        ["after-real-continuation",20,4,18,3,21,21,true,false,1634.21],
+        ["after-terminal-eos",20,4,19,4,24,24,true,true,1650.44]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "four-adjacent-1000ms",
+      "transport": "adjacent",
+      "private_count": 4,
+      "private_token_base": 1820000,
+      "status": "FAIL original timestamp retention",
+      "exit": 2,
+      "strict_pass": false,
+      "pre_idle_real": 17,
+      "pre_idle_private": 2,
+      "terminal_known_real": 19,
+      "terminal_private": 4,
+      "unknown_outputs": 1,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 1000,
+        "observed_ms": 1000.535,
+        "input_gap_ms": 1602.471
+      },
+      "unknown_diagnostics": [
+        {
+          "token": 0,
+          "neutral_pixels": false,
+          "flags": 0,
+          "before_eos": false,
+          "matching_references": 1,
+          "matched_reference_token": 1900000,
+          "matched_reference_flags": true
+        }
+      ],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,2.059],
+        ["after-private-settle",18,4,17,2,19,19,true,false,604.183],
+        ["after-input-idle",18,4,17,2,19,19,true,false,1604.766],
+        ["after-real-continuation",20,4,18,3,21,21,true,false,1635.888],
+        ["after-terminal-eos",20,4,19,4,24,24,true,true,1652.583]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "five-early-100ms",
+      "transport": "prefed",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "PASS strict original identity/pixels/flags/order",
+      "exit": 0,
+      "strict_pass": true,
+      "pre_idle_real": 18,
+      "pre_idle_private": 4,
+      "terminal_known_real": 20,
+      "terminal_private": 5,
+      "unknown_outputs": 0,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 100,
+        "observed_ms": 100.248,
+        "input_gap_ms": 700.387
+      },
+      "unknown_diagnostics": [],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 65000,
+      "prefed_next_original_token_before_idle": 1900000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000,1900000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.12],
+        ["after-private-settle",18,5,18,4,22,22,true,false,601.489],
+        ["after-input-idle",18,5,18,4,22,22,true,false,701.788],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,732.321],
+        ["after-terminal-eos",20,5,20,5,25,25,true,true,749.368]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "five-early-1000ms",
+      "transport": "prefed",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "PASS strict original identity/pixels/flags/order",
+      "exit": 0,
+      "strict_pass": true,
+      "pre_idle_real": 18,
+      "pre_idle_private": 4,
+      "terminal_known_real": 20,
+      "terminal_private": 5,
+      "unknown_outputs": 0,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 1000,
+        "observed_ms": 1000.019,
+        "input_gap_ms": 1600.448
+      },
+      "unknown_diagnostics": [],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 66000,
+      "prefed_next_original_token_before_idle": 1900000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000,1900000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.126],
+        ["after-private-settle",18,5,18,4,22,22,true,false,601.769],
+        ["after-input-idle",18,5,18,4,22,22,true,false,1601.83],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,1632.478],
+        ["after-terminal-eos",20,5,20,5,25,25,true,true,1651.033]
+      ]
+    },
+    {
+      "source": "3d0e4235d38a13526df0c3eb5e18fb4fcad14ca2",
+      "experiment": "five-early-1000ms-repeat",
+      "transport": "prefed",
+      "private_count": 5,
+      "private_token_base": 2020000,
+      "status": "PASS strict original identity/pixels/flags/order",
+      "exit": 0,
+      "strict_pass": true,
+      "pre_idle_real": 18,
+      "pre_idle_private": 4,
+      "terminal_known_real": 20,
+      "terminal_private": 5,
+      "unknown_outputs": 0,
+      "G2": "FAIL",
+      "continuation_run": true,
+      "pause": {
+        "type": "dummy-input-idle",
+        "requested_ms": 1000,
+        "observed_ms": 1001.049,
+        "input_gap_ms": 1602.125
+      },
+      "unknown_diagnostics": [],
+      "component_mapping_observed": true,
+      "boundary_unchanged": true,
+      "peak_mC": 66000,
+      "prefed_next_original_token_before_idle": 1900000,
+      "returned_original_tokens": [100000,300000,400000,200000,700000,600000,800000,500000,1100000,1000000,1200000,900000,1400000,1500000,1300000,1700000,1800000,1600000,2000000,1900000],
+      "phases": [
+        ["after-original-prefix",18,0,0,0,0,0,true,false,1.907],
+        ["after-private-settle",18,5,18,4,22,22,true,false,603.225],
+        ["after-input-idle",18,5,18,4,22,22,true,false,1604.316],
+        ["after-real-continuation",20,5,18,4,22,22,true,false,1634.915],
+        ["after-terminal-eos",20,5,20,5,25,25,true,true,1651.315]
+      ]
+    }
+  ],
+  "findings": ["Raw18+5 with an untimed final delimiter retains18original/3private before idle, but AU19 returns timestamp0 after actual AU19/20 continuation. Diagnostic full-frame matching identifies the unknown output as AU19 with unchanged flags; it is never counted as a correct timestamp or remapped by the test.","Adding a late untimed prefix, a late timed prefix with zero-timestamp payload, or repeating AU19 PTS after the gap does not repair the result. Those candidate protocols are not adopted.","The adjacent four-private tag control also loses AU19 timestamp, so a backward jump from the disjoint private tag range is not necessary for the failure. No-dummy18-AU input idle/resume passes20/20.","Binding the real AU19 prefix timestamp BEFORE the idle gap changes the measured pre-idle state to18original/4private. It supplies no original AU19 VCL bytes before pause; the unchanged AU19 payload consumes the prefed timestamp at resume.","The early-prefix variant passes original20 timestamps/flags/full pixels/order in100ms,1000ms and repeated1000ms added-pause cases. Each follows a600ms receive/verification interval: actual compressed-input gaps are700.387,1600.448 and1602.125ms, not100/1000ms total.","Raw and early-prefix variants have the same elementary codec byte sequence and original timestamp values; the controlled difference is where the next real timestamp is carried. This establishes the measured timestamp-ownership sequencing requirement, not an identified firmware instruction or physical PPB retention contract.","After early-prefix idle, outputs stay18original/4private with no EOS; after submitting actual AU19/20, final normal EOS returns20original/5private. Every observed RX lease is released and original public-handle continuity is checked at each phase.","One private output remains before final EOS, so G2 is still FAIL. The original18/3 raw FAIL is not changed into a PASS, and no LAST/EPIPE/STOP/START or stock-player integration is demonstrated."],
+  "disposition": "Retain a narrow experimental early-next-AU-prefix input-pause strategy. Research probe only; no production/default/ABI/firmware/PM/external-application change, no issue closure, and #114/#115 remain unchanged.",
+  "phase_columns": ["checkpoint","full_original_payloads_accepted","private_payloads_accepted","original_outputs","private_outputs","rx_acquired","rx_released","same_handle","eos","elapsed_ms"],
+  "original_identity_columns": ["au_index1","api_token_100ns","source_pts_ticks","source_poc","reference","idr"],
+  "original_identity_map": [
+    [1,100000,0,0,3,true],
+    [2,200000,1536,6,2,false],
+    [3,300000,512,2,2,false],
+    [4,400000,1024,4,0,false],
+    [5,500000,3584,14,2,false],
+    [6,600000,2560,10,2,false],
+    [7,700000,2048,8,0,false],
+    [8,800000,3072,12,0,false],
+    [9,900000,5632,22,2,false],
+    [10,1000000,4608,18,2,false],
+    [11,1100000,4096,16,0,false],
+    [12,1200000,5120,20,0,false],
+    [13,1300000,7168,28,2,false],
+    [14,1400000,6144,24,2,false],
+    [15,1500000,6656,26,0,false],
+    [16,1600000,8704,34,2,false],
+    [17,1700000,7680,30,2,false],
+    [18,1800000,8192,32,0,false],
+    [19,1900000,10752,42,2,false],
+    [20,2000000,9728,38,2,false]
+  ],
+  "timestamp_scope": "API values are the frozen synthetic native identity tokens; source media PTS/POC correspondence is listed separately. No calibrated A/V or real-time presentation claim.",
+  "local_checks": {
+    "compile": "c++ -std=c++17 -O2 -Wall -Wextra -Werror with public include paths and -ldl: PASS at measured3d0e423",
+    "argument_guards": "10 invalid cases rejected before input/device access;3 valid research controls admitted to input parsing without opening hardware",
+    "observation_only": "Full-frame matching of unknown output never alters returned tokens, original census or strict PASS criteria."
+  }
+}

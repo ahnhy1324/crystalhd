@@ -6,4 +6,11 @@ Makefile text eol=lf
 scripts/* text eol=lf
 tests/fixtures/issue92/scl-input-enabled.patch -whitespace
 tests/fixtures/issue92/command-observer-compat.patch -whitespace
+# Preserve the exact archived SVG evidence imported from the native lineage.
+tests/fixtures/issue530/native-field-views-20261027.svg -whitespace
+tests/fixtures/issue530/native-wait-attribution-20261027.svg -whitespace
+tests/fixtures/issue530/native-wait-discriminators-20261027.svg -whitespace
+tests/fixtures/issue530/swap-tail-20261027.svg -whitespace
+tests/fixtures/issue533/input-idle-20261027.svg -whitespace
+tests/fixtures/issue533/yuy2-resources-20261027.svg -whitespace
 SOURCE_REVISION export-subst

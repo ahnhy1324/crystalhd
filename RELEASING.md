@@ -1,6 +1,6 @@
 # Releasing the maintained CrystalHD stack
 
-The current release tracker is
+The completed v1.2 release tracker is
 [#473](https://github.com/ahnhy1324/crystalhd/issues/473). It defines the
 bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and research
 work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
@@ -49,6 +49,103 @@ boundaries and current status are in
 [USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
 [hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
 
+## Private v1.3 candidate preparation
+
+The complete integration candidate uses bundle `1.3.0-rc.2` and the previously
+unused module-DKMS identity `3.10.17`. The helper/test restoration uses a new
+identity so the registered package16 source and its receipts remain immutable.
+RC1 is an incomplete historical cut,
+not the final scope of 1.3. Implemented PTS-epoch diagnostics, native V4L2
+decoding and its colour/format/EXPBUF repairs, explicit experimental field-GPU
+output, runtime producer/lifecycle and host/metadata/materials tools remain in
+the complete integration. A separate branch or unfinished qualification does
+not authorize excluding an implemented feature.
+
+Combined-source build, device and distribution qualification remains in
+progress. The private source/UI checkpoint below retains only its original
+qualified scope. Master merge, tags, public uploads and default-backend
+promotion remain separate maintainer decisions. Published RC1 tags/assets and
+registered module payloads remain immutable.
+
+Accepted renderer/QoS losses remain nonblocking within
+[#91's recorded display-performance scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
+Source-qualified logs without detected A/V drift suffice for the tested route.
+These policies do not waive source-picture, lifetime or ABI correctness.
+
+The earlier qualified private checkpoint is source
+`c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`, including the own VA sync-binding
+and bounded H.264 admission repairs in #613/#615. Experimental merge
+`1b17fd9ec1128c56bb55fef1dd79cf1865de3d10` has the same tree
+`32c5b89104fd7b9641c0039760894baa3b926ead`.
+[CI41259036128](https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128)
+passes 15 jobs with the intended standalone packed-scaler job skipped. The
+[scoped package and runtime receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json)
+records the exact artifact identities and subsequent qualification:
+
+| Private artifact | SHA-256 |
+| --- | --- |
+| `crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz` | `26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb` |
+| `script.crystalhd.settings-0.1.0.zip` | `1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a` |
+
+All four generated files reproduce byte-for-byte. The fresh Git-free source
+archive builds VA/DIL binaries identical to the hardware-tested checkout and
+passes full replay, real DRM import, provenance and user-configuration-preserving
+staged install/remove/repeated-remove/reinstall checks. Qualification is pinned to this
+source and these bytes; subsequent documentation does not rewrite the frozen
+packages or qualify another archive. Existing T8100/BCM70015/Intel965 x86_64
+evidence does not supply independently clean OS, physical Atom/i386 or BCM70012
+acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
+frozen.
+
+Use the experimental integration branch combining maintenance/Xv and MPEG-1.
+Do not substitute one child's CI for the combined source. Integrate the
+developed native/runtime work while retaining evidence for each component and
+for the final combination. Existing
+registered module package identities must never be overwritten with new bytes;
+private staging does not install or register a host DKMS module.
+
+After committing and checking the exact source:
+
+```sh
+make configuration-check kodi-settings-check candidate-package-check
+make package-candidate PACKAGE_DIR=/absolute/new-private-candidate-directory
+```
+
+The packaging helpers require Python3.8+ and Git. Output is an exact-commit
+Git-free source tar.gz, the optional Kodi settings ZIP, `candidate-manifest.json`
+and `SHA256SUMS`. gzip/ZIP times and file order are fixed. The source's existing
+`SOURCE_REVISION export-subst` retains its full Git identity without `.git`.
+Untracked/ignored files are excluded; existing output directories/packages are
+never replaced. The manifest is deterministic and initially says
+`NOT_RUN_FOR_THESE_ARTIFACTS`. Record subsequent validation in a separate receipt
+bound to its hashes; do not mutate an already qualified package or manifest.
+
+Extract the final source into a fresh private directory. Verify checksums and
+source identity, then build/test there, stage runtime and optional settings,
+check the installed provenance receipt, exercise removal and reinstallation,
+and rebuild the ZIP to compare its bytes. `install-runtime` stays headless;
+`install-settings` additionally needs GTK/PyGObject and gettext `msgfmt`.
+The Kodi ZIP needs stock Kodi's Python3 API and matching installed
+`crystalhd-config editor-state` v1. Its selected real target is Kodi21.3.
+Native dialog tests do not replace actual D-pad, ZIP installation or a new Kodi
+process consuming the saved defaults. Source-qualified no-drift logs suffice
+for the tested playback route's A/V sync; pixels/cadence/ownership stay separate.
+
+Proposed candidate scope is the committed maintained stack, optional experimental
+features under their existing opt-ins, and optional Kodi configuration UI #611.
+Do not advertise general MPEG-1 conformance, selector5, hardware deinterlacing,
+full-rate FHD, Atom/i386/BCM70012 acceptance or every open research issue as done.
+Keep historical FAILs and unavailable-target boundaries. #538 remains open;
+only its explicitly excluded heap-abort follow-up stays ignored.
+
+#607 owns remaining clean-target/public native-runtime prerequisites. The old
+seven-DSO research artifact remains `PUBLIC_NOT_READY` and has distinct platform
+dependencies. Its absence from RC1 is a remaining integration/distribution task,
+not exclusion from the 1.3 plan. The source TAR includes native/runtime tools;
+those source files do not themselves supply the binary DSO payload. Source/notices,
+ABI/provider/rollback, clean-target availability, update ownership and public
+distribution decisions must retain their actual PASS/FAIL/NOT RUN scope.
+
 ## Versions and compatibility
 
 The fork's **bundle version** follows [Semantic Versioning](https://semver.org/).
@@ -60,7 +157,9 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Unreleased follow-up; never replace registered stable payload |
+| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.17` | Qualification in progress; never replace registered payloads |
+| Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Immutable tag/assets; incomplete 1.3 scope |
+| Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
 | Published RC1 bundle / package | `1.2.0-rc.1` / `3.10.11` | Immutable earlier candidate |

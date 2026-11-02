@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "base_revision": "9b85e41c5be5bd0d0bfe6c53988455c1f45ae3aa",
+  "implementation": {
+    "scripts/native-runtime-preflight.py": "978f2ca40cc42164d9daef2ff1a754a73e9acd9e84736f194315e8723287d6fd",
+    "tests/native-runtime-preflight.test.py": "e7fe69b50dc1cd2fabf1d53bc1f9247a88f70559753ebe5a6f0ad8949f07e2ba"
+  },
+  "local_controls": {
+    "command": "make runtime-preflight-check",
+    "test_methods": 17,
+    "result": "PASS"
+  },
+  "actual_files_report": {
+    "ELF_dependency_symbols": "NOT_RECOMPUTED; exact bytes match pinned #576 inventory",
+    "clean_OS_Kodi_GPU_hardware_media_AV_acceptance": "NOT_RUN",
+    "compiler_candidates_found": [],
+    "compiler_names_and_versioned_cross_compiler_variants": [
+      "cc",
+      "gcc",
+      "g++",
+      "c++",
+      "clang",
+      "clang++",
+      "make",
+      "nasm",
+      "yasm",
+      "meson",
+      "ninja",
+      "c89",
+      "c99"
+    ],
+    "compiler_search_directories": [
+      "usr/bin",
+      "usr/sbin",
+      "bin",
+      "sbin",
+      "usr/local/bin"
+    ],
+    "metadata_sha256": {
+      "dependencies": "bca5916dfc36b91315343b5987caf5cd71bd0c4fe837eae203bc2666d75742c5",
+      "files": "8f5fa705cdcdae7c5e6a99263cc3178024d99ff96760b8c4b687170357206a7c",
+      "provenance": "6266b9d0a8bfe6624c236d871f9a16e00feb7c6dc19cd1160e69099d6bd51213"
+    },
+    "package_members": 24,
+    "payload_ELFs": 9,
+    "payload_bytes": 7931560,
+    "public_distribution_status": "PUBLIC_NOT_READY",
+    "rootfs_identity_authenticated_by_this_tool": false,
+    "rootfs_identity_declared": "retained-org.freedesktop.Platform-26.08-existing-host-files-only",
+    "schema": 1,
+    "scope": "Offline immutable files only. No target code, loader, namespaces, devices, installation or publication executed. Absence of inspected compiler names does not prove a running namespace is compilerless.",
+    "status": "PASS_PINNED_TARGET_FILES_ONLY",
+    "target_provider_SONAME_aliases_and_interpreters_match": true,
+    "target_provider_bytes": 4205312,
+    "target_providers": [
+      {
+        "bytes": 253264,
+        "path": "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391"
+      },
+      {
+        "bytes": 2177968,
+        "path": "lib/x86_64-linux-gnu/libc.so.6",
+        "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555"
+      },
+      {
+        "bytes": 100360,
+        "path": "lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+        "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4"
+      },
+      {
+        "bytes": 1227608,
+        "path": "lib/x86_64-linux-gnu/libm.so.6",
+        "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8"
+      },
+      {
+        "bytes": 15600,
+        "path": "lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+        "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a"
+      },
+      {
+        "bytes": 239536,
+        "path": "lib/x86_64-linux-gnu/libva.so.2.2400.0",
+        "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487"
+      },
+      {
+        "bytes": 190976,
+        "path": "lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+        "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c"
+      }
+    ]
+  },
+  "scope": "Existing-host immutable Platform and retained package files only; no new namespace, target executable, Kodi, clean OS, GPU, hardware, physical A/V or publication acceptance.",
+  "raw_report_sha256": "4bd0f8130fb7a72bcca7e8dbc00d9586ab991758a8c1d92109ed8e2147a5d11a"
+}

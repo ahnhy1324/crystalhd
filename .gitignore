@@ -19,6 +19,11 @@
 *.mod
 *.so
 *.so.dbg
+/filters/gst/field-output/field-output-cpu-test
+/filters/gst/field-output/field-output-cpu-test-asan
+/filters/gst/gst-plugin-1.0/libgstcrystalhdmpeg1experimental.so.config
+/filters/gst/gst-plugin-1.0/gst-mpeg1-experimental-test
+/filters/gst/gst-plugin-1.0/mpeg1-natural-playback-test
 *.mod.c
 *.i
 *.lst
@@ -77,3 +82,6 @@ GTAGS
 *.orig
 *~
 \#*#
+
+# Explicit private VPP diagnostic backend and CPU probe outputs.
+/filters/vaapi/payload-observer/

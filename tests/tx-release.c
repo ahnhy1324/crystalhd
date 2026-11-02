@@ -48,6 +48,7 @@ struct crystalhd_tx_buffer_ops {
     void (*put)(const struct crystalhd_tx_buffer *);
 };
 struct crystalhd_tx_buffer {
+    uint32_t bytes;
     void *cookie;
     const struct crystalhd_tx_buffer_ops *ops;
 };
@@ -62,6 +63,7 @@ struct crystalhd_cmd {
     unsigned state, cin_wait_exit, tx_list_id;
     struct crystalhd_adp *adp;
     struct crystalhd_hw *hw_ctx;
+    const void *session_owner, *session_lifetime_owner, *session_lifetime_ops;
 };
 struct mutex {
     pthread_mutex_t real;
@@ -70,7 +72,7 @@ struct crystalhd_adp {
     bool present;
     struct pci_dev *pdev;
     pthread_rwlock_t user_lock;
-    struct mutex tx_lock;
+    struct mutex tx_lock, legacy_gate;
     struct crystalhd_cmd cmds;
 };
 
@@ -78,7 +80,7 @@ struct file {
     struct crystalhd_file *private_data;
 };
 
-typedef int crystalhd_cmd_proc;
+typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 #include "tx-release-types.h"
 static struct pci_dev pci;
 static struct crystalhd_adp adp;
@@ -129,7 +131,7 @@ static void up_write(pthread_rwlock_t *l) { check(!pthread_rwlock_unlock(l), "wr
 static int mutex_lock_interruptible(struct mutex *l) { return pthread_mutex_lock(&l->real); }
 static void mutex_lock(struct mutex *l) {
     pthread_mutex_lock(&control);
-    release_requests++;
+    if (l == &binding.release_lock) release_requests++;
     pthread_cond_broadcast(&changed);
     pthread_mutex_unlock(&control);
     check(!pthread_mutex_lock(&l->real), "mutex lock");
@@ -153,12 +155,18 @@ static bool crystalhd_legacy_color_command(struct crystalhd_adp *a, unsigned uid
     (void)cmd;
     return false;
 }
+static BC_STATUS legacy_handler(struct crystalhd_cmd *c, crystalhd_ioctl_data *data)
+{ (void)c; (void)data; return BC_STS_SUCCESS; }
+static BC_STATUS crystalhd_native_legacy_notify(struct crystalhd_cmd *c, crystalhd_ioctl_data *data)
+{ (void)c; (void)data; check(false,"legacy fixture cannot enter native notify"); return BC_STS_ERR_USAGE; }
+static BC_STATUS crystalhd_native_legacy_release(struct crystalhd_cmd *c, crystalhd_ioctl_data *data)
+{ (void)c; (void)data; check(false,"legacy fixture cannot enter native release"); return BC_STS_ERR_USAGE; }
 static crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *c, unsigned cmd,
                                                  struct crystalhd_user *u) {
     (void)c;
     (void)cmd;
     (void)u;
-    return 1;
+    return legacy_handler;
 }
 static void crystalhd_rx_poll_wake(struct crystalhd_adp *a, int events) {
     (void)a;
@@ -261,6 +269,8 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *a, crystalhd_ioctl_data 
 static int chd_dec_api_cmd(struct crystalhd_adp *, unsigned long, unsigned, unsigned,
                            crystalhd_cmd_proc, bool, crystalhd_ioctl_data *, const uint32_t *);
 
+static BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *device, uint32_t bytes)
+{ (void)device; (void)bytes; check(false,"legacy cancellation cannot request typed WRAP"); return BC_STS_NO_DATA; }
 #include "tx-release-functions.h"
 static int chd_dec_api_cmd(struct crystalhd_adp *a, unsigned long ua, unsigned uid, unsigned cmd,
                            crystalhd_cmd_proc fn, bool compat, crystalhd_ioctl_data *prepared,
@@ -270,7 +280,7 @@ static int chd_dec_api_cmd(struct crystalhd_adp *a, unsigned long ua, unsigned u
     (void)compat;
     if (cmd == BCM_IOC_PROC_INPUT) {
         static const struct crystalhd_tx_buffer_ops ops = {buffer_get, buffer_put};
-        const struct crystalhd_tx_buffer b = {&adp, &ops};
+        const struct crystalhd_tx_buffer b = {.cookie=&adp, .ops=&ops};
         return crystalhd_tx_transfer_common(&a->cmds, &b, 0, false, 0, stop);
     }
     if (cmd == BCM_IOC_RELEASE) {
@@ -330,6 +340,7 @@ static void reset(void) {
         posts[i] = sleeps[i] = wake[i] = done[i] = signals[i] = 0;
     check(!pthread_rwlock_init(&adp.user_lock, NULL), "rwlock init");
     check(!pthread_mutex_init(&adp.tx_lock.real, NULL), "mutex init");
+    check(!pthread_mutex_init(&adp.legacy_gate.real, NULL), "legacy gate init");
     check(!pthread_mutex_init(&binding.release_lock.real, NULL), "release mutex init");
 }
 static void finish(pthread_t *threads, int n) {
@@ -338,6 +349,7 @@ static void finish(pthread_t *threads, int n) {
     check(refs == 0 && read_held == 0 && data_refs == 0, "no backing or reader left");
     check(!pthread_rwlock_destroy(&adp.user_lock), "rwlock destroy");
     check(!pthread_mutex_destroy(&adp.tx_lock.real), "mutex destroy");
+    check(!pthread_mutex_destroy(&adp.legacy_gate.real), "legacy gate destroy");
     check(!pthread_mutex_destroy(&binding.release_lock.real), "release mutex destroy");
 }
 int main(void) {

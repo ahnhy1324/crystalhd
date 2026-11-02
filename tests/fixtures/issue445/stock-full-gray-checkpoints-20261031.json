@@ -1,0 +1,444 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "status": "PASS_RETAINED_THREE_FULL_GRAY_CHECKPOINTS",
+  "runtime_revision": "a7b41702ae6a9a6e0f6c3de3887af5d6f1bd87ca",
+  "host": "T8100/BCM70015/965GM; private headless Wayland with original published Kodi22RC1/App FFmpeg",
+  "fixture_manifest_sha256": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3",
+  "checkpoints": [
+    {
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "active_crop": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "pixels_compared": 921600,
+      "channels_compared": 2764800,
+      "full_BGRA_bytes_inspected": 3686400,
+      "maximum_channel_error": 0,
+      "channel_tolerance": 2,
+      "pixels_over_contract": 0,
+      "channels_over_tolerance": 0,
+      "nonopaque_pixels": 0,
+      "differences": [],
+      "scope": "All visible BGRA pixels at one source-barcode-bound progressive checkpoint. No object-return, cadence, physical scanout or A/V claim.",
+      "label": "initial-pause",
+      "file": "/home/mache/.cache/crystalhd-all-work-20261031/stock-gray-checkpoints-01/profile/initial-pause.bgra",
+      "sha256": "4560f725e0e7c35b89f7fa809e16e66f5093492a0b2b8a7195798417692aa9c1",
+      "source_ordinal": 9,
+      "source_pts": 4608,
+      "source_time_base": "1/15360",
+      "reference_frame_sha256": "3b7f5bda6f4c464a8eb5669a1aac70108be4186ff45a9880cfe9a2203379c58b",
+      "fixture_manifest_sha256": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3"
+    },
+    {
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "active_crop": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "pixels_compared": 921600,
+      "channels_compared": 2764800,
+      "full_BGRA_bytes_inspected": 3686400,
+      "maximum_channel_error": 0,
+      "channel_tolerance": 2,
+      "pixels_over_contract": 0,
+      "channels_over_tolerance": 0,
+      "nonopaque_pixels": 0,
+      "differences": [],
+      "scope": "All visible BGRA pixels at one source-barcode-bound progressive checkpoint. No object-return, cadence, physical scanout or A/V claim.",
+      "label": "seek-forward",
+      "file": "/home/mache/.cache/crystalhd-all-work-20261031/stock-gray-checkpoints-01/profile/seek-forward.bgra",
+      "sha256": "fd448d62ecfedf7d180ea7ce860cf1d7b9460d2ca56c0335ec4225ffbf24ed91",
+      "source_ordinal": 90,
+      "source_pts": 46080,
+      "source_time_base": "1/15360",
+      "reference_frame_sha256": "eb2d917ab8775360fde32c6da4e124ea07bd7a64fed1d4954df1b075a89a205d",
+      "fixture_manifest_sha256": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3"
+    },
+    {
+      "status": "PASS",
+      "width": 1280,
+      "height": 720,
+      "active_crop": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "pixels_compared": 921600,
+      "channels_compared": 2764800,
+      "full_BGRA_bytes_inspected": 3686400,
+      "maximum_channel_error": 0,
+      "channel_tolerance": 2,
+      "pixels_over_contract": 0,
+      "channels_over_tolerance": 0,
+      "nonopaque_pixels": 0,
+      "differences": [],
+      "scope": "All visible BGRA pixels at one source-barcode-bound progressive checkpoint. No object-return, cadence, physical scanout or A/V claim.",
+      "label": "seek-backward",
+      "file": "/home/mache/.cache/crystalhd-all-work-20261031/stock-gray-checkpoints-01/profile/seek-backward.bgra",
+      "sha256": "d0472fee93201bb26c477c3dd01df9fd57ccbca8a7acc23220f2e9fd72fb8a75",
+      "source_ordinal": 30,
+      "source_pts": 15360,
+      "source_time_base": "1/15360",
+      "reference_frame_sha256": "8fc6b4dd67eeb5b7b8efaef83b3ab0587a9b200e8988d23fe2652411fa62c5c9",
+      "fixture_manifest_sha256": "8508ffd6adbf6518affb110173d5d168795851ee92a39301ddeb71e8811dacf3"
+    }
+  ],
+  "selected_images_equal_on_natural_reopen": true,
+  "controls_status": "PASS",
+  "application_exit": 0,
+  "boundary_equal": true,
+  "kernel_exit": 0,
+  "errors": [],
+  "live_resource_handoff": null,
+  "identity_checks": [
+    {
+      "phase": "await-identity",
+      "same_app": {
+        "pid": 1182274,
+        "start_ticks": 40454524,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      },
+      "mapped_images": [
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103",
+          "sha256": "fed22f93458f58ec928be86730b16b4e0469ab78e452059140809074ac3a6750",
+          "device": "08:01",
+          "inode": 11309252
+        },
+        {
+          "role": "own-dil",
+          "path": "/own-lib/libcrystalhd.so.3.6",
+          "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "device": "08:01",
+          "inode": 9311055
+        },
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libswscale.so.9.5.103",
+          "sha256": "d6dda313ae03cc73600e73d3842dd48490f50390aaada00c793617370ca594ce",
+          "device": "08:01",
+          "inode": 11309255
+        },
+        {
+          "role": "own-va",
+          "path": "/own-va/crystalhd_drv_video.so",
+          "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+          "device": "08:01",
+          "inode": 9312715
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libswscale.so.10.1.102",
+          "sha256": "91c0116cd1d5943099464dda1990e89e4190ea75d0dd39105120fe8efe8558fb",
+          "device": "08:01",
+          "inode": 11290757
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavutil.so.61.1.102",
+          "sha256": "e7382c76a1d06f07fee721b5d1d29100ebacd29e3142ddd98f6826f2726d2bda",
+          "device": "08:01",
+          "inode": 11290762
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavformat.so.63.1.102",
+          "sha256": "d9aea791e699c00e730ca959c6887795212232d82c58a3bd9be65692f9b52ac4",
+          "device": "08:01",
+          "inode": 11290760
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavcodec.so.63.1.102",
+          "sha256": "33516c1fb77df3d7a2c05828b7bae61d66ce18e4e0d2da471f6f789a67b5ec7e",
+          "device": "08:01",
+          "inode": 11291646
+        }
+      ],
+      "owned_fds": [
+        {
+          "fd": 62,
+          "target": "/dev/crystalhd"
+        },
+        {
+          "fd": 63,
+          "target": "/dev/crystalhd"
+        }
+      ],
+      "info": {
+        "Player.Filenameandpath": "/fixture.mp4",
+        "Player.Process(pixformat)": "vaapi",
+        "Player.Process(videodecoder)": "ff-h264-vaapi",
+        "System.ScreenHeight": "720",
+        "System.ScreenWidth": "1280"
+      },
+      "monotonic_ns": 404548760461676
+    },
+    {
+      "phase": "await-natural-identity",
+      "same_app": {
+        "pid": 1182274,
+        "start_ticks": 40454524,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      },
+      "mapped_images": [
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103",
+          "sha256": "fed22f93458f58ec928be86730b16b4e0469ab78e452059140809074ac3a6750",
+          "device": "08:01",
+          "inode": 11309252
+        },
+        {
+          "role": "own-dil",
+          "path": "/own-lib/libcrystalhd.so.3.6",
+          "sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+          "device": "08:01",
+          "inode": 9311055
+        },
+        {
+          "role": "own-va-runtime-dependency",
+          "path": "/usr/lib/x86_64-linux-gnu/libswscale.so.9.5.103",
+          "sha256": "d6dda313ae03cc73600e73d3842dd48490f50390aaada00c793617370ca594ce",
+          "device": "08:01",
+          "inode": 11309255
+        },
+        {
+          "role": "own-va",
+          "path": "/own-va/crystalhd_drv_video.so",
+          "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+          "device": "08:01",
+          "inode": 9312715
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libswscale.so.10.1.102",
+          "sha256": "91c0116cd1d5943099464dda1990e89e4190ea75d0dd39105120fe8efe8558fb",
+          "device": "08:01",
+          "inode": 11290757
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavutil.so.61.1.102",
+          "sha256": "e7382c76a1d06f07fee721b5d1d29100ebacd29e3142ddd98f6826f2726d2bda",
+          "device": "08:01",
+          "inode": 11290762
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavformat.so.63.1.102",
+          "sha256": "d9aea791e699c00e730ca959c6887795212232d82c58a3bd9be65692f9b52ac4",
+          "device": "08:01",
+          "inode": 11290760
+        },
+        {
+          "role": "original-client-library",
+          "path": "/app/lib/libavcodec.so.63.1.102",
+          "sha256": "33516c1fb77df3d7a2c05828b7bae61d66ce18e4e0d2da471f6f789a67b5ec7e",
+          "device": "08:01",
+          "inode": 11291646
+        }
+      ],
+      "owned_fds": [
+        {
+          "fd": 62,
+          "target": "/dev/crystalhd"
+        },
+        {
+          "fd": 63,
+          "target": "/dev/crystalhd"
+        }
+      ],
+      "info": {
+        "Player.Filenameandpath": "/fixture.mp4",
+        "Player.Process(pixformat)": "vaapi",
+        "Player.Process(videodecoder)": "ff-h264-vaapi",
+        "System.ScreenHeight": "720",
+        "System.ScreenWidth": "1280"
+      },
+      "monotonic_ns": 404562574039740
+    }
+  ],
+  "retirements": [
+    {
+      "label": "await-stop-retirement",
+      "samples": [
+        {
+          "monotonic_ns": 404560863054792,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        },
+        {
+          "monotonic_ns": 404561245329327,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        }
+      ],
+      "same_app": {
+        "pid": 1182274,
+        "start_ticks": 40454524,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      }
+    },
+    {
+      "label": "await-natural-retirement",
+      "samples": [
+        {
+          "monotonic_ns": 404568646091414,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        },
+        {
+          "monotonic_ns": 404569055891981,
+          "boundary": {
+            "module": "3.10.13",
+            "srcversion": "F76E163690F147B91495DDD",
+            "ref": 0,
+            "pin_net": 0,
+            "force": "Y",
+            "session": "N",
+            "power": "on",
+            "aer": {
+              "0000:02:00.0": {
+                "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+                "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+                "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+              },
+              "0000:00:1c.0": {}
+            },
+            "links": {
+              "0000:02:00.0": 66,
+              "0000:00:1c.0": 66
+            },
+            "debug_rows": 85,
+            "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+            "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+            "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+            "video_nodes": []
+          },
+          "owned_decoder_fds": []
+        }
+      ],
+      "same_app": {
+        "pid": 1182274,
+        "start_ticks": 40454524,
+        "uid": 1000,
+        "executable_device": 2049,
+        "executable_inode": 11290331
+      }
+    }
+  ],
+  "cleanup_policy": "Quit then verified TERM, no SIGKILL/parent death killing",
+  "thermal_maximum_mC": 65000,
+  "artifacts": {
+    "result.json": "fbc459cc5426b498298914aa8a82802d137060ee4805d05fcc1cb6efaf58e0e5",
+    "stock-gray-independent-audit.json": "62bceef017455704f25b230d4d72297c4fb12eae52a7f3ada06716812ff10393",
+    "stock-gray-checkpoints.py": "dfec342196ca33fe27e57b9b74451c5378500bb34acb4dc2f17bb20596e1f260",
+    "stock-gray-oracle.py": "ec0483af7329afc1a1bf23dbb015648300c528ac31f693d0222109135836a4f4",
+    "test-stock-gray-oracle.py": "623c56ee9d204c405dd4cd86e1c72addcd9024db4da39b25e0d2c4d5c4eda9ee",
+    "audit-stock-gray-checkpoints.py": "77e1ce8c88ece1bcd9366c8caa6f980053e3af830e26a85a9bfa48c1daf0ea4c",
+    "frozen-stock-gray-plan.json": "6b557e7a32a179bbde737b647730882a0d6497c586330d9e43796ffef40b3f74"
+  },
+  "local_inert_oracle_and_cleanup_test_methods": 6,
+  "not_claimed": [
+    "nonneutral chroma/colour and broader crop",
+    "interlaced/Bob/field-rate behavior",
+    "all-frame or per-object client/GPU return census",
+    "physical display/scanout/AV",
+    "reporter Atom or native-i386"
+  ],
+  "historical_results": "Older barcode-only scope, interlace/loop/tail FAILs and excluded heap disposition remain unchanged. No third-party code modified."
+}

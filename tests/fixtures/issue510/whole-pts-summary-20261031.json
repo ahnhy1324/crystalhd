@@ -1,0 +1,280 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "status": "PASS_SCOPED_WHOLE_ATTACHMENT_PTS",
+  "runtime_revision": "a7b41702ae6a9a6e0f6c3de3887af5d6f1bd87ca",
+  "case": "whole-pts-fhd-01",
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv",
+    "sha256": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+    "size": 633788375,
+    "device": "8:1",
+    "inode": 9204718
+  },
+  "local_controls": {
+    "native_groups": 14,
+    "native_snapshots": 65,
+    "variants": [
+      "ordinary",
+      "ASan/UBSan/LSan"
+    ],
+    "independent_reader_groups": 9,
+    "Player_tests": 126
+  },
+  "hardware": "Core2 Duo T8100 / BCM70015 / Intel965GM, current host only",
+  "source_picture_count": 7500,
+  "whole_pad_summaries": [
+    {
+      "stage": "output-scale",
+      "token": 1,
+      "buffers": 15000,
+      "eos_count": 1,
+      "pts_summary": {
+        "version": 1,
+        "scope": "whole-attachment-observation",
+        "qualified": true,
+        "buffers": 15000,
+        "covered": 15000,
+        "unknown_pts": 0,
+        "unknown_duration": 0,
+        "invalid_duration": 0,
+        "unqualified_buffers": 0,
+        "duplicate_events": 0,
+        "reverse_events": 0,
+        "off_grid_events": 0,
+        "gap_events": 0,
+        "gap_steps": 0,
+        "epochs": 1,
+        "caps_changes": 0,
+        "segment_events": 1,
+        "flush_events": 0,
+        "seek_requests": 0,
+        "arithmetic_overflow": false,
+        "counters_saturated": false,
+        "period_ns": 20000000,
+        "first_pts": 0,
+        "last_pts": 299980000000,
+        "first_violation": null
+      }
+    },
+    {
+      "stage": "sink",
+      "token": 2,
+      "buffers": 15000,
+      "eos_count": 1,
+      "pts_summary": {
+        "version": 1,
+        "scope": "whole-attachment-observation",
+        "qualified": true,
+        "buffers": 15000,
+        "covered": 15000,
+        "unknown_pts": 0,
+        "unknown_duration": 0,
+        "invalid_duration": 0,
+        "unqualified_buffers": 0,
+        "duplicate_events": 0,
+        "reverse_events": 0,
+        "off_grid_events": 0,
+        "gap_events": 0,
+        "gap_steps": 0,
+        "epochs": 1,
+        "caps_changes": 0,
+        "segment_events": 1,
+        "flush_events": 0,
+        "seek_requests": 0,
+        "arithmetic_overflow": false,
+        "counters_saturated": false,
+        "period_ns": 20000000,
+        "first_pts": 0,
+        "last_pts": 299980000000,
+        "first_violation": null
+      }
+    },
+    {
+      "stage": "decoder",
+      "token": 3,
+      "buffers": 7500,
+      "eos_count": 1,
+      "pts_summary": {
+        "version": 1,
+        "scope": "whole-attachment-observation",
+        "qualified": true,
+        "buffers": 7500,
+        "covered": 7500,
+        "unknown_pts": 0,
+        "unknown_duration": 0,
+        "invalid_duration": 0,
+        "unqualified_buffers": 0,
+        "duplicate_events": 0,
+        "reverse_events": 0,
+        "off_grid_events": 0,
+        "gap_events": 0,
+        "gap_steps": 0,
+        "epochs": 1,
+        "caps_changes": 0,
+        "segment_events": 1,
+        "flush_events": 0,
+        "seek_requests": 0,
+        "arithmetic_overflow": false,
+        "counters_saturated": false,
+        "period_ns": 40000000,
+        "first_pts": 0,
+        "last_pts": 299960000000,
+        "first_violation": null
+      }
+    },
+    {
+      "stage": "deinterlace",
+      "token": 4,
+      "buffers": 15000,
+      "eos_count": 1,
+      "pts_summary": {
+        "version": 1,
+        "scope": "whole-attachment-observation",
+        "qualified": true,
+        "buffers": 15000,
+        "covered": 15000,
+        "unknown_pts": 0,
+        "unknown_duration": 0,
+        "invalid_duration": 0,
+        "unqualified_buffers": 0,
+        "duplicate_events": 0,
+        "reverse_events": 0,
+        "off_grid_events": 0,
+        "gap_events": 0,
+        "gap_steps": 0,
+        "epochs": 1,
+        "caps_changes": 0,
+        "segment_events": 1,
+        "flush_events": 0,
+        "seek_requests": 0,
+        "arithmetic_overflow": false,
+        "counters_saturated": false,
+        "period_ns": 20000000,
+        "first_pts": 0,
+        "last_pts": 299980000000,
+        "first_violation": null
+      }
+    }
+  ],
+  "player_completion": {
+    "attachments": [
+      {
+        "stage": "output-scale",
+        "token": 1,
+        "factory": "crystalhdpackedscale"
+      },
+      {
+        "stage": "sink",
+        "token": 2,
+        "factory": "crystalhdxvsink"
+      },
+      {
+        "stage": "decoder",
+        "token": 3,
+        "factory": "crystalhddec"
+      },
+      {
+        "stage": "deinterlace",
+        "token": 4,
+        "factory": "deinterlace"
+      }
+    ],
+    "attachment_errors": 0,
+    "control_errors": 0,
+    "trigger_errors": 0,
+    "loss_trigger": null,
+    "exit_code": 0,
+    "sink_statistics_before_null": [
+      {
+        "sink": "crystalhdxvsink",
+        "rendered": 15000,
+        "dropped": 0
+      }
+    ],
+    "scope": "independent pad observations; sink input is not display",
+    "controls_are_requests": true,
+    "pts_is_not_unique_picture_identity": true
+  },
+  "xv_final": {
+    "phase": "AFTER_PIPELINE_NULL",
+    "monotonic_ns": 404282304048942,
+    "factory": "crystalhdxvsink",
+    "name": "crystalhd-video-output",
+    "path": "/GstCrystalHdXv:crystalhd-video-output",
+    "available": true,
+    "scope": "own SHM/submission counters, not physical presentation or end-to-end zero-copy",
+    "pipeline_state": [
+      "1",
+      "NULL",
+      "VOID_PENDING"
+    ],
+    "stats": {
+      "submitted": 15001,
+      "acknowledged": 15001,
+      "video-submitted": 15001,
+      "redraw-submitted": 0,
+      "retained-picture": false,
+      "terminal-retired": 0,
+      "copied-bytes": 0,
+      "pool-submitted": 15001,
+      "pending": 0,
+      "images": 0,
+      "bytes": 0,
+      "allocated": 6,
+      "freed": 6,
+      "failed": false,
+      "closed": true,
+      "quarantined": false
+    }
+  },
+  "thermal": {
+    "start_mC": [
+      51000,
+      43000
+    ],
+    "maximum_mC": 68000,
+    "guard_mC": 75000,
+    "matched_thermal_causality_claimed": false
+  },
+  "boundary_equal": true,
+  "kernel_exit": 0,
+  "actual_runtime_images": {
+    "/home/mache/.cache/crystalhd-full-pts-summary-20261031/filters/gst/gst-plugin-1.0/libgstcrystalhd.so": "ca944833c52fcc4cd23635551d0df394688cecddcab9837d5d973013e4e22a50",
+    "/home/mache/.cache/crystalhd-xv-fhd-integration-20261030/filters/gst/xv-output/libgstcrystalhdxv.so": "f8c73d090cb601f5a7fa2433fa81ad497b23baf7b14c452ecd8c7fae9067c215",
+    "/home/mache/.cache/crystalhd-fhd-repair-20261030/linux_lib/libcrystalhd/libcrystalhd.so.3.6": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+    "/home/mache/.cache/crystalhd-full-pts-summary-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984"
+  },
+  "independent_replay": {
+    "checks": 19,
+    "result": "PASS_INDEPENDENT_SAVED_ARTIFACT_REPLAY",
+    "sha256": "1e0e21bce360b11a94463d59c31418bd548193f004582da18875af46bc7cf08d"
+  },
+  "qualification": {
+    "schema": 1,
+    "case": "whole-pts-fhd-01",
+    "qualified": true,
+    "status": "PASS_SCOPED_FROZEN_PROFILE_NATURAL_EOS_METADATA",
+    "media_metadata_qualified": true,
+    "artifacts": {
+      "/home/mache/.cache/crystalhd-all-work-20261031/whole-pts-fhd-01.boundary.json": "3c561a91a9b60301fced7bb4f50d282c6f941ca4a1f46c9b91bcf2d15688eecf",
+      "/home/mache/.cache/crystalhd-all-work-20261031/whole-pts-fhd-01.result.json": "95fa38c44681ea8131461d597e482c7a1f507a9be3d217f63b975bff61ba4412",
+      "/home/mache/.cache/crystalhd-all-work-20261031/whole-pts-fhd-01.trace.json": "86dcb1157aef41195a8f45519adcd754f724419af5e0955fc9cdee02a4377abc"
+    },
+    "scope": "One natural300s source-qualified profile;7500 native originals and whole four-pad fixed-cadence PTS metadata, counts/EOS and retirement. No pixels, physical scanout, A/V, universal endurance or causal proof."
+  },
+  "raw_artifacts": {
+    "whole-pts-fhd-01.boundary.json": "3c561a91a9b60301fced7bb4f50d282c6f941ca4a1f46c9b91bcf2d15688eecf",
+    "whole-pts-fhd-01.trace.json": "86dcb1157aef41195a8f45519adcd754f724419af5e0955fc9cdee02a4377abc",
+    "whole-pts-fhd-01.result.json": "95fa38c44681ea8131461d597e482c7a1f507a9be3d217f63b975bff61ba4412",
+    "whole-pts-fhd-01.qualification.json": "56c3c8ca99a281412a6d33d1b022c85e1ff62cd4d7fc00433fc8bf5c689420eb"
+  },
+  "older_evidence": "Prior300s packed02 and its tail-only output PTS scope remain unchanged; older FAILs remain FAIL. This is another bounded witness with a changed metadata observer and different initial thermals, not a matched benchmark or universal endurance result.",
+  "not_claimed": [
+    "pixel content/unique displayed frame identity",
+    "physical scanout or physical A/V",
+    "matched throughput/thermal causality",
+    "other hardware/Atom/native-i386/BCM70012",
+    "broader seek/format/interlace/endurance matrix"
+  ]
+}

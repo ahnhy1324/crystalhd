@@ -47,7 +47,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 	libswscale) \
 	-lcrystalhd -pthread
 
-.PHONY: all clean check install uninstall seek-test
+.PHONY: all clean check check-ownership-sanitized payload-observer payload-observer-library check-payload-observer install uninstall seek-test
 
 all: $(DRIVER)
 
@@ -65,6 +65,36 @@ BACKEND_HEADERS := $(ROOTDIR)/include/crystalhd-config.h \
 
 $(DRIVER): crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+# Deliberately separate, always fresh diagnostic backend. It is absent from
+# all/check/install and never writes the normal crystalhd_drv_video.so target.
+# Only this wrapper enables test-only bounded payload copies and output.
+payload-observer: $(ROOTDIR)/tests/vaapi-vpp-payload-backend.cpp \
+		$(ROOTDIR)/tests/vaapi-vpp-payload-observer.h crystalhd_drv_video.cpp \
+		$(BACKEND_HEADERS) $(ROOTDIR)/cpu.mk $(ROOTDIR)/include/crystalhd_legacy.h \
+		payload-observer-library
+	mkdir -p payload-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o payload-observer/$(DRIVER) \
+		$(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+# Resolve the ordinary OWN DIL in its own build directory, including the linker
+# and SONAME links. This handles a clean tree without changing normal VA rules.
+# Command-line toolchain/CPU settings propagate through the recursive make.
+payload-observer-library:
+	$(MAKE) -C $(ROOTDIR)/linux_lib/libcrystalhd all
+
+# Explicit CPU-only diagnostic/model controls; normal check is unchanged.
+check-payload-observer: $(ROOTDIR)/tests/vaapi-vpp-payload.cpp \
+		$(ROOTDIR)/tests/vaapi-vpp-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-bob-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
+	mkdir -p payload-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
+		-ffunction-sections -fdata-sections $< -o payload-observer/payload-cpu-test \
+		-Wl,--gc-sections,--wrap=ioctl,--wrap=sws_scale \
+		$(shell $(PKG_CONFIG) --libs gbm libdrm libswscale libavutil) \
+		-pthread $(CRYSTALHD_CPU_FLAGS)
+	CRYSTALHD_CONFIG_DISABLE=1 payload-observer/payload-cpu-test
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-vpp-payload-reader.test.py
 
 $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 	$(CXX) -std=c++17 -Wall -Wextra -Werror \
@@ -127,6 +157,40 @@ $(BUFFER_TEST): $(ROOTDIR)/tests/vaapi-buffer-handles.cpp crystalhd_drv_video.cp
 		-Wl,--wrap=gbm_bo_get_offset,--wrap=gbm_bo_get_stride \
 		-Wl,--wrap=mmap,--wrap=munmap,--wrap=lseek,--wrap=close \
 		-Wl,--wrap=ioctl,--wrap=poll,--wrap=__poll_chk,--wrap=DtsDeviceOpen $(CRYSTALHD_CPU_FLAGS)
+
+# Selected real public ownership callbacks, not the complete VA decode/VPP suite.
+# The harness includes production VA code and guards every DIL call; only the
+# system graphics/scaler link dependencies remain. Neither normal outputs nor
+# the shared CPU-mode stamp are prerequisites of this always-fresh build.
+override VA_OWNERSHIP_SANITIZER_FLAGS := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fno-pie -no-pie
+VA_OWNERSHIP_SANITIZER_LIBS = $(shell $(PKG_CONFIG) --libs gbm libdrm libswscale)
+check-ownership-sanitized: $(ROOTDIR)/tests/vaapi-ownership-sanitized.cpp \
+		$(ROOTDIR)/tests/vaapi-buffer-handles.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS) \
+		$(ROOTDIR)/cpu.mk $(ROOTDIR)/include/crystalhd_legacy.h
+	@set -eu; \
+	if test "$(LEGACY_CPU)" != 0; then \
+		printf '%s\n' 'check-ownership-sanitized requires LEGACY_CPU=0; legacy sanitizer coverage is unqualified' >&2; \
+		exit 2; \
+	fi; \
+	va_ownership_sanitizer_dir=$$(mktemp -d); \
+	trap 'rm -rf -- "$$va_ownership_sanitizer_dir"' EXIT; \
+	trap 'exit 1' HUP INT TERM; \
+	printf '%s\n' $(call crystalhd_quote,CXX=$(CXX)|CPPFLAGS=$(CPPFLAGS)|CXXFLAGS=$(CXXFLAGS)|CPU=$(CRYSTALHD_CPU_FLAGS)|SAN=$(VA_OWNERSHIP_SANITIZER_FLAGS)|PKG_CONFIG=$(PKG_CONFIG)|LIBS=$(VA_OWNERSHIP_SANITIZER_LIBS)|PTHREAD=-pthread) > "$$va_ownership_sanitizer_dir/.crystalhd-ownership-sanitizer-config"; \
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $(VA_OWNERSHIP_SANITIZER_FLAGS) \
+		$(ROOTDIR)/tests/vaapi-ownership-sanitized.cpp \
+		-o "$$va_ownership_sanitizer_dir/vaapi-buffer-handles-test" \
+		$(VA_OWNERSHIP_SANITIZER_LIBS) -pthread \
+		-Wl,--wrap=gbm_create_device,--wrap=gbm_device_destroy \
+		-Wl,--wrap=gbm_bo_create,--wrap=gbm_bo_destroy,--wrap=gbm_bo_get_fd \
+		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_modifier \
+		-Wl,--wrap=gbm_bo_get_offset,--wrap=gbm_bo_get_stride \
+		-Wl,--wrap=mmap,--wrap=munmap,--wrap=lseek,--wrap=close \
+		-Wl,--wrap=ioctl,--wrap=poll,--wrap=__poll_chk,--wrap=DtsDeviceOpen; \
+	CRYSTALHD_CONFIG_DISABLE=1 LD_LIBRARY_PATH= LD_PRELOAD= \
+	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 \
+	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+	LSAN_OPTIONS=exitcode=23 \
+		"$$va_ownership_sanitizer_dir/vaapi-buffer-handles-test"
 
 # Production cache/fence sections, with unrelated frontend functions discarded.
 # Disable test-only SLP constant pooling so GC can separate their vtables.
@@ -253,3 +317,9 @@ $(CENTERED_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(BOB_VPP_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY_CONTRACT_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so
+
+.PHONY: payload-observer-clean
+payload-observer-clean:
+	rm -f payload-observer/crystalhd_drv_video.so payload-observer/payload-cpu-test
+	@rmdir payload-observer 2>/dev/null || true
+clean: payload-observer-clean

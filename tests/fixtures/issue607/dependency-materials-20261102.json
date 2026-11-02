@@ -1,0 +1,215 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "issue": 607,
+  "status": "PASS_PROVIDER_DECLARATIONS_SDK_MATERIALS_AND_NOTICE_INVENTORY",
+  "platform_ostree": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+  "scope": "Exact provider byte inventory, generated source declarations, SDK recipe/patch capture and retained notices. No external builds, binary/source attestation or distribution approval.",
+  "commit_object": {
+    "path": "platform.commit",
+    "bytes": 4236,
+    "sha256": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491"
+  },
+  "sdk_recipe_commit": "d0c0b597d58f8cc14ee26c427aec1be13c6a313e",
+  "ostree_body": "Name: org.freedesktop.Platform\nArch: x86_64\nBranch: 26.08\nBuilt with: Flatpak 1.18.4\n",
+  "xa_from_commit": "58cd9e8d2fe3f337db4a3c684ae78406f14d3b0153f82308c2fe8540defc4769",
+  "generated_manifest": {
+    "path": "platform-manifest.json",
+    "bytes": 846181,
+    "sha256": "78db0b47f2c4e43a382105b2f1ce3e27de849f0b6397ed3d628d7b2ce667eac8"
+  },
+  "providers": [
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+      "soname": "ld-linux-x86-64.so.2",
+      "sha256": "6b887f408400b77f99a5c0e99f380c84264eef29156c191713b3343189cb0391",
+      "bytes": 253264
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libc.so.6",
+      "soname": "libc.so.6",
+      "sha256": "f38d0ec29b1ebfe7bb923b73b68b07b73c395e0cf5a0f291fbce495c3f1c3555",
+      "bytes": 2177968
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libdrm.so.2.134.0",
+      "soname": "libdrm.so.2",
+      "sha256": "eb9eaddd93b1c2b7c47cf15d52a640b31f295149196509472f79fe7dac734cd4",
+      "bytes": 100360
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libm.so.6",
+      "soname": "libm.so.6",
+      "sha256": "d82b9ae8b26fa4f54c35313d94d28133fa88186a96227ee6d9422a5c85be33b8",
+      "bytes": 1227608
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libva-drm.so.2.2400.0",
+      "soname": "libva-drm.so.2",
+      "sha256": "7aebc8fb6919e24d6a1f4c324402e3de702c5501bb6370b1a4b0cd28ffd08a6a",
+      "bytes": 15600
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libva.so.2.2400.0",
+      "soname": "libva.so.2",
+      "sha256": "8d9210f6575e752eb5cfec9f168c058c45ca98adf6005600ae913d2593894487",
+      "bytes": 239536
+    },
+    {
+      "path_in_Platform": "lib/x86_64-linux-gnu/libz.so.1.3.1.zlib-ng",
+      "soname": "libz.so.1",
+      "sha256": "627c5fa735ff7557e14c595871010c09d6b6b7eaa470c9b70b695c5e82adf00c",
+      "bytes": 190976
+    }
+  ],
+  "notices": [
+    {
+      "path": "notices/glibc/LICENSES",
+      "bytes": 19665,
+      "sha256": "b22a69aa3f80a5201818c66cb0df0f25f9fa13cf5861b0093a058dbd12d50dce"
+    },
+    {
+      "path": "notices/libva/COPYING",
+      "bytes": 1130,
+      "sha256": "c86a782ee845b52472dae9b9d79fb915d333628ac0efe49cdce63644814931de"
+    },
+    {
+      "path": "notices/zlib-ng/LICENSE.md",
+      "bytes": 867,
+      "sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee"
+    }
+  ],
+  "libdrm_notice_directory_present": false,
+  "source_materials": [
+    {
+      "path": "sdk/elements/bootstrap/glibc.bst",
+      "bytes": 4912,
+      "sha256": "ca936053cc8e01f12dcba5ebca36f8c840294f3a429bedd3d762ac00b7a6bc2c",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/elements/bootstrap/glibc.bst"
+    },
+    {
+      "path": "sdk/elements/bootstrap/include/glibc-source.yml",
+      "bytes": 273,
+      "sha256": "645698fae494818845e4e04e2a149d2926b136000f109809b29ff721c307534a",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/elements/bootstrap/include/glibc-source.yml"
+    },
+    {
+      "path": "sdk/elements/bootstrap/zlib-ng.bst",
+      "bytes": 943,
+      "sha256": "22f2b10d8ca05253f381e5446ea657383bf2c22050c3ad567daff232f1265ff2",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/elements/bootstrap/zlib-ng.bst"
+    },
+    {
+      "path": "sdk/elements/components/libdrm.bst",
+      "bytes": 926,
+      "sha256": "46c43fd6ebf4011bc8931cb8377742fa0b3368c16a76bbdde06c8e67b5f17e34",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/elements/components/libdrm.bst"
+    },
+    {
+      "path": "sdk/elements/components/libva.bst",
+      "bytes": 1002,
+      "sha256": "927751664f66bae819f0feaa00e76c04d46fea972ee63185fb8773788bb39f0e",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/elements/components/libva.bst"
+    },
+    {
+      "path": "sdk/patches/glibc/fix-dl-dst-lib.patch",
+      "bytes": 602,
+      "sha256": "9f45bbf5a2deda488f4e295ddf07299925dd479d2ee1fc7821580191483e7d40",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/patches/glibc/fix-dl-dst-lib.patch"
+    },
+    {
+      "path": "sdk/project.conf",
+      "bytes": 3905,
+      "sha256": "3d2220d4647a6de1a1912c933848b853a209bbe48bb523b9ca67014f2c493b48",
+      "source_url": "https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/raw/d0c0b597d58f8cc14ee26c427aec1be13c6a313e/project.conf"
+    },
+    {
+      "path": "source/libdrm/meson.build",
+      "bytes": 11350,
+      "sha256": "cddfdf347a0492f29e07793d7797859f05017aafac854eec8270e1f55a57eb43",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/meson.build"
+    },
+    {
+      "path": "source/libdrm/xf86drm.c",
+      "bytes": 136562,
+      "sha256": "dcab8434584e7485d2eb79c847a7c4b6d3b2c90588fad4f3ca9c9b6f346a89a9",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/xf86drm.c"
+    },
+    {
+      "path": "source/libdrm/xf86drmHash.c",
+      "bytes": 7163,
+      "sha256": "76c46073e7745ca474e077558b612390eac6850171f8a9889e7279d113209d6d",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/xf86drmHash.c"
+    },
+    {
+      "path": "source/libdrm/xf86drmRandom.c",
+      "bytes": 4860,
+      "sha256": "f9c811c486704b2435d756c87a82dd1b747aba7657c71fc7a9590db7b1e697fe",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/xf86drmRandom.c"
+    },
+    {
+      "path": "source/libdrm/xf86drmSL.c",
+      "bytes": 8718,
+      "sha256": "75e07aba21a635e78ec1108f6c4f88a3e8a6aa57e37f96a239a4e6742a995e82",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/xf86drmSL.c"
+    },
+    {
+      "path": "source/libdrm/xf86drmMode.c",
+      "bytes": 45167,
+      "sha256": "642bf81371fd6e8cc4b76147772f78bea5fbcdfdbfeecca5180877623dd80dda",
+      "source_url": "https://gitlab.freedesktop.org/mesa/libdrm/-/raw/e984d448b8b17aab853369e6c203e53719f46de1/xf86drmMode.c"
+    },
+    {
+      "path": "source/glibc/COPYING.LESSERv2",
+      "bytes": 26419,
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "source_url": "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=COPYING.LESSERv2;hb=6b48c0b29c359dfa84c09c32373a48c8f663c304"
+    }
+  ],
+  "remaining": [
+    "Complete corresponding-source/component-notice coverage, including libdrm headers/helper files",
+    "Historical FFmpeg binary/source correspondence and reproducible external compilation",
+    "First-user acquisition/full setup costs and explicit maintenance/public-distribution disposition"
+  ],
+  "components": [
+    {
+      "name": "glibc",
+      "declared_version": "2.44",
+      "source_url": "https://sourceware.org/git/glibc.git",
+      "source_commit": "6b48c0b29c359dfa84c09c32373a48c8f663c304",
+      "providers": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libm.so.6"
+      ]
+    },
+    {
+      "name": "libdrm",
+      "declared_version": "2.4.134",
+      "source_url": "https://gitlab.freedesktop.org/mesa/drm.git",
+      "source_commit": "e984d448b8b17aab853369e6c203e53719f46de1",
+      "providers": [
+        "libdrm.so.2"
+      ]
+    },
+    {
+      "name": "libva",
+      "declared_version": "2.24.1",
+      "source_url": "https://github.com/intel/libva.git",
+      "source_commit": "710eb465c6277ee2cac3e6948767b01eebe7e77a",
+      "providers": [
+        "libva.so.2",
+        "libva-drm.so.2"
+      ]
+    },
+    {
+      "name": "zlib-ng",
+      "declared_version": "2.3.3",
+      "source_url": "https://github.com/zlib-ng/zlib-ng.git",
+      "source_commit": "12731092979c6d07f42da27da673a9f6c7b13586",
+      "providers": [
+        "libz.so.1"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,523 @@
+# CrystalHD Settings message template.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+msgid ""
+msgstr ""
+"Project-Id-Version: crystalhd-settings\n"
+"Report-Msgid-Bugs-To: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "_H.264 input policy"
+msgstr ""
+
+msgid "E_xplicit prefeed"
+msgstr ""
+
+msgid "READY re_mapping"
+msgstr ""
+
+msgid "i915 _write combining"
+msgstr ""
+
+msgid "Receive _buffers"
+msgstr ""
+
+msgid "VA _debug logging"
+msgstr ""
+
+msgid "VA timing _trace"
+msgstr ""
+
+msgid ""
+"Saved experiments need an explicitly acknowledged launch. Ordinary "
+"applications may ignore these saved requests."
+msgstr ""
+
+msgid ""
+"Updated CrystalHD components read supported defaults when an app starts. See "
+"Installation for file declarations; running apps are not inspected."
+msgstr ""
+
+msgid ""
+"Save outcome is uncertain. Inspect the file and Reload before another write."
+msgstr ""
+
+msgid "Saved, but readback changed or failed. Reload before another write."
+msgstr ""
+
+msgid ""
+"Saved, but durability is unconfirmed. Inspect the file and Reload before "
+"another write."
+msgstr ""
+
+msgid ""
+"Defaults saved. Restart applications to read them; active state is "
+"unconfirmed."
+msgstr ""
+
+msgid "CrystalHD Settings"
+msgstr ""
+
+msgid "Defaults for next playback"
+msgstr ""
+
+msgid "Profiles and presets"
+msgstr ""
+
+msgid "Player"
+msgstr ""
+
+msgid "Decoder defaults"
+msgstr ""
+
+msgid "Advanced"
+msgstr ""
+
+msgid "_Preset"
+msgstr ""
+
+msgid ""
+"Presets provide defaults, not overrides. Player-only presets affect "
+"crystalhd-play, not Kodi."
+msgstr ""
+
+msgid "Profile used by de_fault"
+msgstr ""
+
+msgid ""
+"Select the profile for future application starts. Selecting what to edit "
+"below does not change this choice."
+msgstr ""
+
+msgid "Settings to _edit"
+msgstr ""
+
+msgid ""
+"Edit user defaults or a named profile. Changing this view keeps all unsaved "
+"edits and does not select the default profile."
+msgstr ""
+
+msgid "_New profile…"
+msgstr ""
+
+msgid "Remove _user profile…"
+msgstr ""
+
+msgid "Model value and origin: "
+msgstr ""
+
+msgid "_Video decoder"
+msgstr ""
+
+msgid "Card output _width"
+msgstr ""
+
+msgid "Card width v_alue"
+msgstr ""
+
+msgid "0 or an even width from 128 to 1918"
+msgstr ""
+
+msgid "Software _output size"
+msgstr ""
+
+msgid "Output size valu_e"
+msgstr ""
+
+msgid "WIDTHxHEIGHT, for example 1920x1080"
+msgstr ""
+
+msgid "Preview and source: "
+msgstr ""
+
+msgid ""
+"Only updated crystalhd-play reads these defaults; see Installation for its "
+"reader declaration. Other players keep their own controls. Scaling needs "
+"hardware decoding; software resizing also needs a nonzero card width. "
+"Interlaced H.264 widths must be multiples of 16. Saving takes effect on the "
+"next playback."
+msgstr ""
+
+msgid ""
+"These controls can clear saved experiments. Activation requires an explicit "
+"acknowledged launch; it is not enabled by this editor. Off for explicit "
+"prefeed still allows eligible automatic prefeed."
+msgstr ""
+
+msgid "Configuration model and origins"
+msgstr ""
+
+msgid "Setting"
+msgstr ""
+
+msgid "Value (model)"
+msgstr ""
+
+msgid "Origin"
+msgstr ""
+
+msgid "Use / timing"
+msgstr ""
+
+msgid "Native model state"
+msgstr ""
+
+msgid "Details"
+msgstr ""
+
+msgid "Refresh _installation status"
+msgstr ""
+
+msgid ""
+"Read component declarations and the completed on-disk userspace receipt. "
+"Does not save settings, load a decoder, inspect running mappings or restart "
+"applications."
+msgstr ""
+
+msgid "Installation"
+msgstr ""
+
+msgid "User file: "
+msgstr ""
+
+msgid "_Reload file"
+msgstr ""
+
+msgid "Reread saved files. Ask before discarding any unsaved changes."
+msgstr ""
+
+msgid "_Clear all user settings…"
+msgstr ""
+
+msgid ""
+"Delete all saved user overrides and profiles after confirmation. System "
+"settings remain."
+msgstr ""
+
+msgid "_Save changes"
+msgstr ""
+
+msgid ""
+"Save every edited profile and user default. Running applications are "
+"unchanged."
+msgstr ""
+
+msgid "_Close"
+msgstr ""
+
+msgid "_Quit"
+msgstr ""
+
+msgid ""
+"Exit the settings app and remove its tray icon. Ask before discarding "
+"unsaved changes."
+msgstr ""
+
+msgid "Inspecting installed components…"
+msgstr ""
+
+msgid "Installation inspection failed. Refresh to retry."
+msgstr ""
+
+msgid " (saved; unavailable here)"
+msgstr ""
+
+msgid "Enter 0 for native width, or an even number from 128 to 1918."
+msgstr ""
+
+msgid ""
+"Enter WIDTHxHEIGHT: positive even dimensions, each at most 4096, total at "
+"most 4096×2160."
+msgstr ""
+
+msgid "Inherit preset"
+msgstr ""
+
+msgid "standard"
+msgstr ""
+
+msgid "Player only"
+msgstr ""
+
+msgid "acknowledged CLI launch only"
+msgstr ""
+
+msgid "unavailable here"
+msgstr ""
+
+msgid "Use system profile selection"
+msgstr ""
+
+msgid "User defaults (before profile overrides)"
+msgstr ""
+
+msgid " (user overrides)"
+msgstr ""
+
+msgid " (system; edit adds user overrides)"
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "On"
+msgstr ""
+
+msgid "Automatic / bounded"
+msgstr ""
+
+msgid "Strict finite"
+msgstr ""
+
+msgid "16 buffers (standard)"
+msgstr ""
+
+msgid "Follow preset/system defaults"
+msgstr ""
+
+msgid "Follow defaults/system profile"
+msgstr ""
+
+msgid "Use built-in default"
+msgstr ""
+
+msgid "CrystalHD hardware (required)"
+msgstr ""
+
+msgid "Software decoding (CPU)"
+msgstr ""
+
+msgid "Set a value"
+msgstr ""
+
+msgid ""
+"Hardware requires actual CrystalHD output and never silently falls back. "
+"Software uses the CPU. Built-in default: hardware."
+msgstr ""
+
+msgid ""
+"Card width controls pixels transferred over PCIe, not display size. Smaller "
+"output loses detail. Built-in default: 0, native width."
+msgstr ""
+
+msgid ""
+"Optional CPU resize after card scaling; it cannot recover lost detail. Built-"
+"in default: no software resize."
+msgstr ""
+
+msgid ""
+"Follow defaults removes this override and uses other saved settings. Built-"
+"in default ignores those settings. Explicit CLI overrides still win."
+msgstr ""
+
+msgid "Previewing editing profile, not the application's default selection. "
+msgstr ""
+
+msgid "Native file reading is bypassed in this settings process's environment."
+msgstr ""
+
+msgid "Explicit prefeed Off still permits eligible automatic prefeed."
+msgstr ""
+
+msgid "Next start in updated VA/DIL; not confirmed active"
+msgstr ""
+
+msgid "Next start in updated crystalhd-play; not confirmed active"
+msgstr ""
+
+msgid "Saved only; automatic consumer unavailable"
+msgstr ""
+
+msgid "Launch-only; native transaction may be ignored"
+msgstr ""
+
+msgid ""
+"Experimental preset; ordinary crystalhd-play ignores this managed overlay"
+msgstr ""
+
+msgid ""
+"Environment override in this settings process; application state unconfirmed"
+msgstr ""
+
+msgid "Built-in default"
+msgstr ""
+
+msgid "User defaults"
+msgstr ""
+
+msgid "System settings"
+msgstr ""
+
+msgid "User profile"
+msgstr ""
+
+msgid "System profile"
+msgstr ""
+
+msgid "Preset"
+msgstr ""
+
+msgid "Environment override"
+msgstr ""
+
+msgid "Preview: "
+msgstr ""
+
+msgid "From: "
+msgstr ""
+
+msgid "Model unavailable"
+msgstr ""
+
+msgid "Unsaved changes"
+msgstr ""
+
+msgid "Settings loaded; running applications have not been inspected"
+msgstr ""
+
+msgid ""
+"Some inspected components do not advertise settings support; see "
+"Installation."
+msgstr ""
+
+msgid "Editing profile: "
+msgstr ""
+
+msgid "Editing user defaults"
+msgstr ""
+
+msgid "Default profile: "
+msgstr ""
+
+msgid "None"
+msgstr ""
+
+msgid ""
+"Finish invalid Player values before saving, including values in other "
+"profiles."
+msgstr ""
+
+msgid "Settings conflict: "
+msgstr ""
+
+msgid "Configuration could not be loaded: "
+msgstr ""
+
+msgid ""
+"Saved configuration changed outside this window. Drafts are preserved; "
+"Reload before saving."
+msgstr ""
+
+msgid ""
+"Saved configuration could not be checked safely. Drafts are preserved; "
+"Reload before saving."
+msgstr ""
+
+msgid ""
+"Checking saved configuration in the background; Save and Clear will resume "
+"when it finishes."
+msgstr ""
+
+msgid ""
+"Model is partial: native-only environment settings are not validated here."
+msgstr ""
+
+msgid ""
+"Some requests are rejected by the native model; see the model state column."
+msgstr ""
+
+msgid "Window-only mode; closing exits."
+msgstr ""
+
+msgid "Tray unavailable; closing this window exits."
+msgstr ""
+
+msgid "Hide to tray"
+msgstr ""
+
+msgid "Keep settings running; reopen from the tray icon."
+msgstr ""
+
+msgid "No tray is available; closing exits the settings app."
+msgstr ""
+
+msgid "New profile"
+msgstr ""
+
+msgid "_Cancel"
+msgstr ""
+
+msgid "C_reate"
+msgstr ""
+
+msgid "1–64 ASCII letters/digits/._-; start with letter/digit"
+msgstr ""
+
+msgid "_Profile name"
+msgstr ""
+
+msgid ""
+"Profile added to draft. Select it as Default profile if desired, then Save."
+msgstr ""
+
+msgid "Remove this user profile from the draft?"
+msgstr ""
+
+msgid ""
+"System definitions remain. A user default selecting a removed user-only "
+"profile becomes inherited. Save is required."
+msgstr ""
+
+msgid "User profile removed from draft; Save to persist."
+msgstr ""
+
+msgid "Correct the highlighted Player values before saving."
+msgstr ""
+
+msgid "Save launch-only experimental defaults?"
+msgstr ""
+
+msgid ""
+"This does not enable experiments in ordinary Kodi. An acknowledged launch "
+"remains required. Risks: "
+msgstr ""
+
+msgid "Keep your edits; Reload to review changes before retrying."
+msgstr ""
+
+msgid "Discard unsaved changes and reload?"
+msgstr ""
+
+msgid "Reload reads the current user and system files."
+msgstr ""
+
+msgid "Clear all saved user settings?"
+msgstr ""
+
+msgid ""
+"This deletes every user override and profile, including unfinished edits. "
+"System settings and process overrides remain."
+msgstr ""
+
+msgid "Discard unsaved changes and quit?"
+msgstr ""
+
+msgid "Saved defaults remain after this utility exits."
+msgstr ""
+
+msgid "Open settings…"
+msgstr ""
+
+msgid "Quit"
+msgstr ""
+
+msgid ""
+"Edit saved CrystalHD defaults; active applications are not reconfigured."
+msgstr ""
+
+msgid "use a separate window only"
+msgstr ""
+
+msgid "start in the tray when available; otherwise show the window"
+msgstr ""

@@ -86,6 +86,15 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #include "crystalhd-wmv3.h"
 #include "crystalhd-vpp-bob.h"
 
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+#include "../../tests/vaapi-vpp-payload-observer.h"
+#define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) \
+  (surface)->payload_observer_stamp.Installed()
+#else
+// Test diagnostics have no runtime knob, state, arguments or copies here.
+#define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) do {} while (false)
+#endif
+
 #if defined(__GNUC__)
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
 // output-event API is negotiated only when the symbol is present.
@@ -538,6 +547,11 @@ static bool IsBgraStorageFormat(uint32_t fourcc) {
 }
 
 struct Surface {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  crystalhd_test_vpp_payload::Stamp payload_observer_stamp;
+  bool payload_observer_is_view = false;
+  crystalhd_test_vpp_payload::Geometry payload_observer_view_geometry;
+#endif
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
   unsigned int height = 0;
@@ -673,6 +687,7 @@ struct Surface {
     pitch[0] = pitch[1] = static_cast<unsigned int>(stride);
     planes[0] = storage.data();
     planes[1] = bytes == 0 ? nullptr : planes[0] + stride * luma_rows;
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -703,6 +718,7 @@ struct Surface {
       if (planes[0] == MAP_FAILED || planes[0] == nullptr)
         return false;
       pitch[0] = mapped_pitch;
+      CRYSTALHD_TEST_STORAGE_INSTALLED(this);
       return true;
     }
     if (fourcc != VA_FOURCC_NV12)
@@ -723,6 +739,7 @@ struct Surface {
           pitch[0] = mapped_pitch;
           pitch[1] = gbm_bo_get_stride_for_plane(bo, 1);
           planes[1] = planes[0] + gbm_bo_get_offset(bo, 1);
+          CRYSTALHD_TEST_STORAGE_INSTALLED(this);
           return true;
         }
         planes[0] = nullptr;
@@ -797,6 +814,7 @@ struct Surface {
                         ? "experimental i915 WC/GTT domains enabled"
                         : "experimental i915 WC mapping unconfirmed; using DMA-BUF sync");
             }
+            CRYSTALHD_TEST_STORAGE_INSTALLED(this);
             return true;
           }
           close(prime_fd);
@@ -874,6 +892,7 @@ struct Surface {
           pitch[1] = gbm_bo_get_stride_for_plane(bo, 1);
           planes[1] = planes[0] + gbm_bo_get_offset(bo, 1);
         }
+        CRYSTALHD_TEST_STORAGE_INSTALLED(this);
         return true;
       }
     }
@@ -914,6 +933,7 @@ struct Surface {
                       plane_desc[plane].offset;
       pitch[plane] = plane_desc[plane].pitch;
     }
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -962,6 +982,7 @@ struct Surface {
       planes[plane] = static_cast<uint8_t *>(object_maps[0]) +
                       desc.offsets[plane];
     }
+    CRYSTALHD_TEST_STORAGE_INSTALLED(this);
     return true;
   }
 
@@ -1995,6 +2016,12 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         }
       }
     }
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    // Tentative copy only: both existing CPU access windows still own pixels.
+    // No new access/wait or filesystem output occurs at this test hook.
+    crystalhd_test_vpp_payload::Copy(*source, *destination, source_region,
+                                    output_region, deinterlace, source_is_field);
+#endif
     if (!destination_write_started && !destination->EndCpuWrite()) {
       source->EndCpuRead();
       Debug("VPP operation failed stage=nv12-target-cpu-end");
@@ -2009,6 +2036,9 @@ static VAStatus ProcessVpp(SwsContext **scaler,
   destination->failed = false;
   destination->expected_timestamp = source->expected_timestamp;
   destination->frame_timestamp = source->frame_timestamp;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  crystalhd_test_vpp_payload::ProcessSuccess();
+#endif
   return VA_STATUS_SUCCESS;
 }
 
@@ -2254,6 +2284,8 @@ struct DecodeContext {
   // Not yet accepted by DIL: never confers timestamp ownership on output.
   uint64_t pending_prefeed_timestamp = 0;
   uint64_t pending_prefeed_generation = 0;
+  // EndPicture parameters stay owned while replay admission yields the mutex.
+  bool admission_in_progress = false;
   bool closing = false;
   bool destroy_in_progress = false;
   bool retired = false;
@@ -2644,6 +2676,12 @@ struct VppPixelView : Surface {
   ~VppPixelView() { object_fds.clear(); }
   void Capture(const std::shared_ptr<Surface> &surface) {
     allocation = surface;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    // A borrowed snapshot identifies its pinned allocation, not the view.
+    payload_observer_stamp = surface->payload_observer_stamp;
+    payload_observer_is_view = true;
+    payload_observer_view_geometry = crystalhd_test_vpp_payload::Describe(*surface);
+#endif
     width = surface->width;
     height = surface->height;
     fourcc = surface->fourcc;
@@ -2728,6 +2766,9 @@ static void RunDecodeWorker(Driver *driver);
 static void RunVppWorker(Driver *driver);
 
 struct Driver {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  std::shared_ptr<crystalhd_test_vpp_payload::State> payload_observer;
+#endif
   std::mutex mutex;
   std::condition_variable condition;
   uint32_t next_config = 1;
@@ -2750,6 +2791,7 @@ struct Driver {
   SwsContext *vpp_scaler = nullptr;
   std::vector<uint8_t> vpp_argb_staging;
   bool stopping = false;
+  unsigned int active_admission_waits = 0;
   std::thread decode_worker;
   std::thread vpp_worker;
   int decode_control_fd = -1;
@@ -2768,6 +2810,15 @@ struct Driver {
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
             crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    if (trace.enabled()) {
+      try {
+        payload_observer.reset(new (std::nothrow) crystalhd_test_vpp_payload::State(trace.session()));
+      } catch (const std::bad_alloc &) {
+        // The private observer is unavailable; normal VA initialization proceeds.
+      }
+    }
+#endif
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -5920,6 +5971,7 @@ static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
         picture->planes[plane] = preserved.planes[plane];
       }
       picture->direct_backing.reset();
+      CRYSTALHD_TEST_STORAGE_INSTALLED(picture.get());
     }
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -5993,8 +6045,123 @@ static bool UnobservedPendingCpuBacking(
       old.planes[1] == old.storage.data() + stride * height;
 }
 
+static VAStatus WaitForH264ReplayAdmission(
+    Driver *driver, DecodeContext *decode,
+    const std::shared_ptr<Surface> &original,
+    const std::shared_ptr<Surface> &target, VASurfaceID target_id,
+    bool idr, size_t bytes, std::unique_lock<std::mutex> *driver_lock,
+    bool *revalidate, uint64_t timeout_ns = VA_TIMEOUT_INFINITE) {
+  *revalidate = false;
+  // Validate-only source fixtures need not own a public API lock. They retain
+  // Append's hard guards; the public EndPicture path always supplies its lock.
+  if (driver_lock == nullptr || !driver_lock->owns_lock())
+    return VA_STATUS_SUCCESS;
+  // Keep the ordinary nonfull path unchanged, including its allocation-error
+  // boundary. History reclamation is needed here only at actual saturation.
+  if (decode->replay.cached_pictures() < decode->replay.MaxCachedPictures() &&
+      decode->replay.cached_bytes() <= decode->replay.MaxCachedBytes() &&
+      bytes <= decode->replay.MaxCachedBytes() - decode->replay.cached_bytes())
+    return VA_STATUS_SUCCESS;
+  if (decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes) !=
+          CrystalHDDecodeReplay::Admission::Full ||
+      !decode->replay.HasPendingTransportWork())
+    return VA_STATUS_SUCCESS;
+  if (decode->admission_in_progress ||
+      driver->active_admission_waits == UINT_MAX)
+    return VA_STATUS_ERROR_HW_BUSY;
+  const uint64_t generation = decode->generation;
+  const VASurfaceID request_target = decode->target;
+  const auto request_owner = decode->transaction_target.lock();
+  const uint64_t request_transaction = decode->target_transaction;
+  const uint64_t original_transaction = original->picture_transaction;
+  const uint64_t original_identity = original->decode_identity;
+  const uint64_t target_transaction = target->picture_transaction;
+  const uint64_t target_identity = target->decode_identity;
+  const auto current_request = [&]() -> VAStatus {
+    if (driver->stopping)
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    const auto context = driver->contexts.find(decode->id);
+    if (context == driver->contexts.end() || context->second.get() != decode ||
+        decode->closing || decode->retired || decode->generation != generation ||
+        decode->target != request_target ||
+        decode->target_transaction != request_transaction ||
+        decode->transaction_target.lock() != request_owner)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    const auto source_binding = driver->surfaces.find(request_target);
+    const auto target_binding = driver->surfaces.find(target_id);
+    if (source_binding == driver->surfaces.end() || source_binding->second != original ||
+        target_binding == driver->surfaces.end() || target_binding->second != target ||
+        original->destroyed || target->destroyed ||
+        original->picture_transaction != original_transaction ||
+        original->decode_identity != original_identity ||
+        target->picture_transaction != target_transaction ||
+        target->decode_identity != target_identity)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+    return VA_STATUS_SUCCESS;
+  };
+  struct AdmissionLease {
+    Driver &driver;
+    DecodeContext &decode;
+    AdmissionLease(Driver &d, DecodeContext &c) : driver(d), decode(c) {
+      decode.admission_in_progress = true;
+      ++driver.active_admission_waits;
+    }
+    ~AdmissionLease() {
+      decode.admission_in_progress = false;
+      --driver.active_admission_waits;
+      driver.condition.notify_all();
+    }
+  } lease(*driver, *decode);
+  *revalidate = true;
+  Debug("H.264 replay admission wait: context=%u cached=%zu/%zu bytes=%zu/%zu outstanding=%zu incoming=%zu",
+        decode->id, decode->replay.cached_pictures(), decode->replay.MaxCachedPictures(),
+        decode->replay.cached_bytes(), decode->replay.MaxCachedBytes(),
+        decode->replay.outstanding(), bytes);
+  const auto start = std::chrono::steady_clock::now();
+  for (;;) {
+    VAStatus status = current_request();
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    const auto admission =
+        decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes);
+    if (admission != CrystalHDDecodeReplay::Admission::Full ||
+        !decode->replay.HasPendingTransportWork())
+      return VA_STATUS_SUCCESS;
+    const uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    status = DecodeWaitStatus(timeout_ns, elapsed);
+    if (status == VA_STATUS_ERROR_DECODING_ERROR)
+      return FailDecode(driver, decode, "H.264 replay admission timed out");
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    // Retire genuine accepted output, and submit already accepted backlog.
+    // Saturation is not EOF and never authorizes sealing or dropping input.
+    status = ReceiveAvailable(driver, decode, 1);
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode, 4);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    status = current_request();
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    if (decode->replay.PrepareAppend(decode->next_timestamp, idr, bytes) !=
+            CrystalHDDecodeReplay::Admission::Full ||
+        !decode->replay.HasPendingTransportWork())
+      return VA_STATUS_SUCCESS;
+    driver->NotifyDecodeWorker();
+    if (decode->output_poll && driver->decode_control_fd >= 0) {
+      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+    } else {
+      driver_lock->unlock();
+      usleep(1000);
+      driver_lock->lock();
+    }
+  }
+}
+
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
-                              VAProfile profile) {
+                              VAProfile profile,
+                              std::unique_lock<std::mutex> *driver_lock = nullptr) {
   if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
     return VA_STATUS_ERROR_DECODING_ERROR;
   if (IsH264Profile(profile) &&
@@ -6382,6 +6549,21 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       Debug("large H.264 input requires fragmented libcrystalhd input");
       return RejectH264Picture(driver, decode, VA_STATUS_ERROR_INVALID_PARAMETER);
     }
+  }
+
+  if (IsH264Profile(profile)) {
+    bool revalidate = false;
+    const VAStatus admission = WaitForH264ReplayAdmission(
+        driver, decode, original_surface, target_surface, target_id, idr,
+        bitstream.size(), driver_lock, &revalidate);
+    if (admission != VA_STATUS_SUCCESS)
+      return admission;
+    // Progress may have completed old pictures or yielded to other contexts.
+    // Repeat all surface/lease/parameter validation before capturing backing.
+    // The mutex is owned and no other producer can refill this context here,
+    // so the second pass has capacity without another admission wait.
+    if (revalidate)
+      return SubmitPicture(driver, decode, profile, driver_lock);
     Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
           bitstream.size(), decode->slice_data.size());
     if (decode->next_timestamp == kTimestampStep) {
@@ -6677,12 +6859,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     std::vector<uint8_t> unused;
     unused.swap(retirement_candidate->storage);
     retirement_candidate->planes[0] = retirement_candidate->planes[1] = nullptr;
+    CRYSTALHD_TEST_STORAGE_INSTALLED(retirement_candidate.get());
     decode->private_backing_pool->Recycle(std::move(unused));
     if (retirement_candidate->centered_pixels) {
       const auto &small = retirement_candidate->centered_pixels;
       std::vector<uint8_t> small_unused;
       small_unused.swap(small->storage);
       small->planes[0] = small->planes[1] = nullptr;
+      CRYSTALHD_TEST_STORAGE_INSTALLED(small.get());
       decode->private_backing_pool->Recycle(std::move(small_unused));
     }
   }
@@ -6821,6 +7005,12 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       return VA_STATUS_ERROR_OPERATION_FAILED;
     if (source->centered_geometry.enabled && !ComposeCenteredCanvas(prepared.get(), true))
       return VA_STATUS_ERROR_OPERATION_FAILED;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+    prepared->payload_observer_stamp.first = {
+        true, first.bottom, first.bottom_first, first.generation,
+        first.decode_identity, first.timestamp, first.picture_number,
+        first.sess_num, first.picture_meta_payload};
+#endif
     *view = std::move(prepared);
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -7093,6 +7283,12 @@ static VAStatus SyncDecodeSurface(
         surface->trace_decode_identity == expected_decode_identity &&
         surface->trace_submission_ordinal == expected_submission_ordinal;
   };
+  const auto wait_binding_status = [&]() -> VAStatus {
+    if (canceled && canceled())
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    return same_wait_binding() ? VA_STATUS_SUCCESS
+                               : VA_STATUS_ERROR_INVALID_SURFACE;
+  };
   const auto presentation_ready = [&]() {
     return same_wait_binding() &&
         ExperimentalPresentationReadable(driver, surface.get());
@@ -7262,6 +7458,12 @@ static VAStatus SyncDecodeSurface(
       usleep(1000);
       driver_lock->lock();
     }
+    // A replacement can already be ready when the mutex is reacquired.
+    // Validate the complete captured binding before any ready fast return,
+    // including DecodeWaitState's completed-picture/context-retirement path.
+    const VAStatus binding_state = wait_binding_status();
+    if (binding_state != VA_STATUS_SUCCESS)
+      return binding_state;
     if (presentation_ready())
       return VA_STATUS_SUCCESS;
     const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
@@ -7278,6 +7480,9 @@ static VAStatus SyncDecodeSurface(
         return VA_STATUS_SUCCESS;
     }
   }
+  const VAStatus binding_state = wait_binding_status();
+  if (binding_state != VA_STATUS_SUCCESS)
+    return binding_state;
   return presentation_ready() ? VA_STATUS_SUCCESS
                               : DecodeSurfaceState(surface.get());
 }
@@ -7327,6 +7532,13 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
     --operation.target_owner->vpp_writers;
   const bool successful_commit =
       committed && status == VA_STATUS_SUCCESS && released;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  if (driver->payload_observer)
+    driver->payload_observer->Commit(sequence, status, successful_commit,
+        !driver->stopping && !PendingVppCanceled(driver, operation) &&
+        !operation.source->failed &&
+        operation.source->expected_timestamp == operation.source_timestamp);
+#endif
   if (successful_commit) {
     InheritTraceIdentity(operation.target.get(), *operation.source);
     if (operation.target_owner != operation.target)
@@ -7663,6 +7875,15 @@ static void RunVppWorker(Driver *driver) {
       driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
       VppPixelView input, output;
       const auto &source = first_field_view ? first_field_view : operation.source;
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      const auto observer_owner = operation.source_owner.lock();
+      crystalhd_test_vpp_payload::Scope observer_scope(
+          observer_owner ? driver->payload_observer.get() : nullptr,
+          operation.trace_binding, *operation.source,
+          observer_owner ? *observer_owner : *operation.source, *operation.target,
+          operation.source_region, operation.output_region,
+          operation.deinterlace, operation.sequence);
+#endif
       if (CaptureVppPixels(operation, source, first_field_view != nullptr,
                            &input, &output)) {
         completed->pixels_active = true;
@@ -7733,7 +7954,8 @@ static VAStatus Terminate(VADriverContextP context) {
     // An admitted destroy may be outside this mutex in a terminal DIL call.
     // Join that exact transaction before closing its handle or freeing Driver.
     driver->condition.wait(lock, [&] {
-      return std::none_of(driver->contexts.begin(), driver->contexts.end(),
+      return driver->active_admission_waits == 0 &&
+          std::none_of(driver->contexts.begin(), driver->contexts.end(),
           [](const auto &entry) { return entry.second->destroy_in_progress; });
     });
     for (const auto &entry : driver->contexts) {
@@ -8297,6 +8519,7 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
       promotion.picture->planes[plane] = promotion.pixels->planes[plane];
     }
     promotion.picture->direct_backing.reset();
+    CRYSTALHD_TEST_STORAGE_INSTALLED(promotion.picture.get());
   }
   std::unordered_set<DecodeContext *> reset_decoders;
   // Fresh VPP probe surfaces have no decoder or queued conversion to wake.
@@ -8854,6 +9077,11 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
                                           VAContextID context_id,
                                           uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  // Declared before lock: normal DestroyCall cleanup and unlock precede I/O.
+  // It pins only independent diagnostic arrays, never the Driver or surfaces.
+  crystalhd_test_vpp_payload::PublishOnReturn payload_publication;
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto found = driver->contexts.find(context_id);
   if (found == driver->contexts.end())
@@ -8955,6 +9183,22 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // Their disposal must not interrupt an unrelated decoder's RX poll.
   if (!decode->video_process || !driver->pending_vpp.empty())
     driver->NotifyDecodeWorker();
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+  if (!decode->video_process) {
+    payload_publication.has_status = true;
+    if (driver->payload_observer) {
+      if (driver->payload_observer->Retire(fields.context, fields.generation, status))
+        payload_publication.state = driver->payload_observer;
+      payload_publication.status = driver->payload_observer->Snapshot(
+          fields.context, fields.generation, status);
+    } else {
+      payload_publication.status.session = driver->trace.session();
+      payload_publication.status.context = fields.context;
+      payload_publication.status.generation = fields.generation;
+      payload_publication.status.retirement_status = status;
+    }
+  }
+#endif
   return status;
 }
 
@@ -9143,6 +9387,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   auto target_surface = driver->surfaces.find(target);
   if (target_surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, target_surface->second.get()))
@@ -9614,6 +9860,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   if (decode->second->video_process) {
     // A failed replacement Render must not leave an earlier filter snapshot
     // available for EndPicture to commit as if the failed request succeeded.
@@ -9876,6 +10124,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (decode->second->admission_in_progress)
+    return VA_STATUS_ERROR_HW_BUSY;
   const std::shared_ptr<DecodeContext> decode_context = decode->second;
   if (decode_context->video_process) {
     const VASurfaceID request_target = decode_context->target;
@@ -9993,6 +10243,12 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
         if (!decoded_source->failed)
           driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, fields);
       }
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      crystalhd_test_vpp_payload::Scope observer_scope(driver->payload_observer.get(),
+          fields, *decoded_source, *source_owner, *target_surface,
+          decode_context->vpp_source_region, decode_context->vpp_output_region,
+          decode_context->vpp_deinterlace, sequence);
+#endif
       VAStatus status = decoded_source->failed
                             ? VA_STATUS_ERROR_DECODING_ERROR
                             : ProcessVpp(&driver->vpp_scaler,
@@ -10015,6 +10271,16 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
                       status != VA_STATUS_SUCCESS);
       if (status == VA_STATUS_SUCCESS)
         RetainCompletedVppPicture(target_owner.get());
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+      if (driver->payload_observer)
+        driver->payload_observer->Commit(sequence, status, status == VA_STATUS_SUCCESS,
+            !driver->stopping && !decoded_source->destroyed && !decoded_source->failed &&
+            !target_surface->destroyed && !target_owner->destroyed &&
+            target_owner->latest_vpp_sequence == sequence &&
+            decoded_source->expected_timestamp == timestamp &&
+            CapturedDecodePictureMatchesLifetime(driver, source_owner, decoded_source,
+                source_decoder, decode_context->vpp_generation));
+#endif
       fields.outcome = status;
       driver->trace.Emit(status == VA_STATUS_SUCCESS
                              ? crystalhd_vaapi_trace::Event::VppCommit
@@ -10148,6 +10414,15 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       }
       if (status == VA_STATUS_SUCCESS) {
         driver->trace.Emit(crystalhd_vaapi_trace::Event::VppRun, operation.trace_binding);
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+        const auto observer_owner = operation.source_owner.lock();
+        crystalhd_test_vpp_payload::Scope observer_scope(
+            observer_owner ? driver->payload_observer.get() : nullptr,
+            operation.trace_binding, *operation.source,
+            observer_owner ? *observer_owner : *operation.source, *operation.target,
+            operation.source_region, operation.output_region,
+            operation.deinterlace, operation.sequence);
+#endif
         status = ProcessVpp(&driver->vpp_scaler, &driver->vpp_argb_staging,
                             first_field_view ? first_field_view.get() : operation.source.get(),
                             operation.target.get(),
@@ -10173,7 +10448,19 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   if (config == driver->configs.end())
     return VA_STATUS_ERROR_INVALID_CONFIG;
   const VAProfile profile = config->second.profile;
-  VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
+  const uint64_t generation = decode_context->generation;
+  const VASurfaceID request_target = decode_context->target;
+  const auto request_owner = decode_context->transaction_target.lock();
+  const uint64_t request_transaction = decode_context->target_transaction;
+  VAStatus status = SubmitPicture(driver, decode_context.get(), profile, &lock);
+  const auto current = driver->contexts.find(context_id);
+  if (current == driver->contexts.end() || current->second != decode_context ||
+      decode_context->closing || decode_context->retired ||
+      decode_context->generation != generation ||
+      decode_context->target != request_target ||
+      decode_context->transaction_target.lock() != request_owner ||
+      decode_context->target_transaction != request_transaction)
+    return status == VA_STATUS_SUCCESS ? VA_STATUS_ERROR_INVALID_CONTEXT : status;
   // Every decode profile consumes End even for malformed/unsupported input or
   // allocation failure. Recoverable Render errors remain replaceable before
   // End; successful queued/backpressured submissions are not rejections.
@@ -11045,7 +11332,14 @@ static VAStatus ReleaseBufferHandle(VADriverContextP context,
   if (found->second.export_busy)
     return VA_STATUS_ERROR_SURFACE_BUSY;
   const std::shared_ptr<ImageExportBacking> backing = found->second.exported;
-  std::vector<uint8_t> updated(found->second.data.size());
+  std::vector<uint8_t> updated;
+  try {
+    updated.resize(found->second.data.size());
+  } catch (const std::bad_alloc &) {
+    // No synchronization or ownership change has started. Keep the same
+    // borrowed handle and any derived-write lease intact for a later retry.
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
   found->second.export_busy = true;
   // External graphics work must not hold up the decode worker's global lock.
   // Busy guards keep this buffer intact while other maps may be rehashed.

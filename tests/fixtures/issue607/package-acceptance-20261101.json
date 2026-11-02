@@ -1,0 +1,1015 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "status": "PASS_CURRENT_HOST_PRIVATE_PACKAGE_SCOPE_PUBLIC_NOT_READY",
+  "issue": 607,
+  "parent_source": "6962efd215fe4b4869c6b4a544263a5dafc729d4",
+  "scope": "Current-host trusted cached packages, own file lifecycle/metadata/software checks; not independent clean OS, new native Kodi/hardware/A/V or public distribution acceptance.",
+  "host": {
+    "CPU": "Core2 T8100",
+    "architecture": "x86_64",
+    "connected_card": "BCM70015",
+    "GPU": "Intel965",
+    "new_hardware_run": false
+  },
+  "own_source_sha256": {
+    "scripts/native-runtime-preflight.py": "d3f8fe3a1da10e2e791d6e589c86dfdb89846159614ea12e0b45369826153102",
+    "scripts/native-runtime-slots.py": "2a4c510d0007abfe1dd903e5b50eddd0af5603671cec833b4dd6aacc84d9f468",
+    "tests/native-runtime-preflight.test.py": "f60015baedb10c1d45ffa45a53024e7bd0ea4f3436f6485c12de1436ba75e325",
+    "tests/native-runtime-slots.test.py": "aa32296cc54f3c77b49f7664885102ae5b67ce4592d9b1bd0bc3d514c4bdadae",
+    "tests/native-runtime-metadata.test.py": "cbf1c35ae8b31f8f5a5fe640fbfb0573f4ecbfaf84e47c5024c3d256affbd506",
+    "tests/kodi-ffmpeg-hwconfig-probe.py": "63af67ab62e04cce2b9c512305b4e467f4b1defec601c75097ee12e8879c1f96",
+    "tests/kodi-ffmpeg-embedded-hwconfig-probe.py": "79e39590237ae9d5ad9820bf0721f939e5058ddae1f55e7576ee5161bc60d663",
+    "tools/kodi-route-probe/.gitignore": "020c2606e8ed484089c2083e0be438b9d0736bee1558a6b76af0d58bd23f69cf",
+    "tools/kodi-route-probe/Makefile": "1836d74e40ef47d6a335f93147d91e182d434f14c0539d7ac14274ae0f60ec71",
+    "tools/kodi-route-probe/README.md": "a7b6e6deeeca5ded1768e83830caddee2954bf9be0af71265bf876af388e37a8",
+    "tools/kodi-route-probe/ffmpeg-embedded-hwconfig-preload.c": "6016caa29c981536d3819ac4b57cad65b8fc6f145c87c9f54d7296ab6491297f",
+    "tools/kodi-route-probe/ffmpeg-embedded-hwconfig-probe.py": "db70591208ae4fb7ba87a856d33f4fed0944cf8443943b659441c2c806ca38ba",
+    "tools/kodi-route-probe/ffmpeg-hwconfig-probe.py": "602cc6cb49052cff7a5ec636daccff5797ac08dfcab96ec1f1a1784e9e7f16dc",
+    "tools/kodi-route-probe/runtime-package-cli.py": "a87df291c1de66198607928cbad7698fd7b4c4c7a9bd68a4e7c06ed347c7a021",
+    "tools/kodi-route-probe/runtime-package-metadata.py": "1e83afd06a349afbbc352ea1ea6fcf25f071e5a069354c3d58e168a72c42d5a0",
+    "tools/kodi-route-probe/runtime-package-namespace.py": "1765e95b5c742e7d724134d711082e33a34377d46d62b12aa14496d9db1afcc8"
+  },
+  "retained_static_target": {
+    "status": "PASS_RETAINED_TARGET_AND_SOURCE_BINDING",
+    "package_sha256": "6754d32f8b6b6501b247a7fc817c2b6eb151c27ca5380abd4f2115163ed0a1d6",
+    "build_id": "0b11c4c2fdbf023b13d036feba99ee02980da070",
+    "bytes": 64941256,
+    "retained_probe_result": {
+      "probe_completed": true,
+      "strict_exit_status": 1,
+      "decoder": "h264_v4l2m2m",
+      "decoder_present": true,
+      "hardware_config_count": 0,
+      "drm_prime_config_present": false,
+      "kodi_find_hw_config_candidate": false,
+      "verdict": "no-kodi-drm-prime-metadata-candidate",
+      "stdout_bytes_before_probe_exit": 0,
+      "stderr_bytes_before_probe_exit": 0
+    },
+    "retained_probe_sources": {
+      "python_probe_sha256": "db70591208ae4fb7ba87a856d33f4fed0944cf8443943b659441c2c806ca38ba",
+      "preload_source_sha256": "6016caa29c981536d3819ac4b57cad65b8fc6f145c87c9f54d7296ab6491297f"
+    },
+    "actual_Kodi_reexecution": false,
+    "device_or_media_run": false,
+    "scope": "Exact retained2026-10-28 static metadata negative; current read-only binary/source identity audit and synthetic controls. Not a new latest-Flathub/runtime acceptance."
+  },
+  "minimum_compatibility_plan": "NATIVE-RUNTIME-ACCEPTANCE.md#minimum-compatibility-plan",
+  "packages": [
+    {
+      "label": "legacy",
+      "archive_bytes": 8028160,
+      "archive_sha256": "832dbfc64a1e0fef3e9db2061bde28f267a22a293159552416dff3b3ae3d8053",
+      "metadata_sha256": {
+        "files": "8f5fa705cdcdae7c5e6a99263cc3178024d99ff96760b8c4b687170357206a7c",
+        "dependencies": "bca5916dfc36b91315343b5987caf5cd71bd0c4fe837eae203bc2666d75742c5",
+        "provenance": "6266b9d0a8bfe6624c236d871f9a16e00feb7c6dc19cd1160e69099d6bd51213"
+      },
+      "preflight_status": "PASS_PINNED_TARGET_FILES_ONLY",
+      "recorded_ABI_diagnostics": {
+        "architecture": [
+          "ELF64",
+          "Advanced Micro Devices X86-64"
+        ],
+        "ffmpeg_sonames": {
+          "avcodec": "libavcodec.so.63",
+          "avdevice": "libavdevice.so.63",
+          "avfilter": "libavfilter.so.12",
+          "avformat": "libavformat.so.63",
+          "avutil": "libavutil.so.61",
+          "swresample": "libswresample.so.7",
+          "swscale": "libswscale.so.10"
+        },
+        "highest_recorded_numeric_glibc_requirement": "GLIBC_2.43",
+        "payload_version_inventory": "RECORDED",
+        "payloads_without_version_inventory": [],
+        "recorded_configure_cpu_options": [
+          "--cpu=core2"
+        ],
+        "recorded_glibc_versions": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4",
+          "GLIBC_2.6",
+          "GLIBC_2.7",
+          "GLIBC_2.14",
+          "GLIBC_2.17",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.29",
+          "GLIBC_2.33",
+          "GLIBC_2.34",
+          "GLIBC_2.35",
+          "GLIBC_2.43"
+        ],
+        "recorded_named_glibc_requirements": [],
+        "scope": "Actual ELF64/x86_64 headers and exact pinned bytes checked; version requirements/configure CPU options are reused inventory, not a new symbol resolution or minimum-CPU execution qualification."
+      },
+      "distribution_diagnostics": {
+        "provenance_records": {
+          "clean_OS_and_Kodi_playback_qualification": "NOT_RUN",
+          "corresponding_source_archive_included": false,
+          "neutral_build_verified": false,
+          "private_build_prefixes_detected": true,
+          "redistribution_review": "NOT_COMPLETED",
+          "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+          "source_url": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+          "update_maintenance_owner": "UNASSIGNED"
+        },
+        "recorded_blockers": [
+          {
+            "field": "private_build_prefixes_detected",
+            "recorded_value": true,
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "neutral_build_verified",
+            "recorded_value": false,
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "corresponding_source_archive_included",
+            "recorded_value": false,
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "redistribution_review",
+            "recorded_value": "NOT_COMPLETED",
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "update_maintenance_owner",
+            "recorded_value": "UNASSIGNED",
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "clean_OS_and_Kodi_playback_qualification",
+            "recorded_value": "NOT_RUN",
+            "state": "DECLARED_UNRESOLVED"
+          }
+        ],
+        "review_declarations_verified_by_this_tool": false,
+        "scope": "Blockers explain recorded provenance declarations. Other values are not approved by this tool; source correspondence, neutral build reproducibility, licence review, maintenance ownership and clean OS/native playback remain independently unverified.",
+        "status": "PUBLIC_NOT_READY",
+        "unknown_provenance_fields": []
+      }
+    },
+    {
+      "label": "neutral",
+      "archive_bytes": 8017920,
+      "archive_sha256": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+      "metadata_sha256": {
+        "files": "aee1eba5bc5d54bf54b6499ad3ffdb94ee8bd89015953c800804ce44e889c11d",
+        "dependencies": "dfbff250c9cd61dfc83beba99bffab30e2d7c2a3af0e3785d021d964feed6b02",
+        "provenance": "7ffd06ad3b22fbf19ae5c4088f5c3d6418ed8dcaca1365957d4cd369d4ea781f"
+      },
+      "preflight_status": "PASS_PINNED_TARGET_FILES_ONLY",
+      "recorded_ABI_diagnostics": {
+        "architecture": [
+          "ELF64",
+          "Advanced Micro Devices X86-64"
+        ],
+        "ffmpeg_sonames": {
+          "avcodec": "libavcodec.so.63",
+          "avdevice": "libavdevice.so.63",
+          "avfilter": "libavfilter.so.12",
+          "avformat": "libavformat.so.63",
+          "avutil": "libavutil.so.61",
+          "swresample": "libswresample.so.7",
+          "swscale": "libswscale.so.10"
+        },
+        "highest_recorded_numeric_glibc_requirement": "GLIBC_2.43",
+        "payload_version_inventory": "RECORDED",
+        "payloads_without_version_inventory": [],
+        "recorded_configure_cpu_options": [
+          "--cpu=core2"
+        ],
+        "recorded_glibc_versions": [
+          "GLIBC_2.2.5",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4",
+          "GLIBC_2.6",
+          "GLIBC_2.7",
+          "GLIBC_2.14",
+          "GLIBC_2.17",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.29",
+          "GLIBC_2.33",
+          "GLIBC_2.34",
+          "GLIBC_2.35",
+          "GLIBC_2.43"
+        ],
+        "recorded_named_glibc_requirements": [],
+        "scope": "Actual ELF64/x86_64 headers and exact pinned bytes checked; version requirements/configure CPU options are reused inventory, not a new symbol resolution or minimum-CPU execution qualification."
+      },
+      "distribution_diagnostics": {
+        "provenance_records": {
+          "clean_OS_and_Kodi_playback_qualification": "NOT_RUN",
+          "corresponding_source_archive_included": false,
+          "neutral_build_verified": false,
+          "private_build_prefixes_detected": false,
+          "redistribution_review": "NOT_COMPLETED",
+          "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+          "source_url": "https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70",
+          "update_maintenance_owner": "UNASSIGNED"
+        },
+        "recorded_blockers": [
+          {
+            "field": "private_build_prefixes_detected",
+            "recorded_value": false,
+            "state": "DECLARED_UNVERIFIED"
+          },
+          {
+            "field": "neutral_build_verified",
+            "recorded_value": false,
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "corresponding_source_archive_included",
+            "recorded_value": false,
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "redistribution_review",
+            "recorded_value": "NOT_COMPLETED",
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "update_maintenance_owner",
+            "recorded_value": "UNASSIGNED",
+            "state": "DECLARED_UNRESOLVED"
+          },
+          {
+            "field": "clean_OS_and_Kodi_playback_qualification",
+            "recorded_value": "NOT_RUN",
+            "state": "DECLARED_UNRESOLVED"
+          }
+        ],
+        "review_declarations_verified_by_this_tool": false,
+        "scope": "Blockers explain recorded provenance declarations. Other values are not approved by this tool; source correspondence, neutral build reproducibility, licence review, maintenance ownership and clean OS/native playback remain independently unverified.",
+        "status": "PUBLIC_NOT_READY",
+        "unknown_provenance_fields": []
+      }
+    }
+  ],
+  "neutral_packaging": {
+    "exit": 0,
+    "seconds": 3.0823501509730704,
+    "packager_sha256": "6c05f55ea8ecbf903085c0bfa98740559559d7a3481c1f9686fb521ddbf82272",
+    "source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "external_source_or_binary_modified": false,
+    "rebuilt_external_code": false
+  },
+  "metadata": {
+    "source_sha256": {
+      "runtime-package-namespace.py": "1765e95b5c742e7d724134d711082e33a34377d46d62b12aa14496d9db1afcc8",
+      "runtime-package-metadata.py": "1e83afd06a349afbbc352ea1ea6fcf25f071e5a069354c3d58e168a72c42d5a0",
+      "runtime-package-cli.py": "a87df291c1de66198607928cbad7698fd7b4c4c7a9bd68a4e7c06ed347c7a021"
+    },
+    "original_neutral_run_exit": 2,
+    "original_neutral_failure": "Own observer rejected legitimately visible neutral /usr; raw failure is retained.",
+    "correction": "Allow only sole literal /usr with matching recorded prefix hashes and explicit private_build_prefixes_detected=false; preserve exact seven package mappings, report /usr visible.",
+    "corrected": {
+      "legacy": {
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "no_decode_GPU_or_sysfs_devices": true,
+        "no_app_GL_DIL_Gst_probe_dependency_overlays": true,
+        "all_seven_FFmpeg_mappings_match_exact_package": true,
+        "original_build_prefix_visible": false,
+        "visible_neutral_configure_prefixes": [],
+        "nonneutral_configure_prefixes_absent": true,
+        "h264_v4l2m2m_HW_configs": [
+          {
+            "format": "drm_prime",
+            "methods": 4,
+            "device_type": 0
+          }
+        ],
+        "scope": "Pinned Platform on the existing host kernel; not an independent clean OS, Kodi launch, decode, graphics or playback proof."
+      },
+      "neutral": {
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "no_decode_GPU_or_sysfs_devices": true,
+        "no_app_GL_DIL_Gst_probe_dependency_overlays": true,
+        "all_seven_FFmpeg_mappings_match_exact_package": true,
+        "original_build_prefix_visible": true,
+        "visible_neutral_configure_prefixes": [
+          "/usr"
+        ],
+        "nonneutral_configure_prefixes_absent": true,
+        "h264_v4l2m2m_HW_configs": [
+          {
+            "format": "drm_prime",
+            "methods": 4,
+            "device_type": 0
+          }
+        ],
+        "scope": "Pinned Platform on the existing host kernel; not an independent clean OS, Kodi launch, decode, graphics or playback proof."
+      }
+    },
+    "execution": [
+      {
+        "case": "legacy",
+        "exit": 0,
+        "seconds": 0.4163722899975255
+      },
+      {
+        "case": "neutral",
+        "exit": 0,
+        "seconds": 0.4112453809939325
+      }
+    ],
+    "selected_and_rolled_back": {
+      "04-selected-neutral-metadata.json": {
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "all_seven_FFmpeg_mappings_match_exact_package": true
+      },
+      "07-rolled-back-legacy-metadata.json": {
+        "status": "PASS_COMPILERLESS_RELOCATED_METADATA_ONLY",
+        "all_seven_FFmpeg_mappings_match_exact_package": true
+      }
+    }
+  },
+  "neutral_software": {
+    "status": "PASS_COMPILERLESS_RELOCATED_SOFTWARE_CLI",
+    "software_decoder": "h264, -hwaccel none",
+    "frames": 50,
+    "time_base": "1/90000",
+    "pts_first_last": [
+      133200,
+      309600
+    ],
+    "full_NV12_Y_and_UV_bytes_compared": 69120000,
+    "all_raw_bytes_equal_retained_independent_software_reference": true,
+    "all_frame_hashes_counts_and_PTS_match": true,
+    "ffprobe_all_decoded_clock_geometry_and_field_metadata_match": true,
+    "reference_manifest_sha256": "8b2a1097fed435b8e05c21a573c5536ed2f7642444fb89d65a4165b95ce424b8",
+    "raw_output_sha256": "82dcc068cff510d6086e15df0ff243c7d18e607d3244c4218289f2127029db91",
+    "framehash_output_sha256": "30f82d796af746e668fe7f6aacdcb3a423550f9fbbe6115de0813deb11cb7d85",
+    "scope": "Actual packaged CLIs, software H264 only, no devices or Kodi; existing host kernel and retained Platform, not independent clean OS or native playback."
+  },
+  "neutral_software_execution": {
+    "exit": 0,
+    "seconds": 3.738553242001217,
+    "maximum_temperature_mC": 50000,
+    "scope": "device-free current-host software CLI with independent input/NV12/PTS oracle; no native Kodi hardware/A/V acceptance"
+  },
+  "lifecycle": {
+    "status": "PASS_CURRENT_HOST_PRIVATE_SLOT_UPDATE_ROLLBACK",
+    "scope": "Current-host cached-input compilerless private files/provider update and rollback; no Kodi/native hardware or independent clean OS acceptance",
+    "implementation_sha256": "2a4c510d0007abfe1dd903e5b50eddd0af5603671cec833b4dd6aacc84d9f468",
+    "new_external_build": false,
+    "external_source_or_binary_modified": false,
+    "rejected_update_preserves_active_state_and_payload_bytes": true,
+    "payload_ELFs_changed": 9,
+    "active_and_previous_removed": true,
+    "user_preferences_preserved": true,
+    "cached_input_archives": [
+      {
+        "label": "legacy",
+        "bytes": 8028160,
+        "sha256": "832dbfc64a1e0fef3e9db2061bde28f267a22a293159552416dff3b3ae3d8053"
+      },
+      {
+        "label": "neutral",
+        "bytes": 8017920,
+        "sha256": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020"
+      }
+    ],
+    "measured_scope": "Cached package install, rejected incomplete update, nine-ELF neutral update, selection metadata, previous-slot rollback, repeated removal; no first-user acquisition or old build RAM measurement.",
+    "actions": [
+      {
+        "name": "01-install-legacy",
+        "operation": "install",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 27492,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 27492,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 8065024,
+                "available": true,
+                "entries": 35,
+                "logical_bytes": 8000392
+              },
+              "name": "extract-candidate",
+              "outcome": "PASS",
+              "seconds": 0.15715353499399498
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 8065024,
+                "available": true,
+                "entries": 35,
+                "logical_bytes": 8000392
+              },
+              "name": "validate-candidate-files-and-providers",
+              "outcome": "PASS",
+              "seconds": 0.1830975590273738
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 8065024,
+                "available": true,
+                "entries": 35,
+                "logical_bytes": 8001396
+              },
+              "name": "publish-selection",
+              "outcome": "PASS",
+              "seconds": 0.0007176329963840544
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 8065024,
+                "available": true,
+                "entries": 35,
+                "logical_bytes": 8001396
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.3460942679666914
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 8065024,
+            "available": true,
+            "entries": 35,
+            "logical_bytes": 8001396
+          },
+          "store_before": {
+            "allocated_bytes": 0,
+            "available": true,
+            "entries": 0,
+            "logical_bytes": 0
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 8065024,
+            "available": true,
+            "entries": 35,
+            "logical_bytes": 8001396
+          },
+          "wall_seconds": 0.3469593389891088,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "02-reject-incomplete-update",
+        "operation": "update",
+        "expected_exit": 1,
+        "actual_exit": 1,
+        "report_status": "FAIL_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 27536,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 27536,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 65,
+                "logical_bytes": 15993284
+              },
+              "name": "extract-candidate",
+              "outcome": "PASS",
+              "seconds": 0.1830277160042897
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 65,
+                "logical_bytes": 15993284
+              },
+              "name": "validate-candidate-files-and-providers",
+              "outcome": "FAIL",
+              "seconds": 0.008849691017530859
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 8069120,
+                "available": true,
+                "entries": 36,
+                "logical_bytes": 8001453
+              },
+              "name": "serialized-operation",
+              "outcome": "FAIL",
+              "seconds": 0.19908237300114706
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 8069120,
+            "available": true,
+            "entries": 36,
+            "logical_bytes": 8001453
+          },
+          "store_before": {
+            "allocated_bytes": 8069120,
+            "available": true,
+            "entries": 36,
+            "logical_bytes": 8001453
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 65,
+            "logical_bytes": 15993284
+          },
+          "wall_seconds": 0.2009565299958922,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "03-update-neutral",
+        "operation": "update",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 27500,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 27500,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15993306
+              },
+              "name": "extract-candidate",
+              "outcome": "PASS",
+              "seconds": 0.17507746000774205
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15993306
+              },
+              "name": "validate-candidate-files-and-providers",
+              "outcome": "PASS",
+              "seconds": 0.18368884699884802
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "publish-selection",
+              "outcome": "PASS",
+              "seconds": 0.0007956480258144438
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.3654530419735238
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_before": {
+            "allocated_bytes": 8069120,
+            "available": true,
+            "entries": 36,
+            "logical_bytes": 8001453
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "wall_seconds": 0.36783579300390556,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "05-status-neutral",
+        "operation": "status",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 25592,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 25592,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "revalidate-active-files-and-providers",
+              "outcome": "PASS",
+              "seconds": 0.12475284101674333
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.12718476098962128
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_before": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "wall_seconds": 0.13011158700101078,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "06-rollback-legacy",
+        "operation": "rollback",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 25640,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 25640,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "revalidate-previous-files-and-providers",
+              "outcome": "PASS",
+              "seconds": 0.12461581005482003
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "publish-rollback",
+              "outcome": "PASS",
+              "seconds": 0.0007605860009789467
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.1293313750065863
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_before": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "wall_seconds": 0.13230059505440295,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "08-remove-owned-payload",
+        "operation": "remove",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 25808,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 25808,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 16109568,
+                "available": true,
+                "entries": 66,
+                "logical_bytes": 15994308
+              },
+              "name": "validate-owned-payload-before-removal",
+              "outcome": "PASS",
+              "seconds": 0.11809425399405882
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 16121856,
+                "available": true,
+                "entries": 67,
+                "logical_bytes": 16003994
+              },
+              "name": "unselect-owned-payload",
+              "outcome": "PASS",
+              "seconds": 0.001052737992722541
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 20480,
+                "available": true,
+                "entries": 6,
+                "logical_bytes": 405
+              },
+              "name": "retry-owned-payload-cleanup",
+              "outcome": "PASS",
+              "seconds": 0.12427518801996484
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 20480,
+                "available": true,
+                "entries": 6,
+                "logical_bytes": 405
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.36506213597021997
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "store_before": {
+            "allocated_bytes": 16109568,
+            "available": true,
+            "entries": 66,
+            "logical_bytes": 15994308
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 16121856,
+            "available": true,
+            "entries": 67,
+            "logical_bytes": 16003994
+          },
+          "wall_seconds": 0.36679702694527805,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "09-repeat-remove",
+        "operation": "remove",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 23616,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 23476,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 20480,
+                "available": true,
+                "entries": 6,
+                "logical_bytes": 405
+              },
+              "name": "validate-owned-payload-before-removal",
+              "outcome": "PASS",
+              "seconds": 9.499024599790573e-06
+            },
+            {
+              "disk_after": {
+                "allocated_bytes": 20480,
+                "available": true,
+                "entries": 6,
+                "logical_bytes": 405
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.0009492309764027596
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "store_before": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "wall_seconds": 0.001383303024340421,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      },
+      {
+        "name": "10-status-removed",
+        "operation": "status",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "report_status": "PASS_PRIVATE_SLOTS_FILES_ONLY",
+        "kernel_command_maxrss_KiB": 23492,
+        "cost": {
+          "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+          "build_RAM": null,
+          "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+          "network_bytes": null,
+          "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+          "own_process_maxrss_KiB": 23364,
+          "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+          "phases": [
+            {
+              "disk_after": {
+                "allocated_bytes": 20480,
+                "available": true,
+                "entries": 6,
+                "logical_bytes": 405
+              },
+              "name": "serialized-operation",
+              "outcome": "PASS",
+              "seconds": 0.0007060390198603272
+            }
+          ],
+          "store_after": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "store_before": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "store_observed_maximum": {
+            "allocated_bytes": 20480,
+            "available": true,
+            "entries": 6,
+            "logical_bytes": 405
+          },
+          "wall_seconds": 0.0011528920149430633,
+          "whole_first_user_burden": "NOT_MEASURED"
+        }
+      }
+    ]
+  },
+  "failure_path_controls": {
+    "original_three_own_failures": "RED_CONFIRMED_PRE_REVIEW_OWN_FAILURE_PATHS",
+    "final_tests": 20,
+    "covered": "Initial-state write/retry, partial deletion retry and unknown-file preservation, interrupt after selection replacement, lock/store inode replacement, mode restoration and unrelated preferences.",
+    "intermediate_failed_test_runs_retained": true,
+    "power_loss_cross_filesystem_and_live_consumer_guarantee": false
+  },
+  "local_checks": {
+    "preflight_tests": 23,
+    "slot_tests": 20,
+    "metadata_worker_tests": 11,
+    "DSO_probe_groups": 10,
+    "embedded_probe": "all cases passed",
+    "note": "local-final-checks.log records these successes, followed by an unrelated nonexistent ci-plan-check target invocation error; corrected contract invocations are separately retained.",
+    "ci_plan_tests": 30,
+    "configuration_inventory_production_surfaces": 40,
+    "configuration_schema_tests": 16,
+    "configuration_canonical_keys": 21,
+    "corrected_contract_invocations_all_exit_zero": true
+  },
+  "not_qualified": [
+    "First-user network/acquisition/tool/Kodi/Platform/GL/driver setup burden",
+    "Historical external build peak RAM",
+    "Reproducible external compilation or corresponding native-runtime source archive",
+    "Independent booted clean OS",
+    "New neutral package native Kodi decoder selection, EOS/reopen, hardware or A/V",
+    "Physical Atom/i386/BCM70012",
+    "Public redistribution/notices/maintenance-owner decision"
+  ],
+  "boundaries": {
+    "external_source_or_binary_modified": false,
+    "new_external_build": false,
+    "system_or_app_configuration_changed": false,
+    "master_merge_tag_release_binary_upload": false,
+    "source_UI_checkpoint": "Frozen c48fe3a archive and optional settings ZIP remain separate and unchanged.",
+    "issue538": "OPEN; original shutdown heap-abort subtask excluded unchanged.",
+    "public_distribution_status": "PUBLIC_NOT_READY"
+  },
+  "private_evidence_root_label": "crystalhd-issue607-run-20261101",
+  "private_evidence_sha256": {
+    "static-package-audit.json": "5e6f794815ad0bf6a83d333ad5f0f7d889525ceba72b2daae4262befb4184e9f",
+    "package-inputs.json": "e089ddd6907dcadfac3f4548f72c8585b4e4e331b09b0347d37d4062f8b0cbac",
+    "neutral-package-build.json": "f075da7d15a098a5ac6665580b477377080dd63fa09fa4fc925aa8b5e8e4cd79",
+    "legacy-preflight.json": "bb13d9ce7785dc5141870620123bc1f56ca6d18a40ff35f799b1334a4e9061ff",
+    "neutral-preflight.json": "254653c1319fcc97da00514728aa0b5599fa08929bbf187be893e19ba4e2431d",
+    "metadata-execution.json": "aba6807797c7b676ecbef6e87403d932d3b1724ab120ef9a20ffbbdb4508dea9",
+    "neutral-metadata.stderr": "619a414dcb9199a014823ef435d96460c73c7eca1c0fbda1afed29943901733d",
+    "metadata-fixed-execution.json": "1e6976f6231ba1382594f372bc2a5b211ec97db4713847a7745daada73539b1f",
+    "legacy-metadata-fixed.json": "5281ae9b040563a6dd585c9a04409a89bd12d99295c9161aba71251963167aa8",
+    "neutral-metadata-fixed.json": "e9176822b27ab5ecb434315415df90a3cedff45adf6ff4b2c325cb0b9e22d400",
+    "neutral-software-report.json": "b67f4872f59d5ad9868687928ebfca276b77a79b5df51e79f06103f71efe649e",
+    "neutral-software-execution.json": "4b892bffe46393aff1c9054c0a880186d05769876687259ca76e4bc41e5eb0c9",
+    "pre-review-failure-controls.json": "d0864a35e79071ae1138f346558dea9dc2254579967baba910ed123a45208663",
+    "slot-controls-final-01.json": "22752506be73d8a493f2cf3961f4ddb22cf0aa9d2ba83d27d4bb4a3af17333fc",
+    "slot-controls-final-02.json": "c91a831c2a4b0fd7aef1b39b8b1424b34c86f6a46c7bea7b2722be08415b3aca",
+    "slot-controls-final-03.json": "a55d8fa0f0a6b574ce0f0eba02965741f20c8047d0977e73ef5cbca7bf665396",
+    "slot-final-02/run.py": "251454a560e06e1403d3ae83b13026bc84c4f157855c26545eebe71bb8e46235",
+    "slot-final-02/slot-acceptance.json": "f0972a9ae472368f09193ac2777e26feee114f49d4ef173d173609e7c2c7e60b",
+    "local-final-checks.log": "40d8bf83408d2194cfdb52d843f1ad72233e44b31141758c21a309aa95658f72",
+    "local-final-checks.json": "d4a6c68ef067f71656fe0b82d6dc7161f6a3bcd5bf106cb39d04e23111a052df",
+    "contracts-final.log": "2735b9b9807405fea76000f8f421776bd2eca0f517793238b3c1ec77c3eadf00",
+    "contracts-final.json": "0823459a79051c38b7f70eaa9fee1c8501da0da479b3b39f85f5ef42185e6479"
+  }
+}

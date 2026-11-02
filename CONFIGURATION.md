@@ -16,8 +16,32 @@ crystalhd-config show-effective
 crystalhd-config explain vaapi.h264.mode --format json
 crystalhd-config list-presets
 crystalhd-config installation
+crystalhd-config editor-state
 crystalhd-config bug-report > crystalhd-config-report.json
 ```
+
+`editor-state` is a read-only JSON interface (`crystalhd-editor-state`, version
+1) for optional frontends. It reuses the shared schema, profile resolution and
+reviewed preset catalogue. It exposes system/user profile names, native editor
+choices, saved selector/override literals, requested-value origins and an input
+revision. This models the inspector process's environment; it does not attest
+to the environment, mappings or active decoder of running Kodi.
+
+An editor passes that revision to `save` or `reset` with `--expect-revision`.
+Changed saved user/system inputs reject the edit and require reload. The token
+covers saved configuration inputs, not live state or the preset catalogue.
+`--editor-safe` limits explicit edits to ordinary native choices and rejects
+selected/edited native experiments requiring an acknowledged launch. Existing
+unrelated inactive profiles are preserved. These options reuse the same atomic
+writer and do not weaken its ownership, permissions or stale-write checks.
+Exit4 means the write outcome/durability is uncertain, never ordinary success.
+
+The optional [Kodi settings add-on](addons/script.crystalhd.settings/README.md)
+provides remote/D-pad preset/profile selection and native default editing.
+Managed files remain authoritative; no add-on settings.xml store is used.
+Saving requires **restarting Kodi** with current per-component snapshots.
+Reopening only a video/context does not guarantee re-reading defaults. The UI
+does not change Kodi's decoder selection or activate launch-only experiments.
 
 `installation` (also `--format json`) and the settings window's **Installation**
 page inspect reader declarations in the PATH-selected Player and the inspector
@@ -151,12 +175,14 @@ With the updated native reader, saved supported defaults are read on ordinary
 application startup. The optional `crystalhd-settings` window edits those defaults;
 `config run` is only needed for explicit invocation overrides/acknowledged launches.
 
-On Ubuntu, the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
+On Ubuntu, building and installing the translated frontend needs `gettext`
+(`msgfmt`), and the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
 tray additionally uses `gir1.2-ayatanaappindicator3-0.1` and a desktop StatusNotifier
 host. The command-line utility and native decoders have no GTK/tray dependency.
 Install the desktop frontend separately from the runtime:
 
 ```sh
+sudo apt install gettext python3-gi gir1.2-gtk-3.0
 sudo make install-settings
 crystalhd-settings
 # Start in the tray; show the window if no working tray is available:
@@ -208,7 +234,7 @@ for their supported invocation paths.
 and profiles; system defaults remain. Conflicting edits and uncertain write
 outcomes require review/reload, never a blind overwrite. Ctrl+S saves, Ctrl+R reloads,
 Ctrl+Q exits, and Escape closes/hides the window. Labels and keyboard mnemonics are
-provided; UI messages are prepared for gettext translation (English is supplied).
+provided; English and Korean UI messages are supplied through gettext.
 Reopening a long-running tray window checks the saved user and system files in the
 background. An external change preserves every draft but requires an explicit
 **Reload file** before Save or Clear, so the window never silently merges or overwrites it.
@@ -331,9 +357,12 @@ Chromium options rather than CrystalHD settings.
 | Control | Owner | Device/backend | Default and accepted values | Dependencies | Read/apply lifecycle | Safety | Public API |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `crystalhddec scale-width` <!-- config-surface:gst-property:scale-width --> | GStreamer `crystalhddec` | BCM70015 decode; progressive and selected H.264 MBAFF with complementary card-field output | `0` means native; otherwise an even width `128..1918`, not wider than coded input; interlaced H.264 requires a multiple of 16 | Hardware scaling support; output height/aspect is derived from the source | Writable only in NULL or READY; snapshotted for one decoder run and reapplied after flush/reopen | **Opt-in** — less PCIe traffic and less detail | Yes — GObject element property |
+| `crystalhdstagetrace capacity` <!-- config-surface:gst-property:capacity --> | Player-owned native diagnostic controller | Hardware or software video-stage observation | `4096`; `1..16384` total retained records, including events and controls | Matching GStreamer plugin; controller has no pipeline pads | Set before first attachment/control; bounded counters continue after record truncation | **Opt-in** — additional observation cost; no decoding or presentation capability | Yes — GObject controller property; invocation-only |
+| `crystalhdstagetrace window` <!-- config-surface:gst-property:window --> | Player-owned native diagnostic controller | Hardware or software video-stage observation | `false`; Boolean | Matching GStreamer plugin; same bounded capacity | Set before attachment/control; one explicit trigger freezes a bounded pre/post history | **Opt-in** — partial history and unknown context remain explicit | Yes — GObject controller property; invocation-only |
+| `crystalhddec finish-trace-limit` <!-- config-surface:gst-property:finish-trace-limit --> | GStreamer `crystalhddec` | Own decoder finish-frame call boundary | `0` disables; `1..8192` preallocated spans | Matching GStreamer plugin | Writable only in NULL or READY; active collector retained through worker shutdown; `finish-trace-snapshot` action remains available after Stop | **Opt-in** — clock/TID samples and bounded locking; first records only, with explicit omissions; no quality or QoS change | Yes — invocation-only GObject diagnostic property, no managed configuration key |
 
-The GObject type is an unsigned integer, but values outside the effective
-range above fail validation. BCM70012, unsupported interlaced codecs/layouts
+Decoder width, finish-trace limit and trace capacity use unsigned integer properties; values
+outside their effective ranges fail validation. Trace window is Boolean. BCM70012, unsupported interlaced codecs/layouts
 and non-multiple-of-16 widths for H.264 interlaced scaling are
 rejected.
 
@@ -350,9 +379,15 @@ It does not change the supported GStreamer version or QoS admission rules.
 | `--hardware` <!-- config-surface:player-flag:--hardware --> | `crystalhd-player.py` | GStreamer local playback | Default mode; flag has no value | Installed/discoverable `crystalhddec`, supported media and an idle card | Decoder ranks are selected for this process before pipeline creation; no software fallback | **Standard** | Yes — CLI |
 | `--software` <!-- config-surface:player-flag:--software --> | `crystalhd-player.py` | GStreamer local playback | Off; mutually exclusive with `--hardware` | Available software decoder | Decoder ranks and playbin software-decoder flag are selected before pipeline creation | **Standard** | Yes — CLI |
 | `--weave` <!-- config-surface:player-flag:--weave --> | `crystalhd-player.py` | Hardware or software local playback | Off; flag has no value | Available selected decoder and playbin | Clears only playbin's deinterlace flag before playback; fails if it remains enabled | **Opt-in** — interlaced frame pass-through, not deinterlacing or a sync guarantee | Yes — CLI |
+| `--video-output` <!-- config-surface:player-flag:--video-output --> | `crystalhd-player.py` | Local video output | `auto`; optional `xv-async` or `field-gpu` | `xv-async` needs the separate X11/MIT-SHM `crystalhdxvsink` and progressive output. `field-gpu` needs the separate XCB/EGL/GLES2/GBM/DRM `crystalhdfieldsink` and qualified limited-range YUY2; it owns nearest Bob and GPU display fitting. Both reject `--weave`; field-GPU also rejects software resizing | This invocation, before pipeline construction; unrelated audio settings are preserved | **Experimental** — explicit selection, no fallback, automatic installation or default promotion | Yes — CLI; not a saved key |
+| `crystalhdxvsink display` <!-- config-surface:gst-property:display --> | Optional Xv output plugin | Local Unix X11 display | Unset inherits `DISPLAY`; explicit local Unix display name | Optional plugin and local X11 authorization | Snapshotted for each stopped-to-started output session | **Experimental** — per-element connection; no global X11 policy change | Yes — GStreamer property; not a managed key |
 | `--scale-width PIXELS` <!-- config-surface:player-flag:--scale-width --> | `crystalhd-player.py` | BCM70015 hardware playback; selected H.264 MBAFF in the bounded 1.2 scope | `0`; otherwise even `128..1918`; interlaced H.264 requires a multiple of 16 | Requires hardware mode; also subject to coded-width/property limits | Parsed at startup and applied to each CrystalHD decoder element | **Opt-in** — hardware downscale/quality trade-off | Yes — CLI |
-| `--software-output-size SIZE` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter` | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
+| `--packed-upscale` <!-- config-surface:player-flag:--packed-upscale --> | `crystalhd-player.py` | Fused host packing/enlargement | Off | Requires `--hardware --video-output xv-async --scale-width 1280 --software-output-size 1920x1080`, GStreamer 1.28.2 and the optional `crystalhdpackedscale` plugin; actual input must be progressive YUY2 1280x720/PAR1 at50Hz with matching color/chroma | This invocation, before pipeline construction | **Experimental** — unsupported caps/metadata reject; fixed method4/two compute threads, CPU-dispatched exact arithmetic | Yes — CLI; not a saved key |
+| `--software-output-size SIZE` <!-- config-surface:player-flag:--software-output-size --> | `crystalhd-player.py` | Host resize after scaled CrystalHD output | Unset; positive even dimensions, each at most `4096`, total at most `4096x2160` pixels; `native` clears a saved resize for this invocation | Resize requires hardware mode, nonzero `--scale-width`, GStreamer `videoscale`/`capsfilter`; the separately selected packed path uses its own filter and stricter admission | Pipeline construction | **Opt-in** — additional CPU use; cannot restore source detail | Yes — CLI |
 | `--subtitles FILE` <!-- config-surface:player-flag:--subtitles --> | `crystalhd-player.py` | Local playback | Unset; readable local regular file | GStreamer subtitle support for the file | Parsed before pipeline construction | **Standard** | Yes — CLI |
+| `--trace-frames FILE` <!-- config-surface:player-flag:--trace-frames --> | `crystalhd-player.py` | Hardware or software playback diagnostics | Off; new output JSON file, never overwrite an existing path | Matching native `crystalhdstagetrace` helper; no Python per-buffer tracing fallback | Create private file at startup; stop native probes and write after decoder teardown | **Opt-in** — independent pad observations, not physical display counts | Yes — CLI; invocation-only |
+| `--trace-limit RECORDS` <!-- config-surface:player-flag:--trace-limit --> | `crystalhd-player.py` | Bounded frame-trace retention | `4096`; integer `1..16384` | Requires `--trace-frames` | Set collector capacity before attachment; includes event/control records | **Opt-in** — overflow is declared while counters continue | Yes — CLI; invocation-only |
+| `--trace-window` <!-- config-surface:player-flag:--trace-window --> | `crystalhd-player.py` | Rolling capture around a reported video-buffer drop | Off; first-N retention remains the default | Requires `--trace-frames` and matching native window helper | Keep bounded recent records, then freeze after the first timed video-drop bus snapshot with positive jitter and a quarter-capacity of following records | **Opt-in** — overwritten history and incomplete capture are explicit; no playback-policy change | Yes — CLI; invocation-only |
 
 The required positional media `FILE`, automatically supplied `-h/--help`, and
 interactive playback keys are command grammar/actions, not saved settings, so
@@ -390,8 +425,8 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check also classifies all 31 surfaces: 23 userspace
-surfaces map to 21 canonical keys; the two module parameters retain a separate
-module-load lifetime; `CRYSTALHD_CONFIG_DISABLE`, `CRYSTALHD_CHROMIUM_CONFIG`,
-`CRYSTALHD_CHROMIUM_CONFIG_DISABLE` and centered NV12 remain explicit
-environment boundaries; and `--subtitles` and `--weave` remain invocation-only.
+The schema conformance check classifies all 40 surfaces: 23 userspace surfaces
+map to 21 canonical keys. The other 17 retain their documented module-load,
+environment, invocation-only or external GStreamer output boundaries.
+The video output, packed enlargement and tracing selectors are invocation-only;
+adding `field-gpu` as a video-output choice does not add a saved setting.

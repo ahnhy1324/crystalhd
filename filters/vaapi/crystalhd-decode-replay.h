@@ -33,11 +33,25 @@ class CrystalHDDecodeReplay {
     bool prefeed = false;
   };
   enum class Output { New, Duplicate, Unknown, Invalid };
+  enum class Admission { Ready, Full, Invalid };
 
   CrystalHDDecodeReplay() = default;
   explicit CrystalHDDecodeReplay(bool live) : live_(live) {}
   explicit CrystalHDDecodeReplay(Limits limits, bool live = false)
       : limits_(limits), live_(live) {}
+
+  // Reclaim only the same safe history as Append, without consuming a token
+  // or poisoning accepted work when admission must wait for real progress.
+  Admission PrepareAppend(uint64_t timestamp, bool idr, size_t bytes) {
+    Prune();
+    if (failed() || timestamp == 0 || bytes == 0 ||
+        (last_timestamp_ == 0 && !idr) || timestamp <= last_timestamp_ ||
+        bytes > limits_.picture_bytes || bytes > limits_.cache_bytes)
+      return Admission::Invalid;
+    if (live_)
+      MakeRoom(bytes);
+    return HasRoom(bytes) ? Admission::Ready : Admission::Full;
+  }
 
   bool Append(uint64_t timestamp, bool idr, std::vector<uint8_t> bytes,
               bool prefeed = false) {
@@ -183,7 +197,16 @@ class CrystalHDDecodeReplay {
   const char *failure() const { return failure_; }
   size_t cached_pictures() const { return units_.size(); }
   size_t cached_bytes() const { return cache_bytes_; }
+  size_t MaxCachedPictures() const { return limits_.pictures; }
+  size_t MaxCachedBytes() const { return limits_.cache_bytes; }
   size_t outstanding() const { return outstanding_.size(); }
+  bool HasPendingTransportWork() const {
+    if (phase_ == Phase::Running)
+      return cursor_ < units_.size() || !outstanding_.empty();
+    // Even after the last picture returns, a sealed batch still awaits its
+    // real EOS marker. An ended batch can have accepted queued continuation.
+    return phase_ == Phase::Sealed || NeedsRestart();
+  }
   bool IsOutstanding(uint64_t timestamp) const {
     return outstanding_.count(timestamp) != 0;
   }

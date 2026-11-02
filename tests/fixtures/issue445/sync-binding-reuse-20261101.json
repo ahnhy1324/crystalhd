@@ -1,0 +1,47 @@
+{
+  "schema": "crystalhd.va.sync-binding.v1",
+  "date": "2026-11-01",
+  "base_commit": "db0b2c8ab48ba6bd2da9dec95351e83e000e0875",
+  "scope": "device-free real own VA sync/decoder/replay code with wrapped I/O; not a hardware reproduction or repair of the retained FFmpeg296/300/Kodi EOF-tail failures",
+  "defect": "An obsolete waiter could accept an already-ready equal-token replacement after releasing Driver::mutex, including the old-context-retired success path.",
+  "regression": {
+    "combinations": 12,
+    "dimensions": [
+      "ordinary exact versus explicit remap",
+      "old context live versus retired",
+      "ready replacement versus unchanged-binding completion versus canceled replacement"
+    ],
+    "original_result": "FAIL at first ordinary exact/live/ready-replacement combination",
+    "fixed_result": "PASS all combinations; replacement pixels, identity, owners, transport and READY queue are unchanged"
+  },
+  "fix": "Recheck cancellation and the captured timestamp/context/generation/decode identity/submission ordinal immediately after mutex reacquisition and before final return.",
+  "preserved_contract": "Same-binding completed pixels may succeed after decoder retirement; no fabricated output or changed playback policy.",
+  "validation": {
+    "focused_normal": "PASS",
+    "full_replay_normal": "PASS",
+    "focused_ASan_UBSan_leaks": "PASS",
+    "full_replay_ASan_UBSan_leaks": "PASS",
+    "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+    "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+    "sanitized_build": {
+      "exit": 0,
+      "seconds": 290.7480359500041
+    }
+  },
+  "sources": {
+    "filters/vaapi/crystalhd_drv_video.cpp": "0a6f16f5fb1f327c03f8ee40f4c62846e3a461d44d34e2f356a067519a87cbe6",
+    "tests/vaapi-replay.cpp": "a490cfba87fff0812d4b077e2c44873e17673e8b012f7206acf0b2c3927f014e"
+  },
+  "baseline_production_sha256": "27eadb37b7ed16a58bdff06a5059ba3e601b180ac1267b88a3a709648f6e6ae3",
+  "log_sha256": {
+    "replay-red.log": "eaa00c23b502b86348cc1b94bda41a4b8e8f1c58a433e2ac460f64deb25089d4",
+    "replay-fixed-focused-v2.log": "f84bbd0cbd4ee67bff75669ea6bb157c5b0819ae686805b525ee518a723b9ab9",
+    "replay-fixed-full.log": "68ce753ba87de64f0a6e95a67fc2edb2124765c3015e0827a93b6b4ae1ff9032",
+    "replay-sanitized-focused.log": "f84bbd0cbd4ee67bff75669ea6bb157c5b0819ae686805b525ee518a723b9ab9",
+    "replay-sanitized-full.log": "4ba947649f0d19ac6ace64c0a6b352c19cc19e0f6e53cb5acb19643659cd692a"
+  },
+  "retained_harness_attempt": "replay-fixed-focused.log ran the previous binary while the fixed build was still pending; retained as an excluded failed scheduling attempt, not fixed-source evidence.",
+  "hardware": "PENDING_SEPARATE_RECEIPT",
+  "external_code": "UNCHANGED",
+  "master_release_and_frozen_v13_artifacts": "UNCHANGED"
+}

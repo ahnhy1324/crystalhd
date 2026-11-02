@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "issue": 510,
+  "status": "PASS_SCOPED_RELEASE_ALLOCATION_ERROR_CONTRACT",
+  "base_revision": "fbab5bcab84153532010d601791e19811e15eef5",
+  "problem": "ReleaseBufferHandle constructed its copy-back vector outside an exception handler; std::bad_alloc escaped the actual registered C ABI callback.",
+  "change": "Catch only the preparatory copy allocation failure and return VA_STATUS_ERROR_ALLOCATION_FAILED before export_busy, any synchronization or ownership mutation; same handle and cold-derived write lease remain retryable.",
+  "source_sha256": {
+    "filters/vaapi/crystalhd_drv_video.cpp": "eb4af1af1099e421ffe5b233a8049ea8a8fa63298c76a58772b94f91cc5009ea",
+    "tests/vaapi-buffer-handles.cpp": "fe00357a9b6ad64487398195b6ef482696dd9dd392c5c14e5f6c8360139bc629"
+  },
+  "base_va_source_sha256": "4ba58a4179d5cabc757cb93653c60699159dfa58df4c323dd868ea7d9012c787",
+  "regression": {
+    "entry": "actual public vaReleaseBufferHandle vtable callback",
+    "mocked": "GBM allocation, DMA synchronization and descriptors/mappings use private test memfds; any DtsDeviceOpen aborts the test",
+    "red": {
+      "image": {
+        "exit": 1,
+        "allocation_bytes": 243,
+        "repeated_failures": 2,
+        "exception_escaped": true
+      },
+      "cold_derived": {
+        "exit": 1,
+        "allocation_bytes": 270,
+        "repeated_failures": 2,
+        "exception_escaped": true
+      }
+    },
+    "green": {
+      "ordinary_full_group": "PASS, zero failed checks",
+      "ASan_UBSan_leak_detection_full_group": "PASS, zero failed checks",
+      "focused_image": "PASS, exception_escaped=false/status0x2 on both failures",
+      "focused_cold_derived": "PASS, exception_escaped=false/status0x2 on both failures",
+      "preserved": [
+        "same exported backing/FD/map/BO",
+        "original CPU bytes and IDs",
+        "export_busy=false and no synchronization calls",
+        "borrow excludes map/reacquire/destruction",
+        "cold-source write lease and original source pixels"
+      ],
+      "successful_retry": [
+        "full image copy-back",
+        "all cold-source active Y/UV rows committed",
+        "write lease retired and source ready",
+        "original FD/BO/map retired",
+        "image/buffer normally destroyable"
+      ]
+    }
+  },
+  "compiler_flags": "-O1 -g; standard C++17/Wextra/Werror; sanitized adds address+undefined, frame pointers, no-PIE; ASAN detect_leaks=1/halt_on_error=1, UBSAN halt_on_error=1",
+  "logs_sha256": {
+    "crystalhd-stock-contract-release-red-image-20261030.log": "7946f2c838fc606a4dc6611e15ae16c9d8b1d51a33514ef8a50e6b9ed054ed7e",
+    "crystalhd-stock-contract-release-red-derived-20261030.log": "95b13fcdac4b6db6e1d18404f7e1a5764e7e05a78ddb63483434b8b20db18ee4",
+    "crystalhd-stock-contract-release-green-image-20261030.log": "54c8a3c1fb3efc06879701a0151701cb7684ee335a8464b48a79dc6866bfd0b2",
+    "crystalhd-stock-contract-release-green-derived-20261030.log": "0559e23ba4cf1d9c3db311c2fad29eec3818c5a1131d4a67d3440e484ff96d49",
+    "crystalhd-stock-contract-buffer-full-green-20261030.log": "5c87d0f1d5b73236c1249e5c0a0a6f5260e43754496d1c7c009577b752fd902d",
+    "crystalhd-stock-contract-buffer-sanitized-20261030.log": "5c87d0f1d5b73236c1249e5c0a0a6f5260e43754496d1c7c009577b752fd902d"
+  },
+  "limits": [
+    "No hardware, external client, DRM device, kernel/module or installed component was exercised or modified.",
+    "This corrects an owned API allocation-error contract; it does not explain or repair the Player FHD loss, excluded heap abort, broader Kodi lifecycle, native EXPBUF pixels, GPU completion, physical display or A/V."
+  ]
+}

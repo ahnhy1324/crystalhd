@@ -1,0 +1,229 @@
+{
+  "schema": 1,
+  "purpose": "Combine reviewed586/587 with experimentalFHDrepair baseline and promote isolated packed-scaler ASan/UBSan/leak checks into both hosted userspaces.",
+  "research_merge": {
+    "PR": 593,
+    "base": "feat/gst-xv-output/#532",
+    "commit": "7d1f5899d4043527414d9cd95d4278b8aacd19b3",
+    "tree": "a5edb75512613f301e565b3ca8ef9ccd04508a6a",
+    "same_tree_as_prior_qualified_head": "6f7a514c56328fc3920ccef10d71bfd6bedca133",
+    "master_merge": false
+  },
+  "combined_reviewed_sources": {
+    "586": "3b2f40ec63bfcc6bae403b2db07d69c1e1d1c160",
+    "587": "6db15986a8481cb07510be05a10c654d29e04ac2"
+  },
+  "positive_sanitizer_target": {
+    "exit": 0,
+    "normal_before": {
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": {
+        "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+        "mtime_ns": 1793401069800907589
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/packed-scale-test": {
+        "sha256": "bdc955ca205c93b5f8cecb8916f917d48748b994fac3ce16444b9a0c152010af",
+        "mtime_ns": 1793401071268879532
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/.crystalhd-cpu-config": {
+        "sha256": "95dc7d6fb3de5243b6397b621ef4aa5a5966fbc909d305edfbbf5e26e5e1094a",
+        "mtime_ns": 1793401068586863269
+      }
+    },
+    "normal_after": {
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": {
+        "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+        "mtime_ns": 1793401069800907589
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/packed-scale-test": {
+        "sha256": "bdc955ca205c93b5f8cecb8916f917d48748b994fac3ce16444b9a0c152010af",
+        "mtime_ns": 1793401071268879532
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/.crystalhd-cpu-config": {
+        "sha256": "95dc7d6fb3de5243b6397b621ef4aa5a5966fbc909d305edfbbf5e26e5e1094a",
+        "mtime_ns": 1793401068586863269
+      }
+    },
+    "normal_images_and_stamp_unchanged": true,
+    "tempdir_empty": true,
+    "TMPDIR_contains_spaces": true,
+    "CPU_frames": 36,
+    "result": {
+      "qualified": true,
+      "compared": 36,
+      "cycles": 3,
+      "scope": "CPU_pixels_metadata_flush_EOS_restart_padded_engine_only"
+    },
+    "stderr": "",
+    "source_pins": {
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/Makefile": "9e7c6a10c00101bd4f3213cee230c93cadd8ab62e88669520ce52c17d278b3d4",
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/check.sh": "c892701d68bd50deb7874b92907bc8cd9022b79e84913504f991a22f518e0961",
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/.github/workflows/main.yml": "ea20015a51553398cece705160f9b6f3250434e656205a58a33da1454cc8b432"
+    }
+  },
+  "failure_and_cleanup_controls": {
+    "qualified": true,
+    "controls": [
+      {
+        "case": "compiler-failure",
+        "exit": 2,
+        "expected_exit": 2,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "make: Entering directory '/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale'\nmake: Leaving directory '/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale'\n",
+        "stderr": "make: *** [Makefile:28: check-sanitized] Error 1\n"
+      },
+      {
+        "case": "missing-own-plugin",
+        "exit": 1,
+        "expected_exit": 1,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "case": "invalid-argument-count",
+        "exit": 2,
+        "expected_exit": 2,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "",
+        "stderr": "Usage: check.sh [build-directory [system-plugins-directory]]\n"
+      },
+      {
+        "case": "empty-explicit-system-path",
+        "exit": 1,
+        "expected_exit": 1,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "case": "missing-required-system-plugin",
+        "exit": 1,
+        "expected_exit": 1,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "case": "test-failure-propagation",
+        "exit": 37,
+        "expected_exit": 37,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "case": "legacy-ISA-policy",
+        "exit": 2,
+        "expected_exit": 2,
+        "tempdir_empty": true,
+        "normal_unchanged": true,
+        "intended_reason": true,
+        "passed": true,
+        "stdout": "make: Entering directory '/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale'\nmake: Leaving directory '/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale'\n",
+        "stderr": "../../../cpu.mk:11: *** LEGACY_CPU=1 selects its own ISA; remove machine flags: -msse2.  Stop.\n"
+      }
+    ],
+    "normal_before": {
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": {
+        "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+        "mtime_ns": 1793401069800907589
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/packed-scale-test": {
+        "sha256": "bdc955ca205c93b5f8cecb8916f917d48748b994fac3ce16444b9a0c152010af",
+        "mtime_ns": 1793401071268879532
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/.crystalhd-cpu-config": {
+        "sha256": "95dc7d6fb3de5243b6397b621ef4aa5a5966fbc909d305edfbbf5e26e5e1094a",
+        "mtime_ns": 1793401068586863269
+      }
+    },
+    "normal_after": {
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so": {
+        "sha256": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+        "mtime_ns": 1793401069800907589
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/packed-scale-test": {
+        "sha256": "bdc955ca205c93b5f8cecb8916f917d48748b994fac3ce16444b9a0c152010af",
+        "mtime_ns": 1793401071268879532
+      },
+      "/home/mache/.cache/crystalhd-verified-integration-20261031/filters/gst/packed-upscale/.crystalhd-cpu-config": {
+        "sha256": "95dc7d6fb3de5243b6397b621ef4aa5a5966fbc909d305edfbbf5e26e5e1094a",
+        "mtime_ns": 1793401068586863269
+      }
+    },
+    "source_pins": {
+      "filters/gst/packed-upscale/Makefile": "9e7c6a10c00101bd4f3213cee230c93cadd8ab62e88669520ce52c17d278b3d4",
+      "filters/gst/packed-upscale/check.sh": "c892701d68bd50deb7874b92907bc8cd9022b79e84913504f991a22f518e0961"
+    }
+  },
+  "relative_plugin_path_regression": {
+    "old_loader_exit": 1,
+    "old_stderr": "pipeline create: no element \"appsrc\"\nfinite packed filter qualification failed\n",
+    "new_loader_exit": 0,
+    "new_last_line": "{\"qualified\":true,\"compared\":36,\"cycles\":3,\"scope\":\"CPU_pixels_metadata_flush_EOS_restart_padded_engine_only\"}",
+    "durable_unit_old_relative_case": "FAIL expected, selectedsymlink target assertion",
+    "durable_unit_final": "PASS5 filesystem-onlycases; noGStreamer/decoder/display/nativepixel claim"
+  },
+  "actual_instrumentation": {
+    "captured02-packed-scale-test": {
+      "sha256": "eba223b0bc538dd14283f4fbdea10639d756d6f84f7464688d39aa74db1c1eeb",
+      "ASan_needed": true,
+      "UBSan_needed": true,
+      "ASan_instrumentation": true,
+      "UBSan_instrumentation": true
+    },
+    "captured02-libgstcrystalhdpackedscale.so": {
+      "sha256": "ac6f0eefaf6baa8571adfa2ff7848652d5338cf6746c55ad048a43c98ca4a16c",
+      "ASan_needed": true,
+      "UBSan_needed": true,
+      "ASan_instrumentation": true,
+      "UBSan_instrumentation": true
+    }
+  },
+  "local_combined_checks": {
+    "classifier": "20PASS",
+    "VA_release_callback": "PASS0failedchecks; preservedretryableoriginal+derivedhandles afterinjectedallocationfailure",
+    "Player": "126PASS usingrebuiltmatchingnativehelper; existingGI deprecationwarningsonly",
+    "normal_component": "36stockpixel/metadata/stride/flush/EOS/restart/rejection PASS",
+    "shell_syntax": "PASS",
+    "diff_whitespace": "PASS"
+  },
+  "rebuilt_actual_runtime_payloads": {
+    "DIL": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+    "native_decoder": "7f7fe47cb32ec42e4b0eda282064e483a093255bdef8c260dfbc97f22997dcf0",
+    "packed_scaler": "c4bde8e040b98af722730305cb2b22a40ada5fe1309822dbb6ac0adde43da984",
+    "scope": "Allthree hashes exactlyequal the images used by original300sFHD witness. No additional hardware/media invocation."
+  },
+  "source_pins": {
+    "filters/gst/packed-upscale/Makefile": "9e7c6a10c00101bd4f3213cee230c93cadd8ab62e88669520ce52c17d278b3d4",
+    "filters/gst/packed-upscale/check.sh": "c892701d68bd50deb7874b92907bc8cd9022b79e84913504f991a22f518e0961",
+    "tests/packed-sanitizer-loader.test.py": "c3ae2318ec3cf76a7b7ec74fd8a9574b445d2a878c537b1fa0a7efb90d64b3bb",
+    ".github/workflows/main.yml": "2272a70f394f57012292a0f5242b49a9ef371b09d6a2558f895d3d7111e80100"
+  },
+  "scope": [
+    "Build/test/loader/CIchanges only fornewpackedpromotion; reviewedVA587fixand586selector retainedratherthanreimplemented.",
+    "Bothinstrumentedpluginandtest areASan/UBSan linkedwithactualreport/handle symbols; leakdetectionanderrorhaltfixed, suppressionsnotused, scannerdisabled.",
+    "Sanitizerbuildisalwaysfresh; normalO2plugin/test/CPUstamp hashes+mtimesunchanged and temporarydirsremoved.",
+    "1.28.2 executes36 nativecomparisons;1.24 receivespluginload/versionrejectionqualificationonly. Hostedfinalhead outcome is recordedonPRseparately; earlierindividualCI doesnotqualifynewcombination.",
+    "Failurecontrols usefalsecompiler, missingfiles, stubexit37 andlegacyISArefusal; noinvalidmemory/heapbugreproduction.",
+    "No externalcode/binary, installedmodule/firmware, mastermerge/defaultoutput/release or538dispositionchanges."
+  ]
+}

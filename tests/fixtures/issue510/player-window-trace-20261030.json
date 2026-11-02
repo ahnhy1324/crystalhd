@@ -1,0 +1,1313 @@
+{
+  "schema": 1,
+  "date": "2026-10-30",
+  "status": "OBSERVER_VALIDATED_PLAYBACK_LOSS_AND_CAUSE_REMAIN_OPEN",
+  "scope": "Bounded native Player metadata/scheduler evidence and progressive original-stock-Kodi control/source checkpoints; no full media, object-return, performance or physical A/V qualification.",
+  "source": {
+    "master_unchanged": "04fb4654924717617cccba367ee3bab49114f30a",
+    "integration_head": "fbab5bcab84153532010d601791e19811e15eef5",
+    "window_implementation_head": "b8a97c94930d038ca9169b5c8a7d88a0e2f88368",
+    "va_release_head": "6db15986a8481cb07510be05a10c654d29e04ac2",
+    "evidence_only_new_head_ci": "PENDING; implementation-head CI does not qualify a later commit",
+    "issues_closed": 0,
+    "master_merge_performed": false,
+    "installed_or_release_artifacts_changed": false,
+    "external_sources_or_binaries_modified": false
+  },
+  "implementation": {
+    "pr": 589,
+    "default": "first-N unchanged; rolling capture is explicit --trace-window with --trace-frames",
+    "capacity_max": 16384,
+    "attachment_history_max": 64,
+    "post_trigger_records": "max(1,capacity/4); retained history freezes, counters continue",
+    "context": "evicted-history checkpoints precede earliest retained record; original order/PTS/ordinal/epochs and caller-namespace Linux thread IDs preserved; unknown context explicit",
+    "trigger": "once-only first timed video QoS snapshot with positive jitter; timestamp zero valid; untimed/nonpositive-jitter header snapshots do not trigger or emit a drop warning",
+    "warning_eligibility_changed": true,
+    "media_qos_quality_deadlines_changed": false
+  },
+  "local_validation": {
+    "player_passed": 122,
+    "player_skipped": 0,
+    "native_variants": [
+      "ordinary",
+      "ASan+UBSan+leaks"
+    ],
+    "native_groups_each": 11,
+    "native_snapshots_each": 28,
+    "compiled_semantic_negatives_rejected": 4,
+    "configuration_surfaces": 36,
+    "configuration_boundaries": 13,
+    "configuration_canonical_keys": 21,
+    "window_reader_checks": 39,
+    "correlation_checks": 14,
+    "separate_eof_correlation_checks": 26
+  },
+  "related_delivery": {
+    "585": "combined #580 -> #583 -> #584 baseline;15/15 CI; ready/unmerged",
+    "586": "conservative independent kernel selector;20 local cases,6 semantic negatives;15/15 CI; ready/unmerged",
+    "587": "nine-line own vaReleaseBufferHandle allocation exception guard; public-vtable RED/GREEN and sanitizers;15/15 CI; ready/unmerged; not a Player loss or excluded heap fix",
+    "588": "actual userspace-only route qualified, then closed unmerged"
+  },
+  "hosted_ci": {
+    "runs": [
+      {
+        "pr": 585,
+        "head": "fbab5bcab84153532010d601791e19811e15eef5",
+        "run": 40990370334,
+        "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/40990370334",
+        "job_count": 15,
+        "successful_jobs": 15,
+        "skipped_jobs": 0
+      },
+      {
+        "pr": 586,
+        "head": "3b2f40ec63bfcc6bae403b2db07d69c1e1d1c160",
+        "run": 40995203372,
+        "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/40995203372",
+        "job_count": 15,
+        "successful_jobs": 15,
+        "skipped_jobs": 0
+      },
+      {
+        "pr": 587,
+        "head": "6db15986a8481cb07510be05a10c654d29e04ac2",
+        "run": 40996189424,
+        "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/40996189424",
+        "job_count": 15,
+        "successful_jobs": 15,
+        "skipped_jobs": 0
+      },
+      {
+        "pr": 588,
+        "head": "d2fb49c9cbed013f96b7fa4164f3d08ebd715319",
+        "run": 40996974046,
+        "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/40996974046",
+        "job_count": 6,
+        "successful_jobs": 5,
+        "skipped_jobs": 1
+      },
+      {
+        "pr": 589,
+        "head": "b8a97c94930d038ca9169b5c8a7d88a0e2f88368",
+        "run": 40997322708,
+        "url": "https://github.com/ahnhy1324/crystalhd/actions/runs/40997322708",
+        "job_count": 15,
+        "successful_jobs": 15,
+        "skipped_jobs": 0
+      }
+    ],
+    "userspace_route_probe": {
+      "classification": {
+        "heavy": true,
+        "kernel": false,
+        "contracts": false,
+        "reason": "reviewed userspace only"
+      },
+      "userspace_ubuntu_versions": [
+        "24.04",
+        "26.04"
+      ],
+      "userspace_all_steps_success": true,
+      "kernel": "one collapsed pre-matrix skipped placeholder; the ten-arm upstream matrix was not instantiated",
+      "docs": "success",
+      "gate": "All selected CI jobs succeeded; unselected heavy jobs were skipped.",
+      "log_paths": [
+        "/home/mache/.cache/crystalhd-ci-probe-588-classify-20261030.log",
+        "/home/mache/.cache/crystalhd-ci-probe-588-gate-20261030.log"
+      ]
+    },
+    "scope": "Ubuntu24.04/26.04 full userspace both execute. Probe has5successful jobs and one collapsed skipped placeholder; ten-arm upstream kernel matrix not instantiated. Shared/unknown/workflow/master/tag/manual changes remain full."
+  },
+  "media": {
+    "path": "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv",
+    "sha256": "823861ecc5d7782dcfca733f7fed7903a3d76be5b9c7d8a35ba0c5e164f07b2c",
+    "bytes": 633788375,
+    "duration_ns": 300000000000,
+    "original_picture_count": 7500,
+    "progressive_field_count": 15000,
+    "picture_period_ns": 40000000,
+    "field_period_ns": 20000000,
+    "video": "1920x1080i25 TFF dialogue, retained30s seed repeated10times by unchanged installed stream-copy tool",
+    "audio": {
+      "codec": "pcm_f32le",
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 14400000
+    },
+    "replay": "Video AU/audio packet hashes, PTS/DTS/duration/size/flags and joins independently checked. Newly reconstructed container; do not reuse missing historical5min container identity.",
+    "comparison_limit": "PCM5min differs from earlier30sAAC workload; no cross-study CPU/performance claim."
+  },
+  "protocol": {
+    "debug": "GST_DEBUG=0",
+    "operator": "root sole hardware/display operator; no artificial load",
+    "requested_conditions": "ordinary automatic Xv/Pulse, hardware scale-width1280; FHD software-output-size1920x1080, source-pinned method4/two FHD scaler threads, QoS/deadlines/normal priority; no explicit video-sink override",
+    "actual_snapshot_limit": "Only720 natural EOS captures actual Pulse clock and properties. FHD trace CAPS prove buffer geometry; actual FHD clock/property snapshots absent. No exact matched-clock or performance causality claim.",
+    "guards": "AC and <75C; normal owned stop, stable module/firmware/debug/PM/link/ref/pin/AER checks, no force unload/reset. FHD02 separately frozen normal Stop60s irrespective of outcome.",
+    "FHD_scope": "buffer geometry, not physical FHD scanout/A/V",
+    "stable_boundary": {
+      "module": "3.10.13",
+      "srcversion": "F76E163690F147B91495DDD",
+      "ref": 0,
+      "pin_net": 0,
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      },
+      "debug_rows": 85,
+      "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+      "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+      "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "video_nodes": []
+    },
+    "aer_limit": "Device exposed counters zero; parent aer_dev files empty/unexposed, not proof of all parent AER counters being zero."
+  },
+  "player_runs": [
+    {
+      "case": "pcm-fhd-window-01",
+      "outcome": "THERMAL_GUARD_FAIL",
+      "entry_exit": 143,
+      "natural_eos": false,
+      "closed": true,
+      "maximum_temperature_mC": 75000,
+      "boundary_equal": true,
+      "kernel_exit": 0,
+      "guard_error": "('AC/thermal guard', True, [75000, 63000])",
+      "planned_user_stop": false,
+      "source_argv": [
+        "--hardware",
+        "--scale-width",
+        "1280",
+        "--software-output-size",
+        "1920x1080",
+        "--trace-frames",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/pcm-fhd-window-01.trace.json",
+        "--trace-limit",
+        "16384",
+        "--trace-window",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv"
+      ],
+      "analysis_status": "WINDOW_CENSUS_QUALIFIED_GLOBAL_ACCOUNTING_UNRESOLVED",
+      "window_census_qualified": true,
+      "trigger_capture_complete": true,
+      "retention": {
+        "capacity": 16384,
+        "observed": 82685,
+        "retained": 7143,
+        "dropped": 75542,
+        "truncated": true
+      },
+      "window_selection": {
+        "triggered": true,
+        "trigger_seqnum": 1697,
+        "trigger_order": 3047,
+        "post_target": 4096,
+        "post_retained": 4096,
+        "complete": true,
+        "overwritten": 0,
+        "unretained_after_window": 75542,
+        "context_before_order": 1
+      },
+      "bus_trigger": {
+        "seqnum": 1697,
+        "factory": "xvimagesink",
+        "processed": 318,
+        "dropped": 1,
+        "accepted": true,
+        "timing": {
+          "live": true,
+          "running_time": 6360000000,
+          "timestamp": 6360000000,
+          "jitter": 26372000,
+          "stream_time": 6360000000,
+          "duration": 20000000
+        },
+        "scope": "first timed video QoS snapshot with positive jitter; counters may reset"
+      },
+      "interval": {
+        "qualified": true,
+        "raw_common_extent_ns": [
+          0,
+          15040000000
+        ],
+        "complete_picture_interval_ns": [
+          0,
+          15040000000
+        ],
+        "end_is_exclusive": true,
+        "expected_original_pictures": 376,
+        "expected_fields": 752,
+        "partial_lower_picture_pts_ns": null,
+        "partial_upper_picture_pts_ns": null,
+        "excluded_retained_buffers_at_edges": {
+          "decoder": {
+            "before": 0,
+            "after": 2
+          },
+          "deinterlace": {
+            "before": 0,
+            "after": 4
+          },
+          "output-pack": {
+            "before": 0,
+            "after": 4
+          },
+          "output-scale": {
+            "before": 0,
+            "after": 4
+          },
+          "sink": {
+            "before": 0,
+            "after": 0
+          }
+        },
+        "stage_counts_within_interval": {
+          "decoder": 375,
+          "deinterlace": 750,
+          "output-pack": 749,
+          "output-scale": 749,
+          "sink": 749
+        },
+        "missing_before_decoder_src_picture_pts_ns": [
+          6400000000
+        ],
+        "missing_before_decoder_src_field_equivalents": 2,
+        "downstream_intervals": [
+          {
+            "to": "deinterlace",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "output-pack",
+            "missing_pts_ns": [
+              6380000000
+            ],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "output-scale",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "sink",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          }
+        ],
+        "loss_terms_field_equivalents": [
+          2,
+          0,
+          1,
+          0,
+          0
+        ],
+        "sink_input_deficit": 3,
+        "conservation_residual": 0,
+        "scope": "PTS/duration delivery relation inside one complete common retained interval only; no unique source-owner or display claim"
+      },
+      "whole_invocation": {
+        "expected_source_pictures": 7500,
+        "expected_fields": 15000,
+        "stage_buffer_counts": {
+          "decoder": 4356,
+          "deinterlace": 8711,
+          "output-pack": 8710,
+          "output-scale": 8709,
+          "sink": 8697
+        },
+        "eos_counts": {
+          "decoder": 0,
+          "deinterlace": 0,
+          "output-pack": 0,
+          "output-scale": 0,
+          "sink": 0
+        },
+        "natural_eos": false,
+        "entry_closed": true,
+        "entry_exit": 143,
+        "complete_invocation_evidenced": false,
+        "sink_accounting": {
+          "qualified": false,
+          "sink_input_buffers_whole_invocation": 8697,
+          "scope": "entire invocation counters, never subtracted from retained-window counts",
+          "rendered": 8689,
+          "dropped": 7,
+          "residual": 1
+        },
+        "expected_render_count_verdict": "UNRESOLVED"
+      },
+      "actual_retained_caps": [
+        {
+          "stage": "decoder",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 25,
+          "fps_d": 1,
+          "format": "YUY2"
+        },
+        {
+          "stage": "deinterlace",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "YUY2"
+        },
+        {
+          "stage": "output-pack",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        },
+        {
+          "stage": "output-scale",
+          "width": 1920,
+          "height": 1080,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        },
+        {
+          "stage": "sink",
+          "width": 1920,
+          "height": 1080,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        }
+      ],
+      "actual_clock_and_properties": null,
+      "actual_clock_evidence": "NOT CAPTURED: private entry snapshots only at EOS; no exact matched-clock/property or performance inference for interrupted FHD arms."
+    },
+    {
+      "case": "pcm720-window-01",
+      "outcome": "NATURAL_EOS_RENDER_DEFICIT_FAIL",
+      "entry_exit": 0,
+      "natural_eos": true,
+      "closed": true,
+      "maximum_temperature_mC": 70000,
+      "boundary_equal": true,
+      "kernel_exit": 0,
+      "guard_error": null,
+      "planned_user_stop": false,
+      "source_argv": [
+        "--hardware",
+        "--scale-width",
+        "1280",
+        "--trace-frames",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/pcm720-window-01.trace.json",
+        "--trace-limit",
+        "16384",
+        "--trace-window",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv"
+      ],
+      "analysis_status": "INCOMPLETE_POST_TRIGGER",
+      "window_census_qualified": true,
+      "trigger_capture_complete": false,
+      "retention": {
+        "capacity": 16384,
+        "observed": 82494,
+        "retained": 16384,
+        "dropped": 66110,
+        "truncated": true
+      },
+      "window_selection": {
+        "triggered": true,
+        "trigger_seqnum": 52197,
+        "trigger_order": 81086,
+        "post_target": 4096,
+        "post_retained": 1408,
+        "complete": false,
+        "overwritten": 66110,
+        "unretained_after_window": 0,
+        "context_before_order": 66111
+      },
+      "bus_trigger": {
+        "seqnum": 52197,
+        "factory": "xvimagesink",
+        "processed": 14739,
+        "dropped": 1,
+        "accepted": true,
+        "timing": {
+          "live": true,
+          "running_time": 294780000000,
+          "timestamp": 294780000000,
+          "jitter": 69464000,
+          "stream_time": 294780000000,
+          "duration": 20000000
+        },
+        "scope": "first timed video QoS snapshot with positive jitter; counters may reset"
+      },
+      "interval": {
+        "qualified": true,
+        "raw_common_extent_ns": [
+          240440000000,
+          300000000000
+        ],
+        "complete_picture_interval_ns": [
+          240440000000,
+          300000000000
+        ],
+        "end_is_exclusive": true,
+        "expected_original_pictures": 1489,
+        "expected_fields": 2978,
+        "partial_lower_picture_pts_ns": null,
+        "partial_upper_picture_pts_ns": null,
+        "excluded_retained_buffers_at_edges": {
+          "decoder": {
+            "before": 0,
+            "after": 0
+          },
+          "deinterlace": {
+            "before": 0,
+            "after": 0
+          },
+          "sink": {
+            "before": 5,
+            "after": 0
+          }
+        },
+        "stage_counts_within_interval": {
+          "decoder": 1488,
+          "deinterlace": 2976,
+          "sink": 2973
+        },
+        "missing_before_decoder_src_picture_pts_ns": [
+          294880000000
+        ],
+        "missing_before_decoder_src_field_equivalents": 2,
+        "downstream_intervals": [
+          {
+            "to": "deinterlace",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "sink",
+            "missing_pts_ns": [
+              294800000000,
+              294820000000,
+              294840000000
+            ],
+            "extra_pts_ns": []
+          }
+        ],
+        "loss_terms_field_equivalents": [
+          2,
+          0,
+          3
+        ],
+        "sink_input_deficit": 5,
+        "conservation_residual": 0,
+        "scope": "PTS/duration delivery relation inside one complete common retained interval only; no unique source-owner or display claim"
+      },
+      "whole_invocation": {
+        "expected_source_pictures": 7500,
+        "expected_fields": 15000,
+        "stage_buffer_counts": {
+          "decoder": 7499,
+          "deinterlace": 14998,
+          "sink": 14995
+        },
+        "eos_counts": {
+          "decoder": 1,
+          "deinterlace": 1,
+          "sink": 1
+        },
+        "natural_eos": true,
+        "entry_closed": true,
+        "entry_exit": 0,
+        "complete_invocation_evidenced": true,
+        "sink_accounting": {
+          "qualified": true,
+          "sink_input_buffers_whole_invocation": 14995,
+          "scope": "entire invocation counters, never subtracted from retained-window counts",
+          "rendered": 14994,
+          "dropped": 1,
+          "residual": 0
+        },
+        "expected_render_count_verdict": "FAIL",
+        "rendered_deficit_from_15000": 6
+      },
+      "actual_retained_caps": [],
+      "actual_clock_and_properties": {
+        "why": "eos-before-null",
+        "clock_name": "GstPulseSinkClock",
+        "clock_type": "GstAudioClock",
+        "output_packing_selected": null,
+        "elements": [
+          {
+            "factory": "deinterlace",
+            "name": "deinterlace",
+            "properties": {
+              "method": "4"
+            }
+          },
+          {
+            "factory": "xvimagesink",
+            "name": "xvimagesink0",
+            "properties": {
+              "qos": "True",
+              "sync": "True",
+              "max-lateness": "5000000",
+              "processing-deadline": "15000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "force-aspect-ratio": "True",
+              "handle-events": "True",
+              "enable-last-sample": "True"
+            }
+          },
+          {
+            "factory": "pulsesink",
+            "name": "audiosink-actual-sink-pulse",
+            "properties": {
+              "qos": "False",
+              "sync": "True",
+              "max-lateness": "-1",
+              "processing-deadline": "20000000",
+              "render-delay": "0",
+              "ts-offset": "0",
+              "buffer-time": "200000",
+              "latency-time": "10000",
+              "enable-last-sample": "False"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "pcm-fhd-window-02-diagnostic",
+      "outcome": "PLANNED_PARTIAL_STOP_NOT_EOF_ACCEPTANCE",
+      "entry_exit": 143,
+      "natural_eos": false,
+      "closed": true,
+      "maximum_temperature_mC": 71000,
+      "boundary_equal": true,
+      "kernel_exit": 0,
+      "guard_error": null,
+      "planned_user_stop": true,
+      "source_argv": [
+        "--hardware",
+        "--scale-width",
+        "1280",
+        "--software-output-size",
+        "1920x1080",
+        "--trace-frames",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/pcm-fhd-window-02-diagnostic.trace.json",
+        "--trace-limit",
+        "16384",
+        "--trace-window",
+        "/home/mache/.cache/crystalhd-window-runtime-20261030/dialogue-continuous-5min.mkv"
+      ],
+      "analysis_status": "WINDOW_CENSUS_QUALIFIED_GLOBAL_ACCOUNTING_UNRESOLVED",
+      "window_census_qualified": true,
+      "trigger_capture_complete": true,
+      "retention": {
+        "capacity": 16384,
+        "observed": 27946,
+        "retained": 8425,
+        "dropped": 19521,
+        "truncated": true
+      },
+      "window_selection": {
+        "triggered": true,
+        "trigger_seqnum": 2177,
+        "trigger_order": 4329,
+        "post_target": 4096,
+        "post_retained": 4096,
+        "complete": true,
+        "overwritten": 0,
+        "unretained_after_window": 19521,
+        "context_before_order": 1
+      },
+      "bus_trigger": {
+        "seqnum": 2177,
+        "factory": "crystalhddec",
+        "processed": 228,
+        "dropped": 1,
+        "accepted": true,
+        "timing": {
+          "live": false,
+          "running_time": 9080000000,
+          "timestamp": 9080000000,
+          "jitter": 45166000,
+          "stream_time": 9080000000,
+          "duration": null
+        },
+        "scope": "first timed video QoS snapshot with positive jitter; counters may reset"
+      },
+      "interval": {
+        "qualified": true,
+        "raw_common_extent_ns": [
+          0,
+          17720000000
+        ],
+        "complete_picture_interval_ns": [
+          0,
+          17720000000
+        ],
+        "end_is_exclusive": true,
+        "expected_original_pictures": 443,
+        "expected_fields": 886,
+        "partial_lower_picture_pts_ns": null,
+        "partial_upper_picture_pts_ns": null,
+        "excluded_retained_buffers_at_edges": {
+          "decoder": {
+            "before": 0,
+            "after": 2
+          },
+          "deinterlace": {
+            "before": 0,
+            "after": 4
+          },
+          "output-pack": {
+            "before": 0,
+            "after": 4
+          },
+          "output-scale": {
+            "before": 0,
+            "after": 4
+          },
+          "sink": {
+            "before": 0,
+            "after": 0
+          }
+        },
+        "stage_counts_within_interval": {
+          "decoder": 442,
+          "deinterlace": 884,
+          "output-pack": 884,
+          "output-scale": 884,
+          "sink": 884
+        },
+        "missing_before_decoder_src_picture_pts_ns": [
+          9080000000
+        ],
+        "missing_before_decoder_src_field_equivalents": 2,
+        "downstream_intervals": [
+          {
+            "to": "deinterlace",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "output-pack",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "output-scale",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          },
+          {
+            "to": "sink",
+            "missing_pts_ns": [],
+            "extra_pts_ns": []
+          }
+        ],
+        "loss_terms_field_equivalents": [
+          2,
+          0,
+          0,
+          0,
+          0
+        ],
+        "sink_input_deficit": 2,
+        "conservation_residual": 0,
+        "scope": "PTS/duration delivery relation inside one complete common retained interval only; no unique source-owner or display claim"
+      },
+      "whole_invocation": {
+        "expected_source_pictures": 7500,
+        "expected_fields": 15000,
+        "stage_buffer_counts": {
+          "decoder": 1472,
+          "deinterlace": 2943,
+          "output-pack": 2943,
+          "output-scale": 2943,
+          "sink": 2938
+        },
+        "eos_counts": {
+          "decoder": 0,
+          "deinterlace": 0,
+          "output-pack": 0,
+          "output-scale": 0,
+          "sink": 0
+        },
+        "natural_eos": false,
+        "entry_closed": true,
+        "entry_exit": 143,
+        "complete_invocation_evidenced": false,
+        "sink_accounting": {
+          "qualified": false,
+          "sink_input_buffers_whole_invocation": 2938,
+          "scope": "entire invocation counters, never subtracted from retained-window counts",
+          "rendered": 2936,
+          "dropped": 1,
+          "residual": 1
+        },
+        "expected_render_count_verdict": "UNRESOLVED"
+      },
+      "actual_retained_caps": [
+        {
+          "stage": "decoder",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 25,
+          "fps_d": 1,
+          "format": "YUY2"
+        },
+        {
+          "stage": "deinterlace",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "YUY2"
+        },
+        {
+          "stage": "output-pack",
+          "width": 1280,
+          "height": 720,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        },
+        {
+          "stage": "output-scale",
+          "width": 1920,
+          "height": 1080,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        },
+        {
+          "stage": "sink",
+          "width": 1920,
+          "height": 1080,
+          "fps_n": 50,
+          "fps_d": 1,
+          "format": "UYVY"
+        }
+      ],
+      "actual_clock_and_properties": null,
+      "actual_clock_evidence": "NOT CAPTURED: private entry snapshots only at EOS; no exact matched-clock/property or performance inference for interrupted FHD arms."
+    }
+  ],
+  "scheduler": {
+    "v3_cpu_only": {
+      "status": "QUALIFIED_TRIGGERED_OBSERVER",
+      "intervals": 5757,
+      "reconciled_ending_buckets": 138,
+      "post_trigger_duration_ns": 1000000000,
+      "prior_failures": [
+        "scheduler-smoke-01 compilation",
+        "scheduler-smoke-02 compilation",
+        "scheduler-smoke-v2-01 boundary-race strict FAIL preserved"
+      ]
+    },
+    "first_fhd_trigger_coverage": "NO_COVERAGE",
+    "fhd02_trigger_coverage": "WITHIN_COMMON_ENDING_COVERAGE",
+    "fhd02_example": {
+      "from": "output-pack",
+      "to": "output-scale",
+      "original_picture_pts_ns": 9040000000,
+      "field_pts_ns": 9060000000,
+      "declared_pts_relation": "same exact field PTS",
+      "upstream": {
+        "order": 4321,
+        "stage": "output-pack",
+        "token": 1,
+        "attachment": 0,
+        "pts": 9060000000,
+        "duration": 20000000,
+        "monotonic_ns": 321422671924862,
+        "thread_id": 1080013,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0
+      },
+      "downstream": {
+        "order": 4322,
+        "stage": "output-scale",
+        "token": 2,
+        "attachment": 1,
+        "pts": 9060000000,
+        "duration": 20000000,
+        "monotonic_ns": 321422687634871,
+        "thread_id": 1080013,
+        "stream_generation": 1,
+        "segment_generation": 1,
+        "flush_generation": 0
+      },
+      "wall_delta_ns": 15710009,
+      "same_emitter_tid": true,
+      "status": "OBSERVED_ADJACENT_PAD_TIMESTAMPS",
+      "emitter_thread_observations": [
+        {
+          "identity": {
+            "tid": 1080013,
+            "birth_ns": 321412456837387,
+            "status": "UNIQUE_RECORDED_BIRTH"
+          },
+          "requested_interval_ns": [
+            321422671924862,
+            321422687634871
+          ],
+          "requested_ns": 15710009,
+          "outside_common_left_censored_ns": 0,
+          "outside_common_right_censored_ns": 0,
+          "common_complete_ending_interval_ns": [
+            321418718607872,
+            321423686457351
+          ],
+          "clipped_interval_ns": [
+            321422671924862,
+            321422687634871
+          ],
+          "clipped_ns": 15710009,
+          "scope": "Emitter-thread scheduler residence within this wall span; not exclusive function CPU or scaler-worker identity.",
+          "status": "COVERED_COMPLETED_INTERVALS",
+          "completed_interval_ns": {
+            "scheduled_residence": 5448571,
+            "ready_wait": 10261438,
+            "sleep_until_wakeup": 0,
+            "unknown_offcpu": 0
+          },
+          "unobserved_inside_common_ns": 0
+        }
+      ]
+    },
+    "interpretation": "At fieldPTS9.06s,15.710009ms pack-to-scale pad wall span includes emitter scheduled residence5.448571ms and ready wait10.261438ms. Not exclusive stage-function CPU, scaler-worker identity or proof of the missing9.08s decoder-picture cause.",
+    "proc_limit": "sched_schedstats=0 makes runqueue counters unknown, not zero waits.100ms proc samples do not resolve a5ms deadline. Sleep/D-state is not exclusive I/O.",
+    "initial_720_strict_scheduler_and_first_eof_reader": "FAILs preserved; no overwrite or media PASS",
+    "separate_eof_v2": {
+      "status": "STOPPED_BEFORE_FREEZE",
+      "eof_coverage_model": 2,
+      "main_exit_tracepoint_semantics": "MAIN_EXIT_IS_NOT_ALL_THREADS_STOPPED",
+      "interval_validation": "PASS",
+      "observer_post_interval_complete": false,
+      "media_result": "NOT_ASSESSED_BY_SCHEDULER_READER",
+      "interval_count": 32768,
+      "fully_reconciled_ending_buckets": 1144,
+      "completed_teardown_intervals": 19
+    },
+    "eof_v2_limit": "Unchanged raw bytes; main exit is not all threads stopped. Completed teardown intervals bounded by observer END. STOPPED_BEFORE_FREEZE and interval validation PASS are not complete capture/media PASS.",
+    "separate_720_eof_correlation": {
+      "status": "SCOPED_STOPPED_BEFORE_FREEZE_OBSERVATIONS",
+      "eof_coverage_model": 2,
+      "scheduler_observer_post_interval_complete": false,
+      "scheduler_media_result": "NOT_ASSESSED_BY_SCHEDULER_READER",
+      "trigger_scheduler_coverage": "WITHIN_COMMON_ENDING_COVERAGE",
+      "common_complete_ending_interval_ns": [
+        320928174198520,
+        320935861408232
+      ],
+      "example": {
+        "from": "deinterlace",
+        "to": "sink",
+        "original_picture_pts_ns": 294760000000,
+        "field_pts_ns": 294780000000,
+        "declared_pts_relation": "same exact field PTS",
+        "upstream": {
+          "order": 81060,
+          "stage": "deinterlace",
+          "token": 2,
+          "attachment": 1,
+          "pts": 294780000000,
+          "duration": 20000000,
+          "monotonic_ns": 320929251545750,
+          "thread_id": 1079314,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0
+        },
+        "downstream": {
+          "order": 81082,
+          "stage": "sink",
+          "token": 3,
+          "attachment": 2,
+          "pts": 294780000000,
+          "duration": 20000000,
+          "monotonic_ns": 320929415802068,
+          "thread_id": 1079316,
+          "stream_generation": 1,
+          "segment_generation": 1,
+          "flush_generation": 0
+        },
+        "wall_delta_ns": 164256318,
+        "same_emitter_tid": false,
+        "status": "OBSERVED_ADJACENT_PAD_TIMESTAMPS",
+        "emitter_thread_observations": [
+          {
+            "identity": {
+              "tid": 1079314,
+              "birth_ns": 320633449469941,
+              "status": "UNIQUE_RECORDED_BIRTH"
+            },
+            "requested_interval_ns": [
+              320929251545750,
+              320929415802068
+            ],
+            "requested_ns": 164256318,
+            "outside_common_left_censored_ns": 0,
+            "outside_common_right_censored_ns": 0,
+            "common_complete_ending_interval_ns": [
+              320928174198520,
+              320935861408232
+            ],
+            "clipped_interval_ns": [
+              320929251545750,
+              320929415802068
+            ],
+            "clipped_ns": 164256318,
+            "scope": "Emitter-thread scheduler residence within this wall span; not exclusive function CPU or scaler-worker identity.",
+            "status": "COVERED_COMPLETED_INTERVALS",
+            "completed_interval_ns": {
+              "scheduled_residence": 11262404,
+              "ready_wait": 14875222,
+              "sleep_until_wakeup": 138118692,
+              "unknown_offcpu": 0
+            },
+            "unobserved_inside_common_ns": 0
+          },
+          {
+            "identity": {
+              "tid": 1079316,
+              "birth_ns": 320634307223897,
+              "status": "UNIQUE_RECORDED_BIRTH"
+            },
+            "requested_interval_ns": [
+              320929251545750,
+              320929415802068
+            ],
+            "requested_ns": 164256318,
+            "outside_common_left_censored_ns": 0,
+            "outside_common_right_censored_ns": 0,
+            "common_complete_ending_interval_ns": [
+              320928174198520,
+              320935861408232
+            ],
+            "clipped_interval_ns": [
+              320929251545750,
+              320929415802068
+            ],
+            "clipped_ns": 164256318,
+            "scope": "Emitter-thread scheduler residence within this wall span; not exclusive function CPU or scaler-worker identity.",
+            "status": "COVERED_COMPLETED_INTERVALS",
+            "completed_interval_ns": {
+              "scheduled_residence": 6984823,
+              "ready_wait": 12082913,
+              "sleep_until_wakeup": 145188582,
+              "unknown_offcpu": 0
+            },
+            "unobserved_inside_common_ns": 0
+          }
+        ]
+      },
+      "synthetic_checks": 26,
+      "interpretation": "Emitter1079314: scheduled11.262404ms/ready14.875222ms/sleep138.118692ms; emitter1079316: scheduled6.984823ms/ready12.082913ms/sleep145.188582ms over the same164.256318ms wall span. Separate overlapping thread observations are never summed. Sleep is not exclusive I/O/callee time or proof of loss cause; post-trigger capture remains incomplete."
+    }
+  },
+  "stock_kodi": {
+    "case": "stock-controls-02",
+    "status": "PASS",
+    "source_commit": "6db15986a8481cb07510be05a10c654d29e04ac2",
+    "original_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "route": "original publishedKodi22RC1 + original AppFFmpeg, current ownVA/DIL; published JSONRPC/Player/Monitor/RenderCapture APIs; private profile/headlessWeston1280x720",
+    "source_media_sha256": "b787658ca33f29940a1d1a7199e31c94a334dd751af7cd13954d759702a704bc",
+    "frames": 180,
+    "geometry": [
+      1280,
+      720
+    ],
+    "actual_decoder": "ff-h264-vaapi",
+    "identity_checks": [
+      {
+        "phase": "await-identity",
+        "info": {
+          "Player.Filenameandpath": "/fixture.mp4",
+          "Player.Process(pixformat)": "vaapi",
+          "Player.Process(videodecoder)": "ff-h264-vaapi",
+          "System.ScreenHeight": "720",
+          "System.ScreenWidth": "1280"
+        }
+      },
+      {
+        "phase": "await-natural-identity",
+        "info": {
+          "Player.Filenameandpath": "/fixture.mp4",
+          "Player.Process(pixformat)": "vaapi",
+          "Player.Process(videodecoder)": "ff-h264-vaapi",
+          "System.ScreenHeight": "720",
+          "System.ScreenWidth": "1280"
+        }
+      }
+    ],
+    "captures": [
+      {
+        "label": "initial-pause",
+        "file": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/stock-controls-02/profile/initial-pause.bgra",
+        "sha256": "6f33cdff620bed9110f1ebf8d998f2487d5618ae4d4a4e5bb34f1a36c11e04e0",
+        "source_ordinal": 8,
+        "source_pts": 4096,
+        "source_time_base": "1/15360",
+        "source_seconds_rational": {
+          "numerator": 4096,
+          "denominator": 15360
+        },
+        "scope": "Replicated source barcode only; no DRM object, full crop, cadence or scanout identity."
+      },
+      {
+        "label": "seek-forward",
+        "file": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/stock-controls-02/profile/seek-forward.bgra",
+        "sha256": "a2f31f2ad9355ed2ff591001df828a6bd132ac9359be7a6a283b4e2fcd31817d",
+        "source_ordinal": 90,
+        "source_pts": 46080,
+        "source_time_base": "1/15360",
+        "source_seconds_rational": {
+          "numerator": 46080,
+          "denominator": 15360
+        },
+        "scope": "Replicated source barcode only; no DRM object, full crop, cadence or scanout identity."
+      },
+      {
+        "label": "seek-backward",
+        "file": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030/stock-controls-02/profile/seek-backward.bgra",
+        "sha256": "f879d4b8ab64540f7ba32fbcc13fa9a96bb182dc676dd25d722e054adf5d3f62",
+        "source_ordinal": 30,
+        "source_pts": 15360,
+        "source_time_base": "1/15360",
+        "source_seconds_rational": {
+          "numerator": 15360,
+          "denominator": 15360
+        },
+        "scope": "Replicated source barcode only; no DRM object, full crop, cadence or scanout identity."
+      }
+    ],
+    "retirement": [
+      {
+        "label": "await-stop-retirement",
+        "sample_count": 2,
+        "final_two_boundary_equal": [
+          true,
+          true
+        ],
+        "final_two_owned_decoder_fds": [
+          [],
+          []
+        ]
+      },
+      {
+        "label": "await-natural-retirement",
+        "sample_count": 2,
+        "final_two_boundary_equal": [
+          true,
+          true
+        ],
+        "final_two_owned_decoder_fds": [
+          [],
+          []
+        ]
+      }
+    ],
+    "controls": "pause/capture, resume, forward3s/capture, backward1s/capture; fresh seek events; Stop OnStopped/end:false; same-process natural reopen OnEnded/end:true; normal Quit",
+    "application_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "maximum_temperature_mC": 62000,
+    "first_attempt": "stock01 FAIL preserved: ownVA runtime swscale9/avutil60 misclassified by private reader. v2 separately pins them while requiring original App codec63/format63/util61/swscale10; eight fake-file controls pass; no external code change.",
+    "limits": {
+      "own_va_trace_v4": "Current source logs synthetic binding/context/generation/VPP and Sync/Export identities, intentionally not real sourcePTS or complete external client/GPU borrow-return events.",
+      "barcoded_RenderCapture": "Source-content/ordinal/PTS checkpoint only; not exact DRM object, full crop/pixel comparison, unique displayed-frame cadence or physical A/V.",
+      "interrupted_controls": "Do not demand full180 picture census across seek/Stop; qualify each declared phase/generation without dropping records.",
+      "remaining_observer_work": "Full per-object client consumption/return census needs qualified additional read-only API/return observations or new own-driver diagnostics; existing trace alone is insufficient."
+    },
+    "not_claimed": [
+      "full180frame interrupted-control census",
+      "full crop/YUV equality",
+      "same native CAPTURE/EXPBUF object and return census",
+      "GPU completion/physical scanout/A/V",
+      "interlaced Bob acceptance"
+    ],
+    "mapped_images": [
+      {
+        "role": "own-va-runtime-dependency",
+        "path": "/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103",
+        "sha256": "fed22f93458f58ec928be86730b16b4e0469ab78e452059140809074ac3a6750",
+        "device": "08:01",
+        "inode": 11309252
+      },
+      {
+        "role": "own-dil",
+        "path": "/own-lib/libcrystalhd.so.3.6",
+        "sha256": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+        "device": "08:01",
+        "inode": 9204628
+      },
+      {
+        "role": "own-va-runtime-dependency",
+        "path": "/usr/lib/x86_64-linux-gnu/libswscale.so.9.5.103",
+        "sha256": "d6dda313ae03cc73600e73d3842dd48490f50390aaada00c793617370ca594ce",
+        "device": "08:01",
+        "inode": 11309255
+      },
+      {
+        "role": "own-va",
+        "path": "/own-va/crystalhd_drv_video.so",
+        "sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+        "device": "08:01",
+        "inode": 9204700
+      },
+      {
+        "role": "original-client-library",
+        "path": "/app/lib/libswscale.so.10.1.102",
+        "sha256": "91c0116cd1d5943099464dda1990e89e4190ea75d0dd39105120fe8efe8558fb",
+        "device": "08:01",
+        "inode": 11290757
+      },
+      {
+        "role": "original-client-library",
+        "path": "/app/lib/libavutil.so.61.1.102",
+        "sha256": "e7382c76a1d06f07fee721b5d1d29100ebacd29e3142ddd98f6826f2726d2bda",
+        "device": "08:01",
+        "inode": 11290762
+      },
+      {
+        "role": "original-client-library",
+        "path": "/app/lib/libavformat.so.63.1.102",
+        "sha256": "d9aea791e699c00e730ca959c6887795212232d82c58a3bd9be65692f9b52ac4",
+        "device": "08:01",
+        "inode": 11290760
+      },
+      {
+        "role": "original-client-library",
+        "path": "/app/lib/libavcodec.so.63.1.102",
+        "sha256": "33516c1fb77df3d7a2c05828b7bae61d66ce18e4e0d2da471f6f789a67b5ec7e",
+        "device": "08:01",
+        "inode": 11291646
+      }
+    ],
+    "same_selected_image_hashes_at_natural_reopen": true
+  },
+  "remaining": {
+    "player_loss_cause_and_same_policy_repair": "OPEN; no demonstrated new production cause/repair from these captures",
+    "partial_fhd_global_sink_residuals": "Each residual1 remains UNRESOLVED; partial stops are not complete media",
+    "native538": "OPEN; same actual CAPTURE/EXPBUF fullcrop/YUV/sourcePTS/ownership separate on frozen2399430 lineage; no new native acceptance run here",
+    "heap_subtask": "maintainer disposition/reason unchanged; no investigation/reproduction",
+    "historical_failures": "all earlier FHD/long-duration FAILs retained; scoped observations do not replace them"
+  },
+  "implementation_source_and_images": {
+    "scripts/crystalhd-player.py": "ef38e563c80ee3c2c19f53bfe661ab3744fe80523b8149ae76e559fcaf765b43",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c": "fb9c44d96521e0656043b42b25eee4c78348d35283ea0754cace6e1fdb4b02dd",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.h": "1f84e8883a7d37d1d3f797d24f9700254ad46400021de5d9413e59d65c3cf4be",
+    "filters/gst/gst-plugin-1.0/libgstcrystalhd.so": "ff8acb5ca4c692c92bffc4e975942d98ea710b155c6ec9905d1f7c82ca1623b8",
+    "linux_lib/libcrystalhd/libcrystalhd.so.3.6": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097",
+    "tests/kernel-log-check.sh": "fea4913e157870869a0572c6c43e426a86900c5cc59c8bca388dcadece85c4e7"
+  },
+  "artifacts": [
+    {
+      "root": "/home/mache/.cache/crystalhd-window-runtime-20261030",
+      "sha256": {
+        "frozen-window-plan.json": "67499fa0e0b22045f6bb3e5a01f8c8c8b43368614baca93dab5d87b38f1491c8",
+        "frozen-window-plan-v3.json": "9106bb1a138eba052c579f30d4f2325acd099311c73d3b2636c363f6104c3aae",
+        "dialogue5-preparation.json": "2987e7cecef1235e9a0227a8d3a9c823c3a6280c02d47e45b396517dba1c1522",
+        "independent-media-replay.json": "5365ba172b8df5fb322d2270d80c00688b745bec34dc533a821ef8abd52334bc",
+        "analyze-window.py": "775202aa6059ec3560deb1710c102174756e9aed5dec594541b41e6393e6b4e1",
+        "analyze-window-selftest-initial.json": "ed81956caf7433b3d1428ecef6f61cc01be5825917f1de63023bea462d79e81c",
+        "analyze-window-selftest.json": "ed81956caf7433b3d1428ecef6f61cc01be5825917f1de63023bea462d79e81c",
+        "correlate-stage-scheduler.py": "4b7c81d409f48be328ad7270905f0f82ebc95005344fff09ed7a75266a27fe69",
+        "correlate-stage-scheduler-selftest.json": "5bb3f6c49f34c211d9a140bc5ad156c183071055cecddd225b175d47fd29c1cd",
+        "bpf-qualification.json": "f635504979b0311373e300d930442eaa2f3b8a5bfd95611d9a97c7cb026155a2",
+        "bpf-v3-qualification.json": "a522ce6a54d1f6061e79637681413b674618630ec2abb56fcac987fa409e3f8b",
+        "scheduler-smoke-01.bpf.stderr": "ad15f3856ff275c48134c72c82205eca00cacb6fa9935809f5d877b19317df09",
+        "scheduler-smoke-02.bpf.stderr": "704dbe37bbd171ac8bb8bdaa0c564137ba47e25d6107aadacd7932d05600f05d",
+        "scheduler-smoke-03.validation.json": "48509d10158fb447d2bcb7c1e75fb929028eab69b542b4d0abfdd2946f539321",
+        "scheduler-smoke-v2-01.validation.json": "8f8e7ab3324e3f6ff6061993e0ec64153403bfbe056f8e08a591da6083131c2c",
+        "scheduler-smoke-v3-01.validation.json": "90ef65b0686b6c0b7b634701dfe40f1c61e8723dd4457942eb46bb9a882dec0e",
+        "scheduler-eof-reader-controls.json": "39b0417548742e08cb0d94d123d0c94e673a4177fed7f341ffb3f6623eed3e91",
+        "scheduler-eof-v2-reader-controls.json": "c23ce072136fe5aa675b9f6d684520b0f451fa6fd703bd4f27cbff21e0d9dc3f",
+        "pcm-fhd-window-01.result.json": "5751213662e492017a147406f184a8cb98fe0d5810623c02673954abaa272aea",
+        "pcm-fhd-window-01.boundary.json": "9f4d40d033e7694c68413370a052a32646d001f167f488db15e40e873ed47e49",
+        "pcm-fhd-window-01.trace.json": "c5d42bd15abb23cee43f6a5a94fc96fb469f5522dc3db12f9827aca51937be8a",
+        "pcm-fhd-window-01.analysis.json": "015019658affd2626c4e3c3327e0e53ddb7faec98821813fcda660994f2451fa",
+        "pcm-fhd-window-01.proc.json": "ee9ed1f414ab8de2178b3b6e58d21d01c88e156b386c809f643704c22ef4e7a6",
+        "pcm-fhd-window-01.bpf.jsonl": "481f64b3fec2ddd8e1d4f92f05e2ae0cc160e97a434bdae111971f6d62c9b44e",
+        "pcm-fhd-window-01.bpf.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "pcm-fhd-window-01.bt": "5ddc56e996fe61359af8874aa042dd845dff11d7068683185e7512ba67a0bb07",
+        "pcm-fhd-window-01.bt.json": "6814d2d54ef8f2c5eae8161807cb11fc26491a4ea90b073307bba3e040894d1e",
+        "pcm-fhd-window-01.scheduler-validation.json": "ff1c3c4ed690e8e9a10d4fca1a177ccdc755cd34b6b51e6f8f7c87f926d9e202",
+        "pcm720-window-01.result.json": "2507c1a8372be922167870849ab1f5de8faef759d51a17bbdd048c1b5375b5ae",
+        "pcm720-window-01.boundary.json": "9dd2f27e84365d24826a0170f342b6eff1c1b7dfe6f4cc1b8e19b195be1466aa",
+        "pcm720-window-01.trace.json": "f47f2ba956838926d957f22977f0727fd2d5426cd6be0f4b0636fcf91ef80422",
+        "pcm720-window-01.analysis.json": "e66ba90693f27e299d990379c35fa6d74ebd14b470d421dd8bd0e32357407f07",
+        "pcm720-window-01.proc.json": "966942f382f407b128cff47816610b33048770558a4cbb864d2ce1e39868ca33",
+        "pcm720-window-01.bpf.jsonl": "95da82b7fa4b0a836dad40552b6ca10d6f6f1e777b50ec87d1691edc42fd20aa",
+        "pcm720-window-01.bpf.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "pcm720-window-01.bt": "6aa9af6e4ab10d53f6f93b5ad20a4a65797913669da1a6333a02b683c2a091cc",
+        "pcm720-window-01.bt.json": "ccf7cbee56b02b2ce6b26090fe1b68cc8307e67949c4d0da45bcd2e94144a41d",
+        "pcm720-window-01.scheduler-validation.json": "cd5f9fe95cd3f8447beeecf693a165aafeef149965f61ea19fa235cc7e36403a",
+        "pcm-fhd-window-02-diagnostic.result.json": "a50d712f18f4f9e71c8ddfb57bec971c0d5f2ceb8ab6f7079924c287e6a4b9ee",
+        "pcm-fhd-window-02-diagnostic.boundary.json": "417291bf0e7806c2e1fd722270cc6db0182d6fab4642ed3e911380e822447cc8",
+        "pcm-fhd-window-02-diagnostic.trace.json": "7dee17fa31a3cf84f6f7d194b6f88a706a70c3bf94aa92baacfcc8962946b1f9",
+        "pcm-fhd-window-02-diagnostic.analysis.json": "83885c8851003993f4b9fa776e4f4a529f22cd8730684879adb765bb12947cf3",
+        "pcm-fhd-window-02-diagnostic.proc.json": "389613cffb4e12c4aa10e05ce6fe1662408994d04dadcbbd4830524139725d44",
+        "pcm-fhd-window-02-diagnostic.bpf.jsonl": "194871ffc89e28dd0e04c4db879a5e4dac2a171df57d01dccd86e0062ed47f8e",
+        "pcm-fhd-window-02-diagnostic.bpf.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "pcm-fhd-window-02-diagnostic.bt": "10a87d4f1c84d1ec35afd469051564da6d091342a76819b5639ff8309a492ea0",
+        "pcm-fhd-window-02-diagnostic.bt.json": "5b8761d3e109e4de84e541c1b8ac872c16c78fa1afe27b997a11213cf7c5c9f1",
+        "pcm-fhd-window-02-diagnostic.scheduler-validation.json": "831d6cbd3b467124ac4c72002ede6fa2d40d450d4541c45dbcdb8a6c310844f5",
+        "pcm-fhd-window-01.analysis-initial.json": "8ef120ea09bb698d56c91c4587b914043fd63d70931c9ce75ae1798def174527",
+        "pcm-fhd-window-01.stage-scheduler-final.json": "a09613afdc576af499de9d682917ccc37c94ffe2edfad86bcc1cf226df0eadfc",
+        "pcm720-window-01.scheduler-validation-attempt1.json": "c171275ebd53f9bf905850dccf052d122b1054505b0f706b69d3be734f45d343",
+        "pcm720-window-01.scheduler-eof-validation.json": "f0968c2d2c3781d83b65bf58ac5b91e0667503b401ed96ee1aa4fba5c8bfd5ee",
+        "pcm720-window-01.scheduler-eof-v2-validation.json": "8250ac1acd0cbc99c14bd0377e13fb073dcf4b55129a278499b2cd9195180767",
+        "pcm-fhd-window-02-diagnostic.stage-scheduler.json": "8cea2245699347344fce866191fd4d78f4a7e1be3ec6c4b76d3781ac72e0dd64",
+        "pcm720-window-01.stage-scheduler-eof.json": "2b958e15161231ba9f725364e2c87c204a57619707e30e4a1d44b090c1c93889",
+        "correlate-stage-scheduler-eof.py": "8d16e6de28e51420388aaf002f47185348a483c5c5492c35e8de350d5754ee9a",
+        "correlate-stage-scheduler-eof-selftest.json": "cef5914aa644424718877fbc2f050c5254bd97d5fb4d38b4de592c6da32f972c",
+        "validate-owned-window-eof-v2.py": "b9559ee54c9f2fec4223403df0a0c580621c485a35c998e5becf64e095ae6087"
+      }
+    },
+    {
+      "root": "/home/mache/.cache/crystalhd-stock-contract-runtime-20261030",
+      "sha256": {
+        "route-plan.json": "caebb67ee14286eeb0f7e4b2c0bbf404720122b9319b6958de2829ae1a322e88",
+        "frozen-stock-plan.json": "4d66d0959a8ef5db2d278407fbc4c2ee17185b5f457d966e7cd88c89f57fb87d",
+        "frozen-stock-v2-plan.json": "b6f69e166ad1d7b6eb20944ffff0e6609b6658b0499bdb912003144ef93c07c4",
+        "stock-controls.py": "2a8ee63c938fa320c6816df32b93fda544739e05c0d59aafd21c4cdc23aad3e7",
+        "stock-controls-v2.py": "c0e20cb7e6451432aac0ce54163bfe61c78898800e9ccbafd8b30afb313ee4cb",
+        "stock-mappings-v2-selftest-attempt1.json": "caf450916163778d97a60d4be4e77f54118d2f5eea0312424b08ba7c2b0cc5c6",
+        "stock-mappings-v2-selftest.json": "49a43a70bac815a233f6f0ce4100a485937b6553933034148b364fd1269ca084",
+        "stock-controls-01/result.json": "3f99be8c1d58f9a402a87830104dce464dc37ed41645391834ff17c1f355b213",
+        "stock-controls-01/profile/controls-result.json": "08f3a99a93ffe895df2a671b3014fe2696362641c0dd79148359e4573d23239d",
+        "stock-controls-02/result.json": "4827c3bc94ab952c556bb7bfdb122dc456698f2603e2b79691eaa7ea4c6ada97",
+        "stock-controls-02/command.json": "30fe9c682875b71e901ff73673cae8438a08f2215c9eb235e9980444431712e4",
+        "stock-controls-02/kodi.stdout": "19241f1fa23ada8ec9c5c546f1e25aaf2f8b9e5ec826e81b8fbbf90f584a1106",
+        "stock-controls-02/kernel.log": "a35fd2be9da76e73934debe8f91e08ad2d7ab92b778d4e9188ca370301d760da",
+        "stock-controls-02/profile/controls-result.json": "e40787e3f8384c9f07896eaba32df18fd05863f2585a2a458ff0255583b24cde",
+        "stock-controls-02/profile/initial-pause.bgra": "6f33cdff620bed9110f1ebf8d998f2487d5618ae4d4a4e5bb34f1a36c11e04e0",
+        "stock-controls-02/profile/seek-forward.bgra": "a2f31f2ad9355ed2ff591001df828a6bd132ac9359be7a6a283b4e2fcd31817d",
+        "stock-controls-02/profile/seek-backward.bgra": "f879d4b8ab64540f7ba32fbcc13fa9a96bb182dc676dd25d722e054adf5d3f62"
+      }
+    },
+    {
+      "root": "/home/mache/.cache",
+      "sha256": {
+        "crystalhd-completed-ci-20261030.json": "da3cb0bb7108f2dedd9a8e2d422d4f142bf6d9b08a1c81dc930b4e489c6274e6",
+        "crystalhd-window-player-final-20261030.log": "7ec7ae99d36baf568768a7a2e77f14843707e66e711ee0a79015dc0b2e4ecf0f",
+        "crystalhd-window-native-tid-final-check-20261030.log": "8b7f626216dcf02ec769c5b9a1dba766622cfbdf2532358d74e902809603edf3",
+        "crystalhd-window-configuration-v2-20261030.log": "3ecc4faa8d6ed35e207a17a664b106f0893c0d9335c9fe194934e154c7316d7d",
+        "crystalhd-window-native-mutations-tid-20261030/result.json": "a9d7c7d59a25ac4f5d3d762dc81da0de221f43e79dfab3d3e51666f5c13c2916",
+        "crystalhd-component-ci-negative-check-20261030.json": "9a6ce871071435cb94473a76f1d29cc7809a4a33d0e2e586609bac63a60e80d4"
+      }
+    }
+  ]
+}

@@ -1,0 +1,585 @@
+{
+  "I_P_B": {
+    "B": 832,
+    "I": 105,
+    "P": 313
+  },
+  "capture_cap_bytes": 268435456,
+  "collector": {
+    "binary": {
+      "bytes": 6710888,
+      "path": "/home/mache/.cache/crystalhd-all-work-20261031/issue529-fresh-mpeg2-control-01/library-drain-test",
+      "sha256": "f9aa09b9384e6a35fd740757d626f68ee3683198d1e391f31aa506dfe7088ddc"
+    },
+    "generation": 0,
+    "source": {
+      "bytes": 951820,
+      "path": "/home/mache/.cache/crystalhd-all-integration-20261031/tests/library-drain.cpp",
+      "sha256": "6b2478675613b9755f322968be0d3f8d3df13a450759ea35d823f92bcd2c7655"
+    }
+  },
+  "date": "2026-10-31",
+  "decision": "HOLD_NORMAL_FRONTEND_AUDIO_CADENCE_AND_SMALL_LUMA_RESIDUAL_INTERPRETATION",
+  "hardware": {
+    "DIL_sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9",
+    "cpu": "Core2 Duo T8100",
+    "decoder": "BCM70015",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "gpu": "Intel965/GMA X3100",
+    "module_srcversion": "F76E163690F147B91495DDD",
+    "module_version": "3.10.13"
+  },
+  "helper_models": {
+    "axis": {
+      "bytes": 21736,
+      "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-axis-topology.py",
+      "sha256": "cfb9fc9c453771f3b463a8af5505f524469fa4273d6a8387cef2518f98a2ac6c"
+    },
+    "separable": {
+      "bytes": 14258,
+      "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-separable-model.py",
+      "sha256": "eef2893be8e42fb0e635eb36ec8b2a7b4327c164c76afbaebb4ecb1875d51418"
+    },
+    "vertical": {
+      "bytes": 18671,
+      "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-vertical31-model.py",
+      "sha256": "c82ea8c4b26b21a553e6daeaf3962b2d1bf034f764e5d9e6dd3c64cf16f56b34"
+    }
+  },
+  "inputs": {
+    "container": {
+      "bytes": 8338464,
+      "sha256": "cd5873c16ff3df4633a4a6da28fd94f4fadc30070006293ec97f27ed5493b8f7"
+    },
+    "elementary_stream": {
+      "bytes": 7498188,
+      "sha256": "f5701684aa89117952c860cd97504696a7fba0c1c7c80627907582997c64f3bb"
+    },
+    "es_frames": {
+      "bytes": 1368709,
+      "sha256": "18e1a086d8cc727c1ce6c47ff84878884c1f6e9f8a509d1c96c98bebe28120ca"
+    },
+    "es_metadata": {
+      "bytes": 2397,
+      "sha256": "4d152288543a26c21c36f3951cec1fd0e4b1d84413e025955e69464bc551fe92"
+    },
+    "es_packets": {
+      "bytes": 566681,
+      "sha256": "097d11e91746ad13057ce018d38a8e12d513e9ed733825f1e07de3c94449de0d"
+    },
+    "mkv_frames": {
+      "bytes": 1431056,
+      "sha256": "ed70a5852875f85c74c544666e6d7b23106ce552a10dbfb6ce22e4c9fa795c7c"
+    },
+    "mkv_metadata": {
+      "bytes": 4579,
+      "sha256": "9c167d939b5e61481eda3457c2e2688098d5fa8f88544e1a32d83fbbce914b2d"
+    },
+    "mkv_packets": {
+      "bytes": 582722,
+      "sha256": "4f577cc4d03682e7aa4d1c612cd8f10a25ea3c6ac3bedd7464a3fa945428f01d"
+    },
+    "software_i420": {
+      "bytes": 190080000,
+      "sha256": "871224d437551c9f6ed58656fbdd5cb506f60f3929a258d154006c0eb5c88a2a"
+    }
+  },
+  "issue": 606,
+  "limits": [
+    "One independently licensed50s clip, not universal MPEG1 conformance.",
+    "Native Atom/i386/BCM70012/otherGPUs unavailable.",
+    "No external source/binary edits, selector5, firmware/register injection, public caps/default/release/master changes.",
+    "A/V may pass from qualified no-drift logs once actual normal playback runs; no calibrated physical lip-sync prerequisite."
+  ],
+  "metrics": {
+    "capture-01": {
+      "H8_then_V8/Cb": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.06433525883838384,
+        "exact_samples": 59283718,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06437815656565657,
+        "samples": 63360000
+      },
+      "H8_then_V8/Cr": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.06326639835858586,
+        "exact_samples": 59351441,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06330741792929293,
+        "samples": 63360000
+      },
+      "V8_then_H8/Cb": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.0698689393939394,
+        "exact_samples": 58933104,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06993249684343435,
+        "samples": 63360000
+      },
+      "V8_then_H8/Cr": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.0689393308080808,
+        "exact_samples": 58992004,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06900086805555555,
+        "samples": 63360000
+      },
+      "Y": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 0,
+          "99": 1
+        },
+        "changed_fraction": 0.010415672348484848,
+        "exact_samples": 125400126,
+        "maximum_absolute_error": 3,
+        "mean_absolute_error": 0.010447458964646465,
+        "samples": 126720000
+      }
+    },
+    "capture-02": {
+      "H8_then_V8/Cb": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.06433525883838384,
+        "exact_samples": 59283718,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06437815656565657,
+        "samples": 63360000
+      },
+      "H8_then_V8/Cr": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.06326639835858586,
+        "exact_samples": 59351441,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06330741792929293,
+        "samples": 63360000
+      },
+      "V8_then_H8/Cb": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.0698689393939394,
+        "exact_samples": 58933104,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06993249684343435,
+        "samples": 63360000
+      },
+      "V8_then_H8/Cr": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 1,
+          "99": 1
+        },
+        "changed_fraction": 0.0689393308080808,
+        "exact_samples": 58992004,
+        "maximum_absolute_error": 2,
+        "mean_absolute_error": 0.06900086805555555,
+        "samples": 63360000
+      },
+      "Y": {
+        "absolute_error_percentiles_nearest_rank": {
+          "50": 0,
+          "95": 0,
+          "99": 1
+        },
+        "changed_fraction": 0.010415672348484848,
+        "exact_samples": 125400126,
+        "maximum_absolute_error": 3,
+        "mean_absolute_error": 0.010447458964646465,
+        "samples": 126720000
+      }
+    }
+  },
+  "normal_sessions": {
+    "capture-01": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 1250,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "7514aba76850e468fa8e0cbb668a11558260d780da0cbf00cb9dc108db122ac9",
+      "peak_temp_mC": 55000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    },
+    "capture-02": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 1250,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "7514aba76850e468fa8e0cbb668a11558260d780da0cbf00cb9dc108db122ac9",
+      "peak_temp_mC": 56000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    },
+    "h264-after-01": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 180,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+      "peak_temp_mC": 53000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    },
+    "h264-before-03": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 180,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+      "peak_temp_mC": 49000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    },
+    "mpeg2-after-01": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 30,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "973193e8a9d8cc9937a32f971cf2767f1d635587f4b058f1ca1d6294f24b3e4a",
+      "peak_temp_mC": 51000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    },
+    "mpeg2-before-01": {
+      "actual_device_owner_observed": true,
+      "all_media_and_children_closed": true,
+      "boundary_equal": true,
+      "expected_frames": 30,
+      "final_pins_equal": true,
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "native_sha256": "973193e8a9d8cc9937a32f971cf2767f1d635587f4b058f1ca1d6294f24b3e4a",
+      "peak_temp_mC": 49000,
+      "status": "ORDINARY_SESSION_TRANSPORT_QUALIFIED_NO_QUALITY_CLAIM"
+    }
+  },
+  "packaged_actual_audit": {
+    "output_artifacts_match_original_v3_byte_for_byte": [
+      "metrics.json",
+      "picture-PTS-proof.json",
+      "per-frame.jsonl",
+      "error-maps.json"
+    ],
+    "proof_sha256": "54c934c8fcd0de23f451f49aa59bb95854e0e2180d9b929241605f1a8fe48ca9",
+    "report_sha256": "9fc9b4de4e673aed0bf420451c4c89a546b96cd3aa906ad4d02c447fd1a1ebed",
+    "source_sha256": "4f2486cc8bdbf2fe3c2ed51752262e986efc1729468ad9af2f0ba794b7845628",
+    "status": "PASS_ALL1250"
+  },
+  "pixel_interpretation": {
+    "Y_exact": false,
+    "Y_histogram_nonzero": {
+      "0": 125400126,
+      "1": 1315851,
+      "2": 4018,
+      "3": 5
+    },
+    "Y_max": 3,
+    "all_fixed_chroma_orders_both_sessions_max": 2,
+    "bit_exact_or_identified_chip_IDCT_claim": false,
+    "model_fit_or_selection": false,
+    "normal_frontend_or_public_codec_support_claim": false,
+    "provisional_chroma_target": 3,
+    "target_met": true
+  },
+  "population": {
+    "frames": 1250,
+    "height": 288,
+    "rate": "25/1",
+    "width": 352
+  },
+  "preserved_failures": [
+    "h264-before-01: unsupported MP4 device-free preflight; changed to established raw H264 767d input.",
+    "h264-before-02: actual180/oracle/EOS PASS, observer proc-exe/waitpid exit race rejected; corrected wait same owned child at most1s, no signal.",
+    "offline-audit-01: own predicate rejected guessed nominal ES50; corrected to avg25 + every sequence code3 + actual40ms containerPTS; nominal50 retained.",
+    "offline-audit-02: own predicate required pulldown0; own enum9=vdecFrame_X1 wholeframe. Corrected to0/9; fields/repeated patterns still rejected.",
+    "Historical #529 full-axis Lanczos22/22 FAIL preserved."
+  ],
+  "producer_profile": {
+    "active_scaled_movie": [
+      352,
+      146
+    ],
+    "attribution": "(CC) Blender Foundation | mango.blender.org",
+    "command": [
+      "/usr/bin/ffmpeg",
+      "-hide_banner",
+      "-nostdin",
+      "-n",
+      "-ss",
+      "120",
+      "-hwaccel",
+      "none",
+      "-threads",
+      "1",
+      "-c:v",
+      "h264",
+      "-i",
+      "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/source-download-01/source-720p.mov",
+      "-t",
+      "50",
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a:0",
+      "-vf",
+      "fps=fps=25:round=near,scale=w=352:h=146:flags=lanczos:in_color_matrix=bt709:out_color_matrix=bt601:in_range=tv:out_range=tv,pad=width=352:height=288:x=0:y=70:color=black,setsar=1,format=yuv420p",
+      "-c:v",
+      "mpeg1video",
+      "-q:v",
+      "2",
+      "-g",
+      "12",
+      "-bf",
+      "2",
+      "-threads:v",
+      "1",
+      "-pix_fmt",
+      "yuv420p",
+      "-fps_mode:v",
+      "passthrough",
+      "-color_range",
+      "tv",
+      "-colorspace",
+      "smpte170m",
+      "-color_primaries",
+      "smpte170m",
+      "-color_trc",
+      "smpte170m",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "-f",
+      "tee",
+      "[select=v:f=mpeg1video]/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.m1v|[f=matroska]/home/mache/.cache/crystalhd-natural-mpeg1-20261031/encode-01/holdout.mkv"
+    ],
+    "encode_once_for_ES_and_container": true,
+    "expected_I420_bytes": 190080000,
+    "expected_capture_bytes": 253440000,
+    "expected_video_frames": 1250,
+    "explicit_encoding_interpretation": "Treat untagged HD source as limited BT709 and convert to limited BT601; declared fixture-production assumption, not recovered original colorimetry. Same encoded-stream SW reference for all comparisons.",
+    "ffmpeg_sha256": "bdf6aabffdba7411edff8d36c389d695257fcdf823d196020176e117612862f6",
+    "fps": "25/1",
+    "frozen_before_encoding_and_hardware": true,
+    "length_seconds": 50,
+    "license": "CC-BY-3.0; official film about page; not separate OST-only license",
+    "original_256MiB_capture_guard_preserved": true,
+    "padding_top_bottom": [
+      70,
+      72
+    ],
+    "rate_conversion": "24\u219225 producer conversion; expected repetitions must match SW oracle.",
+    "schema": "crystalhd.issue606.encoding-profile.v1",
+    "source": "/home/mache/.cache/crystalhd-natural-mpeg1-20261031/source-download-01/source-720p.mov",
+    "source_metadata_matrix_range": "UNKNOWN; not retroactively asserted",
+    "source_sha256": "efa9062d9cdb7a338e40ad530dfdf234806743f29ae6a1a136b97ece4e588e8f",
+    "square_pixel": true,
+    "start_seconds": 120,
+    "target_geometry": [
+      352,
+      288
+    ]
+  },
+  "producer_warnings": "Three coefficient-clipping warnings retained; no re-encode/reference retuning. Compare identical encoded ES, not original movie fidelity.",
+  "repeat": {
+    "all_active_bytes_equal": true,
+    "changed_active_bytes": 0,
+    "compared_active_bytes": 253440000,
+    "first_difference": null
+  },
+  "retained_artifacts": [
+    {
+      "artifact": "frozen-actual-inputs-01.json",
+      "bytes": 10151,
+      "sha256": "5be4b1ad055ec06f87362d0061ba5c37d50e9019af7a44e5d64c08ab58de92c1"
+    },
+    {
+      "artifact": "collector-build-source-identity.json",
+      "bytes": 44688,
+      "sha256": "0c8e124e0c98388db976f1f0689b0ec98e428c42f4f8ae55f9430dde5f5a8414"
+    },
+    {
+      "artifact": "run-hardware-case.py",
+      "bytes": 10535,
+      "sha256": "7e9be60b1cd64e9e35965a026316b420d6365a977426e4f695a2ab3b84cb1abd"
+    },
+    {
+      "artifact": "offline-audit-03/report.json",
+      "bytes": 38084,
+      "sha256": "3c9f919798e2fea90ec4c864cc3bd22cfe62e73671425e92a67f41514df655fa"
+    },
+    {
+      "artifact": "offline-audit-03/picture-PTS-proof.json",
+      "bytes": 1694478,
+      "sha256": "f0b72c82384f96a0a3d8febc294acb8ca5264b9108afe2e7bd0e78171407a14b"
+    },
+    {
+      "artifact": "offline-audit-03/per-frame.jsonl",
+      "bytes": 14375832,
+      "sha256": "a3b802ad56338953a2b9243cf62a3e88683ad87d2456c2e9e7d0f0d3e80ae866"
+    },
+    {
+      "artifact": "offline-audit-03/metrics.json",
+      "bytes": 150037,
+      "sha256": "67f1fe1d70a98311cee9554935f6483b57925d055f1f22c66979442284efd4bf"
+    },
+    {
+      "artifact": "offline-audit-03/error-maps.json",
+      "bytes": 8036037,
+      "sha256": "b42a2171181804c133c8542523c5f7c73ce857fb04038f4fd80909cd275ae6bd"
+    },
+    {
+      "artifact": "visual-01/report.json",
+      "bytes": 549,
+      "sha256": "eaf7cea3a8b9d5af53d9123d4eb6a746dc7ee8c85400e043db9d60609671a6e7"
+    },
+    {
+      "artifact": "visual-01/side-by-side.png",
+      "bytes": 1166053,
+      "sha256": "b3ecd020fb84e913844ce4d92d4803b3fd522240e7d3fb790cd96d3562c30066"
+    },
+    {
+      "artifact": "capture-01/collector.stdout",
+      "bytes": 253181,
+      "sha256": "34c7a4da707dec85fccf7011179cb2ce7ea9611b13fe73ed96557bd383dbde41"
+    },
+    {
+      "artifact": "capture-01/collector.stderr",
+      "bytes": 104462,
+      "sha256": "40f8d7c8dcf840bf5e1a04b8f362ea9222974d99c1c3076a4dba4ecd7a299f8c"
+    },
+    {
+      "artifact": "capture-01/qualification.json",
+      "bytes": 1480,
+      "sha256": "bc942cb6a7cf20a9d0a1b67b50f6d92f6116e927c623c9337dc90278d7083907"
+    },
+    {
+      "artifact": "capture-01/report.json",
+      "bytes": 21750,
+      "sha256": "68b7ba988649ad6baece375ec593118fd50ba005ef50565cc4ddb872d5551fd7"
+    },
+    {
+      "artifact": "capture-02/collector.stdout",
+      "bytes": 253181,
+      "sha256": "7b2b74ea813b0f0731bdc6c8c9cebaa4375fd355ccfa1a03708c2365a4851cad"
+    },
+    {
+      "artifact": "capture-02/collector.stderr",
+      "bytes": 104462,
+      "sha256": "35e8e9e3b430713f46fdc4c954e8c383bbb36c201f82dd8640d16a5dc966ab10"
+    },
+    {
+      "artifact": "capture-02/qualification.json",
+      "bytes": 1480,
+      "sha256": "b4d9a4f70bbb7594f715c8ca87fd19ba97437d785121c46d99a1853d66f53c21"
+    },
+    {
+      "artifact": "capture-02/report.json",
+      "bytes": 20926,
+      "sha256": "5c5f1ed9f149c223659732c954d7c9f5439c038daaf4c444dbbb52defad598ec"
+    }
+  ],
+  "schema": "crystalhd.issue606.natural-holdout-receipt.v1",
+  "source": {
+    "authored_timeline": "50 seconds at25fps; original source absolutePTS is not claimed",
+    "color_transform_assumption": "source matrix unknown; frozen declared709-to601 fixture-generation assumption; same exact encoded ES is used for both SW/native comparison",
+    "film": "Tears of Steel (2012), Blender Foundation / Blender Institute",
+    "notes": "Root must link actual download/encode/software-decode/provider receipts through additional_evidence. No third-party media is committed.",
+    "official_film_license": "CC BY3.0; https://mango.blender.org/about/; the download copyright.txt is OST-only and is not used as film license",
+    "official_source": "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov",
+    "operator_failures_preserved": "h264-before-01 rejected unsupported MP4 before device open; h264-before-02 completed exact180 and cleanEOS but observer /proc-exe/waitpid ordinary-exit race rejected qualification; fixed wait of same owned child, no signals, qualified case03. All originals retained.",
+    "selected_original_interval_seconds": [
+      120,
+      170
+    ]
+  },
+  "source_order_PTS_join": {
+    "ES_and_MKV_planar_bytes_and_sha256_identical": true,
+    "actual_container_time_base": "1/1000",
+    "actual_display_pts": "0,40,...49960ms",
+    "all_1250_native_returned_tokens_unique": true,
+    "identity_chain": "identical ES/MKV coded packet payloads and picture headers -> actual software pkt_pos and container PTS -> native returned token/order",
+    "pictures": 1250,
+    "source_tokens": "coded-AU identifiers (packet_index+1)*100000, never numeric presentationPTS",
+    "status": "PASS"
+  },
+  "status": "HARDWARE_ORDER_REPEAT_AND_FIXED_MODEL_MEASURED_FRONTEND_PENDING",
+  "synthetic_controls": {
+    "existing_models": 53,
+    "hardware_scope": "separate from synthetic controls",
+    "new_mapping": 38,
+    "new_metrics": 10
+  },
+  "visual_stills": {
+    "inspection": "No conspicuous block corruption or color shift in these eight SW/native pairs including scene transitions/outliers. Still inspection is not normal cadence/physical display/A-V acceptance.",
+    "ordinals": [
+      0,
+      320,
+      373,
+      498,
+      582,
+      645,
+      813,
+      849
+    ],
+    "rendering": {
+      "conversion": "same declared limited BT601 float64 matrix for both YUYV planes; clamp floor+.5 RGB8; same nearest horizontal repeat; no automatic color management",
+      "error_heatmap": "max(absY,absCb,absCr) repeated perpair, red x80",
+      "frames": [
+        0,
+        320,
+        373,
+        498,
+        582,
+        645,
+        813,
+        849
+      ],
+      "image_sha256": "b3ecd020fb84e913844ce4d92d4803b3fd522240e7d3fb790cd96d3562c30066",
+      "physical_scanout_or_cadence_claim": false,
+      "reference_order_for_visual_only": "H8_then_V8; both orders remain in numericmetrics"
+    }
+  }
+}

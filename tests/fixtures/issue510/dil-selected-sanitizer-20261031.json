@@ -1,0 +1,105 @@
+{
+  "schema": "crystalhd.issue510.selected-dil-sanitizer.v1",
+  "base": "268984ec96e55a1b512a5e1490e1ac3edacc86a9",
+  "status": "PASS_SELECTED_CPU_CONTRACTS",
+  "cases": [
+    "tx-ring",
+    "tx-concurrency",
+    "copy",
+    "planar",
+    "format"
+  ],
+  "invocations": [
+    "tx-ring",
+    "tx-concurrency",
+    "tx-concurrency status",
+    "tx-concurrency serial",
+    "copy",
+    "planar",
+    "format"
+  ],
+  "sanitizers": [
+    "address",
+    "undefined",
+    "leaks"
+  ],
+  "tsan_claim": false,
+  "hardware_or_media": "NOT_RUN",
+  "production_source_changed": false,
+  "normal_outputs_sha_and_mtime_unchanged": 25,
+  "compiler": "g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "fixed_options": {
+    "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1:abort_on_error=1",
+    "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+    "LSAN_OPTIONS": "exitcode=23"
+  },
+  "controls": {
+    "runner_contracts": 7,
+    "existing_ci_plan": 30,
+    "actual_compiler_failure": "CXX=false make library-check-sanitized exits2",
+    "actual_legacy": "make LEGACY_CPU=1 library-check-sanitized exits2 before compile"
+  },
+  "first_failure_preserved": "Attempt01 rejected added-Wextra legacy unused-parameter warnings before any test; attempt02 uses ordinary library-check warning policy -Wall -Werror. No production warnings/ASan/UBSan assertions were disabled.",
+  "format_wrapper": "Private test translation unit renames only the existing fake ioctl stub; production functions compile unchanged and use linker --wrap. All reachable opens and unexpected ioctls are guarded.",
+  "scope": "Selected actual production functions only; not full-DIL sanitizer, real hardware, native i386, race-freedom or playback acceptance. Existing full CI classifier/gate is unchanged.",
+  "sources": [
+    {
+      "path": "Makefile",
+      "sha256": "8ba6558fd8374deb5f9359857d0405ba0a9ad0d9f4157d2e6dd1ae7fd8004c59"
+    },
+    {
+      "path": ".github/workflows/main.yml",
+      "sha256": "60539a6b01e3b501c01f6098c85c3592aa094d99c6bbfff7221c2c2d60615cad"
+    },
+    {
+      "path": "tests/library-selected-sanitizer.py",
+      "sha256": "100e5e9ca5703aead05d9d680db89c09ea3d92348ba549cf4e7c860d24079da6"
+    },
+    {
+      "path": "tests/library-selected-sanitizer.test.py",
+      "sha256": "c29ff733d533adc8398fe985867607d4d53fffa7e5a7566fab9b83d2e1c2c418"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "dil-sanitizer-01.log",
+      "bytes": 13692,
+      "sha256": "0331c1c3d01769c0ca284c4d49311fde229ff635df00ada21c56ba869bbc8f2d"
+    },
+    {
+      "name": "dil-sanitizer-02.log",
+      "bytes": 9699,
+      "sha256": "84ed771b6ef437e2c8148748fb6a1231594c9cf9cb95f55dd2133e779471979c"
+    },
+    {
+      "name": "dil-sanitizer-controls-final.log",
+      "bytes": 105,
+      "sha256": "27e3e5b299cbe504ed5f73d3de2eb583b4688fe9cad9ed6d10c45aa6b1d8a690"
+    },
+    {
+      "name": "dil-sanitizer-compiler-negative.log",
+      "bytes": 2270,
+      "sha256": "aa432eab967079ec098ad717edf57cd4caf34d0c31c0c78fd59ad1fed901b8c6"
+    },
+    {
+      "name": "dil-sanitizer-legacy-negative.log",
+      "bytes": 521,
+      "sha256": "df5141d38b4397cf135eb70b22a63bc4ce3bb586d20dea1de186f505fbb9b30e"
+    },
+    {
+      "name": "ci-plan-controls.log",
+      "bytes": 129,
+      "sha256": "016b6607389314745124296e213d6eadbb661c5f353e3fa904cd75e113682272"
+    },
+    {
+      "name": "normal-outputs-before.json",
+      "bytes": 6598,
+      "sha256": "858ab997784fcc27f8a85dfa21510727a43bacfa51f73a7a245523893b93e01d"
+    },
+    {
+      "name": "normal-outputs-after.json",
+      "bytes": 6938,
+      "sha256": "9b10e5ad0a66011d228453562623079f04d39f5c7950c53ae4a5009b20c1e2c0"
+    }
+  ]
+}

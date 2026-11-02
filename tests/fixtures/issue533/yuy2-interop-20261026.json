@@ -1,0 +1,652 @@
+{
+  "scope": "Standalone Intel965GM GLES memory/render microbenchmark. Not CrystalHD decoding, V4L2 capture, end-to-end playback, physical display, or predicted decoder FPS. Retained-buffer draw is a static-content lower bound, not measured card DMA.",
+  "source_base": "e992c731d752dc0785efd6e1a6a4484fb04f088d",
+  "GPU": {
+    "type": "gpu",
+    "renderer": "Mesa Intel(R) 965GM (CL)",
+    "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+  },
+  "cache_visibility": "Generic DMA-heap cached CPU writes with DMA_BUF_SYNC alone produce stale GPU content (small marker max4; full-luma alternation max136). Rebinding/recreating EGL image and i915 CPU/GTT domain control did not resolve. CPUID-gated CLFLUSH+MFENCE of owned memory made changing-luma controls pass at all3sizes, fixed max2 unchanged. This CPU-producer simulation is separate from real PCIe capture.",
+  "method": "ABCCBA for each size,120 completed glFinish draws perarm,4 warmups,whole-frame RGB check before/after everyarm. A=2CPUcopies+GLTexSubImage, B=1CPUcopy+cachewriteback+freshEGLimport, C=retained buffer draw without per-frame source writes. Process CPU excludes shader setup/readback/oracle. No power/PM changes.",
+  "raw_results": [
+    {
+      "type": "gpu",
+      "renderer": "Mesa Intel(R) 965GM (CL)",
+      "gles": "OpenGL ES 2.0 Mesa 26.0.8-1ubuntu0.3"
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.086142206,
+      "wall_s": 0.294947251,
+      "cpu_ms_per_frame": 0.717852,
+      "completed_draws_per_s": 406.85241,
+      "max_temp_mC": 56000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.091935443,
+      "wall_s": 0.327729131,
+      "cpu_ms_per_frame": 0.766129,
+      "completed_draws_per_s": 366.156037,
+      "max_temp_mC": 56000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.031568388,
+      "wall_s": 0.266968346,
+      "cpu_ms_per_frame": 0.26307,
+      "completed_draws_per_s": 449.491491,
+      "max_temp_mC": 56000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.02937384,
+      "wall_s": 0.269492339,
+      "cpu_ms_per_frame": 0.244782,
+      "completed_draws_per_s": 445.281674,
+      "max_temp_mC": 57000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.091656313,
+      "wall_s": 0.33283858,
+      "cpu_ms_per_frame": 0.763803,
+      "completed_draws_per_s": 360.535128,
+      "max_temp_mC": 57000
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "max_error": 1,
+      "mean_error": 0.002070313,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 640,
+      "height": 360,
+      "frames": 120,
+      "cpu_s": 0.082170524,
+      "wall_s": 0.292771984,
+      "cpu_ms_per_frame": 0.684754,
+      "completed_draws_per_s": 409.875284,
+      "max_temp_mC": 57000
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.425827507,
+      "wall_s": 1.173439415,
+      "cpu_ms_per_frame": 3.548563,
+      "completed_draws_per_s": 102.263482,
+      "max_temp_mC": 58000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.332519658,
+      "wall_s": 1.203826999,
+      "cpu_ms_per_frame": 2.770997,
+      "completed_draws_per_s": 99.682097,
+      "max_temp_mC": 58000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.040029188,
+      "wall_s": 0.920002696,
+      "cpu_ms_per_frame": 0.333577,
+      "completed_draws_per_s": 130.4344,
+      "max_temp_mC": 59000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.040787899,
+      "wall_s": 0.931323018,
+      "cpu_ms_per_frame": 0.339899,
+      "completed_draws_per_s": 128.848958,
+      "max_temp_mC": 59000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.323407278,
+      "wall_s": 1.196030955,
+      "cpu_ms_per_frame": 2.695061,
+      "completed_draws_per_s": 100.331851,
+      "max_temp_mC": 59000
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "max_error": 1,
+      "mean_error": 0.001180556,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 1280,
+      "height": 720,
+      "frames": 120,
+      "cpu_s": 0.423157581,
+      "wall_s": 1.18468779,
+      "cpu_ms_per_frame": 3.526313,
+      "completed_draws_per_s": 101.29251,
+      "max_temp_mC": 60000
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.899152068,
+      "wall_s": 2.544567167,
+      "cpu_ms_per_frame": 7.492934,
+      "completed_draws_per_s": 47.159297,
+      "max_temp_mC": 60000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.680685276,
+      "wall_s": 2.631346345,
+      "cpu_ms_per_frame": 5.672377,
+      "completed_draws_per_s": 45.604031,
+      "max_temp_mC": 60000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.047810097,
+      "wall_s": 2.026912031,
+      "cpu_ms_per_frame": 0.398417,
+      "completed_draws_per_s": 59.203359,
+      "max_temp_mC": 60000
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "direct-capture-lower-bound",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.046334044,
+      "wall_s": 2.029048528,
+      "cpu_ms_per_frame": 0.386117,
+      "completed_draws_per_s": 59.14102,
+      "max_temp_mC": 61000
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "shared-copy",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.713304929,
+      "wall_s": 2.652131931,
+      "cpu_ms_per_frame": 5.944208,
+      "completed_draws_per_s": 45.246618,
+      "max_temp_mC": 60000
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "pixels",
+      "path": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "max_error": 1,
+      "mean_error": 0.001182163,
+      "channels_over2": 0,
+      "nonopaque": 0
+    },
+    {
+      "type": "timing",
+      "mode": "staging-upload",
+      "width": 1920,
+      "height": 1080,
+      "frames": 120,
+      "cpu_s": 0.888783913,
+      "wall_s": 2.539604621,
+      "cpu_ms_per_frame": 7.406533,
+      "completed_draws_per_s": 47.25145,
+      "max_temp_mC": 60000
+    }
+  ],
+  "summary": [
+    {
+      "width": 640,
+      "modes": {
+        "staging-upload": {
+          "mean_cpu_ms_per_frame": 0.701303,
+          "mean_completed_draws_per_s": 408.363847
+        },
+        "shared-copy": {
+          "mean_cpu_ms_per_frame": 0.764966,
+          "mean_completed_draws_per_s": 363.3455825
+        },
+        "direct-capture-lower-bound": {
+          "mean_cpu_ms_per_frame": 0.253926,
+          "mean_completed_draws_per_s": 447.38658250000003
+        }
+      },
+      "shared_copy_cpu_reduction_percent": -9.077816578568754
+    },
+    {
+      "width": 1280,
+      "modes": {
+        "staging-upload": {
+          "mean_cpu_ms_per_frame": 3.537438,
+          "mean_completed_draws_per_s": 101.777996
+        },
+        "shared-copy": {
+          "mean_cpu_ms_per_frame": 2.733029,
+          "mean_completed_draws_per_s": 100.006974
+        },
+        "direct-capture-lower-bound": {
+          "mean_cpu_ms_per_frame": 0.336738,
+          "mean_completed_draws_per_s": 129.641679
+        }
+      },
+      "shared_copy_cpu_reduction_percent": 22.739875582271683
+    },
+    {
+      "width": 1920,
+      "modes": {
+        "staging-upload": {
+          "mean_cpu_ms_per_frame": 7.4497335,
+          "mean_completed_draws_per_s": 47.2053735
+        },
+        "shared-copy": {
+          "mean_cpu_ms_per_frame": 5.8082925,
+          "mean_completed_draws_per_s": 45.4253245
+        },
+        "direct-capture-lower-bound": {
+          "mean_cpu_ms_per_frame": 0.39226700000000003,
+          "mean_completed_draws_per_s": 59.1721895
+        }
+      },
+      "shared_copy_cpu_reduction_percent": 22.03355328079856
+    }
+  ],
+  "previous_result": "https://github.com/ahnhy1324/crystalhd/blob/a6ca269/tests/fixtures/issue531/kodi-native-yuy2-20261026.json",
+  "stateful_contract": "NOT TESTED; historical114 remainsunresolved; buffer experiment is not533Kick/STOPSTART PASS."
+}

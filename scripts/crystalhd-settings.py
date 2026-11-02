@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Optional GTK settings editor. The model remains stdlib-only/Python 3.6."""
 import argparse
@@ -22,6 +23,7 @@ def data_directory():
     return Path(os.path.abspath(os.path.join(str(Path(__file__).resolve().parent), relative)))
 
 
+# Untranslated and unreviewed (fuzzy) catalogue entries retain the source text.
 _ = gettext.translation("crystalhd-settings", localedir=str(data_directory() / "locale"), fallback=True).gettext
 # Presentation capabilities, not a second schema/validator. Activations which
 # require an acknowledged launcher are deliberately not ordinary GUI toggles.
@@ -234,6 +236,46 @@ def load_gtk():
     return Gtk, Gdk, Gio, GLib
 
 
+_validation_entry_type = None
+
+
+def validation_entry(Gtk):
+    """Keep normal Entry accessibility while exposing a persistent error state."""
+    global _validation_entry_type
+    if _validation_entry_type is None:
+        from gi.repository import Atk
+
+        class ValidationAccessible(Gtk.EntryAccessible):
+            def do_ref_state_set(self):
+                widget = self.get_widget()
+                if widget is None:
+                    states = Atk.StateSet()
+                    states.add_state(Atk.StateType.DEFUNCT)
+                    return states
+                states = Gtk.EntryAccessible.do_ref_state_set(self)
+                if getattr(widget, "_validation_invalid", False):
+                    states.add_state(Atk.StateType.INVALID_ENTRY)
+                return states
+
+        class ValidationEntry(Gtk.Entry):
+            def set_validation_error(self, error):
+                previous = getattr(self, "_validation_invalid", False)
+                self._validation_invalid = bool(error)
+                accessible = self.get_accessible()
+                if accessible.get_description() != error:
+                    accessible.set_description(error)
+                if previous != self._validation_invalid:
+                    accessible.notify_state_change(Atk.StateType.INVALID_ENTRY,
+                                                   self._validation_invalid)
+
+        # Configure our type before its first instance, as for a Gtk.Template.
+        # GTK creates, initializes, retains and retires the accessible through
+        # its ordinary widget lifecycle; Python does not own a parallel cache.
+        ValidationEntry.set_accessible_type(ValidationAccessible.__gtype__)
+        _validation_entry_type = ValidationEntry
+    return _validation_entry_type()
+
+
 def tray_host_present(Gio, GLib):
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -358,14 +400,18 @@ class SettingsWindow(object):
         grid.attach(self.guidance, 0, basic_row, 3, 1)
         self.player_controls, self.player_entries, self.player_errors = {}, {}, {}
         self.player_controls["player.decoder"] = self.choice(player_grid, 0, _("_Video decoder"))
-        for key, row, label, placeholder in (
-                ("gstreamer.crystalhddec.scale_width", 1, _("Card output _width"), _("0 or an even width from 128 to 1918")),
-                ("player.software_output_size", 4, _("Software _output size"), _("WIDTHxHEIGHT, for example 1920x1080"))):
+        for key, row, label, value_label, placeholder in (
+                ("gstreamer.crystalhddec.scale_width", 1, _("Card output _width"), _("Card width v_alue"), _("0 or an even width from 128 to 1918")),
+                ("player.software_output_size", 4, _("Software _output size"), _("Output size valu_e"), _("WIDTHxHEIGHT, for example 1920x1080"))):
             combo = self.choice(player_grid, row, label)
             self.player_controls[key] = combo
-            entry = Gtk.Entry()
+            entry = validation_entry(Gtk)
             entry.set_placeholder_text(placeholder)
-            entry.get_accessible().set_name(label.replace("_", "") + _(" value"))
+            entry_label = Gtk.Label.new_with_mnemonic(value_label)
+            entry_label.set_xalign(0)
+            entry_label.set_mnemonic_widget(entry)
+            entry.get_accessible().set_name(entry_label.get_text())
+            player_grid.attach(entry_label, 0, row+1, 1, 1)
             player_grid.attach(entry, 1, row+1, 2, 1)
             self.player_entries[key] = entry
             error = Gtk.Label(xalign=0)
@@ -404,7 +450,7 @@ class SettingsWindow(object):
         self.installation_status.set_max_width_chars(70)
         self.installation_status.set_selectable(True)
         installation.pack_start(self.installation_status, False, False, 0)
-        self.installation_refresh = self.button(installation, _("Refresh installation status"), self.refresh_installation)
+        self.installation_refresh = self.button(installation, _("Refresh _installation status"), self.refresh_installation)
         self.installation_refresh.set_tooltip_text(_("Read component declarations and the completed on-disk userspace receipt. Does not save settings, load a decoder, inspect running mappings or restart applications."))
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -584,7 +630,7 @@ class SettingsWindow(object):
         combo.add_attribute(cell, "text", 1)
         combo.add_attribute(cell, "sensitive", 2)
         combo.set_hexpand(True)
-        combo.get_accessible().set_name(text.replace("_", ""))
+        combo.get_accessible().set_name(label.get_text())
         label.set_mnemonic_widget(combo)
         grid.attach(label, 0, row, 1, 1)
         grid.attach(combo, 1, row, 1, 1)
@@ -717,7 +763,6 @@ class SettingsWindow(object):
                     raw = self.pending_player[pending] if pending in self.pending_player else (str(value) if token == "custom" else "")
                     self.player_entries[key].set_text(raw)
                     self.player_entries[key].set_sensitive(editable and token == "custom")
-                    self.player_errors[key].set_text(self.player_error_text(key) if pending in self.pending_player else "")
                 self.set_choices(self.player_controls[key], choices, token)
                 self.player_controls[key].set_sensitive(editable)
                 help_text = {
@@ -779,7 +824,9 @@ class SettingsWindow(object):
             for badge in self.badges.values():
                 badge.set_text(_("Model unavailable"))
         for key, label in self.player_errors.items():
-            label.set_text(self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else "")
+            error = self.player_error_text(key) if (self.editing_profile, key) in self.pending_player else ""
+            label.set_text(error)
+            self.player_entries[key].set_validation_error(error)
         status = self.notice or (_("Unsaved changes") if self.has_unsaved_changes() else _("Settings loaded; running applications have not been inspected"))
         if self.readers_unknown:
             status += "\n" + _("Some inspected components do not advertise settings support; see Installation.")
@@ -841,12 +888,16 @@ class SettingsWindow(object):
 
     def prompt_profile_name(self):
         dialog = self.Gtk.Dialog(title=_("New profile"), transient_for=self.window, modal=True)
-        dialog.add_buttons(_("Cancel"), self.Gtk.ResponseType.CANCEL, _("Create"), self.Gtk.ResponseType.OK)
+        dialog.add_buttons(_("_Cancel"), self.Gtk.ResponseType.CANCEL, _("C_reate"), self.Gtk.ResponseType.OK)
         entry = self.Gtk.Entry()
         entry.set_placeholder_text(_("1–64 ASCII letters/digits/._-; start with letter/digit"))
-        entry.get_accessible().set_name(_("Profile name"))
+        label = self.Gtk.Label.new_with_mnemonic(_("_Profile name"))
+        label.set_xalign(0)
+        label.set_mnemonic_widget(entry)
+        entry.get_accessible().set_name(label.get_text())
         entry.set_activates_default(True)
         dialog.set_default_response(self.Gtk.ResponseType.OK)
+        dialog.get_content_area().add(label)
         dialog.get_content_area().add(entry)
         dialog.show_all()
         entry.grab_focus()

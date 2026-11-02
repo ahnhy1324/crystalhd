@@ -3765,7 +3765,12 @@ BC_STATUS txBufPush(pTXBUFFER txBuf, uint8_t* bufToPush, uint32_t sizeToPush)
 	if(txBuf == NULL || bufToPush == NULL)
 		return BC_STS_INV_ARG;
 
-	if(txBuf->freeSize < sizeToPush)
+	/* Pop publishes newly reusable bytes under this mutex.  thLock only
+	 * serializes input callers; the TX consumer does not hold it here. */
+	pthread_mutex_lock(&txBuf->pushpopLock);
+	const bool fits = txBuf->freeSize >= sizeToPush;
+	pthread_mutex_unlock(&txBuf->pushpopLock);
+	if(!fits)
 		return BC_STS_INSUFF_RES;
 
 	// How much will fit before we need to wrap
@@ -3790,7 +3795,6 @@ BC_STATUS txBufPush(pTXBUFFER txBuf, uint8_t* bufToPush, uint32_t sizeToPush)
 		// writePointer should be 0
 		bufRemain += mcpySz;
 		mcpySz = sizeToPush - mcpySz;
-		sizeTop = txBuf->readPointer;
 		memcpy(txBuf->basePointer, bufRemain, mcpySz);
 		txBuf->writePointer = mcpySz;
 		pthread_mutex_lock(&txBuf->pushpopLock);
@@ -3816,7 +3820,10 @@ BC_STATUS txBufPop(pTXBUFFER txBuf, uint8_t* bufToPop, uint32_t sizeToPop)
 
 	pthread_mutex_lock(&txBuf->flushLock);
 
-	if(sizeToPop > txBuf->busySize) {
+	pthread_mutex_lock(&txBuf->pushpopLock);
+	const bool available = sizeToPop <= txBuf->busySize;
+	pthread_mutex_unlock(&txBuf->pushpopLock);
+	if(!available) {
 		// A flush can invalidate the size sampled by the TX worker.
 		pthread_mutex_unlock(&txBuf->flushLock);
 		return BC_STS_INV_ARG;
@@ -3843,7 +3850,6 @@ BC_STATUS txBufPop(pTXBUFFER txBuf, uint8_t* bufToPop, uint32_t sizeToPop)
 		// readPointer should be 0
 		bufRemain += popSz;
 		popSz = sizeToPop - popSz;
-		sizeTop = txBuf->writePointer;
 		memcpy(bufRemain, txBuf->basePointer, popSz);
 		txBuf->readPointer = popSz;
 		pthread_mutex_lock(&txBuf->pushpopLock);
@@ -4173,6 +4179,19 @@ static BC_STATUS DtsRestoreAfterResume(DTS_LIB_CONTEXT *Ctx)
 	return BC_STS_SUCCESS;
 }
 
+/* Match DtsTxFreeSize: reset takes flushLock and producer/consumer byte
+ * publication takes pushpopLock.  A worker snapshot must synchronize with
+ * both, including when it runs outside the context admission mutex. */
+static uint32_t txBufBusySize(pTXBUFFER txBuf)
+{
+	pthread_mutex_lock(&txBuf->flushLock);
+	pthread_mutex_lock(&txBuf->pushpopLock);
+	const uint32_t busy = txBuf->busySize;
+	pthread_mutex_unlock(&txBuf->pushpopLock);
+	pthread_mutex_unlock(&txBuf->flushLock);
+	return busy;
+}
+
 // TX Thread
 // This thread has dual purpose. First is to send TX data. Second is to detect if we have restarted from any suspend/hibernate action
 // and to restore the HW state
@@ -4357,7 +4376,7 @@ void * txThreadProc(void *ctx)
 		}
 
 		// Check if we have data to send.
-		if(Ctx->circBuf.busySize != 0)
+		if(txBufBusySize(&Ctx->circBuf) != 0)
 		{
 			if(pStat.cpbEmptySize == 0)
 			{
@@ -4382,10 +4401,19 @@ void * txThreadProc(void *ctx)
 				continue;
 			}
 
-			if(Ctx->circBuf.busySize < pStat.cpbEmptySize)
-				szDataToSend = Ctx->circBuf.busySize;
+			const uint32_t busy = txBufBusySize(&Ctx->circBuf);
+			if(busy < pStat.cpbEmptySize)
+				szDataToSend = busy;
 			else
 				szDataToSend = pStat.cpbEmptySize;
+			/* A flush may have completed between the first snapshot and
+			 * admission.  Do not submit an empty transfer from that old hint. */
+			if(szDataToSend == 0) {
+				DtsLock(Ctx);
+				Ctx->txPending = false;
+				DtsUnLock(Ctx);
+				continue;
+			}
 			if(BC_STS_SUCCESS != txBufPop(&Ctx->circBuf, localBuffer, szDataToSend)) {
 				DtsLock(Ctx);
 				Ctx->txPending = false;

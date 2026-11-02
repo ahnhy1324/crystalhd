@@ -1,0 +1,511 @@
+{
+  "schema": 1,
+  "issue": 510,
+  "status": "PASS_SCOPED_STAGE_OBSERVATIONS",
+  "source_revision": "caedb7eb1dfe8892e9a0ad7e18194867fc9eefce",
+  "feature": {
+    "default": "off",
+    "invocation": "crystalhd-play --trace-frames NEW_FILE [--trace-limit RECORDS] INPUT",
+    "record_capacity": {
+      "default": 4096,
+      "min": 1,
+      "max": 16384
+    },
+    "max_attachment_histories": 64,
+    "streaming_work": "native metadata only; no additional per-buffer Python, file I/O, payload mapping, buffer retention or mutation",
+    "type_accounting": "individual BUFFER callbacks and LIST members have separate counters; any list declares possible overlap, never a summed unique frame census",
+    "output": "exclusive new mode0600 JSON after decoder NULL and collector stop"
+  },
+  "local_checks": {
+    "player_tests": {
+      "passed": 114,
+      "new_methods": 14,
+      "skipped": 0
+    },
+    "native": {
+      "variants": [
+        "ordinary",
+        "ASan+UBSan+leak detection"
+      ],
+      "groups_each": 8,
+      "structured_snapshots_each": 15,
+      "normal_TFF_BFF": "50 pictures -> 100 fields, exact payload/PTS/duration against unobserved reference",
+      "intentional_drop_TFF_BFF": "50 -> 100 -> 90 exact independent stage counts",
+      "lists": "default fallback direct0/3 + list3/3; custom direct0/0 + list3/3; three actual consumed/destroyed buffers; no summed census",
+      "lifetime": "in-flight callback stop/unref, dispatch stop, bounded histories and immutable closed state"
+    },
+    "gstreamer_plugin_check": "PASS normal/legacy lifecycle, codec/control and observer tests",
+    "configuration": "PASS 34 surfaces/11 boundary dispositions; existing21 canonical keys",
+    "runtime_install_tests": 39
+  },
+  "runtime": {
+    "analyzer_sha256": "6815fdc548040608551e881da708585123d149c93f170291e7cbcc63306d3024",
+    "entry_program_sha256": "4c3bc9dfbcec159f201745d840f8f66589a378feab369d16591271cc87efe1b6",
+    "analysis_criteria_sha256": "f2cccddf3416e4dfdec4e8c0389481bf448ed4577b3747dc37adcf6dc6ee688c",
+    "pts_tolerance_ns": 0,
+    "duration_tolerance_ns": 0,
+    "comparison": "PTS/duration vectors only; DTS/flags/CAPS/monotonic values need not be identical across modes",
+    "independent_raw_audit": {
+      "schema": 1,
+      "status": "PASS",
+      "audited_at_utc": "2026-10-29T23:21:50.828924+00:00",
+      "method": "Independent read-only JSON/file replay; no import/execution of entry/analyzer/operator and no device/proc/sys access",
+      "policy_sha256": "e9a8d034f8b92f324a1477175682d725cf5323dad8b5ea99928e0b1b7312594f",
+      "hardware_plan_sha256": "455f066d2ff1a8df55d6b5e69ff177b17339b1a9dea72aab83dc856c629e9529",
+      "verified_initial_pins": 12,
+      "verified_software_pins": 6,
+      "source_revision": "caedb7eb1dfe8892e9a0ad7e18194867fc9eefce",
+      "native_source_sha256": "f073f1545ff49a0c8d2da76f46b9cd1059bfee142b785c6b0320483c02b70820",
+      "own_image_sha256": {
+        "own-plugin": "45dc427b7f0ee3fa99f1b7cf469e88f8f106ffee72ef62e19f7357e5f9f60a04",
+        "own-library": "9e2b788390e4811082881cdabce2be270282b9c43ec28affa3b328a25f5c7097"
+      },
+      "all_raw_artifact_hashes_match": true,
+      "all_source_and_mapped_regular_file_hashes_match": true,
+      "mapped_regular_files_checked": 27,
+      "zero_ns_comparison": true,
+      "software_references_qualified_and_frozen_before_hardware": true,
+      "arms": {
+        "software-progressive": {
+          "health_frames": 180,
+          "retained_records": 559,
+          "trace_sha256": "42d59bcfe071c697dbc8fdbf48acf92d351fdd14b5419066e78c87341ab4e4f7",
+          "entry_sha256": "e9f43b7f2e0541b4d29d65f551d7d64a008ece01b5c51f15a0b7a1afcbe8dc63",
+          "analysis_sha256": "fe0b903dcd9aae5607198a1f63caae3d73194fb4c5a93c6ab0604677bb648506",
+          "stages": {
+            "sink": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "fakesink",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "decoder": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "avdec_h264",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "deinterlace": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "deinterlace",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            }
+          },
+          "device_fd_count_after_close": 0
+        },
+        "software-interlaced": {
+          "health_frames": 50,
+          "retained_records": 269,
+          "trace_sha256": "48dec18901bd30011f82193b860f0007e316cffd22adebadf84c744c1525be5a",
+          "entry_sha256": "35819903adf016bbf1f75d4413ec6ff050f30cdbb2bdc3e9b7a12a4fbbfeefe4",
+          "analysis_sha256": "e08476c0c591e48c6660b1ad5980cb5a68bbe0ac96a7f28e7667e991e97e0695",
+          "stages": {
+            "sink": {
+              "buffers": 100,
+              "eos": 1,
+              "ordinals": [
+                1,
+                100
+              ],
+              "factory": "fakesink",
+              "pts_duration_sha256": "d89a2650754f4b3b926de64bc14111fd3f5319191abf7f71251bad53c4c5de35",
+              "first": [
+                0,
+                20000000
+              ],
+              "last": [
+                1980000000,
+                20000000
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "decoder": {
+              "buffers": 50,
+              "eos": 1,
+              "ordinals": [
+                1,
+                50
+              ],
+              "factory": "avdec_mpeg2video",
+              "pts_duration_sha256": "12541c140701837f1147c16264d1652b77ac1f3bbdde95dba3aad4f33c90ae89",
+              "first": [
+                0,
+                40000000
+              ],
+              "last": [
+                1960000000,
+                40000000
+              ],
+              "caps_interlace_modes": [
+                1
+              ],
+              "caps_field_orders": [
+                1
+              ]
+            },
+            "deinterlace": {
+              "buffers": 100,
+              "eos": 1,
+              "ordinals": [
+                1,
+                100
+              ],
+              "factory": "deinterlace",
+              "pts_duration_sha256": "d89a2650754f4b3b926de64bc14111fd3f5319191abf7f71251bad53c4c5de35",
+              "first": [
+                0,
+                20000000
+              ],
+              "last": [
+                1980000000,
+                20000000
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            }
+          },
+          "device_fd_count_after_close": 0
+        },
+        "hardware-progressive": {
+          "health_frames": 180,
+          "retained_records": 559,
+          "trace_sha256": "b4a7a9c94f1aa5f3c6ce1a04c569f1a0cf450a08185bc8249e8a69c4afed84e7",
+          "entry_sha256": "8d954ea2eb3c00d3f84acb2f77b41ae465311d7c0a7a84ea6ed849de6a439e7f",
+          "analysis_sha256": "5e63e2bc5ed71147ecdc9fcb18847c80487b47b762c08cd3b9b9dd6eade15c91",
+          "stages": {
+            "sink": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "fakesink",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "decoder": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "crystalhddec",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "deinterlace": {
+              "buffers": 180,
+              "eos": 1,
+              "ordinals": [
+                1,
+                180
+              ],
+              "factory": "deinterlace",
+              "pts_duration_sha256": "77d5c69c60dc66ab533a9cc8c5f98852e1666baca2db0a5e673abb650a6e1e60",
+              "first": [
+                0,
+                33333333
+              ],
+              "last": [
+                5966666666,
+                33333334
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            }
+          },
+          "device_fd_count_after_close": 0
+        },
+        "hardware-interlaced": {
+          "health_frames": 50,
+          "retained_records": 269,
+          "trace_sha256": "746ed202652345e14234bc0f0765bfd4ce6efe74ead7318bf7702316672a9320",
+          "entry_sha256": "f9ec427cc533c496c635ec79535e11424c50b0f5f052faea39cc83882b9fac9a",
+          "analysis_sha256": "f0483227b9c06911f35d8c8079c79e554d8c644d31470facf836e4b54455d18e",
+          "stages": {
+            "sink": {
+              "buffers": 100,
+              "eos": 1,
+              "ordinals": [
+                1,
+                100
+              ],
+              "factory": "fakesink",
+              "pts_duration_sha256": "d89a2650754f4b3b926de64bc14111fd3f5319191abf7f71251bad53c4c5de35",
+              "first": [
+                0,
+                20000000
+              ],
+              "last": [
+                1980000000,
+                20000000
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "decoder": {
+              "buffers": 50,
+              "eos": 1,
+              "ordinals": [
+                1,
+                50
+              ],
+              "factory": "crystalhddec",
+              "pts_duration_sha256": "12541c140701837f1147c16264d1652b77ac1f3bbdde95dba3aad4f33c90ae89",
+              "first": [
+                0,
+                40000000
+              ],
+              "last": [
+                1960000000,
+                40000000
+              ],
+              "caps_interlace_modes": [
+                2
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            },
+            "deinterlace": {
+              "buffers": 100,
+              "eos": 1,
+              "ordinals": [
+                1,
+                100
+              ],
+              "factory": "deinterlace",
+              "pts_duration_sha256": "d89a2650754f4b3b926de64bc14111fd3f5319191abf7f71251bad53c4c5de35",
+              "first": [
+                0,
+                20000000
+              ],
+              "last": [
+                1980000000,
+                20000000
+              ],
+              "caps_interlace_modes": [
+                0
+              ],
+              "caps_field_orders": [
+                0
+              ]
+            }
+          },
+          "device_fd_count_after_close": 0
+        }
+      },
+      "boundary_before_after_and_cross_batch_equal": true,
+      "stable_boundary": {
+        "module": "3.10.13",
+        "srcversion": "F76E163690F147B91495DDD",
+        "ref": 0,
+        "pin_net": 0,
+        "force": "Y",
+        "session": "N",
+        "power": "on",
+        "aer": {
+          "0000:02:00.0": {
+            "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+            "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+            "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+          },
+          "0000:00:1c.0": {}
+        },
+        "links": {
+          "0000:02:00.0": 66,
+          "0000:00:1c.0": 66
+        },
+        "debug_rows": 85,
+        "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+        "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+        "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+        "video_nodes": []
+      },
+      "kernel_checks": {
+        "software": 0,
+        "hardware": 0,
+        "evidence": "checker result summaries retained; raw journal text is not present"
+      },
+      "caps_difference": "Interlaced decoder SW interleaved/TFF CAPS1/1; HW mixed/unknown CAPS2/0; every decoded buffer in both has INTERLACED|TFF. Equality claims cover PTS/duration vectors, not all CAPS.",
+      "scope": [
+        "Only independent pad metadata and normal EOS/close of these four arms",
+        "No full pixels/crop, physical presentation, source-picture ownership or physical A/V claim",
+        "No BufferList ambiguity in these ordinary BUFFER arms; separate native List tests retain their own scope"
+      ],
+      "actions": {
+        "hardware": false,
+        "runtime_entry_execution": false,
+        "analyzer_execution": false,
+        "source_modification": false
+      }
+    },
+    "audit_sha256": "7f5c141c941857d892a0008e517e3a2d17b5ad92d24176f6f3c3f17b1a7614d7",
+    "supplemental_raw_kernel_intervals": {
+      "software": {
+        "since": "2026-10-29 23:14:46 UTC",
+        "until": "2026-10-29T23:14:53.041600+00:00",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "hardware": {
+        "since": "2026-10-29 23:15:30 UTC",
+        "until": "2026-10-29T23:15:40.284593+00:00",
+        "sha256": "a68359cae5834aa0a06f6fb11a3831b2a876c3c78be0395e9bfa0963562a9101",
+        "bytes": 492
+      }
+    },
+    "interlaced_fixture_producer": {
+      "command": [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-xerror",
+        "-n",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=640x480:rate=50",
+        "-vf",
+        "interlace=scan=tff:lowpass=linear",
+        "-frames:v",
+        "50",
+        "-an",
+        "-c:v",
+        "mpeg2video",
+        "-threads",
+        "1",
+        "-g",
+        "12",
+        "-bf",
+        "2",
+        "-q:v",
+        "4",
+        "-flags",
+        "+ilme+ildct+bitexact",
+        "-top",
+        "1",
+        "-fflags",
+        "+bitexact",
+        "interlaced-tff.mkv"
+      ],
+      "ffmpeg_version": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers"
+    },
+    "raw_evidence": "trace/entry/reference/plan/log files retained locally; compact public receipt, not a standalone public raw replay corpus"
+  },
+  "regression": {
+    "unpublished_candidate_native_sha256": "2032e5ccc85cf05eaa350406697c98a82d13071bb9611038cc26239005fbc0c1",
+    "red": "new observer counted default LIST fallback as source3/sink6; original source and failing test retained",
+    "fix": "type-separated observations and explicit ambiguity, no PTS/address heuristic, payload mutation or GStreamer change"
+  },
+  "limits": [
+    "Independent pad metadata, not unique source-picture or physical display identity",
+    "No compressed-decode pixel/crop, scanout, physical A/V, power or performance acceptance",
+    "Selected native natural EOF only; actual software Player tests separately cover pause/seek annotations and observed generation changes",
+    "BUFFER_LIST types are not combined into a unique census; normal Player health remains BUFFER-only",
+    "No broader codec/i386/BCM70012/client qualification or historical-failure disposition",
+    "Issue91/429/445/538 broader acceptance remains separate; shutdown heap investigation excluded"
+  ]
+}

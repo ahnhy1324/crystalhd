@@ -1,0 +1,594 @@
+{
+  "schema": 1,
+  "issue": 533,
+  "date": "2026-10-27",
+  "scope": "Ordinary input-only idle/resume on one legacy channel. This is not complete drain, LAST/EPIPE, or V4L2 STOP/START. No presentation policy is exercised.",
+  "source": "28e1116d1b606c82d0b1d13728d77b0764d5becc",
+  "library_source": "54752a1af514eb673b563fb80b6df6600223a666",
+  "firmware": {
+    "file": "bcm70015fw.bin",
+    "sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "mtime": 1792712699.7601044,
+    "matches_frozen_firmware": true
+  },
+  "frozen_input_sha256": "1b6ad927b660238dfabc4c25531439d4ea16d0742f249427784bc575e6270eec",
+  "oracle": {
+    "frozen_evidence": "stop-kick-20261027.json",
+    "fresh_uninterrupted_reference_matches_retained_full_bytes": true,
+    "software_oracle": "reused frozen #533 software oracle; not a new software decode",
+    "comparison": "all original YUYV bytes and picture flags compared by token; exact full output order; no hash-only comparison"
+  },
+  "columns": ["token", "source_pts_ticks", "source_poc", "flags", "phase"],
+  "source_columns": ["au_index1", "source_pts_ticks", "source_poc", "reference", "idr"],
+  "source_aus": [
+    [1, 0, 0, 3, true],
+    [2, 1536, 6, 2, false],
+    [3, 512, 2, 2, false],
+    [4, 1024, 4, 0, false],
+    [5, 3584, 14, 2, false],
+    [6, 2560, 10, 2, false],
+    [7, 2048, 8, 0, false],
+    [8, 3072, 12, 0, false],
+    [9, 5632, 22, 2, false],
+    [10, 4608, 18, 2, false],
+    [11, 4096, 16, 0, false],
+    [12, 5120, 20, 0, false],
+    [13, 7168, 28, 2, false],
+    [14, 6144, 24, 2, false],
+    [15, 6656, 26, 0, false],
+    [16, 8704, 34, 2, false],
+    [17, 7680, 30, 2, false],
+    [18, 8192, 32, 0, false],
+    [19, 10752, 42, 2, false],
+    [20, 9728, 38, 2, false]
+  ],
+  "cases": [
+    {
+      "mode": "reference",
+      "returncode": 0,
+      "elapsed_s": 1.266069827004685,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "prefix": 6,
+        "terminal-eos": 14
+      },
+      "idle_boundaries": [],
+      "result": [
+        {
+          "type": "result",
+          "mode": "reference",
+          "boundary_real": 6,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": false,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": null,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "prefix"],
+        [300000, 512, 2, 0, "prefix"],
+        [400000, 1024, 4, 0, "prefix"],
+        [200000, 1536, 6, 0, "prefix"],
+        [700000, 2048, 8, 0, "prefix"],
+        [600000, 2560, 10, 0, "prefix"],
+        [800000, 3072, 12, 0, "terminal-eos"],
+        [500000, 3584, 14, 0, "terminal-eos"],
+        [1100000, 4096, 16, 0, "terminal-eos"],
+        [1000000, 4608, 18, 0, "terminal-eos"],
+        [1200000, 5120, 20, 0, "terminal-eos"],
+        [900000, 5632, 22, 0, "terminal-eos"],
+        [1400000, 6144, 24, 0, "terminal-eos"],
+        [1500000, 6656, 26, 0, "terminal-eos"],
+        [1300000, 7168, 28, 0, "terminal-eos"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-idle-100",
+      "returncode": 0,
+      "elapsed_s": 1.5242331059998833,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "input-idle": 12,
+        "continuation": 3,
+        "terminal-eos": 5
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 17,
+          "requested_ms": 100,
+          "host_receive": true,
+          "real_before": 0,
+          "real_after": 12,
+          "actual_gap_ms": 100.804
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-idle-100",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-idle-100",
+          "boundary_real": 12,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "input-idle"],
+        [300000, 512, 2, 0, "input-idle"],
+        [400000, 1024, 4, 0, "input-idle"],
+        [200000, 1536, 6, 0, "input-idle"],
+        [700000, 2048, 8, 0, "input-idle"],
+        [600000, 2560, 10, 0, "input-idle"],
+        [800000, 3072, 12, 0, "input-idle"],
+        [500000, 3584, 14, 0, "input-idle"],
+        [1100000, 4096, 16, 0, "input-idle"],
+        [1000000, 4608, 18, 0, "input-idle"],
+        [1200000, 5120, 20, 0, "input-idle"],
+        [900000, 5632, 22, 0, "input-idle"],
+        [1400000, 6144, 24, 0, "continuation"],
+        [1500000, 6656, 26, 0, "continuation"],
+        [1300000, 7168, 28, 0, "continuation"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-idle-1000",
+      "returncode": 0,
+      "elapsed_s": 2.2820031700030086,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "input-idle": 12,
+        "continuation": 3,
+        "terminal-eos": 5
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 17,
+          "requested_ms": 1000,
+          "host_receive": true,
+          "real_before": 0,
+          "real_after": 12,
+          "actual_gap_ms": 1000.075
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-idle-1000",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-idle-1000",
+          "boundary_real": 12,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "input-idle"],
+        [300000, 512, 2, 0, "input-idle"],
+        [400000, 1024, 4, 0, "input-idle"],
+        [200000, 1536, 6, 0, "input-idle"],
+        [700000, 2048, 8, 0, "input-idle"],
+        [600000, 2560, 10, 0, "input-idle"],
+        [800000, 3072, 12, 0, "input-idle"],
+        [500000, 3584, 14, 0, "input-idle"],
+        [1100000, 4096, 16, 0, "input-idle"],
+        [1000000, 4608, 18, 0, "input-idle"],
+        [1200000, 5120, 20, 0, "input-idle"],
+        [900000, 5632, 22, 0, "input-idle"],
+        [1400000, 6144, 24, 0, "continuation"],
+        [1500000, 6656, 26, 0, "continuation"],
+        [1300000, 7168, 28, 0, "continuation"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-hold-1000",
+      "returncode": 0,
+      "elapsed_s": 2.2780866679968312,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "input-idle": 12,
+        "continuation": 3,
+        "terminal-eos": 5
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 17,
+          "requested_ms": 1000,
+          "host_receive": false,
+          "real_before": 0,
+          "real_after": 12,
+          "actual_gap_ms": 1018.267
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-hold-1000",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-hold-1000",
+          "boundary_real": 12,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "input-idle"],
+        [300000, 512, 2, 0, "input-idle"],
+        [400000, 1024, 4, 0, "input-idle"],
+        [200000, 1536, 6, 0, "input-idle"],
+        [700000, 2048, 8, 0, "input-idle"],
+        [600000, 2560, 10, 0, "input-idle"],
+        [800000, 3072, 12, 0, "input-idle"],
+        [500000, 3584, 14, 0, "input-idle"],
+        [1100000, 4096, 16, 0, "input-idle"],
+        [1000000, 4608, 18, 0, "input-idle"],
+        [1200000, 5120, 20, 0, "input-idle"],
+        [900000, 5632, 22, 0, "input-idle"],
+        [1400000, 6144, 24, 0, "continuation"],
+        [1500000, 6656, 26, 0, "continuation"],
+        [1300000, 7168, 28, 0, "continuation"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-idle-multi",
+      "returncode": 0,
+      "elapsed_s": 1.774375366003369,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "intermediate-idle": 8,
+        "input-idle": 4,
+        "continuation": 3,
+        "terminal-eos": 5
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 5,
+          "requested_ms": 100,
+          "real_before": 0,
+          "real_after": 0,
+          "actual_gap_ms": 101.05
+        },
+        {
+          "type": "input-idle",
+          "accepted": 9,
+          "requested_ms": 100,
+          "real_before": 0,
+          "real_after": 4,
+          "actual_gap_ms": 100.935
+        },
+        {
+          "type": "input-idle",
+          "accepted": 13,
+          "requested_ms": 100,
+          "real_before": 4,
+          "real_after": 8,
+          "actual_gap_ms": 100.106
+        },
+        {
+          "type": "input-idle",
+          "accepted": 17,
+          "requested_ms": 100,
+          "host_receive": true,
+          "real_before": 8,
+          "real_after": 12,
+          "actual_gap_ms": 100.171
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-idle-multi",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-idle-multi",
+          "boundary_real": 12,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "intermediate-idle"],
+        [300000, 512, 2, 0, "intermediate-idle"],
+        [400000, 1024, 4, 0, "intermediate-idle"],
+        [200000, 1536, 6, 0, "intermediate-idle"],
+        [700000, 2048, 8, 0, "intermediate-idle"],
+        [600000, 2560, 10, 0, "intermediate-idle"],
+        [800000, 3072, 12, 0, "intermediate-idle"],
+        [500000, 3584, 14, 0, "intermediate-idle"],
+        [1100000, 4096, 16, 0, "input-idle"],
+        [1000000, 4608, 18, 0, "input-idle"],
+        [1200000, 5120, 20, 0, "input-idle"],
+        [900000, 5632, 22, 0, "input-idle"],
+        [1400000, 6144, 24, 0, "continuation"],
+        [1500000, 6656, 26, 0, "continuation"],
+        [1300000, 7168, 28, 0, "continuation"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-idle-empty",
+      "returncode": 0,
+      "elapsed_s": 1.2667631859949324,
+      "peak_mC": 59000,
+      "phase_counts": {
+        "continuation": 5,
+        "terminal-eos": 15
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 0,
+          "requested_ms": 100,
+          "host_receive": true,
+          "real_before": 0,
+          "real_after": 0,
+          "actual_gap_ms": 100.858
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-idle-empty",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-idle-empty",
+          "boundary_real": 0,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "continuation"],
+        [300000, 512, 2, 0, "continuation"],
+        [400000, 1024, 4, 0, "continuation"],
+        [200000, 1536, 6, 0, "continuation"],
+        [700000, 2048, 8, 0, "continuation"],
+        [600000, 2560, 10, 0, "terminal-eos"],
+        [800000, 3072, 12, 0, "terminal-eos"],
+        [500000, 3584, 14, 0, "terminal-eos"],
+        [1100000, 4096, 16, 0, "terminal-eos"],
+        [1000000, 4608, 18, 0, "terminal-eos"],
+        [1200000, 5120, 20, 0, "terminal-eos"],
+        [900000, 5632, 22, 0, "terminal-eos"],
+        [1400000, 6144, 24, 0, "terminal-eos"],
+        [1500000, 6656, 26, 0, "terminal-eos"],
+        [1300000, 7168, 28, 0, "terminal-eos"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    },
+    {
+      "mode": "input-idle-1000",
+      "returncode": 0,
+      "elapsed_s": 2.278037948999554,
+      "peak_mC": 60000,
+      "phase_counts": {
+        "input-idle": 12,
+        "continuation": 3,
+        "terminal-eos": 5
+      },
+      "idle_boundaries": [
+        {
+          "type": "input-idle",
+          "accepted": 17,
+          "requested_ms": 1000,
+          "host_receive": true,
+          "real_before": 0,
+          "real_after": 12,
+          "actual_gap_ms": 1000.096
+        }
+      ],
+      "result": [
+        {
+          "type": "input-idle-result",
+          "mode": "input-idle-1000",
+          "distinct_real": 20,
+          "same_channel": true,
+          "full_reference_order": true,
+          "full_pixels_and_flags_match": true,
+          "leases_acquired": 20,
+          "leases_released": 20,
+          "terminal_eos": true,
+          "pass": true
+        },
+        {
+          "type": "result",
+          "mode": "input-idle-1000",
+          "boundary_real": 12,
+          "boundary_private": 0,
+          "g2": false,
+          "continuation_attempted": true,
+          "terminal_real": 20,
+          "terminal_private": 0,
+          "eos": true,
+          "full_reference_order": true,
+          "pixels_match_reference": true,
+          "unknown_outputs": 0,
+          "terminal_complete": true
+        }
+      ],
+      "output": [
+        [100000, 0, 0, 0, "input-idle"],
+        [300000, 512, 2, 0, "input-idle"],
+        [400000, 1024, 4, 0, "input-idle"],
+        [200000, 1536, 6, 0, "input-idle"],
+        [700000, 2048, 8, 0, "input-idle"],
+        [600000, 2560, 10, 0, "input-idle"],
+        [800000, 3072, 12, 0, "input-idle"],
+        [500000, 3584, 14, 0, "input-idle"],
+        [1100000, 4096, 16, 0, "input-idle"],
+        [1000000, 4608, 18, 0, "input-idle"],
+        [1200000, 5120, 20, 0, "input-idle"],
+        [900000, 5632, 22, 0, "input-idle"],
+        [1400000, 6144, 24, 0, "continuation"],
+        [1500000, 6656, 26, 0, "continuation"],
+        [1300000, 7168, 28, 0, "continuation"],
+        [1700000, 7680, 30, 0, "terminal-eos"],
+        [1800000, 8192, 32, 0, "terminal-eos"],
+        [1600000, 8704, 34, 0, "terminal-eos"],
+        [2000000, 9728, 38, 0, "terminal-eos"],
+        [1900000, 10752, 42, 0, "terminal-eos"]
+      ]
+    }
+  ],
+  "boundary_before": {
+    "module": "3.10.13",
+    "refs": 0,
+    "pin_net": 0,
+    "force": "Y",
+    "session": "N",
+    "power": "on",
+    "links": {
+      "0000:02:00.0": "0042",
+      "0000:00:1c.0": "0042"
+    },
+    "aer": {
+      "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+      "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+      "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+    }
+  },
+  "boundary_after": {
+    "module": "3.10.13",
+    "refs": 0,
+    "pin_net": 0,
+    "force": "Y",
+    "session": "N",
+    "power": "on",
+    "links": {
+      "0000:02:00.0": "0042",
+      "0000:00:1c.0": "0042"
+    },
+    "aer": {
+      "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+      "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+      "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+    }
+  },
+  "interpretation": ["100ms/1s:12 originals during input idle,3 after the actual3 continuation AUs,5 only at final EOS. All20 match the uninterrupted source order, including source POC32 before34.", "No EOS,Kick,Stop,close,reset,replay or fabricated original at the pause boundary. Ordinary final EOS follows acceptance of the whole20-AU input.", "The empty control pauses before any AU; it is not proof of a nonempty zero-reorder case. Host hold means1s without receiving; it does not qualify V4L2 CAPTURE starvation.", "Same-handle code path and reference-dependent exact continuation establish this fixture behavior; internal DPB memory lifetime is not directly measured.", "This does not change #533G2FAIL or #114/#115 EOPNOTSUPP. Application pausing compressed input, renderer catch-up,other streams,longer idle and endurance are not established."]
+}

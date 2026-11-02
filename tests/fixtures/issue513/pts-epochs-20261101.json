@@ -1,0 +1,1191 @@
+{
+  "schema": 1,
+  "status": "CPU_QUALIFIED_BOUNDED_SEGMENT_FLUSH_PTS_METADATA",
+  "parent_source": "b0d4a06147db034a0f676d62b57d57efb1d2aea8",
+  "issue": 513,
+  "date": "2026-11-01",
+  "scope": "Additive bounded16-row per-attachment PTS ledger; fixed stable raw-video25/50Hz, forwardTIME rate/appliedrate1; independent expectation schema2. No decoder/device/display/media-hardware execution.",
+  "legacy_compatibility": {
+    "trace_schema": 1,
+    "pts_summary_version": 1,
+    "expectation_schema1_preserved": true,
+    "baseline_source": "b0d4a06147db034a0f676d62b57d57efb1d2aea8",
+    "exact_old_attachment_and_global_projection_snapshots_each_variant": 65,
+    "variants": [
+      "ordinary",
+      "ASan+UBSan+leaks"
+    ]
+  },
+  "native_controls": {
+    "groups": 21,
+    "old_groups": 14,
+    "new_groups": 7,
+    "snapshots_each_variant": 113,
+    "new_snapshots_each_variant": 48,
+    "both_variants_passed": true,
+    "real_pipeline": "identity pipeline with source/sink probes, three epochs, flushing seek and EOS replay; baseline vs observed payload/PTS/DTS/duration/flags exact.",
+    "independent_expectations": "Frozen producer constants in tests/gst-stage-trace.sh, not extracted from observed ledger.",
+    "run_report_sha256": "0b7a12ad0a7c1fa996b882dc9f70141b9013fac26549f961c6c913bb9e0f72cf"
+  },
+  "reader_controls": {
+    "total": 37,
+    "old": 9,
+    "new": 28,
+    "all_passed": true,
+    "scope": "Independent per-epoch anchors/counts/caps/segments/generations/ordinals, source slot IDs, required global event capacity, helper broadcast counts, Player completion. Includes2^60 bulk counters without per-frame expansion."
+  },
+  "local_integration": {
+    "Player_controls": 126,
+    "CI_plan_controls": 30,
+    "configuration_surfaces": 40,
+    "configuration_schema_controls": 16,
+    "steps": [
+      {
+        "name": "library-build",
+        "command": [
+          "make",
+          "library"
+        ],
+        "exit": 0,
+        "seconds": 15.426002216991037
+      },
+      {
+        "name": "player-integration",
+        "command": [
+          "make",
+          "-C",
+          "filters/gst/gst-plugin-1.0",
+          "check-player"
+        ],
+        "exit": 0,
+        "seconds": 17.42640064097941
+      },
+      {
+        "name": "ci-plan-controls",
+        "command": [
+          "python3",
+          "-B",
+          "tests/ci-plan.test.py"
+        ],
+        "exit": 0,
+        "seconds": 7.344850082998164
+      },
+      {
+        "name": "configuration-inventory",
+        "command": [
+          "python3",
+          "-B",
+          "tests/configuration-inventory.test.py"
+        ],
+        "exit": 0,
+        "seconds": 0.28891198901692405
+      },
+      {
+        "name": "configuration-schema",
+        "command": [
+          "python3",
+          "-B",
+          "tests/configuration-schema.test.py"
+        ],
+        "exit": 0,
+        "seconds": 0.2398877139785327
+      }
+    ]
+  },
+  "input_sha256": {
+    "tests/gst-stage-trace.sh": "af97b3c53ce9450f09b826ff62411072e3d5dd140f58beab4a11e28f44d711da",
+    "tests/gst-stage-trace.c": "144f80967ec7bc746f66ba1d2241a1f96ebebe371460caa5b8f1328d970a5ced",
+    "filters/gst/gst-plugin-1.0/gstcrystalhd-stage-trace.c": "88fc499f9e6e12ad79df7952e7b3f2c1485de83256c5eaa6628748faac21deb2",
+    "tests/stage-pts-audit.py": "fb4f04891c504c1e758e90ac89c6fd2d2caa2cda5b7af730064461dca2f3ca58",
+    "tests/stage-pts-audit.test.py": "2c7bd7840fa8a58ef9ac97cd24291346ed0b1d6b07497005593e2e75fbaadeae"
+  },
+  "design_contract_sha256": "63c25a6a7d0464c5803df1f30c99716441526ed517970dc542e4746e036de63b",
+  "metadata_layout": {
+    "baseline": {
+      "state_size_bytes": 80032,
+      "attachment_size_bytes": 496
+    },
+    "candidate": {
+      "state_size_bytes": 880808,
+      "attachment_size_bytes": 13008
+    },
+    "scope": "Compiler sizeof preallocated metadata structs; excludes detail ring, allocator overhead, RSS and video payload. No Gst initialization, device/media execution."
+  },
+  "new_cases": [
+    {
+      "case": "epoch_segments_first",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 201,
+          "buffers": 32,
+          "epochs": 16,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_segments_roll",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 201,
+          "buffers": 32,
+          "epochs": 16,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_segments_frozen",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 201,
+          "buffers": 32,
+          "epochs": 16,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "epoch_pipeline_replay",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 216,
+          "buffers": 9,
+          "epochs": 3,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 0,
+          "first_violation": null
+        },
+        {
+          "stage": "sink",
+          "token": 217,
+          "buffers": 9,
+          "epochs": 3,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_cancel",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 202,
+          "buffers": 4,
+          "epochs": 1,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 1,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_stream_reset",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 202,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_combined_stream_flush",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 202,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_combined_flush_stream",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 202,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_compensated_offset",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 211,
+          "buffers": 3,
+          "epochs": 1,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_compensated_high_base",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 211,
+          "buffers": 3,
+          "epochs": 1,
+          "qualified": true,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": null
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_gap",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "gap",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1120000000,
+            "expected_pts": 1080000000
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_duplicate",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "duplicate",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1040000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_reverse",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "reverse",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1000000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_off_grid",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "off-grid",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1080000001,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_unknown_pts",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "unknown-pts",
+            "order": 10,
+            "ordinal": 5,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_unknown_duration",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "unknown-duration",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1080000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_duration",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "invalid-duration",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1080000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_buffer_gap",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "buffer-gap",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1080000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_discont",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "buffer-discont",
+            "order": 10,
+            "ordinal": 5,
+            "pts": 1080000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_caps_changed",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "caps-changed",
+            "order": 10,
+            "ordinal": 4,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_defect_caps_metadata_changed",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 203,
+          "buffers": 14,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "caps-changed",
+            "order": 10,
+            "ordinal": 4,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_unresolved",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "seek-request",
+            "order": 9,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_overlap",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 2,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "seek-request",
+            "order": 8,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_fail_unmatched",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 1,
+          "first_violation": {
+            "reason": "seek-failed",
+            "order": 7,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_fail_mismatch",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 1,
+          "first_violation": {
+            "reason": "seek-failed",
+            "order": 8,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_seek_fail_after_flush",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 1,
+          "first_violation": {
+            "reason": "seek-failed",
+            "order": 10,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_flush_stop_unpaired",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "flush-unpaired",
+            "order": 7,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_flush_start_repeat",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "flush-unpaired",
+            "order": 8,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_flush_unresolved",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 8,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_flush_missing_segment",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 5,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 1,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "context-unknown",
+            "order": 9,
+            "ordinal": 3,
+            "pts": 80000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_tail_flush",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 10,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_tail_stream",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 10,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_stream_repeat",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "stream-changed",
+            "order": 9,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_flush_repeat_pair",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "flush-unpaired",
+            "order": 9,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_eos_without_flush",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 204,
+          "buffers": 4,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "buffer-after-eos",
+            "order": 10,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_bad_rate",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "segment-unsupported",
+            "order": 4,
+            "ordinal": 0,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_bad_applied",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "segment-unsupported",
+            "order": 4,
+            "ordinal": 0,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_bytes",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "segment-unsupported",
+            "order": 4,
+            "ordinal": 0,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_bounds",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "segment-bounds",
+            "order": 6,
+            "ordinal": 2,
+            "pts": 40000000,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_offset",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "negative-running-time",
+            "order": 5,
+            "ordinal": 1,
+            "pts": 0,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_overflow",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 205,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "arithmetic-overflow",
+            "order": 5,
+            "ordinal": 1,
+            "pts": 0,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "epoch_empty_segment",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 206,
+          "buffers": 1,
+          "epochs": 2,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "empty-segment",
+            "order": 5,
+            "ordinal": 0,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "epoch_detach_open",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 206,
+          "buffers": 1,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 6,
+            "ordinal": 1,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "epoch_stop_open",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 206,
+          "buffers": 1,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 6,
+            "ordinal": 1,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_limit_overflow",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 207,
+          "buffers": 17,
+          "epochs": 16,
+          "qualified": false,
+          "overflow": true,
+          "unassigned_buffers": 1,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "epoch-overflow",
+            "order": 36,
+            "ordinal": 16,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "window_epoch_counter_saturation",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 208,
+          "buffers": 2,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "counter-saturation",
+            "order": 6,
+            "ordinal": 2,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "epoch_seek_before_attach",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 209,
+          "buffers": 1,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 1,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "seek-request",
+            "order": 2,
+            "ordinal": 0,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    },
+    {
+      "case": "epoch_concurrent_stop",
+      "attachments": [
+        {
+          "stage": "output-scale",
+          "token": 210,
+          "buffers": 1,
+          "epochs": 1,
+          "qualified": false,
+          "overflow": false,
+          "unassigned_buffers": 0,
+          "seek_requests": 0,
+          "seek_failures": 0,
+          "first_violation": {
+            "reason": "missing-eos",
+            "order": 6,
+            "ordinal": 1,
+            "pts": null,
+            "expected_pts": null
+          }
+        }
+      ]
+    }
+  ],
+  "initial_failure_preserved": {
+    "input_hashes_and_result": "native-first/execution.json",
+    "sha256": "2e8d26ec038f9971b4e2da512b2b15c4e38688d8c90b40fe7bdceb974fe660c3",
+    "scope": "Own test incorrectly required a repeated FLUSH_START push to returnTRUE. Corrected to compare with an independent event probe; core-rejected unobserved attempts do not fabricate a ledger violation. Original raw logs retained."
+  },
+  "limits": [
+    "PTS/pad metadata does not prove decoded pixel identity, source provenance, renderer submission/presentation, A/V drift, consumer ownership or performance improvement.",
+    "CAPS changes, rates otherthan1, VFR, cadence beyond fixed25/50, morethan16segments and unsupported boundary sequences stay unqualified.",
+    "Initial flush/late attach/overlapping unresolved seeks are outside this bounded profile. EOS requires pairedflush before another epoch evenifnewstreamstarts.",
+    "Independent reader event-capacity check is necessary metadata consistency, not reconstruction/authentication of all unretained events.",
+    "No new hardware seek/pixel/AV/physical scanout claim; the older singleepoch300s hardware receipt remains a separate frozen scope.",
+    "No external code/binary edits, module/firmware changes, master merge, tag/release/public binary upload/default promotion or excluded heap work."
+  ],
+  "preservation": {
+    "preexisting_worktrees": 195,
+    "original_dirty_trees": 8,
+    "prior_frozen_evidence_files": 437,
+    "initial_audit_sha256": "dc1b2e2ec3a6f8190286f01c06ff3f4ce7566834f246b4771f803d9aecdc7031"
+  }
+}

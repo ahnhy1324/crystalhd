@@ -1,0 +1,345 @@
+{
+  "schema": "crystalhd-original-stock-bob-payload-receipt-v1",
+  "status": "PASS_SCOPED_OWN_COMPLETED_VPP_ACTIVE_PREFIX",
+  "case": "stock-bob-payload-03",
+  "validation": {
+    "root_operator_result": "PASS",
+    "source_and_metadata_review": "PASS_SCOPED_CONSISTENCY",
+    "artifact_hashes_rechecked": true,
+    "independent_pixel_reader_cli_replay": "PASS; root separately invoked committed reader CLI over retained manifest/trace/all blobs",
+    "cpu_controls": 219,
+    "reader_controls": 29
+  },
+  "source_revision": "1a495f467a5cac076db060b0fa3e1f5b3ceb6d01",
+  "host": {
+    "inventory_source": "user-confirmed current equipment",
+    "cpu": "Intel Core 2 Duo T8100",
+    "decoder": "BCM70015",
+    "other_targets": "NOT_RUN"
+  },
+  "original_client": {
+    "kodi_source_revision": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "kodi_binary_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "external_images_modified": false,
+    "actual_decoder": "ff-h264-vaapi",
+    "actual_deinterlacer": "vaapi-bob",
+    "explicit_interlace_setting": 22
+  },
+  "own_images": {
+    "diagnostic_va_sha256": "563ae7fde928c6cd4132dad891b4e0bcead2d18b2d83b040d74ce83ae81ae76e",
+    "ordinary_va_sha256": "147c142e1bb6a527fcd5826651f8bfcee6e6d9667b01bf3fa9f548493e630c48",
+    "ordinary_va_unchanged": true,
+    "dil_sha256": "e5b7cba03cd3beb81c87c6ef92bb9f53ada0442f0ccbcdaaf46d6bf07f86d9a9"
+  },
+  "fixtures": {
+    "tff": {
+      "file": "h264-tff-1280x720-2s.mp4",
+      "sha256": "847249796f3ff572a82421b0573aa3c5aaa4856b2a6901bb874204466b1409f3",
+      "source_pictures": 50,
+      "independent_probe_sha256": "867759a575d62465b5577571808fb92bb42a55c1eec3f0db8c50b116a802f596",
+      "natural_eof": true,
+      "source_binding_stage_counts": {
+        "submit_bind": 50,
+        "input_sent": 50,
+        "output_dequeued": 50,
+        "materialized": 50
+      },
+      "successful_unique_vpp_operations": 100,
+      "operations_per_original": 2
+    },
+    "bff": {
+      "file": "h264-bff-1280x720-2s.mp4",
+      "sha256": "ea902de5e02fc530f18fc8597bd476e185fa94f84c4a8ff3d4f94a0789afc779",
+      "source_pictures": 50,
+      "independent_probe_sha256": "23942e4143f11d4e33f67057a8b8431123754cb5d0f9ebd4629a5c61c406ae94",
+      "natural_eof": true,
+      "source_binding_stage_counts": {
+        "submit_bind": 50,
+        "input_sent": 50,
+        "output_dequeued": 50,
+        "materialized": 50
+      },
+      "successful_unique_vpp_operations": 100,
+      "operations_per_original": 2
+    }
+  },
+  "payload": {
+    "schema": "crystalhd-vpp-payload-v1",
+    "driver_instance": 2,
+    "pid": 1214009,
+    "slots": 8,
+    "source_parents": 4,
+    "physical_parities_per_parent": 2,
+    "source_physical": [
+      1280,
+      736
+    ],
+    "target_physical": [
+      1280,
+      736
+    ],
+    "source_and_target_crop": [
+      0,
+      0,
+      1280,
+      736
+    ],
+    "source_and_target_pitch_bytes": [
+      1280,
+      1280
+    ],
+    "source_and_target_active_payload": [
+      1280,
+      720
+    ],
+    "packed_bytes_per_source_and_target": 1382400,
+    "target_bytes_compared": 11059200,
+    "comparison": "Every active Y/U/V byte matched independently selected physical rows of the captured OWN source; no software-chroma golden was substituted.",
+    "all_actual_sources_full_frame": true,
+    "compact_source_runtime_captures": 0,
+    "compact_source_handling": "CPU_CONTROLS_ONLY",
+    "coded_padding_and_pitch_tails": "EXCLUDED",
+    "checkpoints": [
+      {
+        "fixture": "tff",
+        "source_ordinal": 1,
+        "source_token": 100000,
+        "context": 2,
+        "generation": 1,
+        "decode_identity": 2,
+        "operation": 1,
+        "physical_parity": "top",
+        "source_is_field": false,
+        "source_storage_view": [
+          21,
+          1
+        ],
+        "target_storage_view": [
+          24,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-0-source.nv12",
+        "target_file": "vpp-payload-1214009-2-0-target.nv12"
+      },
+      {
+        "fixture": "tff",
+        "source_ordinal": 1,
+        "source_token": 100000,
+        "context": 2,
+        "generation": 1,
+        "decode_identity": 2,
+        "operation": 2,
+        "physical_parity": "bottom",
+        "source_is_field": false,
+        "source_storage_view": [
+          21,
+          1
+        ],
+        "target_storage_view": [
+          25,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-1-source.nv12",
+        "target_file": "vpp-payload-1214009-2-1-target.nv12"
+      },
+      {
+        "fixture": "tff",
+        "source_ordinal": 2,
+        "source_token": 200000,
+        "context": 2,
+        "generation": 1,
+        "decode_identity": 4,
+        "operation": 5,
+        "physical_parity": "top",
+        "source_is_field": false,
+        "source_storage_view": [
+          22,
+          1
+        ],
+        "target_storage_view": [
+          28,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-2-source.nv12",
+        "target_file": "vpp-payload-1214009-2-2-target.nv12"
+      },
+      {
+        "fixture": "tff",
+        "source_ordinal": 2,
+        "source_token": 200000,
+        "context": 2,
+        "generation": 1,
+        "decode_identity": 4,
+        "operation": 6,
+        "physical_parity": "bottom",
+        "source_is_field": false,
+        "source_storage_view": [
+          22,
+          1
+        ],
+        "target_storage_view": [
+          29,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-3-source.nv12",
+        "target_file": "vpp-payload-1214009-2-3-target.nv12"
+      },
+      {
+        "fixture": "bff",
+        "source_ordinal": 1,
+        "source_token": 100000,
+        "context": 5,
+        "generation": 1,
+        "decode_identity": 402,
+        "operation": 102,
+        "physical_parity": "top",
+        "source_is_field": false,
+        "source_storage_view": [
+          104,
+          1
+        ],
+        "target_storage_view": [
+          108,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-4-source.nv12",
+        "target_file": "vpp-payload-1214009-2-4-target.nv12"
+      },
+      {
+        "fixture": "bff",
+        "source_ordinal": 1,
+        "source_token": 100000,
+        "context": 5,
+        "generation": 1,
+        "decode_identity": 402,
+        "operation": 101,
+        "physical_parity": "bottom",
+        "source_is_field": false,
+        "source_storage_view": [
+          104,
+          1
+        ],
+        "target_storage_view": [
+          107,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-5-source.nv12",
+        "target_file": "vpp-payload-1214009-2-5-target.nv12"
+      },
+      {
+        "fixture": "bff",
+        "source_ordinal": 4,
+        "source_token": 400000,
+        "context": 5,
+        "generation": 1,
+        "decode_identity": 408,
+        "operation": 104,
+        "physical_parity": "top",
+        "source_is_field": false,
+        "source_storage_view": [
+          114,
+          1
+        ],
+        "target_storage_view": [
+          110,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-6-source.nv12",
+        "target_file": "vpp-payload-1214009-2-6-target.nv12"
+      },
+      {
+        "fixture": "bff",
+        "source_ordinal": 4,
+        "source_token": 400000,
+        "context": 5,
+        "generation": 1,
+        "decode_identity": 408,
+        "operation": 103,
+        "physical_parity": "bottom",
+        "source_is_field": false,
+        "source_storage_view": [
+          114,
+          1
+        ],
+        "target_storage_view": [
+          109,
+          1
+        ],
+        "source_file": "vpp-payload-1214009-2-7-source.nv12",
+        "target_file": "vpp-payload-1214009-2-7-target.nv12"
+      }
+    ]
+  },
+  "publication": {
+    "kind": "selected-decoder-context-retirement",
+    "after_driver_unlock": true,
+    "all_slots_frozen": true,
+    "retirements": [
+      {
+        "stream_index": 0,
+        "context": 2,
+        "generation": 1,
+        "status": 0
+      },
+      {
+        "stream_index": 1,
+        "context": 5,
+        "generation": 1,
+        "status": 0
+      }
+    ],
+    "context_destroy_trace_sequences": [
+      1323,
+      2697
+    ],
+    "trace_prefix_records": 2760,
+    "driver_destruction": "NOT_RUN",
+    "storage_view_identity": "OWN Surface serial/storage epoch only; not globally unique DMA-BUF identity"
+  },
+  "end_state": {
+    "application_exit": 0,
+    "natural_eof_both_sources": true,
+    "boundary_equal": true,
+    "kernel_check_exit": 0,
+    "live_media_handoff": null,
+    "errors": []
+  },
+  "not_run": [
+    "Source/output PTS correspondence",
+    "All100 fields per fixture pixel census",
+    "Chronological field presentation",
+    "GPU import/fence/external-owner retirement",
+    "Physical scanout/displayed pixels",
+    "Physical A/V synchronization",
+    "Performance or universal losslessness",
+    "Atom/BCM70012"
+  ],
+  "preserved_failed_cases": [
+    "stock-bob-payload-01",
+    "stock-bob-payload-02"
+  ],
+  "frozen_plan_sha256": "40beee3ab7c29b13ee35e5540253311013a77e7e67b88053a855ffe646a4f8d8",
+  "artifacts": {
+    "stock-bob-payload-03/result.json": "24e79136c88bfae5b710b1897544663b8dccb4d89394f8c041851e12b1ce5eed",
+    "stock-bob-payload-03/kodi.stdout": "bd13a24fbb4a4ebc843d0a302bab98c6bf60e754a3e46a50123bc4f937a6f97b",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2.json": "4f25854164f980fd22454203a152684fd3d9f14eb34c588d29d1bb87a21dbcaf",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-0-source.nv12": "f61cc3c6d3593f20e174ff226229f1d42a2931deca510cbbe1f3260b0db17616",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-0-target.nv12": "9f4bca4fa737f9d24a15a8f303340796b5c1f4d806ee20b69c5f0c4aa9dd0836",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-1-source.nv12": "f61cc3c6d3593f20e174ff226229f1d42a2931deca510cbbe1f3260b0db17616",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-1-target.nv12": "e87994b6adc255c513062b649fa0269f5d09d534f782f9c898f58ed0da179f6d",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-2-source.nv12": "092952f0c12b70b9d89123f8fd4bd0942bd30f293ba2a300a7b9461b95c687f9",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-2-target.nv12": "682335739beae579afecae759d4711abe2138d8e67a47ff3b1f3c39fd4181d64",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-3-source.nv12": "092952f0c12b70b9d89123f8fd4bd0942bd30f293ba2a300a7b9461b95c687f9",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-3-target.nv12": "78ac7069020a7deec21b7c0d720bb93038735d42871f2080d3b52b8716c9544f",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-4-source.nv12": "dbbd862d8eb7ef9e6a722beefa460eed1e122f063157fe08fb5f46dbb4ffd64e",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-4-target.nv12": "32f6b094e91ec487620e34153a60bf2d2d1ce36ed3bed49a6706347a8fee52a3",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-5-source.nv12": "dbbd862d8eb7ef9e6a722beefa460eed1e122f063157fe08fb5f46dbb4ffd64e",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-5-target.nv12": "7ca10c94f56d60a3b840ff1731637d28506123041b7c3dac58efb1c012eab09c",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-6-source.nv12": "c442af15d9f54820fe08ac2354bc6f06af5b87fe677022b3af42ffaedca23e7c",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-6-target.nv12": "3ffab122b0966f5c9bf51c65e6b1de762eac423774e670dc625db6bc59021f26",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-7-source.nv12": "c442af15d9f54820fe08ac2354bc6f06af5b87fe677022b3af42ffaedca23e7c",
+    "stock-bob-payload-03/payload/vpp-payload-1214009-2-7-target.nv12": "cc94a640501fac19ea4063da9f043881cdb5eba46ed997160ccf16acf52ec220",
+    "stock-bob-payload-03-independent-replay.json": "fda2ce56ec246e9a10ffc7ee98c96da6697ec0bd57ddbb936d93348b286acd5e",
+    "vpp-padded-observer-build-check.log": "96239f5ab7a9108a9bdc7bf2dd20ee3c6bb5d53ac6928704b8576787a06d165d"
+  }
+}

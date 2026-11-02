@@ -1,0 +1,166 @@
+{
+  "actual_live": {
+    "XCB_event_and_holder_FDs_closed": true,
+    "all_children_closed": true,
+    "allocated_freed_images_per_cycle": [
+      6,
+      6
+    ],
+    "boundary_equal": true,
+    "exact_busy_error": "sink output / GST_RESOURCE_ERROR_OPEN_READ_WRITE / No free UYVY XVideo port",
+    "exact_port_regrabbable_after_each_NULL": true,
+    "failed_attempt_bus": "NULL confirmed; recorded exactly one same-sink CORE/STATE_CHANGE fallback, debug gst_base_sink_change_state/Failed to start; queue empty before any new PLAYING; unexpected errors reject",
+    "final_own_context_and_SysV_SHM": 0,
+    "final_pins_equal": true,
+    "kernel_exit": 0,
+    "live_resource_handoff": null,
+    "only_owned_successful_grabs_released": true,
+    "owned_free_compatible_ports": 16,
+    "peak_temp_mC": 49000,
+    "pending_retained_quarantine_or_terminal_failures": 0,
+    "poll_samples_without_decoder_nodes": 2,
+    "preexisting_busy_external_ports": 0,
+    "released_port": 95,
+    "same_pipeline_EOS_reopen_cycles": 2,
+    "stdout": "TAP version 14\n# random seed: R02Sa362ed178680b83fb13a7914399a71f3\n# Start of xv tests\n# Start of x11 tests\n# private holder owns16 free UYVY ports; left0 already-grabbed ports untouched\n# failed-start queued error source=output domain=gst-core-error-quark code=4 message=GStreamer error: state change failed and some element failed to post a proper error message with the reason for the failure. debug=../libs/gst/base/gstbasesink.c(5902): gst_base_sink_change_state (): /GstPipeline:pipeline0/GstCrystalHdXv:output:\n# Failed to start\n# failed-start bus: recorded-messages=1 expected-state-errors=1 empty=yes\n# port=95 video=12 submit/ACK=12/12 allocated/freed=6/6\n# port=95 video=12 submit/ACK=12/12 allocated/freed=6/6\nok 1 /xv/x11/port-contention-reopen\n# slow test /xv/x11/port-contention-reopen executed in 0.68 secs\n# End of x11 tests\n# End of xv tests\n1..1\n",
+    "submit_ACK_per_cycle": [
+      12,
+      12
+    ],
+    "video_submitted_per_cycle": 12
+  },
+  "date": "2026-10-31",
+  "failure_interpretation": "New harness consumed the expected RESOURCE error but carried a second failed-start BaseSink state error into a new PLAYING generation. Diagnostic run02 proves its source/domain/debug; corrected test records/classifies it after settledNULL and before releasing a port. Production transport and external sources remain unchanged.",
+  "limits": [
+    "One host/two finite cycles, not broad contention/stress or system X-server interruption.",
+    "No external already-grabbed ports were present; code leaves unsuccessful grabs untouched.",
+    "No calibrated A/V or physical display acceptance is implied by generated video without audio.",
+    "This closes one bounded #513 work item, not the whole issue."
+  ],
+  "other_checks": {
+    "optout": {
+      "argv": [
+        "/home/mache/.cache/crystalhd-xv-port-contention-20261031/filters/gst/xv-output/gst-xv-output-test",
+        "-p",
+        "/xv/x11/port-contention-reopen"
+      ],
+      "exit": 0,
+      "tail": "TAP version 14\n# random seed: R02Sb88f1b6282b2ecb320c73e7acbc440cd\n# Start of xv tests\n# Start of x11 tests\nok 1 /xv/x11/port-contention-reopen # SKIP Set CRYSTALHD_TEST_X11=1 with an available local Xv display\n# End of x11 tests\n# End of xv tests\n1..1\n"
+    },
+    "ordinary": {
+      "argv": [
+        "make",
+        "-C",
+        "/home/mache/.cache/crystalhd-xv-port-contention-20261031/filters/gst/xv-output",
+        "check"
+      ],
+      "exit": 0,
+      "tail": "make: Entering directory '/home/mache/.cache/crystalhd-xv-port-contention-20261031/filters/gst/xv-output'\n./gst-xv-output-test -p /xv/identity\nTAP version 14\n# random seed: R02S1b34fd12f35d539ac0948e86fa775674\n# Start of xv tests\nok 1 /xv/identity\n# End of xv tests\n1..1\n./gst-xv-output-test -p /xv/setup-failure\nTAP version 14\n# random seed: R02S315a90cca46b1f0a249b9903f7ab9211\n# Start of xv tests\nok 1 /xv/setup-failure\n# End of xv tests\n1..1\n./gst-xv-output-test -p /xv/color-admission\nTAP version 14\n# random seed: R02Sc41bce0f521645791ffa20e9017d3803\n# Start of xv tests\nok 1 /xv/color-admission\n# End of xv tests\n1..1\n./gst-xv-output-test -p /xv/unspecified-color-pixels\nTAP version 14\n# random seed: R02Sdcb4b8780fe7414e773f350e04844ec8\n# Start of xv tests\nok 1 /xv/unspecified-color-pixels\n# End of xv tests\n1..1\nmake: Leaving directory '/home/mache/.cache/crystalhd-xv-port-contention-20261031/filters/gst/xv-output'\n"
+    }
+  },
+  "preserved_failures": [
+    {
+      "boundary_equal": true,
+      "case": "live-01",
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "reason": "nonzero command: port-contention",
+      "status": "FAIL_PRESERVE_FIRST_ATTEMPT",
+      "stdout": "TAP version 14\n# random seed: R02S57766a3eb18346cf7716b7871480bae6\n# Start of xv tests\n# Start of x11 tests\n# private holder owns16 free UYVY ports; left0 already-grabbed ports untouched\n# port=95 video=0 submit/ACK=0/0 allocated/freed=0/0\n# port-contention failure: finite reopened pipeline did not reach natural EOS\nnot ok 1 /xv/x11/port-contention-reopen\nBail out!\n"
+    },
+    {
+      "boundary_equal": true,
+      "case": "live-02",
+      "kernel_exit": 0,
+      "live_resource_handoff": null,
+      "reason": "nonzero command: port-contention",
+      "status": "FAIL_PRESERVE_FIRST_ATTEMPT",
+      "stdout": "TAP version 14\n# random seed: R02S6a81195a60fa2a93a2bf24099bd71c1a\n# Start of xv tests\n# Start of x11 tests\n# private holder owns16 free UYVY ports; left0 already-grabbed ports untouched\n# reopen bus error source=output domain=gst-core-error-quark code=4 message=GStreamer error: state change failed and some element failed to post a proper error message with the reason for the failure. debug=../libs/gst/base/gstbasesink.c(5902): gst_base_sink_change_state (): /GstPipeline:pipeline0/GstCrystalHdXv:output:\n# Failed to start\n# port=95 video=0 submit/ACK=0/0 allocated/freed=0/0\n# port-contention failure: finite reopened pipeline did not reach natural EOS\nnot ok 1 /xv/x11/port-contention-reopen\nBail out!\n"
+    }
+  ],
+  "production_unchanged": {
+    "base": "8b4640c7285653b0f31c190de8f65c41c61c13ce",
+    "new_runtime_default_or_policy": false,
+    "no_DIL_link": true,
+    "source": {
+      "artifact": "filters/gst/xv-output/gstcrystalhdxv.c",
+      "bytes": 51053,
+      "sha256": "35932865af01b74064d0e53698f79eb115a9877ad8fdd876b3737d868359f1cf"
+    }
+  },
+  "retained_artifacts": [
+    {
+      "artifact": "live-01/report.json",
+      "bytes": 9072,
+      "sha256": "f891562270283948142ad149a667102cc2dffcb9472310f52e6b28cc1a357cf6"
+    },
+    {
+      "artifact": "live-01/port-contention.stdout",
+      "bytes": 368,
+      "sha256": "2a5de1375e3826e389d24107fdbeb97b0eb8d5a52d03d408439fbeba8bf00417"
+    },
+    {
+      "artifact": "live-02/report.json",
+      "bytes": 8243,
+      "sha256": "ee86b41f9e432b54c5ff302e8e68a4e0dde7fcf687e1f46a42047e525d80bc27"
+    },
+    {
+      "artifact": "live-02/port-contention.stdout",
+      "bytes": 708,
+      "sha256": "357ab4b001d6368458fa5b9672abfcb30c1a7da6539b17f8b9b48f48455e6f81"
+    },
+    {
+      "artifact": "live-03/report.json",
+      "bytes": 8926,
+      "sha256": "62ebf808fd0117606fce1a4f99e5d293c44e0d670e6eef99d7e035b83599c91a"
+    },
+    {
+      "artifact": "live-03/port-contention.stdout",
+      "bytes": 865,
+      "sha256": "c18988d0d993febd60002330401497c4c80eba68914966f88862deb4a9a6f305"
+    },
+    {
+      "artifact": "live-03/port-contention.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "build-01/report.json",
+      "bytes": 292,
+      "sha256": "5a5dabbfc1d4ac1f91120080e56bc8c9f3cf8f981ffb34fd9fc7a65d8c1b1fc0"
+    },
+    {
+      "artifact": "build-02/report.json",
+      "bytes": 281,
+      "sha256": "494b019880c69e474b05125ccb075a8481bde001b589a708098b5eb314f2b220"
+    },
+    {
+      "artifact": "build-03/report.json",
+      "bytes": 281,
+      "sha256": "9924665110cca837655bc6704efe213b61d0e233fbd7b7c7123bc526732697c6"
+    },
+    {
+      "artifact": "checks-03/report.json",
+      "bytes": 1649,
+      "sha256": "3fd2dbdd5876d44aaf97389eb79a8c13b3a39fb0553ed007c62075ce87426eb5"
+    },
+    {
+      "artifact": "run-live.py",
+      "bytes": 4361,
+      "sha256": "a543f8202b72716ea7365c65015d5e74b2fe447455c6198962b6a6bc2dac42c3"
+    },
+    {
+      "artifact": "run-live-02.py",
+      "bytes": 4361,
+      "sha256": "6ba1ac1bf88e017060ce5ae072625b9c21e71ce1b427402268d0f349b6875c87"
+    },
+    {
+      "artifact": "run-live-03.py",
+      "bytes": 4361,
+      "sha256": "e5824f222da724122b402330dc05f14bf78e2d526b7c50eaae02a4a9c44b1faf"
+    }
+  ],
+  "schema": "crystalhd.issue513.xv-port-contention.v1",
+  "scope": "Decoder-free port admission/lifecycle on one Intel965/X11 host, generated320x240 UYVY50fps; no decoder input, audio, broad endurance or physical scanout qualification",
+  "status": "PASS_DECODER_FREE_LIVE_PORT_CONTENTION_REOPEN"
+}

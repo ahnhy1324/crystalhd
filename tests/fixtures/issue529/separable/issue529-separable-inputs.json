@@ -1,0 +1,64 @@
+{
+  "schema": "crystalhd.issue529.fixed-separable-inputs.v1",
+  "status": "PREREGISTERED_SOURCE_ONLY_NOT_EXECUTED_BY_AUTHOR",
+  "horizontal_rule": "normalized float64 Lanczos3 at j-0.25; six integer source taps with |distance|<3; clamp each tap index; floor(value+0.5) then clip0..255",
+  "vertical_rule": "q=y//2; adjacent=clamp(q-1) for even y else clamp(q+1); value=(3*source[q,x]+source[adjacent,x]+2)//4",
+  "orders": ["H8_then_V8", "V8_then_H8"],
+  "axis_helper": {
+    "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-axis-topology.py",
+    "bytes": 21736,
+    "sha256": "cfb9fc9c453771f3b463a8af5505f524469fa4273d6a8387cef2518f98a2ac6c"
+  },
+  "vertical_helper": {
+    "path": "/home/mache/.cache/crystalhd-remaining-run-20261031/issue529-vertical31-model.py",
+    "bytes": 18671,
+    "sha256": "c82ea8c4b26b21a553e6daeaf3962b2d1bf034f764e5d9e6dd3c64cf16f56b34"
+  },
+  "cases": [
+    {
+      "fixture": "horizontal30",
+      "width": 352,
+      "height": 288,
+      "frames": 30,
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-card.yuy2",
+        "bytes": 6082560,
+        "sha256": "43cccc91ca563438099e3cace5f85ce07ecc7403c0a581cab9431e39e69659f5"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/horizontal-sw.yuv420",
+        "bytes": 4561920,
+        "sha256": "ad92fdbf6ba95e5abf5f0966d17dea209ed5af24f48e46bd96677d77530b0980"
+      }
+    },
+    {
+      "fixture": "checker90",
+      "width": 352,
+      "height": 288,
+      "frames": 90,
+      "native": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-card.yuy2",
+        "bytes": 18247680,
+        "sha256": "be2038ece6a8a3cabd5d008639ee590ca5bfee24eacb92273c918a36b3cd0763"
+      },
+      "planar": {
+        "path": "/home/mache/.cache/crystalhd-mpeg1-pixels.puxZgI/checker-sw.yuv420",
+        "bytes": 13685760,
+        "sha256": "ef67756b670d1dd577fbf371baa08aed5c55ee488149e9325e77d110a9311741"
+      }
+    }
+  ],
+  "interpretation": {
+    "preregistered_before_any_new_full_model_result": true,
+    "both_orders_must_be_retained_without_selection": true,
+    "horizontal_coordinate_units": "decoded420 chroma-grid samples; j-0.25 is an explicit mathematical phase hypothesis",
+    "kernel": "sinc(x)*sinc(x/3) for |x|<3; six phase-fixed taps normalized before index clamping",
+    "intermediate_quantization": "round half-up then clip8 after BOTH stages; no retained high-precision intermediate",
+    "quality_pass_claim": false,
+    "project_local_target_unchanged": 3,
+    "original_fixed_Lanczos_checker22_failure": "PRESERVED",
+    "no_actual_hardware_coefficient_or_rounding_order_proof": true,
+    "no_filter_fit_or_threshold_change": true,
+    "no_foreign_converter_or_hardware_or_generated_pixel_file": true
+  }
+}

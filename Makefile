@@ -28,7 +28,7 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring tx-concurrency flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
@@ -81,10 +81,12 @@ library-check:
 			input-format) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
+			tx-concurrency) test_wrap=-Wl,--wrap=pthread_mutex_lock,--wrap=open,--wrap=openat,--wrap=ioctl; \
+				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=DtsFinishOutputCall,--wrap=DtsPublishOutput"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsCommitFetchedOutput,--wrap=DtsPublishCopiedOutput" ;; \
-			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_unlock; \
+			tx-flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_unlock; \
 				test_wrap="$$test_wrap -Wl,--wrap=_Z14DtsCacheSpsPpsPvPKhj"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsFlushRxCapture"; \
@@ -108,6 +110,16 @@ library-check:
 
 gstreamer: library
 	$(MAKE) -C filters/gst/gst-plugin-1.0
+
+# Fresh CPU-only production-function binaries. No normal library outputs or
+# CPU-mode stamp are dependencies; legacy sanitizer coverage is not claimed.
+.PHONY: library-check-sanitized
+library-check-sanitized:
+	CXX=$(call crystalhd_quote,$(CXX)) CPPFLAGS=$(call crystalhd_quote,$(CPPFLAGS)) \
+		CXXFLAGS=$(call crystalhd_quote,$(CXXFLAGS)) LDFLAGS=$(call crystalhd_quote,$(LDFLAGS)) \
+		CRYSTALHD_LIBRARY_SANITIZER_CPU_FLAGS=$(call crystalhd_quote,$(CRYSTALHD_CPU_FLAGS)) \
+		CRYSTALHD_LIBRARY_SANITIZER_LEGACY=$(call crystalhd_quote,$(LEGACY_CPU)) \
+		$(PYTHON3) -B tests/library-selected-sanitizer.py
 
 raw-frame-check:
 	CC="$(CC)" CXX="$(CXX)" sh ./tests/library-raw-frame.sh
@@ -150,6 +162,21 @@ settings-ui-check:
 	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
 	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
+.PHONY: kodi-settings-check kodi-settings-package candidate-package-check package-candidate
+kodi-settings-check:
+	$(PYTHON3) -B tests/kodi-settings.test.py
+
+candidate-package-check:
+	$(PYTHON3) -B tests/package-candidate.test.py
+
+kodi-settings-package:
+	$(PYTHON3) -B scripts/package-kodi-settings.py --output "$(KODI_PACKAGE)"
+
+# Local review artifacts only. The exact HEAD must be committed; no tag, upload,
+# installation, master merge or native-backend promotion is performed.
+package-candidate:
+	$(PYTHON3) -B scripts/package-candidate.py --output-dir "$(PACKAGE_DIR)"
+
 .PHONY: runtime-install-check
 runtime-install-check:
 	$(PYTHON3) -B tests/runtime-install.test.py
@@ -167,6 +194,13 @@ native-picture-check:
 	$(PYTHON3) -B tests/native-picture-oracle.test.py
 	$(PYTHON3) -B tests/native-picture-fixture.test.py
 	CC="$(CC)" $(PYTHON3) -B tests/native-color-negotiation.py
+
+# Optional developer check; NumPy is not an installed product dependency.
+# Runs fixed synthetic controls only, without media or reference manifests.
+.PHONY: mpeg1-reference-model-check
+mpeg1-reference-model-check:
+	$(PYTHON3) -B tests/mpeg1-reference-models.test.py
+	$(PYTHON3) -B tests/mpeg1-natural-audit.test.py
 
 uapi-check:
 	sh ./tests/uapi-abi.sh
@@ -210,6 +244,10 @@ fw-probe-tool:
 
 tx-release-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-release.sh
+
+.PHONY: tx-wrap-check
+tx-wrap-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-wrap.sh
 
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
@@ -257,6 +295,19 @@ flea-power-check:
 device-lifetime-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/device-lifetime.sh
 
+.PHONY: v4l2-node-check v4l2-buffers-check v4l2-decoder-check v4l2-output-check
+v4l2-buffers-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-buffers.sh
+
+v4l2-decoder-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-decoder.sh
+
+v4l2-output-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-output.sh
+
+v4l2-node-check: v4l2-buffers-check v4l2-decoder-check v4l2-output-check
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-node.sh
+
 v4l2-parent-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-parent.sh
 
@@ -266,7 +317,7 @@ ioctl-dispatch-check:
 rx-output-receipts-check:
 	CXX="$(CXX)" sh ./tests/rx-output-receipts.sh
 
-architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check tx-release-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-command-observer-check fw-download-check fw-staging-check fw-probe-check tx-admission-check tx-release-check tx-wrap-check h264-stream-check rx-ownership-check rx-pages-check rx-receipt-check rx-output-receipts-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
@@ -292,7 +343,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracl
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
-check: runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
+check: kodi-settings-check candidate-package-check runtime-preflight-check runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check runtime-install-check kodi-compat-check ffmpeg-compat-check native-picture-check configuration-check uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check h264-au-admission-check mpeg2-inspect-check vc1-seek-oracle-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
@@ -374,7 +425,50 @@ install-config: install-provenance
 			"$$helper_relative"
 
 # Optional desktop frontend; native runtime/CLI installation stays headless.
-install-settings: install-config
+# The static UTF-8 header keeps extraction reproducible without generated dates.
+XGETTEXT ?= xgettext
+MSGFMT ?= msgfmt
+SETTINGS_LOCALES := $(shell sed '/^\#/d' po/LINGUAS)
+SETTINGS_POT_EXTRACT = $(XGETTEXT) --language=Python --from-code=UTF-8 \
+	--keyword=_ --no-location \
+	--add-comments=Translators:
+
+.PHONY: settings-pot settings-l10n-check install-settings-locales uninstall-settings-locales
+settings-pot:
+	@set -eu; settings_messages=$$(mktemp); \
+		trap 'rm -f "$$settings_messages"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_messages"; } > po/crystalhd-settings.pot
+
+settings-l10n-check:
+	@set -eu; settings_check=$$(mktemp -d); \
+		trap 'rm -rf "$$settings_check"' EXIT HUP INT TERM; \
+		$(SETTINGS_POT_EXTRACT) --output="$$settings_check/messages" scripts/crystalhd-settings.py; \
+		{ cat po/settings-header.pot; printf '\n'; sed '1,/^$$/d' "$$settings_check/messages"; } > "$$settings_check/template"; \
+		cmp po/crystalhd-settings.pot "$$settings_check/template" || \
+			{ printf '%s\n' 'Settings catalogue template is stale; run make settings-pot.' >&2; exit 1; }; \
+		$(PYTHON3) -B scripts/check-settings-messages.py; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --use-fuzzy \
+				--output-file=/dev/null "po/$$locale.po"; \
+		done
+
+install-settings-locales:
+	@set -eu; umask 022; settings_mo=$$(mktemp); \
+		trap 'rm -f "$$settings_mo"' EXIT HUP INT TERM; \
+		for locale in $(SETTINGS_LOCALES); do \
+			$(MSGFMT) --check --check-accelerators=_ --output-file="$$settings_mo" "po/$$locale.po"; \
+			install -D -m 0644 "$$settings_mo" \
+				"$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		done
+
+uninstall-settings-locales:
+	@set -eu; for locale in $(SETTINGS_LOCALES); do \
+		file="$(DESTDIR)$(DATADIR)/locale/$$locale/LC_MESSAGES/crystalhd-settings.mo"; \
+		if [ -e "$$file" ] || [ -L "$$file" ]; then rm -- "$$file"; fi; \
+		done
+
+install-settings: install-config install-settings-locales
 	@set -eu; umask 022; \
 		install -D -m 0755 scripts/crystalhd-settings.py \
 			"$(DESTDIR)$(BINDIR)/crystalhd-settings"; \
@@ -393,7 +487,7 @@ install-settings: install-config
 			done; \
 		done
 
-uninstall-settings:
+uninstall-settings: uninstall-settings-locales
 	@set -eu; for file in \
 		"$(DESTDIR)$(BINDIR)/crystalhd-settings" \
 		"$(DESTDIR)$(DATADIR)/applications/crystalhd-settings.desktop"; do \
@@ -444,3 +538,22 @@ clean:
 	$(MAKE) -C examples clean
 
 include cpu.mk
+
+# Inspect immutable package/rootfs fixtures without loading target executables.
+.PHONY: runtime-preflight-check
+runtime-preflight-check:
+	$(PYTHON3) -B tests/native-runtime-preflight.test.py
+
+# Private package file transactions and trusted-package metadata, device-free.
+.PHONY: runtime-slots-check runtime-host-preflight-check runtime-materials-check kodi-package-check
+runtime-slots-check:
+	$(PYTHON3) -B tests/native-runtime-slots.test.py
+
+runtime-host-preflight-check:
+	$(PYTHON3) -B tests/native-runtime-host-preflight.test.py
+
+runtime-materials-check:
+	$(PYTHON3) -B tests/native-runtime-materials.test.py
+
+kodi-package-check:
+	$(MAKE) -C tools/kodi-route-probe check CC="$(CC)" PYTHON3="$(PYTHON3)"
