@@ -7,7 +7,8 @@ negotiated pool. It does not replace GStreamer's installed plugins or change
 the output plugin itself works without a CrystalHD card.
 
 Build with the GStreamer video development package and `xcb`, `xcb-shm`,
-`xcb-xv` development packages available to `pkg-config`. From the source root:
+`xcb-xv`, `xau` and `xdmcp` development packages available to `pkg-config`.
+From the source root:
 
 ```sh
 make -C filters/gst/xv-output
@@ -126,6 +127,32 @@ Without explicit X11 opt-in/local Xv availability the case truthfully skips.
 The [receipt](../../../tests/fixtures/issue513/xv-port-contention-20261031.json)
 retains the two original harness FAILs, diagnostic and corrected outcome.
 System X-server interruption and broader stress remain separate acceptance.
+
+Local socket connection and XCB protocol setup now share a one-second
+deadline. Previously, an accepted connection with no setup reply could block
+inside `xcb_connect()` before the existing reply deadlines applied. The own
+connector uses nonblocking Unix connection attempts and the normal local
+Xauthority selection, including MIT cookie and XDM authorization. A joined
+watchdog shuts down a duplicate of only that connection's socket; no blocked
+setup worker is abandoned. Caller signal masks and any already-pending
+SIGPIPE are preserved across a deadline/write race. Xauthority filesystem I/O
+is ordinary local file lookup and is not interrupted by this network deadline.
+
+The [startup receipt](../../../tests/fixtures/issue513/xv-setup-deadline-20261103.json)
+retains a direct production-code before/after control: the old connection
+still waits after three seconds, while the corrected call returns a setup
+timeout after about one second, before the owned peer closes. Peer credentials
+identify the exact caller process. The initial gst-launch attempt instead
+blocked before the own plugin was loaded and is excluded from attribution.
+
+`make -C filters/gst/xv-output check` also runs six isolated setup exchanges:
+no authority/MIT/XDM, each with an absent or partial reply, normal and `unix/`
+display spelling and explicit screen selection. Private known test credentials,
+FD/context retirement and caller signal state are checked without contacting
+the user's display. The explicit X11 suite adds timeout then normal display/
+EOS/restart in one process; all18 groups pass ordinary and ASan/UBSan/leaks
+on the current965GM host. This does not qualify restarting the system X server,
+card decoding, A/V or physical presentation. Original failures remain retained.
 
 The decoder-free `/xv/x11/live-port-handoff` control requires two currently
 free compatible ports and owns its pixel-test window. It covers busy/missing

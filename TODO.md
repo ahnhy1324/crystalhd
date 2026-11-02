@@ -70,6 +70,12 @@ shelve the work or silently exclude implemented features.
    rejection, dormant pools and stop cancellation. See the
    [receipt](tests/fixtures/issue513/xv-live-port-20261102.json).
    X-server interruption and matched endurance/attribution remain active research.
+   Own local X11 connection/setup now has a one-second network deadline,
+   preserving local MIT/XDM authorization and caller signal state. Six owned
+   no/partial-reply controls and all18 actual-X11 regression groups pass
+   ordinary/sanitized, including same-process timeout then display/EOS/restart.
+   See the [startup receipt](tests/fixtures/issue513/xv-setup-deadline-20261103.json).
+   This does not establish system-server restart or interrupt filesystem I/O.
 3. #538: SPS prefix #624 is merged. The admission-binding follow-up now
    observes PPS/SPS/single-first-slice prefixes, snapshots range/SPS generation
    per token and returns the matching observation to private CAPTURE storage.

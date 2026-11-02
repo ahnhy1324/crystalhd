@@ -1,0 +1,254 @@
+{
+  "actual_X11": {
+    "native": {
+      "baseline_equal": true,
+      "groups": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine"
+      ],
+      "maximum_temperature_mC": 54000,
+      "probe_sha256": "1d8187e15b02b1ca47c2c4147681ba7365792049756b76cf9716f0a92cbd382f",
+      "seconds": 15.335336619988084,
+      "status": "PASS_XV_X11_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "7b64cb037a714761712ab89fcc019a046aeec849dd4d8ca1c59dd7de55170352"
+    },
+    "san": {
+      "baseline_equal": true,
+      "groups": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine"
+      ],
+      "maximum_temperature_mC": 53000,
+      "probe_sha256": "cbd4f652977e822cd87cbaa95375ce5bceca1db247b5543b108a025796d4cda5",
+      "seconds": 15.76043010794092,
+      "status": "PASS_XV_ASAN_UBSAN_LSAN_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "9a097044ee1e7d0c828fbd1832c386d3c483d9f99605c7cb7cda9bb1601bb5ea"
+    }
+  },
+  "boundary": {
+    "card_opens": 0,
+    "installed_leaves": 36,
+    "installed_runtime_verify": true,
+    "kernel_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel_suspicious_rows": 0,
+    "maximum_temperature_mC": 54000,
+    "module_swaps": 0,
+    "system_X_server_interruptions": 0
+  },
+  "date": "2026-11-03",
+  "dependencies": {
+    "pkg_config": [
+      "gstreamer-video-1.0",
+      "xcb",
+      "xcb-shm",
+      "xcb-xv",
+      "xau",
+      "xdmcp"
+    ],
+    "runtime": "libXau/libXdmcp were already libxcb dependencies on the current host; now explicit build/link inputs.",
+    "source_archive": "Both new private headers are tracked and present in git archive; frozen published artifacts are unchanged."
+  },
+  "device_free": {
+    "EPIPE": "Synthetic forced write on own closed socketpair, both with and without prior pending SIGPIPE. Validates signal state; not evidence the real scheduling race occurred.",
+    "authority": "Known private test file validates actual wire MIT cookie bytes and independently unwraps XDM identifier/PID/time/padding/nonce. No user credential is recorded.",
+    "exchanges": {
+      "native": {
+        "cases": [
+          {
+            "elapsed_us": 1000619,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "no-authority",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1000285,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "no-authority",
+            "partial_reply": true,
+            "unix_spelling": true
+          },
+          {
+            "elapsed_us": 1000507,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "MIT-MAGIC-COOKIE-1",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1000295,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "MIT-MAGIC-COOKIE-1",
+            "partial_reply": true,
+            "unix_spelling": true
+          },
+          {
+            "elapsed_us": 1000501,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "XDM-AUTHORIZATION-1",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1000346,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "XDM-AUTHORIZATION-1",
+            "partial_reply": true,
+            "unix_spelling": true
+          }
+        ],
+        "log_sha256": "6166afa7a0658fa05e580bd029ddf6aad46735304eb545225a9231091c08f1bb"
+      },
+      "sanitized": {
+        "cases": [
+          {
+            "elapsed_us": 1001593,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "no-authority",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1000805,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "no-authority",
+            "partial_reply": true,
+            "unix_spelling": true
+          },
+          {
+            "elapsed_us": 1001045,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "MIT-MAGIC-COOKIE-1",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1001222,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "MIT-MAGIC-COOKIE-1",
+            "partial_reply": true,
+            "unix_spelling": true
+          },
+          {
+            "elapsed_us": 1001653,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "XDM-AUTHORIZATION-1",
+            "partial_reply": false,
+            "unix_spelling": false
+          },
+          {
+            "elapsed_us": 1001092,
+            "fd_delta": 0,
+            "live_contexts": 0,
+            "method": "XDM-AUTHORIZATION-1",
+            "partial_reply": true,
+            "unix_spelling": true
+          }
+        ],
+        "log_sha256": "69bee39796d59627c1d23b0bec8f715ee74bb527ed6b85bbf9b0dd509db2b4c4"
+      }
+    },
+    "native_groups": 5,
+    "other_sanitized_log_sha256": "880e7660ef78c4f34b3a5ab909d3c516b6925a90efbeebc700ebca8baffc313a",
+    "sanitized_groups": 5,
+    "screen_selection": "Explicit screen2, :N.2 and unix/:N.2 checked before failed setup."
+  },
+  "implementation": {
+    "authentication": "Normal local hostname/display Xauthority selection via public Xau APIs, XDM then MIT preference. XDM per-connection wire values use a separate high counter range and refuse wrap. Never log real credentials.",
+    "setup": "Public xcb_connect_to_fd in caller; watchdog on a duplicate of exactly that socket uses shutdown at deadline and is always joined. XCB retains original FD ownership on success/error.",
+    "signals": "Thread-local SIGPIPE block/drain of only a newly pending signal around setup write; restore original mask and preserve any prior pending SIGPIPE; no process-global handler.",
+    "transport": "Owned nonblocking Unix sockets, abstract then filesystem fallback, one monotonic deadline; preserve display number/screen parsing."
+  },
+  "limits": [
+    "Deadline covers local socket connection and XCB protocol setup waits. Ordinary Xauthority filesystem I/O is not forcibly interrupted; no universal wall-clock bound on all startup/file I/O is claimed.",
+    "Public native/sanitized six-case controls use owned local peers. They do not restart or interrupt the user/system X server.",
+    "Normal current965GM X11/18-group regression includes timeout then successful display/EOS/restart in one process, existing held-ACK/port/window/quarantine paths. No card decoding, A/V, physical scanout, broader XDM-server or independent OS acceptance is added.",
+    "System X-server interruption/restart, broader formats/rates, matched attribution and endurance remain open in513.",
+    "External Kodi/FFmpeg/GStreamer/kernel-core/firmware sources/binaries and installed defaults are unchanged. Issue538 stays OPEN with its exact original heap-only exclusion/reason; stable1.3 stays deferred."
+  ],
+  "problem": "Own open_locked used blocking xcb_connect before existing reply deadlines, so an accepted local connection with no setup response could wait without bound.",
+  "reproduction": {
+    "after": {
+      "accepted_seconds": 0.006104981992393732,
+      "error": "X11 connection setup timed out",
+      "harness_sha256": "0788030ef24bd36d9ad6d9745322d75198d3a65567edc418f71909d9e3a2af2b",
+      "peer_pid_verified": true,
+      "retired_before_owned_peer_close": true,
+      "setup_wait_seconds": 1.0172561790095642,
+      "status": "PASS_BOUNDED_STARTUP_FAILURE",
+      "stderr_sha256": "77b307c0f17429e7177457d4be6072af766c331cdb447ce7e3a23a1e70d81fd7",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "before": {
+      "accepted_seconds": 0.00596313108690083,
+      "harness_sha256": "11aa988ab8a5eb840520a3139d1c833289622ea2696e8d1415203fb6bd042a1c",
+      "peer_pid_verified": true,
+      "retired_only_after_owned_peer_close": true,
+      "status": "REPRODUCED_STARTUP_STALL",
+      "stderr_sha256": "f350e48a18faf813286d5a01fee4a5d53b168026cb6e804ec07809eea9c9b2f7",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "still_waiting_after_seconds": 3
+    },
+    "original_gst_launch_attempt": {
+      "diagnostic_sha256": "d9074f96f05edd1c7172a349ee03cb22ca0b3cb18784e0fe245fdb0d095706e2",
+      "initial_after_result_sha256": "e2400d7f6efe823368687d73aef4403a7e6970330c4f626cb1beef4f59e0e5f5",
+      "original_before_result_sha256": "ab6dd6c4d9258fd80fc2c28a26c827a99930461a4fc16d65debc61a23035ee88",
+      "reason": "Fresh-registry run stalled before the own Xv plugin was mapped; the observed parent had no own-plugin mapping or setup watchdog. The direct production-code controls replace it, not an external-code patch.",
+      "verdict": "INVALID_OWN_PLUGIN_ATTRIBUTION"
+    }
+  },
+  "source": "8697a741cddf8cac06f63bf8d72c0ab06f12b935",
+  "source_files": {
+    "filters/gst/xv-output/Makefile": "ac76aebe49c321fe2ac4ba7ac8c2f784e3f174eeec563617de61612e9014d583",
+    "filters/gst/xv-output/gstcrystalhdxv.c": "474a1dded9755e7401d068bbfe71195b9a67c3d4a25b3fb17dba3e726950d460",
+    "filters/gst/xv-output/xv-connect.h": "470dfcd4b31626ce18a33c6be061d2a54789ec20dd2ce24defdca0c44cdf74b8",
+    "tests/gst-xv-output.c": "ee7d74deb6c94888fc6edffadfdfcf9f8c5c00b4d9aea218ad219bc313812413",
+    "tests/xv-setup-fixture.h": "601d8b5de2c25028ac16900abd16e8d38f6475743641145968057175796ca50b"
+  },
+  "status": "PASS_BOUNDED_LOCAL_X11_SETUP"
+}
