@@ -212,8 +212,8 @@ static void chd_flea_source_colors(struct crystalhd_v4l2_file *f, u32 word)
 	default: return;
 	}
 	/* CAPTURE describes the parsed source, not a requested conversion.
-	 * Leave OUTPUT and its compatibility range hint intact. No range claim
-	 * can be recovered from the firmware's discarded video_full_range_flag.
+	 * This word cannot recover the discarded video_full_range_flag. Format
+	 * token input provenance is handled separately; OUTPUT remains a hint.
 	 */
 	f->capture.colorspace = colorspace;
 	f->capture.xfer_func = xfer;
@@ -490,6 +490,7 @@ static int chd_format(struct crystalhd_v4l2_file *f,
 	struct v4l2_event event = { .type = V4L2_EVENT_SOURCE_CHANGE };
 	u32 width = result->pib.ppb.width, height = result->pib.ppb.height;
 	u32 size;
+	struct chd_h264_range_snapshot input_range;
 	bool initial = !f->format_known;
 	struct crystalhd_v4l2_capture_buffer *boundary = NULL;
 	u32 i;
@@ -525,6 +526,17 @@ static int chd_format(struct crystalhd_v4l2_file *f,
 	f->output.width = width;
 	f->output.height = height;
 	chd_flea_source_colors(f, result->pib.ppb.colour_primaries);
+	/* pause_format validated the core RX epoch before retiring its buffer.
+	 * Tokens are never reused across decoder resets. Use only the exact format
+	 * token's immutable input observation, without completing that picture or
+	 * consulting the newest SPS. Publish the range before SOURCE_CHANGE.
+	 */
+	if (result->format_metadata.valid &&
+	    !crystalhd_v4l2_decoder_peek_range(&f->decoder, f->decoder.epoch,
+		result->format_metadata.firmware_timestamp, &input_range) &&
+	    input_range.associated && input_range.range_present)
+		f->capture.quantization = input_range.full_range ?
+			V4L2_QUANTIZATION_FULL_RANGE : V4L2_QUANTIZATION_LIM_RANGE;
 	f->format_known = true;
 	f->format_pending = true;
 	event.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION;

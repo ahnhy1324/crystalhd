@@ -18,14 +18,14 @@ sed '/^#include /d' "$repo_dir/driver/linux/crystalhd_v4l2_compat.h" > "$buffer_
 sed '/^#include /d' "$repo_dir/driver/linux/crystalhd_v4l2_buffers.h" > "$buffer_test_dir/buffers.h"
 sed '/^#include /d' "$repo_dir/driver/linux/crystalhd_v4l2_buffers.c" > "$buffer_test_dir/buffers.c"
 awk '
-    /^struct crystalhd_rx_(buffer_ops|buffer|metadata|completion|image)[[:space:]]*\{/ {
+    /^struct crystalhd_rx_(buffer_ops|buffer|format_metadata|metadata|completion|image)[[:space:]]*\{/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+CRYSTALHD_DMA_DESC_MAX_XFER_BYTES[[:space:]]/ { print; limits++ }
     /^#define[[:space:]]+FLEA_DECODE_ERROR_FLAG[[:space:]]/ { print; limits++ }
-    END { if (found != 5 || copying || limits != 2) exit 1 }
+    END { if (found != 6 || copying || limits != 2) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_misc.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/driver/linux/FleaDefs.h" > "$buffer_test_dir/types.h"

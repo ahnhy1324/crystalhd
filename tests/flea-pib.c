@@ -51,6 +51,7 @@ struct crystalhd_rx_buffer {
 /* The finisher must not inspect the legacy PIB, whose ABI is tested elsewhere. */
 struct C011_PIB { uint32_t unused; };
 #include "rx-metadata.h"
+_Static_assert(CRYSTALHD_PICTURE_FLAG_EOS == VDEC_FLAG_EOS, "same firmware EOS bit");
 struct crystalhd_rx_dma_pkt {
     struct crystalhd_rx_buffer *buffer;
     void *cookie;
@@ -58,6 +59,7 @@ struct crystalhd_rx_dma_pkt {
     uint32_t flags;
     BC_PIC_INFO_BLOCK pib;
     struct crystalhd_rx_metadata metadata;
+    struct crystalhd_rx_format_metadata format_metadata;
 };
 struct crystalhd_elem { void *data; };
 struct crystalhd_dioq { unsigned count, lock; struct crystalhd_elem *head; };
@@ -344,6 +346,31 @@ static void special_pictures(void)
           "format metadata and geometry/repeat reset semantics are preserved");
     check(metadata_empty(&f.packet),
           "format-change status retains no accepted-picture snapshot");
+    check(!f.packet.format_metadata.valid,
+          "status peek never publishes format provenance");
+    {
+        uint32_t number = 99;
+        uint64_t timestamp = 0;
+        check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &timestamp) &&
+              metadata_empty(&f.packet) && f.packet.format_metadata.valid &&
+              f.packet.format_metadata.firmware_timestamp == 123407,
+              "format dequeue preserves bounded source token separately from pictures");
+        memcpy(f.original, f.words, sizeof(f.words));
+        peek(&f);
+        check(!f.packet.format_metadata.valid,
+              "subsequent status peek clears the prior format identity");
+    }
+    for (unsigned bad = 0; bad < 3; bad++) {
+        uint32_t number = 0;
+        uint64_t timestamp = 0;
+        prepare(&f, 7, 7, PIB_FORMAT_CHANGE_BIT |
+            (bad == 1 ? PIB_EOS_DETECTED_BIT : 0),
+            bad == 2 ? VDEC_FLAG_EOS : bad == 0 ? FLEA_DECODE_ERROR_FLAG : 0, true);
+        f.packet.format_metadata.valid = true;
+        (void)flea_GetPictureInfo(&f.hw, &f.packet, &number, &timestamp);
+        check(!f.packet.format_metadata.valid && metadata_empty(&f.packet),
+              "contradictory error/EOS format cannot publish source provenance");
+    }
 
     ++groups;
     prepare(&f, 7, 7, PIB_EOS_DETECTED_BIT, VDEC_FLAG_EOS, true);

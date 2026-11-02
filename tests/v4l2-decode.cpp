@@ -818,7 +818,7 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     const std::vector<std::string> &expected_segments, bool after_empty_drain,
     const std::vector<std::string> &contract_hashes, LegacyLibrary *legacy,
     const std::string &late_admission_device, const std::string &gpu_mode,
-    unsigned capture_buffers)
+    unsigned capture_buffers, unsigned range_hint, unsigned expected_range)
 {
 #ifdef CRYSTALHD_TEST_GPU
     std::unique_ptr<CaptureRenderer> renderer;
@@ -857,15 +857,20 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
         fmt.fmt.pix.width = input.width; fmt.fmt.pix.height = input.height;
         fmt.fmt.pix.sizeimage = std::max(size_t(2 * 1024 * 1024), input.largest);
         fmt.fmt.pix.field = V4L2_FIELD_NONE;
-        if (!gpu_mode.empty()) {
+        if (!gpu_mode.empty() || range_hint) {
             fmt.fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
             fmt.fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_709;
-            fmt.fmt.pix.quantization = V4L2_QUANTIZATION_LIM_RANGE;
+            fmt.fmt.pix.quantization = range_hint ? range_hint : unsigned(V4L2_QUANTIZATION_LIM_RANGE);
             fmt.fmt.pix.xfer_func = V4L2_XFER_FUNC_709;
             fmt.fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
         }
         checked(fd, VIDIOC_S_FMT, &fmt, "S_FMT OUTPUT");
         require(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_H264, "H264 OUTPUT format unavailable");
+        require(!range_hint || fmt.fmt.pix.quantization == range_hint,
+            "OUTPUT range hint did not roundtrip");
+        printf("output_format quantization=%u colorspace=%u xfer=%u matrix=%u\n",
+            fmt.fmt.pix.quantization, fmt.fmt.pix.colorspace,
+            fmt.fmt.pix.xfer_func, fmt.fmt.pix.ycbcr_enc);
         output.allocate(8);
     } else if (restarting) {
         /* An empty drain is resumable without resetting either queue. */
@@ -876,6 +881,8 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
         require(recovered_terminal_drain && !output.buffers.empty(),
             "stopped OUTPUT queue lacks a terminal-drain recovery fence");
     }
+    v4l2_format original_output{}; original_output.type = output.type;
+    checked(fd, VIDIOC_G_FMT, &original_output, "G_FMT OUTPUT before input");
     size_t next = 0, completed = 0, frames = 0;
     bool stopped = false, last = false, source_change = false;
     bool resolution_pending = false;
@@ -923,8 +930,19 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
             "expected progressive YUYV CAPTURE");
         width = fmt.fmt.pix.width; height = fmt.fmt.pix.height; stride = fmt.fmt.pix.bytesperline;
         require(width && height && stride >= width * 2, "invalid CAPTURE geometry");
-        printf("format width=%u height=%u stride=%u sizeimage=%u output_streaming=%u\n",
-            width, height, stride, fmt.fmt.pix.sizeimage, output.streaming ? 1 : 0);
+        printf("format width=%u height=%u stride=%u sizeimage=%u output_streaming=%u "
+            "quantization=%u colorspace=%u xfer=%u matrix=%u frames_before=%zu\n",
+            width, height, stride, fmt.fmt.pix.sizeimage, output.streaming ? 1 : 0,
+            fmt.fmt.pix.quantization, fmt.fmt.pix.colorspace, fmt.fmt.pix.xfer_func,
+            fmt.fmt.pix.ycbcr_enc, frames);
+        require(!expected_range || fmt.fmt.pix.quantization == expected_range,
+            "CAPTURE source range mismatch before buffer exposure");
+        require(gpu_mode.empty() || fmt.fmt.pix.quantization == V4L2_QUANTIZATION_LIM_RANGE,
+            "GPU probe requires actual limited-range CAPTURE");
+        v4l2_format output_fmt{}; output_fmt.type = output.type;
+        checked(fd, VIDIOC_G_FMT, &output_fmt, "G_FMT OUTPUT after source change");
+        require(output_fmt.fmt.pix.quantization == original_output.fmt.pix.quantization,
+            "source range changed the OUTPUT hint");
         if (!capture.streaming) {
             capture.allocate(capture_buffers);
             printf("capture_pool requested=%u allocated=%zu\n",
@@ -943,6 +961,7 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
             if (event.type != V4L2_EVENT_SOURCE_CHANGE) continue;
             require(event.u.src_change.changes & V4L2_EVENT_SRC_CH_RESOLUTION, "unknown source-change event");
             if (!source_change) {
+                require(frames == 0, "initial source change arrived after a picture");
                 source_change = true;
                 configure_capture(false);
             } else {
@@ -1137,9 +1156,9 @@ int main(int argc, char **argv)
         std::vector<std::string> next_inputs, expected_segments;
         unsigned timeout = 60, repeat = 1; bool stress = false, demux_only = false, busy = false;
         bool contracts = false, empty_stop = false, failed_streamon = false, late_admission = false;
-        bool legacy_arbitration = false;
+        bool legacy_arbitration = false, range_hint_set = false;
         unsigned seek_at = 0, idle_before_stop_ms = 250, legacy_prefix = 0;
-        unsigned capture_buffers = 12;
+        unsigned capture_buffers = 12, range_hint = 0, expected_range = 0;
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--help") {
@@ -1148,6 +1167,7 @@ int main(int argc, char **argv)
                      "       [--demux-only] (validate fixture without opening any device)\n"
                      "       [--gpu-check|--gpu-render|--gpu-upload] (opt-in GLES build; limited BT.709 fixture)\n"
                      "       [--capture-buffers N] (2..32, default 12)\n"
+                     "       [--range-hint default|limited|full] [--expect-range limited|full]\n"
                      "       [--seek-at N --expect-sha256 HEX] [--idle-before-stop-ms 250]\n"
                      "       [--check-busy] (second native session must fail STREAMON with EBUSY)\n"
                      "       [--next-input fixture.mp4 ...] [--expect-segment-sha256 HEX ...]\n"
@@ -1185,6 +1205,14 @@ int main(int argc, char **argv)
             else if (arg == "--timeout") timeout = std::stoul(value);
             else if (arg == "--repeat") repeat = std::stoul(value);
             else if (arg == "--capture-buffers") capture_buffers = std::stoul(value);
+            else if (arg == "--range-hint" || arg == "--expect-range") {
+                require(value == "limited" || value == "full" ||
+                    (arg == "--range-hint" && value == "default"), "invalid range option");
+                unsigned range = value == "full" ? V4L2_QUANTIZATION_FULL_RANGE :
+                    value == "limited" ? V4L2_QUANTIZATION_LIM_RANGE : 0;
+                if (arg == "--range-hint") { range_hint = range; range_hint_set = true; }
+                else expected_range = range;
+            }
             else if (arg == "--seek-at") seek_at = std::stoul(value);
             else if (arg == "--legacy-contract") { legacy_prefix = std::stoul(value); require(legacy_prefix, "legacy prefix must be positive"); }
             else if (arg == "--idle-before-stop-ms") idle_before_stop_ms = std::stoul(value);
@@ -1196,6 +1224,11 @@ int main(int argc, char **argv)
             "provide --input and valid timeout/repeat bounds");
         require(capture_buffers >= 2 && capture_buffers <= 32,
             "capture buffer request must be 2..32");
+        require(!range_hint_set || (!contracts && !empty_stop),
+            "--range-hint requires direct decode setup without empty STOP/preflight");
+        require(gpu_mode.empty() || (range_hint != V4L2_QUANTIZATION_FULL_RANGE &&
+            expected_range != V4L2_QUANTIZATION_FULL_RANGE),
+            "GPU probe only qualifies limited BT.709");
         Input input = demux(input_path, stress);
         require(next_inputs.size() <= 8, "at most eight --next-input segments are supported");
         require(next_inputs.empty() || (!seek_at && repeat == 1),
@@ -1220,7 +1253,8 @@ int main(int argc, char **argv)
         if (legacy_prefix) {
             require(next_inputs.empty() && !contracts && !empty_stop && !failed_streamon && !late_admission &&
                 !legacy_arbitration && !busy && !seek_at && repeat == 1 &&
-                raw_path.empty() && expected_hash.empty() && expected_segments.empty() && gpu_mode.empty(),
+                raw_path.empty() && expected_hash.empty() && expected_segments.empty() && gpu_mode.empty() &&
+                !range_hint && !expected_range,
                 "--legacy-contract is a separate legacy-only mode; native options/hashes are not applied");
             legacy_contract(input, legacy_prefix, timeout);
             return 0;
@@ -1254,7 +1288,7 @@ int main(int argc, char **argv)
             decode(device.fd, output, capture, input, timeout, raw, expected_hash,
                 seek_at, idle_before_stop_ms, busy ? path : std::string(), expected_segments,
                 (contracts || empty_stop) && !i, contract_hashes, legacy.get(),
-                late_admission ? path : std::string(), gpu_mode, capture_buffers);
+                late_admission ? path : std::string(), gpu_mode, capture_buffers, range_hint, expected_range);
         }
         return 0;
     } catch (const std::exception &e) {

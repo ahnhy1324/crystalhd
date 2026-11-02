@@ -406,6 +406,7 @@ struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw)
 #endif
 		memset(&temp->pib, 0, sizeof(temp->pib));
 		memset(&temp->metadata, 0, sizeof(temp->metadata));
+		memset(&temp->format_metadata, 0, sizeof(temp->format_metadata));
 		temp->uv_phy_addr = 0;
 		temp->next = NULL;
 	}
@@ -438,6 +439,7 @@ void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 #endif
 	memset(&pkt->pib, 0, sizeof(pkt->pib));
 	memset(&pkt->metadata, 0, sizeof(pkt->metadata));
+	memset(&pkt->format_metadata, 0, sizeof(pkt->format_metadata));
 	pkt->uv_phy_addr = 0;
 	pkt->next = hw->rx_pkt_pool_head;
 	hw->rx_pkt_pool_head = pkt;
@@ -1305,6 +1307,7 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 
 	/* Recycled free-queue packets can bypass allocation before another DMA. */
 	memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
+	memset(&rx_pkt->format_metadata, 0, sizeof(rx_pkt->format_metadata));
 
 	if (comp_sts == BC_STS_SUCCESS)
 	{
@@ -1871,6 +1874,8 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 
 	if (rpkt->metadata.valid && !(rpkt->flags & COMP_FLAG_FMT_CHANGE))
 		result->metadata = rpkt->metadata;
+	if ((rpkt->flags & COMP_FLAG_FMT_CHANGE) && rpkt->format_metadata.valid)
+		result->format_metadata = rpkt->format_metadata;
 
 	result->buffer = rpkt->buffer;
 	result->cookie = rpkt->cookie;

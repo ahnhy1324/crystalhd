@@ -97,5 +97,11 @@ int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
 int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decoder *d,
 	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp,
 	struct chd_h264_range_snapshot *input_range);
+/* Non-consuming format provenance lookup. Caller must first validate the RX
+ * registration/channel boundary. Errors leave input_range untouched; success
+ * can still contain an unassociated or absent-range input observation.
+ */
+int crystalhd_v4l2_decoder_peek_range(const struct crystalhd_v4l2_decoder *d,
+	u64 epoch, u64 firmware_timestamp, struct chd_h264_range_snapshot *input_range);
 bool crystalhd_v4l2_decoder_drained(const struct crystalhd_v4l2_decoder *d);
 #endif

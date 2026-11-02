@@ -249,6 +249,14 @@ struct tx_dma_pkt {
  * Format-change packets, rejected pictures and Link leave this invalid.
  * Geometry is observed firmware data, not a validated native image layout.
  */
+/* Format notifications are not pictures and must never consume a picture
+ * token. This is a bounded PIB observation, qualified separately by a caller.
+ */
+struct crystalhd_rx_format_metadata {
+	uint64_t firmware_timestamp;
+	bool valid;
+};
+
 struct crystalhd_rx_metadata {
 	uint64_t	firmware_timestamp;
 	uint32_t	picture_number; /* Parsed repeat-filter value, including EOS sentinel. */
@@ -276,6 +284,7 @@ struct crystalhd_rx_dma_pkt {
 	uint32_t			uv_done_sz;
 	BC_PIC_INFO_BLOCK		pib;
 	struct crystalhd_rx_metadata	metadata;
+	struct crystalhd_rx_format_metadata format_metadata;
 	dma_addr_t			uv_phy_addr;
 #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 	uint64_t			receipt_run_id;
@@ -292,6 +301,7 @@ struct crystalhd_rx_completion {
 	void			*cookie;
 	struct C011_PIB		pib;
 	struct crystalhd_rx_metadata metadata;
+	struct crystalhd_rx_format_metadata format_metadata;
 	uint64_t		capture_epoch;
 	uint32_t		flags;
 	uint32_t		y_done_sz;
