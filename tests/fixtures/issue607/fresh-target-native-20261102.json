@@ -1,0 +1,567 @@
+{
+  "a_v_scope": "AAC source/clock/sink and sync-stall log observations only; physical calibrated A/V NOT_RUN.",
+  "core_source": "940cf357ff0b64a41907126c58f629f0f3c514da",
+  "cycles": [
+    {
+      "actual_legacy_node": false,
+      "actual_video_node": true,
+      "audio_clock_observations": [
+        "2026-11-02 00:48:34.195 T:1600010    info <general>: CDVDAudioCodecFFmpeg::Open() Successful opened audio decoder aac",
+        "2026-11-02 00:48:34.196 T:1600010   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:34.198 T:1600010   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:34.208 T:1600012    info <general>: Creating audio stream (codec: aac, channels: 1, sample rate: 48000, no pass-through)",
+        "2026-11-02 00:48:34.208 T:1600012   debug <general>: CVideoPlayerAudio:: synctype set to 0: clock feedback",
+        "2026-11-02 00:48:34.212 T:1600010   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:34.978 T:1600010   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:34.978 T:1600010   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:35.087 T:1599892   debug <general>: ActiveAE::SyncStream - average error of 22.440778, start adjusting",
+        "2026-11-02 00:48:35.087 T:1599892   debug <general>: ActiveAE::SyncStream - average error 0.440778 below threshold of 30.000000"
+      ],
+      "audio_null_link": true,
+      "audio_stalls": [],
+      "audio_sync_errors": [],
+      "capture_LAST_bytes": [
+        0
+      ],
+      "controls": [],
+      "cpu_s": 1.4900000000000002,
+      "cycle": 0,
+      "decode_fd_retired": true,
+      "decoder_selection_h264_v4l2m2m": true,
+      "drm_frame_count": 180,
+      "drm_layout_census": {
+        "(1280, 720, 1, 1448695129, 2560, 1)": 180
+      },
+      "elapsed_s": 7.263189607998356,
+      "peak_rss_kib": 261176,
+      "player_exit": true,
+      "renderer_acceptances": 180,
+      "trace_end_byte": 57624,
+      "trace_start_byte": 719,
+      "video_sync_warnings": []
+    },
+    {
+      "actual_legacy_node": false,
+      "actual_video_node": true,
+      "audio_clock_observations": [
+        "2026-11-02 00:48:41.957 T:1600114    info <general>: CDVDAudioCodecFFmpeg::Open() Successful opened audio decoder aac",
+        "2026-11-02 00:48:41.958 T:1600114   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:41.970 T:1600116    info <general>: Creating audio stream (codec: aac, channels: 1, sample rate: 48000, no pass-through)",
+        "2026-11-02 00:48:41.970 T:1600116   debug <general>: CVideoPlayerAudio:: synctype set to 0: clock feedback",
+        "2026-11-02 00:48:42.739 T:1600114   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:42.739 T:1600114   debug <general>: CDVDClock::SetSpeedAdjust - adjusted:0.000000",
+        "2026-11-02 00:48:42.867 T:1599892   debug <general>: ActiveAE::SyncStream - average error of 5.009073, start adjusting",
+        "2026-11-02 00:48:42.867 T:1599892   debug <general>: ActiveAE::SyncStream - average error 0.009073 below threshold of 30.000000"
+      ],
+      "audio_null_link": true,
+      "audio_stalls": [],
+      "audio_sync_errors": [],
+      "capture_LAST_bytes": [
+        0
+      ],
+      "controls": [],
+      "cpu_s": 1.42,
+      "cycle": 1,
+      "decode_fd_retired": true,
+      "decoder_selection_h264_v4l2m2m": true,
+      "drm_frame_count": 180,
+      "drm_layout_census": {
+        "(1280, 720, 1, 1448695129, 2560, 1)": 180
+      },
+      "elapsed_s": 7.262796332943253,
+      "peak_rss_kib": 268444,
+      "player_exit": true,
+      "renderer_acceptances": 180,
+      "trace_end_byte": 114529,
+      "trace_start_byte": 57624,
+      "video_sync_warnings": []
+    }
+  ],
+  "date": "2026-11-02",
+  "fixture": {
+    "audio": "retained AAC-qualified source fixture",
+    "path": "/home/mache/.cache/crystalhd-v13-distribution-20261102/first-use/h264-720-av.mp4",
+    "sha256": "9f9d0d5809ea2182efcc95176b0af5e7880d90b033d54475701a1b691759a23b"
+  },
+  "fresh_targets": [
+    {
+      "commit": "e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491",
+      "installed_size": 724066816,
+      "ref": "runtime/org.freedesktop.Platform/x86_64/26.08"
+    },
+    {
+      "commit": "25dbbb0cd3a63b2ef8a24ee948ad43998960f3e2bea713263742cc076840aec2",
+      "installed_size": 469800960,
+      "ref": "runtime/org.freedesktop.Platform.GL.default/x86_64/26.08"
+    },
+    {
+      "commit": "0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630",
+      "installed_size": 231709696,
+      "ref": "app/tv.kodi.Kodi/x86_64/beta"
+    }
+  ],
+  "historical_native_lib_and_probe_deps_mounts": false,
+  "independent_source_pts_oracle": {
+    "completed_cycles": 2,
+    "cycles": [
+      {
+        "accepted": 180,
+        "cycle": 0,
+        "returned": 180
+      },
+      {
+        "accepted": 180,
+        "cycle": 1,
+        "returned": 180
+      }
+    ],
+    "input_sha256": {
+      "native_report": "9b8cb28ee19efa588a6d5827a18e3ad275893c7bd42e552a96ce03a7c5728375",
+      "source_packets": "70d33dcd6926d1941915e041d64619edc1c115b4285e0f122f318e740cd238e5"
+    },
+    "kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "media_sha256": "9f9d0d5809ea2182efcc95176b0af5e7880d90b033d54475701a1b691759a23b",
+    "native_report_status_observed": "PASS",
+    "rational_vs_binary64_diagnostic": {
+      "examples": [
+        {
+          "caller_pts_us": 4099999,
+          "delta_us": -1,
+          "packet_index": 124,
+          "rational_pts_us": 4100000,
+          "raw_pts": 62976
+        }
+      ],
+      "maximum_delta_us": 0,
+      "minimum_delta_us": -1,
+      "nonzero_delta_packets": 1,
+      "reference": "exact rational conversion truncated toward zero; diagnostic only"
+    },
+    "renderer_census": {
+      "cycles": [
+        {
+          "classification": "FULL",
+          "cycle": 0,
+          "deficit": 0,
+          "excess": 0,
+          "expected": 180,
+          "renderer_acceptances": 180,
+          "status": "PASS"
+        },
+        {
+          "classification": "FULL",
+          "cycle": 1,
+          "deficit": 0,
+          "excess": 0,
+          "expected": 180,
+          "renderer_acceptances": 180,
+          "status": "PASS"
+        }
+      ],
+      "deficit": 0,
+      "excess": 0,
+      "expected_total": 360,
+      "known_deficit": 0,
+      "known_excess": 0,
+      "renderer_acceptances_total": 360,
+      "scope": "Renderer return counts only; no PTS-bound presentation, scanout, runtime or A/V promotion.",
+      "status": "PASS",
+      "unknown_cycles": 0
+    },
+    "schema": 1,
+    "scope": "OFFLINE_PTS_ONLY_NO_HARDWARE_OR_AV_PROMOTION",
+    "source_video_packets": 180,
+    "status": "PASS_OFFLINE_SOURCE_CALLER_RETURNED_PTS_MATCH",
+    "tolerance_us": 0,
+    "video_time_base": "1/15360"
+  },
+  "kernel_errors": false,
+  "maximum_temperature_mC": 55000,
+  "module_and_firmware_boundary_restored": true,
+  "module_srcversion": "DF1416C32049D4DADE81EB2",
+  "module_version": "3.10.17",
+  "raw_report_sha256": "9b8cb28ee19efa588a6d5827a18e3ad275893c7bd42e552a96ce03a7c5728375",
+  "runtime_36_leaves_restored": true,
+  "schema": 1,
+  "scope": "Same current host, unchanged Kodi22RC1 built-in DRM PRIME, neutral private FFmpeg; headless GL output and AAC to isolated null sink. Physical A/V and independent clean OS NOT_RUN.",
+  "slot_lifecycle": {
+    "equivalent_wrapper_sha256": "c54694fbf19f2e5f8b0dee9c87b4291a2f62ca3d371f1358f61695577ff0d88b",
+    "original_sha256": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+    "scope": "Install selected original slot, actual fresh-target native playback, then update to equivalent TAR wrapper (only TAR member mtimes +1; runtime and metadata bytes unchanged), rollback to original, remove and repeat removal. Wrapper is a qualification input, not a second distributed runtime."
+  },
+  "slot_operations": {
+    "install": {
+      "active": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+      "cost": {
+        "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+        "build_RAM": null,
+        "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+        "network_bytes": null,
+        "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+        "own_process_maxrss_KiB": 27328,
+        "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+        "phases": [
+          {
+            "disk_after": {
+              "allocated_bytes": 8056832,
+              "available": true,
+              "entries": 35,
+              "logical_bytes": 7992195
+            },
+            "name": "extract-candidate",
+            "outcome": "PASS",
+            "seconds": 0.17761671100743115
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 8056832,
+              "available": true,
+              "entries": 35,
+              "logical_bytes": 7992195
+            },
+            "name": "validate-candidate-files-and-providers",
+            "outcome": "PASS",
+            "seconds": 0.19310482300352305
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 8056832,
+              "available": true,
+              "entries": 35,
+              "logical_bytes": 7993252
+            },
+            "name": "publish-selection",
+            "outcome": "PASS",
+            "seconds": 0.0007339100120589137
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 8056832,
+              "available": true,
+              "entries": 35,
+              "logical_bytes": 7993252
+            },
+            "name": "serialized-operation",
+            "outcome": "PASS",
+            "seconds": 0.37670631299261004
+          }
+        ],
+        "store_after": {
+          "allocated_bytes": 8056832,
+          "available": true,
+          "entries": 35,
+          "logical_bytes": 7993252
+        },
+        "store_before": {
+          "allocated_bytes": 0,
+          "available": true,
+          "entries": 0,
+          "logical_bytes": 0
+        },
+        "store_observed_maximum": {
+          "allocated_bytes": 8056832,
+          "available": true,
+          "entries": 35,
+          "logical_bytes": 7993252
+        },
+        "wall_seconds": 0.3775856379652396,
+        "whole_first_user_burden": "NOT_MEASURED"
+      },
+      "operation": "install",
+      "previous": null,
+      "status": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+    },
+    "remove": {
+      "active": null,
+      "cost": {
+        "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+        "build_RAM": null,
+        "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+        "network_bytes": null,
+        "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+        "own_process_maxrss_KiB": 27244,
+        "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+        "phases": [
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "validate-owned-payload-before-removal",
+            "outcome": "PASS",
+            "seconds": 0.11838113307021558
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16109568,
+              "available": true,
+              "entries": 66,
+              "logical_bytes": 15995740
+            },
+            "name": "unselect-owned-payload",
+            "outcome": "PASS",
+            "seconds": 0.0010419089812785387
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16384,
+              "available": true,
+              "entries": 5,
+              "logical_bytes": 342
+            },
+            "name": "retry-owned-payload-cleanup",
+            "outcome": "PASS",
+            "seconds": 0.12576606101356447
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16384,
+              "available": true,
+              "entries": 5,
+              "logical_bytes": 342
+            },
+            "name": "serialized-operation",
+            "outcome": "PASS",
+            "seconds": 0.3673922240268439
+          }
+        ],
+        "store_after": {
+          "allocated_bytes": 16384,
+          "available": true,
+          "entries": 5,
+          "logical_bytes": 342
+        },
+        "store_before": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "store_observed_maximum": {
+          "allocated_bytes": 16109568,
+          "available": true,
+          "entries": 66,
+          "logical_bytes": 15995740
+        },
+        "wall_seconds": 0.3691387039143592,
+        "whole_first_user_burden": "NOT_MEASURED"
+      },
+      "operation": "remove",
+      "previous": null,
+      "status": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+    },
+    "remove-again": {
+      "active": null,
+      "cost": {
+        "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+        "build_RAM": null,
+        "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+        "network_bytes": null,
+        "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+        "own_process_maxrss_KiB": 27244,
+        "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+        "phases": [
+          {
+            "disk_after": {
+              "allocated_bytes": 16384,
+              "available": true,
+              "entries": 5,
+              "logical_bytes": 342
+            },
+            "name": "validate-owned-payload-before-removal",
+            "outcome": "PASS",
+            "seconds": 8.450937457382679e-06
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16384,
+              "available": true,
+              "entries": 5,
+              "logical_bytes": 342
+            },
+            "name": "serialized-operation",
+            "outcome": "PASS",
+            "seconds": 0.0008698869496583939
+          }
+        ],
+        "store_after": {
+          "allocated_bytes": 16384,
+          "available": true,
+          "entries": 5,
+          "logical_bytes": 342
+        },
+        "store_before": {
+          "allocated_bytes": 16384,
+          "available": true,
+          "entries": 5,
+          "logical_bytes": 342
+        },
+        "store_observed_maximum": {
+          "allocated_bytes": 16384,
+          "available": true,
+          "entries": 5,
+          "logical_bytes": 342
+        },
+        "wall_seconds": 0.00127853499725461,
+        "whole_first_user_burden": "NOT_MEASURED"
+      },
+      "operation": "remove",
+      "previous": null,
+      "status": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+    },
+    "rollback": {
+      "active": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+      "cost": {
+        "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+        "build_RAM": null,
+        "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+        "network_bytes": null,
+        "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+        "own_process_maxrss_KiB": 27244,
+        "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+        "phases": [
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "revalidate-previous-files-and-providers",
+            "outcome": "PASS",
+            "seconds": 0.13101066509261727
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "publish-rollback",
+            "outcome": "PASS",
+            "seconds": 0.0007475930033251643
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "serialized-operation",
+            "outcome": "PASS",
+            "seconds": 0.1356270380783826
+          }
+        ],
+        "store_after": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "store_before": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "store_observed_maximum": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "wall_seconds": 0.13852822198532522,
+        "whole_first_user_burden": "NOT_MEASURED"
+      },
+      "operation": "rollback",
+      "previous": "c54694fbf19f2e5f8b0dee9c87b4291a2f62ca3d371f1358f61695577ff0d88b",
+      "status": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+    },
+    "update": {
+      "active": "c54694fbf19f2e5f8b0dee9c87b4291a2f62ca3d371f1358f61695577ff0d88b",
+      "cost": {
+        "RSS_scope": "Linux own-Python-process high-water since process startup, including imports and inspection; not child-tree, unique physical RAM, kernel/GPU memory or prior build RAM.",
+        "build_RAM": null,
+        "disk_scope": "Store-tree snapshots at operation/file boundaries, inode-deduplicated; symlinks are not followed. Existing store-top user files are included. Not a continuous/global disk peak.",
+        "network_bytes": null,
+        "network_scope": "No network is used; first-user acquisition/download burden is NOT_MEASURED.",
+        "own_process_maxrss_KiB": 27584,
+        "phase_relationship": "serialized-operation includes lock wait and encloses the nested stages; phase times overlap and must not be summed.",
+        "phases": [
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15985105
+            },
+            "name": "extract-candidate",
+            "outcome": "PASS",
+            "seconds": 0.17443748493678868
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15985105
+            },
+            "name": "validate-candidate-files-and-providers",
+            "outcome": "PASS",
+            "seconds": 0.18845422798767686
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "publish-selection",
+            "outcome": "PASS",
+            "seconds": 0.0007682660361751914
+          },
+          {
+            "disk_after": {
+              "allocated_bytes": 16097280,
+              "available": true,
+              "entries": 65,
+              "logical_bytes": 15986160
+            },
+            "name": "serialized-operation",
+            "outcome": "PASS",
+            "seconds": 0.36965567199513316
+          }
+        ],
+        "store_after": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "store_before": {
+          "allocated_bytes": 8056832,
+          "available": true,
+          "entries": 35,
+          "logical_bytes": 7993252
+        },
+        "store_observed_maximum": {
+          "allocated_bytes": 16097280,
+          "available": true,
+          "entries": 65,
+          "logical_bytes": 15986160
+        },
+        "wall_seconds": 0.37192114896606654,
+        "whole_first_user_burden": "NOT_MEASURED"
+      },
+      "operation": "update",
+      "previous": "dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020",
+      "status": "PASS_PRIVATE_SLOTS_FILES_ONLY"
+    }
+  },
+  "status": "PASS_FRESH_ACQUIRED_TARGET_NATIVE17_SLOT_LIFECYCLE"
+}
