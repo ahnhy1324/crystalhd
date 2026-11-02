@@ -26,7 +26,7 @@ GST_PLUGIN_PATH_1_0="$field_plugins${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}
 
 Run from the source root with a separately qualified CrystalHD GStreamer
 decoder/library available. This leaves the default output unchanged. The
-sink consumes limited-range YUY2 with BT.601/709 colorimetry. It accepts
+sink consumes limited-range YUY2 or explicitly qualified NV12 below with BT.601/709 colorimetry. It accepts
 progressive or paired fields; ONEFIELD/RFF and reverse playback remain
 unqualified. It does not add a Kick/readiness policy.
 
@@ -81,6 +81,64 @@ Live input, NV12, native i386, long endurance and physical scanout timing
 remain unqualified. The installed module, PM, links, pins and AER boundaries
 are unchanged; finite playback does not advance #533's nonempty-drain gate.
 
+### NV12 input — 2026-11-03
+
+The explicit sink additionally accepts raw linear NV12 with declared
+`chroma-site=jpeg` or `mpeg2`, limited-range BT.601/709, even width up to1920
+and height divisible by4 up to1088. It accepts complete progressive or
+interleaved pictures; omitted/unknown/DV chroma site, mixed mode, ONEFIELD/RFF,
+negative strides and full range remain unqualified and are rejected.
+The Player's existing YUY2 output negotiation is unchanged.
+
+Y and UV are copied separately into one owned linear GBM allocation, without
+CPU color conversion or full-height Bob materialization. A field's Y starts
+at `parity * Ypitch`, with pitch `2 * Ypitch`; its UV starts at
+`UVbase + parity * UVpitch`, with pitch `2 * UVpitch`. This is the supported
+line-interleaved raw NV12 layout, not a claim about native tiled PPB420.
+Each source plane has its own mapped extent/stride validation, including
+separate GstMemory planes, nonzero offsets and adjacent mappings. Format/site
+changes retire both previous field uses before replacing allocation/imports.
+
+```sh
+make -C filters/gst/field-output check
+# Explicit X11/renderD128 GPU runs; never run by check:
+filters/gst/field-output/field-nv12-test
+filters/gst/field-output/field-nv12-test --no-readback
+```
+
+The [current-host receipt](nv12-field-20261103.json) records14 synthetic
+sources,28 readback observations including preroll,601/709 × JPEG/MPEG2 ×
+TFF/BFF, progressive and YUY2/NV12 transitions,2 EOS/reopens and all24 source
+memories returned. RGB comparisons use independent source-only flat3×3 UV
+neighborhoods, maximum error1/255; nonflat chroma-edge interpolation is not
+qualified. Observed PTS are source-buffer PTS, not field clock/swap timestamps.
+The separate no-readback run checks metadata, field order and retirement
+without an extra readback/completion; it makes no pixel/performance claim.
+Existing native YUY2 spatial/retirement regression and9 ordinary plus9
+ASan/UBSan/leak CPU groups pass. Earlier7-group sanitizer evidence was CPU-only.
+
+**Actual hardware-GL LeakSanitizer remains FAIL:**147248 bytes in564 allocations,
+also reproduced with YUY2 only and with no readback. An independent standard
+GLES2/GBM program, `tests/egl-draw-closure.cpp`, reproduces exactly that report
+with no project/GStreamer code. Its no-draw control and llvmpipe draw control
+pass; explicit GL object deletion and EGL/GBM/FD closure succeed. This narrows
+the qualification failure to the hardware graphics route, without identifying
+an exact driver defect or proving all application workarounds impossible.
+No leak suppression, external source changes or leak-free GPU claim is made.
+
+```sh
+make -C filters/gst/field-output egl-draw-closure-asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  filters/gst/field-output/egl-draw-closure-asan
+# Same owned public-API setup/cleanup with glDrawArrays omitted:
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  filters/gst/field-output/egl-draw-closure-asan --no-draw
+```
+
+This is research integration, not stable-release qualification or promotion.
+Live sources, nonflat chroma phase, field-clock/A/V qualification for NV12 and
+field-GPU endurance remain active work. Frozen RC2 assets are unchanged.
+
 ### Live window replacement — 2026-11-02
 
 The worker applies checked reparent requests while preserving the same owned
@@ -105,7 +163,7 @@ and its ancestry stable through the synchronous call and while selected. The
 API is void; inspect `window-handle`/`window-rejections` for a rejected request.
 
 `make -C filters/gst/field-output check` compiles the explicit X11 regression
-and runs the7 existing CPU groups in ordinary and ASan/UBSan modes plus plugin
+and runs9 CPU groups in ordinary and ASan/UBSan modes plus plugin
 discovery. Run actual GPU cases only on an available X11/DRM host:
 
 ```sh

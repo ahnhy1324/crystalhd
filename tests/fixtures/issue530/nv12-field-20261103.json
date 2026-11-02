@@ -1,0 +1,488 @@
+{
+  "actual_native": {
+    "EOS_reopens": 2,
+    "NV12_eligible_points_per_observation": [
+      153408
+    ],
+    "NV12_sources": 10,
+    "RGB_components_over2": 0,
+    "YUY2_sources": 4,
+    "maximum_RGB_error": 1,
+    "observations_including_preroll": 28,
+    "oracle": "Frozen independent source Y/UV arrays and unique source-buffer PTS, actual draw parity, actual EGL import plane offsets/pitches and site hint;601/709 x JPEG/MPEG2 x TFF/BFF, progressive, format/site changes, padding/different Y/UV strides/nonzero offsets/separate adjacent GstMemory maps.",
+    "pixel_limit": "Only source-qualified flat3x3 UV neighborhoods compared for NV12. This is not a nonflat chroma-edge interpolation or siting-phase oracle. Observed PTS are source-buffer PTS, not calculated field timestamps, swap deadlines or scanout.",
+    "regular_fields": 26,
+    "run": {
+      "boundary_equal": true,
+      "evidence_label": "worker-committed-01",
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "f055ba504bbb823d767d835452ac892205f76cd09b6bca739c6f70c03050917d",
+      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "seconds": 1.5488430310506374,
+      "source_files": {
+        "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+        "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+        "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+        "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+        "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+      },
+      "status": "PASS_NV12_WORKER",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cbb8eaa306cc16320c0a48c51fd42c4dd40b059eb7d945548de401b57e9f20c5"
+    },
+    "source_memories_returned": 24,
+    "sources": 14
+  },
+  "base_commit": "196f1d3e51b3e89a31ff6b863527dc4679e91330",
+  "boundary": {
+    "all_recorded_GPU_trials_restore_guard": true,
+    "card_opens": 0,
+    "installed_runtime_verify": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "installed_verify_log_sha256": "bdb67573d41a118c007bc041d680b12c4b923a70a3cf33dc4df0fec27a65eabb",
+    "kernel_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel_rows_final_window": 0,
+    "kernel_scope": "Final closure controls/final CPU and committed-native tests window only; earlier trials retain their own exact guard snapshots.",
+    "kernel_window_start_local": "2026-11-03 05:43:28",
+    "maximum_temperature_mC": 56000,
+    "module": "3.10.13",
+    "module_swaps": 0
+  },
+  "date": "2026-11-03",
+  "device_free": {
+    "actual_GL_started": false,
+    "asan_ubsan_leak_groups": [
+      "/field/caps",
+      "/field/caps-rejection",
+      "/field/nv12-caps",
+      "/field/plane-mapping",
+      "/field/times",
+      "/field/clock",
+      "/field/command-ownership",
+      "/field/output-validation",
+      "/field/null-lifetime"
+    ],
+    "discovery": "PASS",
+    "log_sha256": "280aa0a279106a1b95307c4958f79ea7ad79360b4cb2b9f706c0924d2e583399",
+    "ordinary_groups": [
+      "/field/caps",
+      "/field/caps-rejection",
+      "/field/nv12-caps",
+      "/field/plane-mapping",
+      "/field/times",
+      "/field/clock",
+      "/field/command-ownership",
+      "/field/output-validation",
+      "/field/null-lifetime"
+    ],
+    "status": "PASS"
+  },
+  "existing_YUY2_regression": {
+    "checks": "36 spatial RGB comparisons,8 retirement comparisons,3 border layouts,3 synthetic EOS/reopens and second-field cancellation. Native only; not an actualGL sanitizer pass.",
+    "run": {
+      "boundary_equal": true,
+      "evidence_label": "existing-01",
+      "exit": 0,
+      "maximum_temperature_mC": 48000,
+      "probe_sha256": "e6acfbad2d6e8cd656ce0900c1b576fb2fecfa91774b5df7deb607817af00cc7",
+      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "seconds": 5.898381734965369,
+      "source_files": {
+        "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+        "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+        "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+        "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+        "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+      },
+      "status": "PASS_EXISTING_FIELD_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8d3a4a31d5e2e27d8e9fbdabaa9ead3126495b05c17410e0c2adfd3416cbb104"
+    },
+    "source_note": "Production code unchanged since this run; final shared-header change only updates its carrier-layout comment."
+  },
+  "implementation": {
+    "formats": "Existing YUY2 preserved; new linear NV12, limited BT.601/709, explicit JPEG or MPEG2 chroma site, even W 2..1920, H divisible by4 4..1088, complete progressive/interleaved pictures.",
+    "ownership": "Existing paired-field retirement and exception RetainGuard preserved. Format/site changes retire previous generation before replacement; no CPU color conversion or full-height Bob outputs.",
+    "planes": "Independent mapped source extents and strides; raw Y then UV copied into one coherent linear GBM allocation; Y field offset=parity*Ypitch, UV field offset=UVbase+parity*UVpitch, both field pitches doubled.",
+    "player": "Existing Player YUY2 negotiation unchanged. This qualifies the explicit sink raw-NV12 input, not a new decoder/Player NV12 path.",
+    "reject": "Omitted/unknown/DV site, mixed NV12, ONEFIELD/RFF, full range and negative/short source strides are not accepted."
+  },
+  "independent_public_API_control": {
+    "conclusion": "Identical strict147248/564 report reproducible outside project on Intel965GM hardware drawing; same public-API setup without glDrawArrays and same draw using llvmpipe pass. Does not identify exact driver defect or prove every application workaround impossible. No external code edits or leak suppressions.",
+    "prior_VBO_draw": {
+      "boundary_equal": true,
+      "evidence_label": "pure-vbo-01",
+      "exit": -6,
+      "failure": "AssertionError(('probe failed', -6))",
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "fd65e08ce394ff94b9428ba31ef07710be9cc10b278cb706375ec2c29f8d693d",
+      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "seconds": 1.8555714809335768,
+      "source_files": {
+        "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+        "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+        "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+        "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+        "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+      },
+      "status": "FAIL",
+      "stderr_sha256": "08974b0f6202afd140f2b8d21596f6cf268a38c318a27229319ee8060dfffceb",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "strict_lsan": {
+        "allocations": 564,
+        "bytes": 147248,
+        "status": "FAIL"
+      }
+    },
+    "runs": {
+      "closure-final-draw-01": {
+        "boundary_equal": true,
+        "evidence_label": "closure-final-draw-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 44000,
+        "probe_sha256": "47d2fcaca75f8023ae81b20fc1331a181b448da4ad9bb8aa5cfba98c5cff4994",
+        "scope": "Independent16x16 standard GLES2/GBM program,2 ownedcontexts, no project/GStreamer/Kodi/FFmpeg code. Every ownGL/EGL/GBM object is deleted andAPIreturns checked. LeakSanitizer verdict remains strict; no suppression.",
+        "seconds": 1.8566673919558525,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "a3a57e9e6d2be33e86b6d2a224806cd41941c3b91c82609727ba6541c7a114da",
+        "stdout": [
+          "renderer=Mesa Intel(R) 965GM (CL) draw=1 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0",
+          "renderer=Mesa Intel(R) 965GM (CL) draw=1 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0"
+        ],
+        "stdout_sha256": "e1d7e7088e377958502c292663d6e55bdbdebcf9a5655b8b11eb9747f5a52a4c",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "closure-final-no-draw-01": {
+        "boundary_equal": true,
+        "evidence_label": "closure-final-no-draw-01",
+        "exit": 0,
+        "maximum_temperature_mC": 45000,
+        "probe_sha256": "47d2fcaca75f8023ae81b20fc1331a181b448da4ad9bb8aa5cfba98c5cff4994",
+        "scope": "Independent16x16 standard GLES2/GBM program,2 ownedcontexts, no project/GStreamer/Kodi/FFmpeg code. Every ownGL/EGL/GBM object is deleted andAPIreturns checked. LeakSanitizer verdict remains strict; no suppression.",
+        "seconds": 0.3142639569705352,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "PASS_STANDARD_GLES_CLOSURE",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout": [
+          "renderer=Mesa Intel(R) 965GM (CL) draw=0 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0",
+          "renderer=Mesa Intel(R) 965GM (CL) draw=0 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0"
+        ],
+        "stdout_sha256": "7b65bb9d21f5b69b26f4d3bb2ffd89f0f2a28f4e0c3d810d22a00f021b2e172a"
+      },
+      "closure-software-draw-01": {
+        "boundary_equal": true,
+        "evidence_label": "closure-software-draw-01",
+        "exit": 0,
+        "maximum_temperature_mC": 45000,
+        "probe_sha256": "47d2fcaca75f8023ae81b20fc1331a181b448da4ad9bb8aa5cfba98c5cff4994",
+        "scope": "Independent16x16 standard GLES2/GBM program,2 ownedcontexts, no project/GStreamer/Kodi/FFmpeg code. Every ownGL/EGL/GBM object is deleted andAPIreturns checked. LeakSanitizer verdict remains strict; no suppression.",
+        "seconds": 0.5181149960262701,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "PASS_STANDARD_GLES_CLOSURE",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout": [
+          "renderer=llvmpipe (LLVM 21.1.8, 128 bits) draw=1 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0",
+          "renderer=llvmpipe (LLVM 21.1.8, 128 bits) draw=1 vbo=0",
+          "all own GL/EGL/GBM/FD objects retired; API errors0"
+        ],
+        "stdout_sha256": "35e13de7589ad04122d464d0c1995441fb21039b13b83619782aa3b44f9c8461"
+      }
+    },
+    "source": "tests/egl-draw-closure.cpp",
+    "standard_API": "Two sequential owned worker-thread GBM/EGL GLES2 contexts,16x16 RGBA FBO,constant-color shader,ordinary glDrawArrays. No project/GStreamer/Kodi/FFmpeg code. glIs* deletion,GL error,EGL unbind/destroy/terminate/release and render FD close checked in final source."
+  },
+  "issue": 530,
+  "native_no_readback": {
+    "checks": "Same source-buffer identity/parity/order/import attributes/counts/24 source memory returns/2 EOS-reopens/resources0, with no glReadPixels or extra observer completion.",
+    "performance": "NOT_QUALIFIED",
+    "pixels": "NOT_RUN",
+    "run": {
+      "boundary_equal": true,
+      "evidence_label": "no-readback-committed-01",
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "f055ba504bbb823d767d835452ac892205f76cd09b6bca739c6f70c03050917d",
+      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "seconds": 0.8307828010292724,
+      "source_files": {
+        "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+        "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+        "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+        "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+        "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+      },
+      "status": "PASS_NV12_NO_READBACK",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "533098268e6f064db13d174bbfa839c31b04cc0a242133c1f3ef3b6d91dee193"
+    }
+  },
+  "release": "Research integration only. No default promotion, stable1.3 publication or frozenRC2 asset changes. #530 remains open; excluded #538 heap investigation untouched.",
+  "remaining": [
+    "Nonflat NV12 chroma-edge reconstruction/siting-phase pixels",
+    "Live-input timing/control qualification",
+    "NV12 field-clock and A/V log qualification",
+    "Field-GPU endurance",
+    "Strict hardware-GL LSan failure remains open",
+    "Native i386 unavailable/current-equipment-only; no pass inferred"
+  ],
+  "retained_failures": {
+    "cpu-check-01": {
+      "log_sha256": "c78f29acf80f4faca23d930f086fbe8e1ad02c8a97460ca6269417f9f24acc84",
+      "reason": "GStreamer defaults omitted chroma-site to MPEG2; changed set_caps to require explicit raw caps site.",
+      "status": "FAIL"
+    },
+    "worker-01": {
+      "reason": "Harness incorrectly assumed lifetime cumulative fields counter resets on NULL; corrected baseline to current counter. First-cycle pixel result did not qualify full test.",
+      "run": {
+        "boundary_equal": true,
+        "evidence_label": "worker-01",
+        "exit": 1,
+        "failure": "AssertionError(('probe failed', 1))",
+        "maximum_temperature_mC": 46000,
+        "probe_sha256": "1b33337fb92eb1575276b757559472afb11ca654bbd4332359fbfd2cc405be24",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 0.9315130059840158,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "12119fb452683c147f451081d46f58db030fcff51161efdb3ca309a57ac0997a",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "cfb3f02f2eed763cb8275b031e5e97c6ffb3f444a72a380a34050f44209642a8",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "b9097c387d6d28648b010eac28d4b8a4de6ae7e95e34d8d49fd2b393cb2e679a",
+        "stdout_sha256": "c8a0aa05b81a7dc43828baa3741f65fd544031182c59f4c370536c1c86a3f223"
+      }
+    }
+  },
+  "scope": "Explicit experimental raw-video sink on current X61/Core2/BCM70015/Intel965GM x86_64 host; no card/module transitions or external source changes; no stable release/published asset changes.",
+  "source_commit": "1099bc8a97a6dbfbe2ae10053af51719f59f80e2",
+  "source_files": {
+    ".gitignore": "7b1412afac727a71e5e5bad78f24124b9672db3348999dd9fc123027f21040a9",
+    "filters/gst/field-output/Makefile": "651d76e31f643dc7f1988a27a5fe467121de6b289394a89d281f6ec63db8fb85",
+    "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+    "tests/egl-draw-closure.cpp": "21dc0e114adda2fedf25236365cdc2e183aea019d2ee5928fd38419e34deaac2",
+    "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+    "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+    "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+  },
+  "strict_actual_GL_sanitizer": {
+    "allocations": 564,
+    "bytes": 147248,
+    "changes_not_adopted": "Readback removal, eglReleaseThread, program unbind, gst_deinit and VBO alternatives did not change strict failure. Temporary controls retained in local evidence; no ineffective cleanup workaround integrated.",
+    "controls": {
+      "control-nv12-deinit-01": {
+        "boundary_equal": true,
+        "evidence_label": "control-nv12-deinit-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 56000,
+        "probe_sha256": "d8a866bd7ded138368f8750a655548154e6bed926bd9e9ccddf9f22d054a3e60",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 5.656087178969756,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "0b27a6980d2fb47e70ca27a5d54199e8f5200cb44370f5926aee1c54b81f588e",
+        "stdout_sha256": "91e4232f3f521c45b244d101a1716128938a8a4e789ec5c521f6e03fcbd5e845",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "control-nv12-release-01": {
+        "boundary_equal": true,
+        "evidence_label": "control-nv12-release-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 56000,
+        "probe_sha256": "3e50936a00fb6178561c464ea310e2e05cc5227f1264cdfc087d6c5b83025620",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 5.657369126100093,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "a904753c3367306310ce8f482614d6090cbed40d6339ec92b05ce6ba9369a9c3",
+        "stdout_sha256": "91e4232f3f521c45b244d101a1716128938a8a4e789ec5c521f6e03fcbd5e845",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "control-nv12-unbind-01": {
+        "boundary_equal": true,
+        "evidence_label": "control-nv12-unbind-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 55000,
+        "probe_sha256": "193be2ae2265cdb662a7d9527453cc3bb350011f0918ef8d83b2523c7682e710",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 5.551187110017054,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "439bc6dd95e33b39d116cba9d0cecaa22aa7a9963be3d9e573df681fd21db994",
+        "stdout_sha256": "91e4232f3f521c45b244d101a1716128938a8a4e789ec5c521f6e03fcbd5e845",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "control-nv12-vbo-01": {
+        "boundary_equal": true,
+        "evidence_label": "control-nv12-vbo-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 54000,
+        "probe_sha256": "7bfb45dba76debef482a3c36c5de99ec21a7883ac06e275ade4d041c3f45d186",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 5.5482459251070395,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "9af4cfeb0eb1ebb2412902d6fbd23b40ab79005536603c975021470065f227be",
+        "stdout_sha256": "91e4232f3f521c45b244d101a1716128938a8a4e789ec5c521f6e03fcbd5e845",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "control-yuy2-only-01": {
+        "boundary_equal": true,
+        "evidence_label": "control-yuy2-only-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 55000,
+        "probe_sha256": "75545c4fbf3da3a120eea005ac67af44cb0200a17acd6762158d19c6a464694c",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 4.521326711052097,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "a37e308c88830c7056b418e65ea30f8ce1ab68e1573325c75b63c9622001f084",
+        "stdout_sha256": "978a75e0319ebc9904495fb8b6c9b1f85cc3b939de4729e18f7fcca8aad53224",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      },
+      "san-no-readback-01": {
+        "boundary_equal": true,
+        "evidence_label": "san-no-readback-01",
+        "exit": -6,
+        "failure": "AssertionError(('probe failed', -6))",
+        "maximum_temperature_mC": 55000,
+        "probe_sha256": "10ecea6024714bd4a0af2127f21bcf47290f229928cb5a562f6b6960d7147033",
+        "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+        "seconds": 2.677684249007143,
+        "source_files": {
+          "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+          "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+          "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+          "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+          "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+        },
+        "status": "FAIL",
+        "stderr_sha256": "70378af8c0d2875f5c969b6e2a86943595fab7bcfac3395952948ac99adbf5f1",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "strict_lsan": {
+          "allocations": 564,
+          "bytes": 147248,
+          "status": "FAIL"
+        }
+      }
+    },
+    "direct_allocations": 2,
+    "direct_bytes": 1040,
+    "functional": "Pixel/parity/memory-return checks completed before process-exit LSan failure; not a sanitizer PASS.",
+    "run": {
+      "boundary_equal": true,
+      "evidence_label": "san-01",
+      "exit": -6,
+      "failure": "AssertionError(('probe failed', -6))",
+      "maximum_temperature_mC": 55000,
+      "probe_sha256": "10ecea6024714bd4a0af2127f21bcf47290f229928cb5a562f6b6960d7147033",
+      "scope": "Actual own NV12/YUY2 worker, frozen source RGB/PTS/parity, separate GstMemory planes/strides, site/format changes and EOS/reopen. No card, A/V or physical scanout claim.",
+      "seconds": 5.650474734953605,
+      "source_files": {
+        "filters/gst/field-output/Makefile": "bad20414e81cc06faa5474d246ef6f27703a6e9251df1eee03746be8e0b608c1",
+        "filters/gst/field-output/gstcrystalhdfield.cpp": "62bba883d56a52f96946866aaca05bb75644ecaeea392858293e1121ad2685ae",
+        "tests/field-view-gpu.h": "2f6ba5927f7ff4315c36260cfeab1186e521561104d32bc6f3f7bde0080676bf",
+        "tests/gst-field-nv12.cpp": "712033c3ce8692407865441aae73245c7d8d2136359bb9ea8d25f2e59c98ccfe",
+        "tests/gst-field-output-cpu.cpp": "f1ecc8273ea7249684e75abc469c21c74b52caa7dde3533dc2594798e16638ba"
+      },
+      "status": "FAIL",
+      "stderr_sha256": "6315e5898666ca8c6c4dea0f0ccd9a034ef93cfb9d210a62c60e0b0e9a59dc3e",
+      "stdout_sha256": "91e4232f3f521c45b244d101a1716128938a8a4e789ec5c521f6e03fcbd5e845",
+      "strict_lsan": {
+        "allocations": 564,
+        "bytes": 147248,
+        "status": "FAIL"
+      }
+    },
+    "status": "FAIL"
+  },
+  "verdict": "BOUNDED_NATIVE_NV12_FUNCTIONAL_PASS_WITH_STRICT_HARDWARE_GL_LSAN_FAIL"
+}

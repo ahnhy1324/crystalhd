@@ -342,6 +342,9 @@ and display fitting for limited-range YUY2 with BT.601/709 colorimetry, and
 disables playbin's automatic deinterlacing. This requires the research plugin
 and its XCB/EGL/GLES2/GBM/DRM dependencies; it is not part of an ordinary install.
 See the [field-output build, invocation and qualification limits](tests/fixtures/issue530/README.md#experimental-window-consumer).
+Direct raw-video use of the sink also accepts explicitly declared, limited-range
+NV12 within its [current plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).
+The Player continues negotiating YUY2.
 
 The default `--video-output auto` keeps the normal output path. The selector is
 per invocation and is not saved by the configuration manager. With `field-gpu`,
