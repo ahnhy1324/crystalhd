@@ -27,6 +27,7 @@
 #define XV_TIMEOUT_US G_USEC_PER_SEC
 #define XV_MAX_CONTEXTS 4
 #define XV_MAX_PIXELS (4096U * 2160U)
+#include "xv-connect.h"
 
 typedef struct XvContext XvContext;
 typedef struct XvMemory XvMemory;
@@ -217,9 +218,10 @@ static gboolean open_locked(XvContext *c, const char *name, xcb_window_t window,
                              xcb_xv_port_t requested)
 {
   int screen_number;
-  c->connection = xcb_connect(name, &screen_number);
+  const char *failure;
+  c->connection = connect_local_display(name, &screen_number, &failure);
   if (!c->connection || xcb_connection_has_error(c->connection))
-    return context_error(c, "A local X11 display is unavailable");
+    return context_error(c, failure);
   xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(c->connection));
   for (int n = 0; n < screen_number && screens.rem; n++) xcb_screen_next(&screens);
   if (!screens.rem) return context_error(c, "X11 screen is unavailable");
