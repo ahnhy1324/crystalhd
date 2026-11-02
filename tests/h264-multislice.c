@@ -4,6 +4,7 @@
 #include <string.h>
 #include "crystalhd_h264_range_binding.h"
 #include "fixtures/issue538/h264-multislice-prefixes-20261102.h"
+#include "fixtures/issue538/h264-poc0-multislice-prefixes-20261102.h"
 
 static const unsigned char full[] = CHD_TEST_MULTI2_SPS;
 static const unsigned char limited[] = CHD_TEST_MULTI_SPS_LIMITED;
@@ -61,11 +62,11 @@ static void synthetic(unsigned int first, unsigned int picture, bool idr,
 	size = finish((reference ? 0x60 : 0) | (idr ? 5 : 1));
 	add(prefix, size);
 }
-static void parameter(unsigned int id, unsigned int groups, bool redundant)
+static void parameter_bottom(unsigned int id, unsigned int groups, bool redundant, bool bottom)
 {
 	unsigned int size;
 	memset(rbsp, 0, sizeof(rbsp)); bit = 0;
-	ue(id); ue(0); put(0, 1); put(0, 1); ue(groups);
+	ue(id); ue(0); put(0, 1); put(bottom, 1); ue(groups);
 	/* Deliberately stop unsupported FMO before its map syntax. */
 	if (!groups) {
 		ue(0); ue(0); put(0, 1); put(0, 2);
@@ -74,6 +75,10 @@ static void parameter(unsigned int id, unsigned int groups, bool redundant)
 	}
 	size = finish(0x68); add(prefix, size);
 }
+static void parameter(unsigned int id, unsigned int groups, bool redundant)
+{
+    parameter_bottom(id, groups, redundant, false);
+}
 static void config(void)
 {
 	bytes = 0; add(full, sizeof(full)); add(pps, sizeof(pps));
@@ -81,6 +86,107 @@ static void config(void)
 static void pair(void)
 {
 	bytes = 0; add(idr0, sizeof(idr0)); add(idr1, sizeof(idr1));
+}
+/* Independent synthetic POC0 fields after the traced frame_num/IDR prefix.
+ * Only the header is generated; these controls are not decoded pictures. */
+static unsigned int poc_slice(unsigned int first, unsigned int lsb, int delta,
+    bool bottom)
+{
+    unsigned int size;
+    memset(rbsp, 0, sizeof(rbsp)); bit = 0;
+    ue(first); ue(1); ue(0); put(2, 4); put(lsb, 5);
+    if (bottom) ue(delta > 0 ? (unsigned int)delta * 2 - 1 : (unsigned int)-delta * 2);
+    size = finish(1); add(prefix, size); return size;
+}
+static int poc0_checks(void)
+{
+    static const unsigned char sps[] = CHD_TEST_POC0_2_SPS;
+    static const unsigned char lim[] = CHD_TEST_POC0_SPS_LIMITED;
+    static const unsigned char param[] = CHD_TEST_POC0_2_PPS;
+    static const unsigned char vcl[][16] = {
+        CHD_TEST_POC0_2_VCL0, CHD_TEST_POC0_2_VCL1,
+        CHD_TEST_POC0_2_VCL2, CHD_TEST_POC0_2_VCL3,
+        CHD_TEST_POC0_2_VCL4, CHD_TEST_POC0_2_VCL5,
+        CHD_TEST_POC0_2_VCL6, CHD_TEST_POC0_2_VCL7 };
+    static const unsigned char four[][16] = { CHD_TEST_POC0_4_VCL8,
+        CHD_TEST_POC0_4_VCL9, CHD_TEST_POC0_4_VCL10, CHD_TEST_POC0_4_VCL11 };
+    struct chd_h264_range_state state = {0};
+    struct chd_h264_range_snapshot a, b;
+    struct chd_h264_range_picture x, y;
+    struct chd_h264_sps_range value;
+    unsigned int i, size;
+    CHECK(chd_h264_read_sps_range(sps, sizeof(sps), &value) == CHD_H264_RANGE_OK);
+    CHECK(value.poc_type == 0 && value.poc_lsb_bits == 5 && value.frame_num_bits == 4);
+    bytes=0; add(sps,sizeof(sps)); add(param,sizeof(param));
+    add(vcl[0],16);add(vcl[1],16);
+    chd_h264_observe_range(&state,au,bytes,&a);
+    CHECK(a.associated && a.full_range && a.sps_generation == 1 &&
+        !state.pps[0].bottom_field_poc_present);
+    for(i=1;i<4;i++) {
+        bytes=0;add(vcl[i*2],16);add(vcl[i*2+1],16);
+        chd_h264_observe_range(&state,au,bytes,&b); CHECK(b.associated && b.full_range);
+    }
+    CHECK(chd_h264_range_picture_prefix(&state,vcl[4],16,&x));
+    CHECK(chd_h264_range_picture_prefix(&state,vcl[7],16,&y));
+    CHECK(x.frame_num == 2 && y.frame_num == 2 && !x.reference && !y.reference &&
+        x.pic_order_cnt_lsb == 2 && y.pic_order_cnt_lsb == 4 &&
+        !chd_h264_range_same_picture(&x,&y));
+    bytes=0;add(vcl[4],16);add(vcl[7],16);
+    chd_h264_observe_range(&state,au,bytes,&b); CHECK(!b.associated);
+    bytes=0;for(i=0;i<4;i++)add(four[i],16);
+    chd_h264_observe_range(&state,au,bytes,&b);CHECK(b.associated && b.full_range);
+    bytes=0;add(lim,sizeof(lim));add(vcl[4],16);add(vcl[5],16);
+    chd_h264_observe_range(&state,au,bytes,&b);
+    CHECK(b.associated && !b.full_range && b.sps_generation == 2 && a.full_range);
+    /* Delta is signed and is present even in a progressive frame picture. */
+    for(i=0;i<2;i++) {
+        int delta=i ? -19 : 19;
+        bytes=0;parameter_bottom(0,0,false,true);
+        poc_slice(0,2,delta,true);size=poc_slice(480,2,delta,true);
+        chd_h264_observe_range(&state,au,bytes,&b);
+        CHECK(b.associated && state.pps[0].bottom_field_poc_present);
+        CHECK(chd_h264_range_picture_prefix(&state,prefix,
+            size,&x) && x.delta_pic_order_cnt_bottom==delta);
+        bytes=0;poc_slice(0,2,delta,true);poc_slice(480,2,-delta,true);
+        chd_h264_observe_range(&state,au,bytes,&b); CHECK(!b.associated);
+        bytes=0;poc_slice(0,2,delta,true);size=poc_slice(480,2,delta,true);
+        bytes-=size+3;add(prefix,size-2);
+        chd_h264_observe_range(&state,au,bytes,&b);
+        CHECK(!b.associated && state.pps[0].picture_qualified);
+    }
+    bytes=0;parameter(0,0,false);poc_slice(0,2,0,false);poc_slice(480,2,0,false);
+    chd_h264_observe_range(&state,au,bytes,&b);
+    CHECK(b.associated && !state.pps[0].bottom_field_poc_present);
+    /* With bottom=0 these different SE-looking payload bits are not delta. */
+    bytes=0;size=poc_slice(0,2,19,true);
+    CHECK(chd_h264_range_picture_prefix(&state,prefix,size,&x) && !x.delta_pic_order_cnt_bottom);
+    size=poc_slice(480,2,-19,true);
+    CHECK(chd_h264_range_picture_prefix(&state,prefix,size,&y) && !y.delta_pic_order_cnt_bottom);
+    chd_h264_observe_range(&state,au,bytes,&b);CHECK(b.associated);
+    for(i=1;i<=4;i++) {
+        bytes=0;poc_slice(0,2,0,false);size=poc_slice(480,2,0,false);
+        bytes-=size+3;add(prefix,i);
+        chd_h264_observe_range(&state,au,bytes,&b);
+        CHECK(!b.associated && state.pps[0].picture_qualified);
+    }
+    for(i=0;i<2;i++) {
+        state.sps[0].value.poc_lsb_bits=i?17:3;
+        bytes=0;add(vcl[4],16);add(vcl[5],16);
+        chd_h264_observe_range(&state,au,bytes,&b);CHECK(!b.associated);
+    }
+    state.sps[0].value.poc_lsb_bits=5;
+    bytes=0;parameter_bottom(0,0,false,true);
+    chd_h264_observe_range(&state,au,bytes,&b);CHECK(state.pps[0].bottom_field_poc_present);
+    { static const unsigned char short_pps[]={0x68,0xe0};
+      bytes=0;add(short_pps,sizeof(short_pps));add(vcl[4],16);add(vcl[5],16);
+      chd_h264_observe_range(&state,au,bytes,&b);
+      CHECK(!b.associated && !state.pps[0].picture_qualified &&
+          !state.pps[0].bottom_field_poc_present); }
+    /* POC2 must not read POC0 fields, even when the PPS bottom flag is set. */
+    config();parameter_bottom(0,0,false,true);add(idr0,sizeof(idr0));add(idr1,sizeof(idr1));
+    chd_h264_observe_range(&state,au,bytes,&b);
+    CHECK(b.associated && state.pps[0].bottom_field_poc_present);
+    return 0;
 }
 int main(void)
 {
@@ -142,8 +248,8 @@ int main(void)
 	/* Reload real parameters after the empty-NAL cache invalidation above. */
 	config(); add(idr0, sizeof(idr0)); add(idr1, sizeof(idr1));
 	chd_h264_observe_range(&state, au, bytes, &b); CHECK(b.associated);
-	for (n = 0; n < 3; n++) {
-		if (n < 2) state.sps[0].value.poc_type = n;
+	for (n = 0; n < 2; n++) {
+		if (n == 0) state.sps[0].value.poc_type = 1;
 		else { state.sps[0].value.poc_type = 2; state.sps[0].value.frame_mbs_only = false; }
 		pair(); chd_h264_observe_range(&state, au, bytes, &b); CHECK(!b.associated);
 		bytes = 0; add(idr0, sizeof(idr0));
@@ -173,6 +279,7 @@ int main(void)
 	chd_h264_observe_range(&state, au, bytes, &b); CHECK(b.associated);
 	bytes = 0; synthetic(0, 0, true, 65536, true, 0, 2); synthetic(480, 0, true, 65536, true, 0, 2);
 	chd_h264_observe_range(&state, au, bytes, &b); CHECK(!b.associated);
-	printf("H264 progressive POC2 multi-slice association: %u checks PASS\n", checks);
+	CHECK(!poc0_checks());
+	printf("H264 progressive POC0/2 multi-slice association: %u checks PASS\n", checks);
 	return 0;
 }

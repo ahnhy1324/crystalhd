@@ -112,8 +112,18 @@ shelve the work or silently exclude implemented features.
    preserve210 pictures/full YUYV/sourcePTS/final LAST/EPIPE;180 GPU pictures
    pass at maximum RGB error1. Pre-fix FULL failures remain preserved in the
    [receipt](tests/fixtures/issue538/progressive-multislice-range-20261102.json).
-   POC0/1 multi-slice, fields/FMO/ASO/redundant/extensions, multi-slice reorder/
-   endurance and the exact graphics implementation site remain research.
+   Progressive POC0 multi-slice now also qualifies on actual forced B pictures:
+   2/4-slice limited/full sources each contain19 B pictures in30, and a90-picture
+   FULL→LIMITED→FULL run has unique source tags across both transitions.
+   POC LSB plus conditional signed bottom delta prevents same-frame_num B
+   pictures being joined. All270 native pictures match independent per-picture
+   YUYV/sourcePTS/completion/LAST/EPIPE;210 GPU pictures pass tolerance2.
+   See the [POC0 receipt](tests/fixtures/issue538/poc0-multislice-range-20261102.json).
+   The old single-slice 'B2' fixture was configured B2 but contains I/P only;
+   it remains a valid I/P regression, without actual B coverage.
+   POC1, reference-B/pyramid, fields/FMO/ASO/redundant/extensions, endurance,
+   hardware private-snapshot census and the exact graphics implementation
+   site remain research. Encoded bottom-delta1 coverage is also separate.
    No external patch or driver pixel/range workaround
    is applied. Sampled Kodi RGB, separate native/GPU controls and physical
    presentation retain distinct evidence limits.
