@@ -38,7 +38,7 @@ static void test_caps_rejection() {
     auto *sink=element();auto *valid=caps();
     g_assert_true(set_caps(GST_BASE_SINK(sink),valid));gst_caps_unref(valid);
     for(unsigned mode=0;mode<6;mode++) {
-        auto *value=caps(mode==0?GST_VIDEO_FORMAT_NV12:GST_VIDEO_FORMAT_YUY2,
+        auto *value=caps(mode==0?GST_VIDEO_FORMAT_I420:GST_VIDEO_FORMAT_YUY2,
                          mode==1?641:mode==2?1922:1280,mode==3?719:720);
         if(mode==4)gst_caps_set_simple(value,"colorimetry",G_TYPE_STRING,"1:3:5:1",nullptr);
         if(mode==5)gst_caps_set_simple(value,"framerate",GST_TYPE_FRACTION,0,1,nullptr);
@@ -60,7 +60,9 @@ static void test_nv12_caps() {
       }
     for(unsigned n=0;n<5;n++) {
         auto *value=caps(GST_VIDEO_FORMAT_NV12,1280,n==0?718:720);
-        if(n!=1)gst_caps_set_simple(value,"chroma-site",G_TYPE_STRING,n==2?"dv":"mpeg2",nullptr);
+        // Older video-info builders emit a default site; make omission explicit.
+        if(n==1)gst_structure_remove_field(gst_caps_get_structure(value,0),"chroma-site");
+        else gst_caps_set_simple(value,"chroma-site",G_TYPE_STRING,n==2?"dv":"mpeg2",nullptr);
         if(n==3)gst_caps_set_simple(value,"interlace-mode",G_TYPE_STRING,"mixed",nullptr);
         if(n==4)gst_caps_set_simple(value,"colorimetry",G_TYPE_STRING,"1:3:5:1",nullptr);
         g_assert_false(set_caps(GST_BASE_SINK(sink),value));gst_caps_unref(value);
