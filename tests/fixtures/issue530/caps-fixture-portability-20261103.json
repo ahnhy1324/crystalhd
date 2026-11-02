@@ -1,0 +1,144 @@
+{
+  "cause": "Old negative-format fixture used NV12, now supported if explicitly declared. Stock1.24 gst_video_info_set_format/to_caps supplies MPEG2 site for1280x720 YUV;1.28 emits no site. Thus1.24 built a valid admitted NV12 input, and the new missing-site case also did not actually omit its site. This was our fixture assumption, not an external-code defect.",
+  "date": "2026-11-03",
+  "failure": {
+    "OS": "Ubuntu24.04",
+    "PR": 635,
+    "assertion": "test_caps_rejection: set_caps should be FALSE",
+    "head": "3ac7e99c8c90ee177ec0903bb4b3fc2ce57cd1a3",
+    "job_id": 125546644745,
+    "raw_job_log_sha256": "0dbd0cb68ba43e82bf38f531978df6208c2f3394a43a411e7c00a00c17c85ecf",
+    "run_id": 41523892351,
+    "step": "Build and check explicit field GPU output without hardware"
+  },
+  "integration": "Final combined integration proceeds via#636, retaining#635 failure and all NV12/setup implementation/evidence. Full remote matrix remains separately required.",
+  "issue": 530,
+  "logs": {
+    "124-before-rejection": {
+      "CPU_groups": [],
+      "sha256": "5bcdb1a684ae7ab3a8d968d8a51fd2abba3d96f0d0e05b2b4662f3f1606f656a"
+    },
+    "124-fixed-native": {
+      "CPU_groups": [
+        "/field/caps",
+        "/field/caps-rejection",
+        "/field/nv12-caps",
+        "/field/plane-mapping",
+        "/field/times",
+        "/field/clock",
+        "/field/command-ownership",
+        "/field/output-validation",
+        "/field/null-lifetime"
+      ],
+      "sha256": "26ffcceeac5d0788e9f009d62f34867fdc4df3e8bbb44384670676d56da85fbd"
+    },
+    "124-fixed-san": {
+      "CPU_groups": [
+        "/field/caps",
+        "/field/caps-rejection",
+        "/field/nv12-caps",
+        "/field/plane-mapping",
+        "/field/times",
+        "/field/clock",
+        "/field/command-ownership",
+        "/field/output-validation",
+        "/field/null-lifetime"
+      ],
+      "sha256": "4e13c5b2126c980aa65e40e2a8647b054b9960512889dcd1c44ad4f8494cd86a"
+    },
+    "128-before-rejection": {
+      "CPU_groups": [
+        "/field/caps-rejection"
+      ],
+      "sha256": "80cf15a5246b02a93245aa33318b4c0212e2a1da2313b4e75f54e7b1a6c532f5"
+    },
+    "128-fixed-native": {
+      "CPU_groups": [
+        "/field/caps",
+        "/field/caps-rejection",
+        "/field/nv12-caps",
+        "/field/plane-mapping",
+        "/field/times",
+        "/field/clock",
+        "/field/command-ownership",
+        "/field/output-validation",
+        "/field/null-lifetime"
+      ],
+      "sha256": "0f50236df840e17a2db79618ddb6aa3fb1494de2c5b5c0fba6ebb67a3b2117ad"
+    },
+    "128-fixed-san": {
+      "CPU_groups": [
+        "/field/caps",
+        "/field/caps-rejection",
+        "/field/nv12-caps",
+        "/field/plane-mapping",
+        "/field/times",
+        "/field/clock",
+        "/field/command-ownership",
+        "/field/output-validation",
+        "/field/null-lifetime"
+      ],
+      "sha256": "8576db995e3fb12c43ae460e2ff127dd1a0179c40313ff963eb1576ab52821d4"
+    }
+  },
+  "observed_defaults": {
+    "124": [
+      "core=GStreamer 1.24.2",
+      "NV12 site enum=2",
+      "video/x-raw, format=(string)NV12, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, pixel-aspect-ratio=(fraction)1/1, chroma-site=(string)mpeg2, colorimetry=(string)bt709, framerate=(fraction)25/1"
+    ],
+    "128": [
+      "core=GStreamer 1.28.2",
+      "NV12 site enum=0",
+      "video/x-raw, format=(string)NV12, width=(int)1280, height=(int)720, interlace-mode=(string)progressive, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)bt709, framerate=(fraction)25/1"
+    ]
+  },
+  "official_reference": "https://github.com/GStreamer/gstreamer/blob/1.24.2/subprojects/gst-plugins-base/gst-libs/gst/video/video-info.c",
+  "production_changed": false,
+  "repair": "Use unqualified I420 for negative format; explicitly remove chroma-site in the omitted-site case, independent of builder defaults. Production admission/quality requirements unchanged.",
+  "results": {
+    "124-before-rejection": {
+      "exit": -6,
+      "scope": "Private unchanged stock GStreamer core/video/base1.24 on current host GLib, not native Ubuntu24 OS."
+    },
+    "124-fixed-native": {
+      "exit": 0,
+      "scope": "Private unchanged stock GStreamer core/video/base1.24 on current host GLib, not native Ubuntu24 OS."
+    },
+    "124-fixed-san": {
+      "exit": 0,
+      "scope": "Private unchanged stock GStreamer core/video/base1.24 on current host GLib, not native Ubuntu24 OS."
+    },
+    "128-before-rejection": {
+      "exit": 0,
+      "scope": "Current host1.28 libraries."
+    },
+    "128-fixed-native": {
+      "exit": 0,
+      "scope": "Current host1.28 libraries."
+    },
+    "128-fixed-san": {
+      "exit": 0,
+      "scope": "Current host1.28 libraries."
+    }
+  },
+  "scope": "Private unchanged official Ubuntu stock GStreamer1.24 core/base/video shared libraries loaded only into CPU test subprocesses on current host GLib; not a booted/native Ubuntu24 OS qualification. Current host1.28 is tested separately. No package install, external code edit, graphics/Card/module access or release asset changes.",
+  "source_commit": "3c64484b53af0e5f15bc8223ebcf0441031041a2",
+  "source_file": "tests/gst-field-output-cpu.cpp",
+  "source_sha256": "e388c0ee676a7af2eb0d9044378190b46efff77b8571e21d825b4ac0e112b48f",
+  "stock_packages": [
+    {
+      "bytes": 862170,
+      "package": "Package: libgstreamer-plugins-base1.0-0\nVersion: 1.24.2-1ubuntu0.5",
+      "sha256": "3c5826eee14cb5077c7e53707fbe86cc0882c787ffe79b330cad636c0009473d",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gst-plugins-base1.0/libgstreamer-plugins-base1.0-0_1.24.2-1ubuntu0.5_amd64.deb"
+    },
+    {
+      "bytes": 1165196,
+      "package": "Package: libgstreamer1.0-0\nVersion: 1.24.2-1ubuntu0.1",
+      "sha256": "306a6a5cff08630b79b8a68e5f888da7d8e209a452e9b5e24449cca95d8e71f5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/libgstreamer1.0-0_1.24.2-1ubuntu0.1_amd64.deb"
+    }
+  ],
+  "verdict": "PASS_9_NATIVE_AND_9_ASAN_UBSAN_LEAK_CPU_GROUPS_ON_EACH_GST124_AND_GST128"
+}

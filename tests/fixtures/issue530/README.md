@@ -181,6 +181,15 @@ does not interrupt Xauthority filesystem I/O or bound later EGL/atom/geometry
 calls, universal start/stop time, or system X-server restart. Those remaining
 interruption scopes are not completed by this setup fix.
 
+The [GStreamer version fixture repair](caps-fixture-portability-20261103.json)
+retains the original Ubuntu24 rejection-test failure. Our old negative input
+used newly supported NV12;1.24's builder adds MPEG2 chroma site while1.28's
+does not. The corrected negative format is I420, and the missing-site case
+explicitly removes that field. Nine ordinary plus nine ASan/UBSan/leak CPU
+groups pass with each version's actual libraries. The private1.24 library
+run uses current-host GLib and is not a native Ubuntu24 OS qualification.
+Production admission and quality conditions are unchanged.
+
 ### Live window replacement — 2026-11-02
 
 The worker applies checked reparent requests while preserving the same owned
