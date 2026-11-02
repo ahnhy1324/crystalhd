@@ -374,6 +374,47 @@ manifest and trace logs declare the syntax, range, sourcePTS and independent
 reference of each newly generated source before hardware use. Constant chroma
 makes software420→packed422 reference construction unambiguous. The public
 `h264-multislice-prefixes` files retain fixed independently traced CPU inputs.
-Their VCL arrays are first16-byte prefixes only. POC0/1/field cache-guard checks
-and the separate single-slice B2 regression must not be promoted to broader
-multi-slice field/B-frame acceptance.
+Their VCL arrays are first16-byte prefixes only. The original POC0/1/field
+cache guards were the historical POC2-only scope; the POC0 follow-up below
+replaces its old POC0 exclusion. The separate old single-slice 'B2' fixture
+was configured `-bf 2` but independently traced as one I and29 P pictures,
+with no actual B slices. Its passing regression remains valid for I/P only.
+
+
+[Actual-B POC0 multi-slice qualification](poc0-multislice-range-20261102.json)
+adds POC LSB/conditional signed bottom-delta equality to the bounded picture
+key. The new source recipe forces actual B scheduling, disables B-pyramid,
+checks packet decode order against independent trace headers and presentation
+PTS against software decode, and validates two replicated ordinal/CRC tags
+plus unique per-picture YUYV hashes. Every30-picture source has19 actual B
+pictures, including two nonreference pictures with equal frame_num2 and
+POC LSB2/4. The traced POC width is5 bits and wraps within the source; raw
+POC order is never used for PTS or picture identity.
+
+```sh
+python3 -B tests/native-poc0-multislice-fixture.py --output /tmp/poc0-sources
+python3 -B tests/native-poc0-multislice-fixture.py --ordinal-base 30 --slices 4 --output /tmp/poc0-middle
+python3 -B tests/native-poc0-multislice-fixture.py --ordinal-base 60 --slices 2 --output /tmp/poc0-final
+```
+
+Each output directory must be new. Constant whole-picture chroma permits an
+exact independent420→YUYV reference; FULL/LIMITED partners differ only in
+range metadata and decode to identical coded YUV. The portable receipt retains
+per-AU keys and per-picture hash/PTS/tag tables. On current BCM70015, four
+contradictory-hint cases plus2-slice FULL→4-slice LIMITED→2-slice FULL return
+all210 POC0 pictures with per-picture bytes/sourcePTS/EOS intact, and all210
+GPU RGB/alpha pictures pass tolerance2/max1. Separate old POC2 two/four-slice
+regressions add60 native pictures. Both guarded batches restore stable13,
+exact module/resource boundaries and36 installed runtime leaves; maximum62C,
+kernel errors0. The old-module FULL failures remain recorded.
+
+The75 ordinary/sanitized multi-slice CPU checks include real POC0 I/P/B
+prefixes, an LSB-only different-picture negative, signed positive/negative
+deltas, absent-delta payload, truncation and PPS redefinition. Production
+mapped-token controls retain sourcePTS/range/generation across decode/display
+reordering and overwritten input storage. Bottom flag1 is CPU-prefix coverage;
+actual encoded/hardware sources use flag0. These short current-host checks do
+not qualify reference-B/pyramid, POC1, fields/MBAFF/FMO/ASO/redundant/extension
+syntax, endurance or actual hardware snapshot readback. Actual Kodi rendering
+and physical presentation remain separate. The measured reused-external-texture
+return-to-limited failure is unchanged; this own GPU probe uses fresh textures.
