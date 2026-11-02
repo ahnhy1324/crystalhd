@@ -1,0 +1,278 @@
+{
+  "actual_cases": [
+    {
+      "RGB_frames_checked": 0,
+      "case": "full-scale-native-raw",
+      "channels_over_fixed2": 0,
+      "maximum_channel_error_to_matrix_oracle": null,
+      "nonopaque": 0,
+      "source_PTS_complete_YUYV_and_LAST_EPIPE": "PASS",
+      "status": "PASS",
+      "stdout_sha256": "c24ceb983aded36ecadff1245ba6b05e8be81ea778232671f6640e0b4f0043ed"
+    },
+    {
+      "RGB_frames_checked": 60,
+      "case": "full-scale-native-import",
+      "channels_over_fixed2": 0,
+      "maximum_channel_error_to_matrix_oracle": 1,
+      "nonopaque": 0,
+      "source_PTS_complete_YUYV_and_LAST_EPIPE": "PASS",
+      "status": "PASS",
+      "stdout_sha256": "8fe404f4cc63659c32789848cc848e03d44e1c21384cd9d4fb4cce0e04350a69"
+    },
+    {
+      "RGB_frames_checked": 60,
+      "case": "full-scale-native-upload",
+      "channels_over_fixed2": 0,
+      "maximum_channel_error_to_matrix_oracle": 0,
+      "nonopaque": 0,
+      "source_PTS_complete_YUYV_and_LAST_EPIPE": "PASS",
+      "status": "PASS",
+      "stdout_sha256": "1ca5f33559dc33b62884bf4e2147594c81c192bad890c9465739e20c71cdf68d"
+    },
+    {
+      "RGB_frames_checked": 30,
+      "case": "limited-native-import",
+      "channels_over_fixed2": 0,
+      "maximum_channel_error_to_matrix_oracle": 1,
+      "nonopaque": 0,
+      "source_PTS_complete_YUYV_and_LAST_EPIPE": "PASS",
+      "status": "PASS",
+      "stdout_sha256": "8324ca8447731e8377e2aaa3e501a240f0ab0d2af6f03204acfe52339ae7f177"
+    }
+  ],
+  "date": "2026-11-02",
+  "fixture": {
+    "chroma": [
+      [
+        128,
+        128
+      ],
+      [
+        64,
+        128
+      ],
+      [
+        192,
+        128
+      ],
+      [
+        128,
+        64
+      ],
+      [
+        128,
+        192
+      ],
+      [
+        64,
+        192
+      ],
+      [
+        192,
+        64
+      ],
+      [
+        0,
+        255
+      ],
+      [
+        255,
+        0
+      ],
+      [
+        96,
+        160
+      ]
+    ],
+    "decoded_YUV_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+    "encode_command": [
+      "ffmpeg",
+      "-hide_banner",
+      "-nostdin",
+      "-v",
+      "info",
+      "-f",
+      "rawvideo",
+      "-pixel_format",
+      "yuv420p",
+      "-video_size",
+      "640x360",
+      "-framerate",
+      "30",
+      "-color_range",
+      "pc",
+      "-colorspace",
+      "bt709",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "bt709",
+      "-i",
+      "/home/mache/.cache/crystalhd-issue538-full-range-gpu-run-20261102/full-scale-input.yuv",
+      "-an",
+      "-c:v",
+      "libx264",
+      "-profile:v",
+      "high",
+      "-preset",
+      "veryfast",
+      "-qp",
+      "1",
+      "-bf",
+      "2",
+      "-g",
+      "30",
+      "-x264-params",
+      "slices=1:repeat-headers=1",
+      "-pix_fmt",
+      "yuv420p",
+      "-color_range",
+      "pc",
+      "-colorspace",
+      "bt709",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "bt709",
+      "/home/mache/.cache/crystalhd-issue538-full-range-gpu-run-20261102/full-scale.mp4"
+    ],
+    "frames": 30,
+    "height": 360,
+    "levels": [
+      0,
+      1,
+      8,
+      15,
+      16,
+      17,
+      31,
+      64,
+      96,
+      128,
+      160,
+      192,
+      219,
+      220,
+      234,
+      235,
+      236,
+      247,
+      254,
+      255
+    ],
+    "media_sha256": "4dd1ef76e270c1de9e60974d4e46743ef6be0de7b9c995265e1622b38945ec71",
+    "preparation_script_sha256": "3bcde377c8e63b3c1c09031f9489fe69d4aae776b70b6f3452fedff6b4493997",
+    "reference_YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+    "scope": "Actual full-scale source, not a VUI-only relabel. Single slice, progressive640x360/30pictures, constant chroma per frame.",
+    "source_above235": 1382400,
+    "source_below16": 1382400,
+    "source_luma_max": 255,
+    "source_luma_min": 0,
+    "trace_sha256": "c8be4d0faebe342613eac7a3ace1d7bd6c030c4bcceab6f9c7887e7163160962",
+    "width": 640
+  },
+  "full_source_GPU_RGB_pictures": 120,
+  "full_source_native_pictures": 150,
+  "implementation": {
+    "EGL": "EGL_SAMPLE_RANGE_HINT_EXT FULL/NARROW; hold EXPBUF through image destruction/glFinish before QBUF.",
+    "RGB_oracle": "Double precision Kr=.2126/Kb=.0722 derived coefficients, clamp/round, all pixels/alpha and fixed2 tolerance. Upload now runs verification too.",
+    "format_changes": "Picture recreated when range changes even if geometry unchanged; actual range-only event emission remains unproven.",
+    "packed_shader": "Per-format luma offset/scale and chroma scale uniforms; Limited defaults and original packed_storage third argument preserved.",
+    "range_authority": "Actual CAPTURE G_FMT explicit BT.709 tuple and full/limited range; OUTPUT hint never selects rendering range."
+  },
+  "limited_regression_pictures": 30,
+  "limits": [
+    "Own probe and Intel965GM/BCM70015 only, not unchanged Kodi full-range acceptance or physical scanout.",
+    "640x360/30 source frames; repeated two epochs for each full GPU path. No broad resolution, sustained performance, A/V, interlace or other hardware claim.",
+    "No claim that a same-size range-only SPS change produces a firmware format event.",
+    "Prefix parser/association scope, original heap exclusion and unsupported nonempty STOP/START remain unchanged.",
+    "Stable1.3 deferred; published RC2/assets, registered payloads and installed runtime/external code/firmware remain unchanged."
+  ],
+  "live_receipt_sha256": "137ba2e7e29e4f5dc49448271a6b8d58aef16e1481c86ee6d666c6aea2c634e1",
+  "module": "Unchanged qualified private source985f155/module3.10.17 SRC7C46B02B3F58D82CBFEADBF from preceding format-token work; no new driver build/install/DKMS registration.",
+  "oracle_scope": "Actual native active YUYV is byte-exact to independently packed unchanged FFmpeg decode; GPU RGB is checked against a BT.709 Kr/Kb-derived double-precision oracle at fixed maximum2/alpha255. Unchanged FFmpeg/swscale explicit full-range RGBA independently crosschecks that oracle at maximum2; these are separate comparisons.",
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-full-range-gpu-run-20261102",
+  "probe_source": "37a586e1489eed0f5a43eee7b43f5d6bc4cf867f",
+  "public_fixture_recipe": "tests/native-full-range-fixture.py --output NEW_DIRECTORY",
+  "public_fixture_recipe_sha256": "343b3726dbf2109b38cd5b843334abc3721e1ada9f77e6a773a828e0664c4c3e",
+  "public_recipe_replay": "Fresh CLI output reproduces pinned media, software YUV and packed YUYV hashes.",
+  "restoration": {
+    "baseline_equal": true,
+    "kernel_errors": false,
+    "maximum_temperature_mC": 57000,
+    "module_inventory_equal": true,
+    "restored": true,
+    "runtime_baseline_verify": {
+      "leaves": 36,
+      "passed": true
+    }
+  },
+  "schema": "crystalhd.issue538.full-scale-native-gpu.v1",
+  "scope": "Actual640x360 full-scale0..255 source, complete native YUYV/sourcePTS/EOS, own EXPBUF/EGL and packed-upload RGB. Not Kodi or physical display.",
+  "software_RGB_oracle": {
+    "golden_128_64_192": [
+      229,
+      110,
+      9
+    ],
+    "maximum_channel_error": 2,
+    "nonopaque": 0,
+    "pixels": 6912000,
+    "pixels_over2": 0,
+    "rgba_sha256": "d742fd495c44975398a4b1c1b531b42df59afcc6b201c6c83edba1aa8fbe573d",
+    "triplets": 200
+  },
+  "source_bindings": {
+    "cpu_probe_sha256": "d3803f5ab3cab92ae92ba8528834055f5708576763da990f2afc1f6f52805ea5",
+    "fixture_manifest_sha256": "1207fa38f380b4a2a06b806467bd9b180e7ae238b24b7b6c3dd1b09a55ac27e0",
+    "gpu_probe_sha256": "96f5a0c470afe1f1484f0eb0f42ff20f030507fc7a89587ce461dc58850d469d",
+    "probe_files": {
+      "tests/v4l2-decode.cpp": "1f891598eff66f45a669faddf39993ea8dc26236eda276e1cc7660d381362250",
+      "tests/yuy2-gpu.h": "74f020c2ce7eff8acc0e17563c796d135fda1095ab5639c9aa2924d68b51a829"
+    },
+    "probe_source": "37a586e1489eed0f5a43eee7b43f5d6bc4cf867f",
+    "qualified_module_binding": {
+      "files": {
+        "driver/linux/crystalhd_fleafuncs.c": "437a0ba3289cb3c911a463f71a87c3d14c6936056c0a990e98f138bab62b6412",
+        "driver/linux/crystalhd_hw.c": "d9319e72697e41db299b97890d34b8923678c7c8e4baba3930ea662acb164163",
+        "driver/linux/crystalhd_hw.h": "5bc775db77a822587f09158286a118b9bfe667ddd746dc1cf8e6f69816798bd3",
+        "driver/linux/crystalhd_linkfuncs.c": "1f8e17cfe60395819e9e6de5496f1a00d00cd7f98605fb435dc02fb74f39eb2b",
+        "driver/linux/crystalhd_v4l2_decoder.c": "908f9e96db9c64936dbb48f5df845da91ab581f7e0bf26fda0c7f4afc15cff5e",
+        "driver/linux/crystalhd_v4l2_decoder.h": "fcb5013b297780535127ff6464006eaf4339418304863a6c7cefc9117833d787",
+        "driver/linux/crystalhd_v4l2_node.c": "414db2167e937f270529cc053978e5aaf4ffc26f816c3b3b40002b899580bea2",
+        "tests/flea-pib.c": "27c6d1dcb5daa56581936beaef345a7c10f1299a4d87532d9a999bf177822cce",
+        "tests/flea-pib.sh": "3ec53b1e3e512913d8f46ee7527c8b6d69f7d0793345d41e272e10975b782f73",
+        "tests/rx-ownership.c": "ea57f7562a02dda4736ac3e1e9264d12161821a16e7774c3bfdfcbeef7fcf039",
+        "tests/rx-ownership.sh": "a0fee155183299a5a42fc91733e7fa05ce85c6e14300361215526a82f8a38667",
+        "tests/v4l2-buffers.sh": "dc4ac8a53fcd080b9049fcf30b349d9cac6e8d39ba97802451df075d8d8d7b30",
+        "tests/v4l2-decode.cpp": "034c7e1b1ae903bff0f5c7a1b552f5956aa797901fb6ca69af4fa35133f97cb8",
+        "tests/v4l2-decoder.c": "c9c4074e9bcd4c0a7fd577c5647d2f772ebbf62cc45dfa776ed182b280f316b8",
+        "tests/v4l2-node.c": "869b646b1929ff6b776996ee3326bbc7930cf25392dacfe4e3f61fec954bcb36"
+      },
+      "module_sha256": "3b9d45723bb6e95675851a049fb98f3cc720e25bb4bf0195cde0cde852875f88",
+      "probe_sha256": "a511883fd99f4a848c6e029ef978feeef1254fa96c0403c14fb8e9a52416f31b",
+      "source": "985f155baf2279f5292abf73c737ec89c1bf522f",
+      "srcversion": "7C46B02B3F58D82CBFEADBF"
+    },
+    "software_RGB_oracle_sha256": "c7873e78255bb4a8de04ad109efa7522f5414d0bd79bd547a8d3e15debc8d1a9"
+  },
+  "source_trace": {
+    "PPS_each": 0,
+    "VCL_count": 30,
+    "bit_depth": 8,
+    "chroma_format_idc": 1,
+    "first_mb_in_slice_each": 0,
+    "full_range_flag": 1,
+    "primaries_transfer_matrix": [
+      1,
+      1,
+      1
+    ],
+    "profile_idc": 100,
+    "trace_sha256": "c8be4d0faebe342613eac7a3ace1d7bd6c030c4bcceab6f9c7887e7163160962"
+  },
+  "status": "PASS_FULL_SCALE_NATIVE_GPU",
+  "total_GPU_RGB_pictures": 150,
+  "total_native_pictures": 180
+}

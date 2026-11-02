@@ -76,9 +76,12 @@ shelve the work or silently exclude implemented features.
    limited/full sources override contradictory hints in four combinations,
    each repeated after destructive reset, with original YUYV bytes/PTS/EOS
    preserved; see the [bounded range receipt](tests/fixtures/issue538/format-source-range-20261102.json).
-   Next qualify full-scale full-range pictures in unchanged Kodi/GPU clients
-   and investigate same-size range-only notifications. The VUI-only full
-   control does not establish full-range rendering quality.
+   A separately generated full-scale0..255 source now passes complete native
+   YUYV/sourcePTS/EOS and all-pixel RGB checks in the own GPU import/upload
+   probe; see the [full-scale receipt](tests/fixtures/issue538/full-scale-native-gpu-20261102.json).
+   Next qualify unchanged Kodi full-range rendering and investigate same-size
+   range-only notifications. Own-probe GPU results do not establish Kodi or
+   physical-display acceptance.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in
