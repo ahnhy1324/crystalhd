@@ -9,7 +9,8 @@ with module-DKMS identity `3.10.13` and prereleases
 qualification in [#473](https://github.com/ahnhy1324/crystalhd/issues/473).
 Fresh final-package checks, explicit maintainer GO and public-asset verification
 are complete. The full integration candidate is `1.3.0-rc.2` / `3.10.17`,
-with acceptance and packaging still in progress.
+with the agreed current-equipment RC qualification and companion packaging
+complete; RC publication and stable promotion retain separate decisions.
 Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 distinguishes fresh final-package checks from scoped RC2 evidence reuse.
@@ -18,10 +19,15 @@ broader performance and research remain in
 [#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
 scope to general full-rate FHD or hardware deinterlacing.
 
-## Current priorities — 2026-11-01
+## Current priorities — 2026-11-02
 
-The complete 1.3 candidate is being assembled on
-`integrate/v1.3-complete-20261101`. RC1 is an incomplete historical cut;
+The complete 1.3 core is frozen at940/module17 on
+`integrate/v1.3-complete-20261101`; the separately identified
+[native companion](NATIVE-RUNTIME-DELIVERY.md) supplies its binaries, source,
+notices and supplemental tools without overwriting registered17 source.
+The [complete claim map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
+binds all developed feature groups to their actual tests and reuse boundaries.
+RC1 is an incomplete historical cut;
 its source/UI checkpoint does not authorize excluding already-developed work.
 
 - [x] Integrate the maintained PTS-epoch diagnostics and runtime
@@ -30,9 +36,10 @@ its source/UI checkpoint does not authorize excluding already-developed work.
   explicit field-GPU output from #538/#581/#590, preserving existing opt-ins.
 - [x] Connect the runtime package producer to the current preflight/slot
   consumers and exercise install/update/rejected update/rollback/removal.
-- [ ] Complete affected combined-source build, contract and actual-device tests.
-- [ ] Complete the current-equipment runtime distribution work in #607 and
+- [x] Complete affected combined-source build, contract and actual-device tests.
+- [x] Complete the current-equipment runtime distribution work in #607 and
   package the complete candidate with its own qualification receipt.
+- [ ] Record the final RC2 release disposition; stable1.3 is a separate step.
 
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted
