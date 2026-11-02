@@ -4,6 +4,7 @@
  */
 #include <assert.h>
 #include <stdbool.h>
+#include "crystalhd_h264_range_binding.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

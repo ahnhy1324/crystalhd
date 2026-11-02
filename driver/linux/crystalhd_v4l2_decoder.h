@@ -2,6 +2,7 @@
 #ifndef _CRYSTALHD_V4L2_DECODER_H_
 #define _CRYSTALHD_V4L2_DECODER_H_
 #include <linux/types.h>
+#include "crystalhd_h264_range_binding.h"
 
 #define CRYSTALHD_V4L2_TIMESTAMPS 256U
 struct crystalhd_cmd;
@@ -18,9 +19,11 @@ struct crystalhd_v4l2_decoder {
 	u64 epoch;
 	u32 next_token;
 	u32 count;
+	struct chd_h264_range_state input_parameters;
 	struct {
 		u64 timestamp;
 		u32 token;
+		struct chd_h264_range_snapshot input_range;
 	} timestamps[CRYSTALHD_V4L2_TIMESTAMPS];
 };
 
@@ -50,6 +53,15 @@ int crystalhd_v4l2_decoder_close_locked(struct crystalhd_v4l2_decoder *d,
  */
 int crystalhd_v4l2_decoder_reserve(struct crystalhd_v4l2_decoder *d,
 	struct crystalhd_cmd *cmd, const void *owner, u64 timestamp, u64 *raw_pts);
+/* Metadata observation never rejects a previously admissible bitstream.
+ * The mapped variant obtains CPU ownership before reading; call before TX
+ * starts and under the same frontend serialization as reserve(). */
+int crystalhd_v4l2_decoder_reserve_au(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner, const u8 *data, size_t bytes,
+	u64 timestamp, u64 *raw_pts);
+int crystalhd_v4l2_decoder_reserve_mapped(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner,
+	struct crystalhd_v4l2_output_buffer *buffer, u64 timestamp, u64 *raw_pts);
 int crystalhd_v4l2_decoder_submitted(struct crystalhd_v4l2_decoder *d, int rc);
 /* Arm before sending E-M-E-E outside the frontend state lock. The caller
  * must hold any observed LAST until the transport completes successfully;
@@ -80,5 +92,10 @@ int crystalhd_v4l2_decoder_drain(struct crystalhd_v4l2_decoder *d,
  */
 int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
 	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp);
+/* Copies the row's immutable input-prefix observation only for 0/-EILSEQ.
+ * Other results, including EOS, leave the observation output untouched. */
+int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decoder *d,
+	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp,
+	struct chd_h264_range_snapshot *input_range);
 bool crystalhd_v4l2_decoder_drained(const struct crystalhd_v4l2_decoder *d);
 #endif

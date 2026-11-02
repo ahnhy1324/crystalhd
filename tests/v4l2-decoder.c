@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
+#include "crystalhd_h264_range_binding.h"
+#include "fixtures/issue538/h264-range-nals-20261102.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -21,7 +23,8 @@ struct crystalhd_cmd { enum crystalhd_decoder_phase decoder_phase; };
 static const char owner;
 static unsigned calls, fail_call, bootstrap_calls;
 static u64 last_pts;
-struct crystalhd_v4l2_output_buffer { unsigned transport_calls; };
+struct crystalhd_v4l2_output_buffer { unsigned transport_calls; const u8 *source; size_t bytes; int source_error; };
+static unsigned source_calls;
 static struct crystalhd_v4l2_output_buffer mapped;
 static struct crystalhd_v4l2_decoder *early_eos;
 static int step(const void *p)
@@ -102,6 +105,16 @@ static int crystalhd_v4l2_output_submit(struct crystalhd_cmd *c, const void *p,
     buffer->transport_calls++;
     last_pts = pts;
     return step(p);
+}
+static int crystalhd_v4l2_output_source(struct crystalhd_v4l2_output_buffer *buffer,
+    const u8 **data, size_t *bytes)
+{
+    static const u8 unknown[] = {0,0,1,0x65};
+    source_calls++;
+    if (buffer->source_error) return buffer->source_error;
+    *data = buffer->source ? buffer->source : unknown;
+    *bytes = buffer->source ? buffer->bytes : sizeof(unknown);
+    return 0;
 }
 #include "decoder-production.h"
 
@@ -289,6 +302,115 @@ static void failed_picture_checks(void)
     }
 }
 
+static void observation_checks(void)
+{
+    static const u8 limited[] = CHD_TEST_SPS_LIMITED;
+    static const u8 full[] = CHD_TEST_SPS_FULL;
+    static const u8 pps[] = CHD_TEST_PPS;
+    static const u8 vcl[] = CHD_TEST_VCL;
+    struct crystalhd_v4l2_decoder d, before;
+    struct crystalhd_cmd c = {0};
+    struct crystalhd_rx_metadata m = {.valid=true};
+    struct chd_h264_range_snapshot out, saved;
+    u8 input[128]; size_t n;
+    u64 timestamp, pts = 0, old_epoch;
+    unsigned old_sources;
+    fail_call=0; crystalhd_v4l2_decoder_init(&d);
+    assert(!crystalhd_v4l2_decoder_open_locked(&d,&c,&owner));
+#define RANGE_AU(sps) do { \
+    n=0; memcpy(input+n,"\0\0\1",3);n+=3;memcpy(input+n,sps,sizeof(sps));n+=sizeof(sps); \
+    memcpy(input+n,"\0\0\0\1",4);n+=4;memcpy(input+n,pps,sizeof(pps));n+=sizeof(pps); \
+    memcpy(input+n,"\0\0\1",3);n+=3;memcpy(input+n,vcl,sizeof(vcl));n+=sizeof(vcl); \
+} while(0)
+    RANGE_AU(limited);
+    assert(!crystalhd_v4l2_decoder_submit(&d,&c,&owner,input,n,0,100));
+    assert(d.timestamps[0].input_range.associated && !d.timestamps[0].input_range.full_range &&
+           d.timestamps[0].input_range.sps_generation==1);
+    saved=d.timestamps[0].input_range;
+    RANGE_AU(full);mapped.source=input;mapped.bytes=n;
+    assert(!crystalhd_v4l2_decoder_submit_mapped(&d,&c,&owner,&mapped,0,100));
+    assert(d.timestamps[1].input_range.associated && d.timestamps[1].input_range.full_range &&
+           d.timestamps[1].input_range.sps_generation==2);
+    assert(!memcmp(&saved,&d.timestamps[0].input_range,sizeof(saved)));
+    RANGE_AU(limited);
+    assert(!crystalhd_v4l2_decoder_submit(&d,&c,&owner,input,n,UINT64_MAX,100));
+    assert(d.timestamps[2].input_range.sps_generation==3);
+    for(unsigned i=0;i<3;i++) {
+        static const unsigned order[]={2,0,1}; unsigned k=order[i];
+        m.firmware_timestamp=k+1;
+        assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+        assert(timestamp==(k==2?UINT64_MAX:0) && out.associated && out.range_present &&
+               out.sps_generation==k+1 && out.full_range==(k==1));
+    }
+    assert(!d.count);
+    /* A full queue must not observe newer headers or even read mapped bytes. */
+    for(unsigned i=0;i<CRYSTALHD_V4L2_TIMESTAMPS;i++)
+        assert(!crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,
+            (const u8[]){0,0,1,0x65,0x88,0x84},6,i,&pts));
+    memcpy(&before,&d,sizeof(d)); RANGE_AU(full);pts=123;
+    assert(crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,input,n,999,&pts)==-EAGAIN);
+    assert(pts==123 && !memcmp(&before,&d,sizeof(d)));
+    old_sources=source_calls;mapped.source=input;mapped.bytes=n;
+    assert(crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,999,&pts)==-EAGAIN);
+    assert(source_calls==old_sources && !memcmp(&before,&d,sizeof(d)));
+    old_epoch=d.epoch;restart(&d,&c);
+    assert(!d.input_parameters.generation && !d.input_parameters.pps[0].valid);
+    /* State reset cannot revive old parameters or reuse old token/epoch. */
+    assert(!crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,
+        (const u8[]){0,0,1,0x65,0x88,0x84},6,77,&pts));
+    m.firmware_timestamp=pts>>1;timestamp=55;
+    out=(struct chd_h264_range_snapshot){.associated=true,.sps_generation=999};saved=out;
+    assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,old_epoch,&timestamp,&out)==-ESTALE);
+    assert(timestamp==55 && !memcmp(&out,&saved,sizeof(out)) && d.count==1);
+    assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+    assert(timestamp==77 && !out.associated && !d.count);
+    RANGE_AU(full);mapped.source=input;mapped.bytes=n;mapped.source_error=-EIO;
+    memcpy(&before,&d,sizeof(d));pts=543;
+    assert(crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,3,&pts)==-EIO);
+    assert(pts==543 && !memcmp(&before,&d,sizeof(d)));mapped.source_error=0;
+    /* Row observation exists before RX can race a still-running TX. */
+    assert(!crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,14,&pts));
+    m.firmware_timestamp=pts>>1;
+    assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+    assert(timestamp==14 && out.associated && out.full_range && out.sps_generation==1);
+    assert(!crystalhd_v4l2_decoder_submitted(&d,0) && d.phase==CHD_V4L2_RUNNING);
+    assert(!crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,input,n,89,&pts));
+    m.firmware_timestamp=pts>>1;m.picture_flags=CRYSTALHD_PICTURE_FLAG_DECODE_ERROR;
+    assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out)==-EILSEQ);
+    assert(timestamp==89 && out.full_range && out.sps_generation==2 && !d.count);
+    /* Generation exhaustion degrades only metadata; older rows stay immutable. */
+    m.picture_flags=0;
+    assert(!crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,input,n,90,&pts));
+    u64 token=pts>>1; saved=d.timestamps[0].input_range;
+    d.input_parameters.generation=UINT64_MAX;
+    assert(!crystalhd_v4l2_decoder_reserve_au(&d,&c,&owner,input,n,91,&pts));
+    assert(d.input_parameters.exhausted && !d.timestamps[1].input_range.associated);
+    m.firmware_timestamp=token;
+    assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+    assert(out.associated && out.sps_generation==saved.sps_generation && timestamp==90);
+    m.firmware_timestamp=pts>>1;
+    assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+    assert(!out.associated && timestamp==91);
+    /* Any transport error retains the already-reserved input observation. */
+    restart(&d,&c); RANGE_AU(limited);fail_call=calls+1;
+    assert(crystalhd_v4l2_decoder_submit(&d,&c,&owner,input,n,123,100)==-EIO);
+    assert(d.phase==CHD_V4L2_FAILED && d.count==1 && d.timestamps[0].input_range.associated &&
+           !d.timestamps[0].input_range.full_range);
+    out=(struct chd_h264_range_snapshot){.sps_generation=777};saved=out;timestamp=9;
+    m.firmware_timestamp=d.timestamps[0].token;
+    assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out)==-EPIPE);
+    assert(timestamp==9 && !memcmp(&out,&saved,sizeof(out)) && d.count==1);
+    fail_call=0;restart(&d,&c);
+    assert(!d.count && !d.input_parameters.pps[0].valid);
+    assert(!crystalhd_v4l2_decoder_begin_drain(&d));
+    m.eos_trailer=true;m.picture_number=UINT32_MAX;m.picture_flags=CRYSTALHD_PICTURE_FLAG_EOS;
+    assert(crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out)==1);
+    assert(timestamp==9 && !memcmp(&out,&saved,sizeof(out)));
+    mapped=(struct crystalhd_v4l2_output_buffer){0};
+    printf("V4L2 immutable input observations: redefinition/reordering/duplicate-PTS/EAGAIN/reset/TX-error/RX-before-return/error/EOS PASS; decoder=%zu bytes\n",sizeof(d));
+#undef RANGE_AU
+}
+
 int main(void)
 {
     struct crystalhd_v4l2_decoder d;
@@ -411,6 +533,7 @@ int main(void)
     d.epoch = UINT64_MAX;
     crystalhd_v4l2_decoder_reset(&d);
     assert(d.phase == CHD_V4L2_FAILED);
+    observation_checks();
     mapped_checks();
     asynchronous_checks();
     failed_picture_checks();

@@ -43,6 +43,11 @@ int crystalhd_v4l2_output_prepare(struct crystalhd_v4l2_output_buffer *buffer);
  */
 int crystalhd_v4l2_output_submit(struct crystalhd_cmd *cmd, const void *owner,
 		struct crystalhd_v4l2_output_buffer *buffer, u64 pts, u32 timeout_ms);
+/* Caller owns the queued, prepared, non-core-owned buffer. Acquire CPU
+ * ownership for bounded input observation before TX; submit restores DMA
+ * ownership as usual. Failure leaves caller outputs untouched. */
+int crystalhd_v4l2_output_source(struct crystalhd_v4l2_output_buffer *buffer,
+	const u8 **data, size_t *bytes);
 bool crystalhd_v4l2_output_owned(struct crystalhd_v4l2_output_buffer *buffer);
 /* Reclaim CPU ownership after final core put; required before returning a
  * formerly retained buffer. This does not replace whole-session admission.

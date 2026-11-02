@@ -50,6 +50,18 @@ static void crystalhd_output_cpu(struct crystalhd_v4l2_output_buffer *buffer)
 	}
 }
 
+int crystalhd_v4l2_output_source(struct crystalhd_v4l2_output_buffer *buffer,
+	const u8 **data, size_t *bytes)
+{
+	if (!buffer || !data || !bytes || !buffer->prepared || !buffer->vaddr ||
+	    !buffer->source || !buffer->payload) return -EINVAL;
+	if (crystalhd_v4l2_output_owned(buffer)) return -EBUSY;
+	if (buffer->failed) return -EPIPE;
+	crystalhd_output_cpu(buffer);
+	*data = buffer->vaddr; *bytes = buffer->payload;
+	return 0;
+}
+
 bool crystalhd_v4l2_output_retire(struct crystalhd_v4l2_output_buffer *buffer)
 {
 	if (crystalhd_v4l2_output_owned(buffer))

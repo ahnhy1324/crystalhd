@@ -16,6 +16,7 @@ void crystalhd_v4l2_decoder_init(struct crystalhd_v4l2_decoder *d)
 void crystalhd_v4l2_decoder_reset(struct crystalhd_v4l2_decoder *d)
 {
 	memset(d->timestamps, 0, sizeof(d->timestamps));
+	memset(&d->input_parameters, 0, sizeof(d->input_parameters));
 	d->count = 0;
 	/* Epoch exhaustion, like token exhaustion, permanently stops admission. */
 	if (d->epoch == ~(u64)0) {
@@ -88,10 +89,13 @@ int crystalhd_v4l2_decoder_close_locked(struct crystalhd_v4l2_decoder *d,
 	return rc;
 }
 
-int crystalhd_v4l2_decoder_reserve(struct crystalhd_v4l2_decoder *d,
-	struct crystalhd_cmd *cmd, const void *owner, u64 timestamp, u64 *pts)
+static int crystalhd_v4l2_reserve_input(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner,
+	struct crystalhd_v4l2_output_buffer *buffer, const u8 *data, size_t bytes,
+	u64 timestamp, u64 *pts)
 {
 	u32 i, token;
+	int rc;
 
 	if (!d || !cmd || !owner || !pts)
 		return -EINVAL;
@@ -106,15 +110,47 @@ int crystalhd_v4l2_decoder_reserve(struct crystalhd_v4l2_decoder *d,
 			break;
 	if (i == CRYSTALHD_V4L2_TIMESTAMPS)
 		return -EIO;
+	/* No parser/cache/generation changes on failed admission or EAGAIN.
+	 * Mapped bytes are read only after obtaining adapter CPU ownership. */
+	if (buffer) {
+		rc = crystalhd_v4l2_output_source(buffer, &data, &bytes);
+		if (rc) return rc;
+	}
 	token = d->next_token++;
 	d->timestamps[i].token = token;
 	d->timestamps[i].timestamp = timestamp;
+	memset(&d->timestamps[i].input_range, 0, sizeof(d->timestamps[i].input_range));
+	if (data && bytes && bytes <= CHD_H264_RANGE_MAX_AU)
+		chd_h264_observe_range(&d->input_parameters, data, bytes,
+				      &d->timestamps[i].input_range);
+	else
+		chd_h264_range_forget(&d->input_parameters);
 	d->count++;
 	/* libcrystalhd_if.cpp documents XPT's right shift of the PES PTS.
 	 * Reserve zero and 0xffffffff (firmware preload/EOS special values).
 	 */
 	*pts = (u64)token << 1;
 	return 0;
+}
+
+int crystalhd_v4l2_decoder_reserve(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner, u64 timestamp, u64 *pts)
+{
+	return crystalhd_v4l2_reserve_input(d, cmd, owner, NULL, NULL, 0, timestamp, pts);
+}
+int crystalhd_v4l2_decoder_reserve_au(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner, const u8 *data, size_t bytes,
+	u64 timestamp, u64 *pts)
+{
+	if (!data || !bytes) return -EINVAL;
+	return crystalhd_v4l2_reserve_input(d, cmd, owner, NULL, data, bytes, timestamp, pts);
+}
+int crystalhd_v4l2_decoder_reserve_mapped(struct crystalhd_v4l2_decoder *d,
+	struct crystalhd_cmd *cmd, const void *owner,
+	struct crystalhd_v4l2_output_buffer *buffer, u64 timestamp, u64 *pts)
+{
+	if (!buffer) return -EINVAL;
+	return crystalhd_v4l2_reserve_input(d, cmd, owner, buffer, NULL, 0, timestamp, pts);
 }
 
 int crystalhd_v4l2_decoder_submitted(struct crystalhd_v4l2_decoder *d,
@@ -139,7 +175,7 @@ int crystalhd_v4l2_decoder_submit(struct crystalhd_v4l2_decoder *d,
 
 	if (!data || !bytes)
 		return -EINVAL;
-	rc = crystalhd_v4l2_decoder_reserve(d, cmd, owner, timestamp, &pts);
+	rc = crystalhd_v4l2_decoder_reserve_au(d, cmd, owner, data, bytes, timestamp, &pts);
 	if (rc)
 		return rc;
 	rc = crystalhd_decoder_submit_h264(cmd, owner, data, bytes, true,
@@ -156,7 +192,7 @@ int crystalhd_v4l2_decoder_submit_mapped(struct crystalhd_v4l2_decoder *d,
 
 	if (!buffer)
 		return -EINVAL;
-	rc = crystalhd_v4l2_decoder_reserve(d, cmd, owner, timestamp, &pts);
+	rc = crystalhd_v4l2_decoder_reserve_mapped(d, cmd, owner, buffer, timestamp, &pts);
 	if (rc)
 		return rc;
 	rc = crystalhd_v4l2_output_submit(cmd, owner, buffer, pts, timeout_ms);
@@ -187,8 +223,9 @@ int crystalhd_v4l2_decoder_drain(struct crystalhd_v4l2_decoder *d,
 	return crystalhd_v4l2_decoder_submitted(d, rc);
 }
 
-int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
-	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp)
+int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decoder *d,
+	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp,
+	struct chd_h264_range_snapshot *input_range)
 {
 	u32 i;
 
@@ -231,12 +268,20 @@ int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
 		if (d->timestamps[i].token != metadata->firmware_timestamp)
 			continue;
 		*timestamp = d->timestamps[i].timestamp;
+		if (input_range) *input_range = d->timestamps[i].input_range;
+		memset(&d->timestamps[i].input_range, 0, sizeof(d->timestamps[i].input_range));
 		d->timestamps[i].token = 0;
 		d->count--;
 		return metadata->picture_flags & CRYSTALHD_PICTURE_FLAG_DECODE_ERROR ?
 			-EILSEQ : 0;
 	}
 	return -ESTALE;
+}
+
+int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
+	const struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp)
+{
+	return crystalhd_v4l2_decoder_complete_observed(d, metadata, epoch, timestamp, NULL);
 }
 
 bool crystalhd_v4l2_decoder_drained(const struct crystalhd_v4l2_decoder *d)
