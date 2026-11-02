@@ -65,6 +65,22 @@ shelve the work or silently exclude implemented features.
 1. #530: live PLAYING/PAUSED overlay-window replacement, owned standalone
    host and current-parent geometry, same field generation/deadline and bounded
    stop are implemented in the follow-up; see its current-host receipt.
+   The explicit sink also accepts limited601/709 NV12 with declared JPEG/MPEG2
+   chroma site and complete progressive/interleaved pictures. Native current-host
+   plane/field/pixel/EOS/reopen checks pass; actual GL LeakSanitizer remains FAIL,
+   reproduced independently with ordinary GLES drawing. See the
+   [NV12 receipt](tests/fixtures/issue530/nv12-field-20261103.json).
+   A separate [materialized-field comparison](tests/fixtures/issue530/nv12-field-equivalence-20261103.json)
+   passes48 full-pixel comparisons including chroma boundaries at observed
+   error0/255. Absolute chroma reconstruction/siting, live sources and
+   field-GPU endurance remain open.
+   Own field Window connection/protocol setup now shares the bounded local
+   helper; a3second own-peer stall is repaired to approximately1second, with
+   six ordinary/sanitized auth exchanges, same-process actual display reopen
+   and native field regressions. See the
+   [setup receipt](tests/fixtures/issue530/field-setup-deadline-20261103.json).
+   Local DISPLAY is required; later EGL/replies and system-server restart
+   remain outside this setup deadline.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
    rejection, dormant pools and stop cancellation. See the
@@ -372,9 +388,11 @@ its exact-source and acceptance scope in the owning issue.
   burden handoff is disposed in #607's bounded current-cohort RC2 delivery;
   an independent booted OS remains unavailable/NOT_RUN.
 - [x] [#530: opt-in EGL field-view prototype and measured discriminators](https://github.com/ahnhy1324/crystalhd/issues/530)
-  — bounded synthetic/native/window/retirement work is recorded on its
-  unmerged research branch. The approximately 53 ms swap tail, field expiry
-  and broader presentation/host acceptance remain unresolved.
+  — bounded synthetic/native/window/retirement work is integrated as an explicit
+  experimental output. Scoped NV12 plane/field support is implemented with the
+  receipt above; this checkbox does not close the issue. The approximately53ms
+  swap tail, actual GL LSan failure, nonflat chroma interpolation, live sources,
+  field-GPU endurance and broader presentation/host acceptance remain unresolved.
 
 ## Tracked work
 

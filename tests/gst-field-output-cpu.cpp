@@ -38,7 +38,7 @@ static void test_caps_rejection() {
     auto *sink=element();auto *valid=caps();
     g_assert_true(set_caps(GST_BASE_SINK(sink),valid));gst_caps_unref(valid);
     for(unsigned mode=0;mode<6;mode++) {
-        auto *value=caps(mode==0?GST_VIDEO_FORMAT_NV12:GST_VIDEO_FORMAT_YUY2,
+        auto *value=caps(mode==0?GST_VIDEO_FORMAT_I420:GST_VIDEO_FORMAT_YUY2,
                          mode==1?641:mode==2?1922:1280,mode==3?719:720);
         if(mode==4)gst_caps_set_simple(value,"colorimetry",G_TYPE_STRING,"1:3:5:1",nullptr);
         if(mode==5)gst_caps_set_simple(value,"framerate",GST_TYPE_FRACTION,0,1,nullptr);
@@ -47,6 +47,41 @@ static void test_caps_rejection() {
         g_assert_cmpint(sink->state->info.height,==,720);
     }
     g_assert_null(sink->state->worker.get());gst_object_unref(sink);
+}
+
+static void test_nv12_caps() {
+    auto *sink=element();
+    for(auto matrix:{GST_VIDEO_COLOR_MATRIX_BT601,GST_VIDEO_COLOR_MATRIX_BT709})
+      for(const char *site:{"jpeg","mpeg2"})for(const char *mode:{"progressive","interleaved"}) {
+        auto *value=caps(GST_VIDEO_FORMAT_NV12,1280,720,matrix);
+        gst_caps_set_simple(value,"chroma-site",G_TYPE_STRING,site,"interlace-mode",G_TYPE_STRING,mode,nullptr);
+        g_assert_true(set_caps(GST_BASE_SINK(sink),value));gst_caps_unref(value);
+        g_assert_cmpint(GST_VIDEO_INFO_FORMAT(&sink->state->info),==,GST_VIDEO_FORMAT_NV12);
+      }
+    for(unsigned n=0;n<5;n++) {
+        auto *value=caps(GST_VIDEO_FORMAT_NV12,1280,n==0?718:720);
+        // Older video-info builders emit a default site; make omission explicit.
+        if(n==1)gst_structure_remove_field(gst_caps_get_structure(value,0),"chroma-site");
+        else gst_caps_set_simple(value,"chroma-site",G_TYPE_STRING,n==2?"dv":"mpeg2",nullptr);
+        if(n==3)gst_caps_set_simple(value,"interlace-mode",G_TYPE_STRING,"mixed",nullptr);
+        if(n==4)gst_caps_set_simple(value,"colorimetry",G_TYPE_STRING,"1:3:5:1",nullptr);
+        g_assert_false(set_caps(GST_BASE_SINK(sink),value));gst_caps_unref(value);
+        g_assert_cmpint(sink->state->info.height,==,720);
+      }
+    g_assert_null(sink->state->worker.get());gst_object_unref(sink);
+}
+static void test_plane_mapping() {
+    std::array<guint8,96> bytes{};GstVideoFrame frame{};
+    frame.map[0].data=bytes.data();frame.map[0].size=64;
+    frame.map[1].data=bytes.data()+64;frame.map[1].size=32;
+    frame.data[0]=bytes.data();frame.data[1]=bytes.data()+64;
+    g_assert_cmpuint(crystalhd_field::mapped_plane_available(frame,0),==,64);
+    g_assert_cmpuint(crystalhd_field::mapped_plane_available(frame,1),==,32);
+    frame.map[0].size=80;
+    g_assert_cmpuint(crystalhd_field::mapped_plane_available(frame,1),==,32);
+    frame.data[1]=bytes.data()+96;
+    bool rejected=false;try{crystalhd_field::mapped_plane_available(frame,1);}catch(const std::exception &){rejected=true;}
+    g_assert_true(rejected);
 }
 
 static void test_times() {
@@ -144,6 +179,8 @@ int main(int argc,char **argv) {
     gst_init(&argc,&argv);g_test_init(&argc,&argv,nullptr);
     g_test_add_func("/field/caps",test_caps);
     g_test_add_func("/field/caps-rejection",test_caps_rejection);
+    g_test_add_func("/field/nv12-caps",test_nv12_caps);
+    g_test_add_func("/field/plane-mapping",test_plane_mapping);
     g_test_add_func("/field/times",test_times);
     g_test_add_func("/field/clock",test_target_clock);
     g_test_add_func("/field/command-ownership",test_command_ownership);

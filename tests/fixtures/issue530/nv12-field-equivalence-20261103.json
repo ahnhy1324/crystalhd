@@ -1,0 +1,98 @@
+{
+  "actual_GPU": {
+    "boundary_equal": true,
+    "exit": 0,
+    "maximum_temperature_mC": 45000,
+    "probe_sha256": "abc2099b339b3e7a7637b9d1a78efb3537551d62c3c1b7581507c7a148847ee9",
+    "seconds": 2.7839204660849646,
+    "status": "PASS_NV12_FIELD_EQUIVALENCE"
+  },
+  "base_commit": "7b3ef5b8cbd1ad56c38f8cf4d4dfa1017ffc4809",
+  "boundary": {
+    "card_opens": 0,
+    "installed_verify": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "kernel_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel_rows": 0,
+    "kernel_since_local": "2026-11-03 05:54:39",
+    "module": "3.10.13",
+    "module_swaps": 0
+  },
+  "date": "2026-11-03",
+  "evidence": {
+    "result.json": "be52555adb8c5a55fd8216f70be2bc09aa94facba181c173b67f57f01ae66b58",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout.log": "6eccc2734442b90c694be397abccbb110c3434f76bb22296559527a11541d7b6"
+  },
+  "implementation": "Production offset/double-pitch field Image compared with an ordinary progressive NV12 Image from a separate half-height allocation. CPU materialization independently extracts Y[2*r+parity] into H/2 rows and UV[2*r+parity] into H/4 rows. Identical production Renderer and coordinates intentionally hold sampling constant. Dense Y/UV values vary every row/pair and generation. Shared GBM copy, import and renderer helpers are not independently requalified by this relative comparison.",
+  "issue": 530,
+  "limits": [
+    "Layout/render equivalence with independently extracted fields, not absolute JPEG/MPEG2 reconstruction or siting conformance",
+    "Common Renderer coordinate behavior is held fixed; previous independent flat-source/luma oracle remains separately scoped",
+    "Readback/completion is used; no async retirement/performance/scanout claim",
+    "No GStreamer pipeline, source PTS/order, decoder, A/V, live-input or endurance qualification in this standalone comparison",
+    "This test is native only; sanitizer NOT_RUN. Strict actual hardware-GL LSan FAIL from nv12-field-20261103.json remains unresolved and is not overridden",
+    "No stable release, default promotion or frozen RC2 asset change"
+  ],
+  "negative_control": {
+    "meaning": "Keep correct Y rows and deliberately materialize opposite UV parity. Comparator must detect more than1000 components with error>2. This proves UV-field mismatch sensitivity, not all possible fault detection.",
+    "result": {
+      "components_over2": 688184,
+      "max_error": 231,
+      "type": "nv12-wrong-UV-parity"
+    }
+  },
+  "production_changes": false,
+  "source_commit": "87fc6046bf61019ecf544e9634d82db46f525702",
+  "source_files": {
+    "filters/gst/field-output/Makefile": "4e48fe66b6070d7bc3ccd87e5fe1d689e73407464163d5be452abc793bead30b",
+    "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+    "tests/nv12-field-equivalence.cpp": "73248ea66b4bffd274e406d4d4c5bb464affa77995f2c98f94b235b1e43a0c63",
+    "tests/yuy2-gpu.h": "74f020c2ce7eff8acc0e17563c796d135fda1095ab5639c9aa2924d68b51a829"
+  },
+  "summary": {
+    "RGB_components_over2": 0,
+    "chroma_site_hints": [
+      "jpeg",
+      "mpeg2"
+    ],
+    "comparisons": 48,
+    "flat_or_edge_exclusions": 0,
+    "generations": 2,
+    "geometries": [
+      [
+        640,
+        360,
+        640,
+        360
+      ],
+      [
+        720,
+        576,
+        854,
+        480
+      ],
+      [
+        1280,
+        720,
+        1920,
+        1080
+      ]
+    ],
+    "matrices": [
+      601,
+      709
+    ],
+    "maximum_RGB_error": 0,
+    "nonopaque": 0,
+    "parities": [
+      0,
+      1
+    ],
+    "tolerance_RGB": 2,
+    "total_pixels": 43422720
+  },
+  "verdict": "PASS_BOUNDED_NV12_LAYOUT_RENDER_EQUIVALENCE"
+}
