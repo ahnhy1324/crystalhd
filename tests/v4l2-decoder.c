@@ -5,6 +5,7 @@
 #include "crystalhd_h264_range_binding.h"
 #include "fixtures/issue538/h264-range-nals-20261102.h"
 #include "fixtures/issue538/h264-multislice-prefixes-20261102.h"
+#include "fixtures/issue538/h264-poc0-multislice-prefixes-20261102.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -482,6 +483,50 @@ static void multislice_observation_checks(void)
 #undef MULTI_ADD
 }
 
+
+static void poc0_observation_checks(void)
+{
+    static const u8 limited[] = CHD_TEST_POC0_SPS_LIMITED;
+    static const u8 full[] = CHD_TEST_POC0_2_SPS;
+    static const u8 pps[] = CHD_TEST_POC0_2_PPS;
+    static const u8 slices[][16] = { CHD_TEST_POC0_2_VCL0,CHD_TEST_POC0_2_VCL1,
+        CHD_TEST_POC0_2_VCL2,CHD_TEST_POC0_2_VCL3,CHD_TEST_POC0_2_VCL4,
+        CHD_TEST_POC0_2_VCL5,CHD_TEST_POC0_2_VCL6,CHD_TEST_POC0_2_VCL7 };
+    const u64 source_pts[]={0,100000,33333,66667};
+    const unsigned display_order[]={0,2,3,1};
+    struct crystalhd_v4l2_decoder d;
+    struct crystalhd_cmd c={0};
+    struct crystalhd_rx_metadata m={.valid=true};
+    struct chd_h264_range_snapshot saved[4],out;
+    u64 tokens[4],timestamp=0;
+    u8 input[160];size_t n;
+    fail_call=0;crystalhd_v4l2_decoder_init(&d);
+    assert(!crystalhd_v4l2_decoder_open_locked(&d,&c,&owner));
+#define POC_ADD(ptr,len) do {memcpy(input+n,"\0\0\1",3);n+=3;memcpy(input+n,ptr,len);n+=len;} while(0)
+    /* Real IDR/P/B/B prefixes in decode order. Parameter relabels are CPU-only
+     * ownership controls, not a claim about a complete decodable GOP. */
+    for(unsigned i=0;i<4;i++) {
+        n=0;if(i&1) {POC_ADD(full,sizeof(full));} else {POC_ADD(limited,sizeof(limited));}
+        POC_ADD(pps,sizeof(pps));POC_ADD(slices[i*2],16);POC_ADD(slices[i*2+1],16);
+        mapped.source=input;mapped.bytes=n;
+        assert(!crystalhd_v4l2_decoder_reserve_mapped(&d,&c,&owner,&mapped,source_pts[i],&tokens[i]));
+        assert(d.timestamps[i].input_range.associated &&
+            d.timestamps[i].input_range.full_range==!!(i&1) &&
+            d.timestamps[i].input_range.sps_generation==i+1);
+        saved[i]=d.timestamps[i].input_range;
+        memset(input,0xff,sizeof(input));
+    }
+    for(unsigned i=0;i<4;i++) {
+        unsigned index=display_order[i];
+        m.firmware_timestamp=tokens[index]>>1;
+        assert(!crystalhd_v4l2_decoder_complete_observed(&d,&m,d.epoch,&timestamp,&out));
+        assert(timestamp==source_pts[index] && !memcmp(&out,&saved[index],sizeof(out)));
+    }
+    assert(!d.count);mapped=(struct crystalhd_v4l2_output_buffer){0};
+    printf("V4L2 POC0 actual-B prefixes: decode/display reorder, immutable per-token range PASS; decoder=%zu bytes\n",sizeof(d));
+#undef POC_ADD
+}
+
 int main(void)
 {
     struct crystalhd_v4l2_decoder d;
@@ -609,6 +654,7 @@ int main(void)
     asynchronous_checks();
     failed_picture_checks();
     multislice_observation_checks();
+    poc0_observation_checks();
     puts("V4L2 decoder state, timestamp correlation and genuine drain checks passed");
     return 0;
 }
