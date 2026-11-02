@@ -24,7 +24,7 @@ struct chd_h264_sps_range {
 	/* Additional input-prefix facts for bounded progressive picture grouping.
 	 * Geometry is never used for allocation by this reader.
 	 */
-	unsigned int frame_num_bits, poc_type, pic_size_in_map_units;
+	unsigned int frame_num_bits, poc_type, poc_lsb_bits, pic_size_in_map_units;
 	bool frame_mbs_only;
 };
 struct chd_h264_range_bits {
@@ -134,7 +134,9 @@ static inline enum chd_h264_range_status chd_h264_read_sps_range(
 	if (value > 2) return CHD_H264_RANGE_INVALID;
 	out.poc_type = value;
 	if (!value) {
-		if (chd_h264_range_ue(&b) > 12) return CHD_H264_RANGE_INVALID;
+		value = chd_h264_range_ue(&b);
+		if (value > 12) return CHD_H264_RANGE_INVALID;
+		out.poc_lsb_bits = value + 4;
 	} else if (value == 1) {
 		chd_h264_range_get(&b, 1);
 		chd_h264_range_se(&b); chd_h264_range_se(&b);
