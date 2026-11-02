@@ -79,9 +79,12 @@ shelve the work or silently exclude implemented features.
    A separately generated full-scale0..255 source now passes complete native
    YUYV/sourcePTS/EOS and all-pixel RGB checks in the own GPU import/upload
    probe; see the [full-scale receipt](tests/fixtures/issue538/full-scale-native-gpu-20261102.json).
-   Next qualify unchanged Kodi full-range rendering and investigate same-size
-   range-only notifications. Own-probe GPU results do not establish Kodi or
-   physical-display acceptance.
+   Unchanged Kodi/native FFmpeg now also passes one720p FULL-declaration
+   control:794 fixed source points at RGB error0, barcode-bound source frame1,
+  30 inputs/outputs and one LAST. See the [Kodi receipt](tests/fixtures/issue538/kodi-full-range-20261102.json).
+   Next qualify an actual full-scale Kodi fixture and investigate same-size
+   range-only notifications. The separate own-probe and Kodi results retain
+   their input and presentation limits.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in
