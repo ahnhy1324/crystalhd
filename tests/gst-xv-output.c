@@ -24,6 +24,15 @@ static gpointer fail_flush_connection;
 static gpointer delay_connection, delayed_event;
 static gint release_delayed;
 static gint drop_type;
+static gint force_setup_pipe, observed_setup_pipe;
+static xcb_connection_t *test_setup_connect(int fd, xcb_auth_info_t *auth)
+{
+  if (force_setup_pipe) {
+    ssize_t count = write(fd, "x", 1);
+    observed_setup_pipe = count < 0 && errno == EPIPE;
+  }
+  return xcb_connect_to_fd(fd, auth);
+}
 static const char *self_path;
 /* Deliberate candidate-only layout mismatch: a rejection-path control,
  * not a claim that this server advertises incompatible real ports. */
@@ -99,7 +108,9 @@ static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 #define xcb_flush test_flush
 #define xcb_poll_for_reply test_poll_reply
 #define xcb_xv_query_image_attributes test_image_attributes
+#define xcb_connect_to_fd test_setup_connect
 #include "../filters/gst/xv-output/gstcrystalhdxv.c"
+#undef xcb_connect_to_fd
 #undef shmget
 #undef shmat
 #undef shmctl
@@ -1623,17 +1634,38 @@ static void test_native_error_reopen_lifetime(void) { native_error_reopen(FALSE,
 static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, TRUE, FALSE, FALSE); }
 static void test_native_error_reopen_mp4(void) { native_error_reopen(TRUE, TRUE, TRUE, FALSE); }
 static void test_native_error_reopen_parser_policy(void) { native_error_reopen(TRUE, TRUE, FALSE, TRUE); }
+#include "xv-setup-fixture.h"
+static void test_setup_timeout(void)
+{
+  gchar *args[] = {(gchar *)self_path, "--setup-deadline-child", NULL};
+  gchar *out = NULL, *err = NULL; gint status = 0; GError *error = NULL;
+  g_assert_true(g_spawn_sync(NULL, args, NULL, 0, NULL, NULL, &out, &err, &status, &error));
+  g_assert_no_error(error);
+  if (status) g_test_message("setup child: %s", err);
+  g_assert_true(g_spawn_check_wait_status(status, &error)); g_assert_no_error(error);
+  g_test_message("%s", out); g_free(out); g_free(err);
+}
+static void test_setup_reopen(void)
+{
+  if (!x11_enabled()) return;
+  SetupPeer peer = {0}; setup_listen(&peer);
+  setup_exchange(&peer, FALSE, FALSE); close(peer.listener);
+  test_reopen();
+}
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
+  if (argc == 2 && !strcmp(argv[1], "--setup-deadline-child")) return setup_deadline_child();
   self_path = g_canonicalize_filename(argv[0], NULL);
   gst_init(&argc, &argv); g_test_init(&argc, &argv, NULL);
   g_assert_true(plugin_init(NULL));
   g_test_add_func("/xv/identity", test_identity);
   g_test_add_func("/xv/setup-failure", test_setup_failure);
+  g_test_add_func("/xv/setup-timeout", test_setup_timeout);
   g_test_add_func("/xv/color-admission", test_color_admission);
   g_test_add_func("/xv/unspecified-color-pixels", test_unspecified_color_pixels);
   g_test_add_func("/xv/x11/reopen", test_reopen);
+  g_test_add_func("/xv/x11/setup-reopen", test_setup_reopen);
   g_test_add_func("/xv/x11/preroll", test_preroll);
   g_test_add_func("/xv/x11/padded-copy", test_padded_copy);
   g_test_add_func("/xv/x11/paused-expose", test_paused_expose);
