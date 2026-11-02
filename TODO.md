@@ -92,6 +92,10 @@ shelve the work or silently exclude implemented features.
    ordinary/sanitized, including same-process timeout then display/EOS/restart.
    See the [startup receipt](tests/fixtures/issue513/xv-setup-deadline-20261103.json).
    This does not establish system-server restart or interrupt filesystem I/O.
+   A default-FIFO caps-aspect repair now invalidates cached bars: previously
+   a4:3 white picture left white pixels in newly exposed16:9 letterbox bars.
+   The current-host19 actual-X11 groups pass ordinary and ASan/UBSan/leaks;
+   [source/regression](https://github.com/ahnhy1324/crystalhd/blob/42ded7e0cdff8030f72aba71a328b6d0f9724e78/filters/gst/xv-output/gstcrystalhdxv.c).
 3. #538: SPS prefix #624 is merged. The admission-binding follow-up now
    observes PPS/SPS/single-first-slice prefixes, snapshots range/SPS generation
    per token and returns the matching observation to private CAPTURE storage.

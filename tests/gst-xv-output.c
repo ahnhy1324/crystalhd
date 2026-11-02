@@ -1430,6 +1430,42 @@ cleanup:
   g_free(skip); g_free(failure);
 #undef CONTENTION_REQUIRE
 }
+static void test_caps_aspect_borders(void)
+{
+  if (!x11_enabled()) return;
+  XvContext owner = {.wake_fd = -1}; g_mutex_init(&owner.lock); g_cond_init(&owner.changed);
+  int screen_number = 0; const char *failure = NULL;
+  owner.connection = connect_local_display(NULL, &screen_number, &failure);
+  g_assert_nonnull(owner.connection); g_assert_cmpint(xcb_connection_has_error(owner.connection), ==, 0);
+  xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(owner.connection));
+  for (int i = 0; i < screen_number && screens.rem; i++) xcb_screen_next(&screens);
+  g_assert_cmpint(screens.rem, >, 0);
+  xcb_window_t window = xcb_generate_id(owner.connection); guint32 values[] = {0, TRUE};
+  xcb_create_window(owner.connection, XCB_COPY_FROM_PARENT, window, screens.data->root,
+      0, 0, 320, 240, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual,
+      XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT, values);
+  xcb_map_window(owner.connection, window); g_assert_true(barrier_locked(&owner));
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window);
+  g_assert_true(sink_start(GST_BASE_SINK(sink))); XvContext *c = sink_context(XV_SINK(sink));
+  g_mutex_lock(&c->lock); c->redraw_suspended++; g_mutex_unlock(&c->lock);
+  for (guint step = 0; step < 2; step++) {
+    GstVideoInfo info = info_for(step ? 640 : 320, step ? 360 : 240);
+    GstCaps *caps = gst_video_info_to_caps(&info);
+    g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+    GstBuffer *buffer = pattern_buffer(&info, step);
+    solid_pool_buffer(buffer, &info, step == 0, step);
+    g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
+    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+    window_pixel_locked(c, 160, 120, step == 0); /* New source is actually painted. */
+    window_pixel_locked(c, 160, 1, step == 0); /* Newly exposed bar must become black. */
+    g_mutex_unlock(&c->lock); gst_buffer_unref(buffer);
+  }
+  g_assert_true(sink_stop(GST_BASE_SINK(sink))); context_unref(c); gst_object_unref(sink); clean_contexts();
+  xcb_destroy_window(owner.connection, window); g_assert_true(barrier_locked(&owner));
+  xcb_disconnect(owner.connection); g_mutex_clear(&owner.lock); g_cond_clear(&owner.changed);
+  g_test_message("Default FIFO caps4:3 white ->16:9 black: new video and newly exposed bars replace old pixels");
+}
 static void test_caps_and_flush(void)
 {
   if (!x11_enabled()) return;
@@ -1677,6 +1713,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/two-instances", test_two_instances);
   g_test_add_func("/xv/x11/port-contention-reopen", test_port_contention_reopen);
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
+  g_test_add_func("/xv/x11/caps-aspect-borders", test_caps_aspect_borders);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
   g_test_add_func("/xv/x11/live-window-replacement", test_live_window_replacement);
   g_test_add_func("/xv/x11/live-port-handoff", test_live_port_handoff);

@@ -914,6 +914,7 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
   gboolean ok = drain_locked(c) && colorspace_locked(c, &info);
   if (ok) {
     s->info = info; c->epoch++;
+    c->borders_dirty = TRUE; /* New aspect/PAR can expose previously covered bars. */
     GST_VIDEO_SINK_WIDTH(s) = info.width; GST_VIDEO_SINK_HEIGHT(s) = info.height;
   }
   g_mutex_unlock(&c->lock); g_mutex_unlock(&s->control);
