@@ -96,27 +96,41 @@ struct Image {
     EGLint error = EGL_SUCCESS;
     template<class Source>
     Image(yuy2_gpu::GPU &g, Source &source, bool field, unsigned parity,
-          EGLint matrix=EGL_ITU_REC709_EXT, bool trace=true)
+          EGLint matrix=EGL_ITU_REC709_EXT, bool trace=true,
+          uint32_t format=DRM_FORMAT_YUYV, unsigned uv_offset=0,
+          unsigned uv_pitch=0, EGLint horizontal=EGL_YUV_CHROMA_SITING_0_5_EXT)
         : gpu(g) {
+        const bool nv12=format==DRM_FORMAT_NV12;
+        need(nv12||format==DRM_FORMAT_YUYV,"supported image format");
+        need(!nv12||(!(source.height%(field?4:2))&&uv_pitch>=source.width),"complete NV12 planes");
         const unsigned height = field ? source.height / 2 : source.height;
         const unsigned pitch = source.pitch * (field ? 2 : 1);
         const unsigned offset = field ? parity * source.pitch : 0;
         need(parity < 2 && size_t(offset) + size_t(height - 1) * pitch +
-             source.width * 2 <= source.length, "import extent");
-        EGLint attributes[] = {
-            EGL_WIDTH, EGLint(source.width), EGL_HEIGHT, EGLint(height),
-            EGL_LINUX_DRM_FOURCC_EXT, EGLint(DRM_FORMAT_YUYV),
-            EGL_DMA_BUF_PLANE0_FD_EXT, source.fd,
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT, EGLint(offset),
-            EGL_DMA_BUF_PLANE0_PITCH_EXT, EGLint(pitch),
-            EGL_YUV_COLOR_SPACE_HINT_EXT, matrix,
-            EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,
-            EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
-            EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
-            EGL_NONE
-        };
+             source.width * (nv12?1:2) <= source.length, "import extent");
+        std::array<EGLint,32> attributes{};unsigned used=0;
+        auto attribute=[&](EGLint key,EGLint value){attributes[used++]=key;attributes[used++]=value;};
+        attribute(EGL_WIDTH,source.width);attribute(EGL_HEIGHT,height);
+        attribute(EGL_LINUX_DRM_FOURCC_EXT,format);
+        attribute(EGL_DMA_BUF_PLANE0_FD_EXT,source.fd);
+        attribute(EGL_DMA_BUF_PLANE0_OFFSET_EXT,offset);
+        attribute(EGL_DMA_BUF_PLANE0_PITCH_EXT,pitch);
+        if(nv12) {
+            const size_t base=size_t(uv_offset)+(field?size_t(parity)*uv_pitch:0);
+            const size_t stride=size_t(uv_pitch)*(field?2:1);
+            need(base<=INT32_MAX&&stride<=INT32_MAX&&
+                 base+(height/2-1)*stride+source.width<=source.length,"UV import extent");
+            attribute(EGL_DMA_BUF_PLANE1_FD_EXT,source.fd);
+            attribute(EGL_DMA_BUF_PLANE1_OFFSET_EXT,base);
+            attribute(EGL_DMA_BUF_PLANE1_PITCH_EXT,stride);
+        }
+        attribute(EGL_YUV_COLOR_SPACE_HINT_EXT,matrix);
+        attribute(EGL_SAMPLE_RANGE_HINT_EXT,EGL_YUV_NARROW_RANGE_EXT);
+        attribute(EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,horizontal);
+        attribute(EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT,EGL_YUV_CHROMA_SITING_0_5_EXT);
+        attributes[used]=EGL_NONE;
         image = gpu.create(gpu.display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
-                           nullptr, attributes);
+                           nullptr, attributes.data());
         error = eglGetError();
         if (trace) printf("{\"type\":\"import\",\"field\":%s,\"parity\":%u,\"width\":%u,"
                "\"height\":%u,\"offset\":%u,\"pitch\":%u,\"ok\":%s,\"egl_error\":%u}\n",
@@ -147,28 +161,33 @@ struct Image {
 };
 
 // Native producer alternative: GBM owns the map/unmap coherency boundary.
-// Storage is a linear array of four-byte pairs; EGL interprets those bytes
-// as YUYV. No CPU color conversion is performed. map/unmap may internally
+// A linear ARGB carrier holds raw YUYV pairs or NV12 Y then UV rows; EGL
+// interprets the declared video layout. No CPU color conversion is performed. map/unmap may internally
 // stage/copy, so its entire cost belongs to the producer measurement.
 struct GbmAllocation {
     gbm_bo *bo=nullptr;
     int fd=-1;
-    unsigned width,height,pitch;
+    unsigned width,height,pitch,format,row_bytes,rows,columns;
+    unsigned uv_offset=0,uv_pitch=0;
     size_t length=0;
     bool initialized=false;
-    GbmAllocation(yuy2_gpu::GPU &gpu,unsigned w,unsigned h):width(w),height(h),pitch(0) {
+    GbmAllocation(yuy2_gpu::GPU &gpu,unsigned w,unsigned h,uint32_t fourcc=DRM_FORMAT_YUYV)
+        :width(w),height(h),pitch(0),format(fourcc),row_bytes(w*(fourcc==DRM_FORMAT_NV12?1:2)),
+         rows((fourcc==DRM_FORMAT_NV12?h+h/2:h)+8),columns((row_bytes+3)/4) {
       try {
         need(w&&!(w&1)&&h&&!(h&1),"GBM even geometry");
-        bo=gbm_bo_create(gpu.gbm,w/2,h+8,GBM_FORMAT_ARGB8888,
+        need(format==DRM_FORMAT_YUYV||format==DRM_FORMAT_NV12,"GBM video format");
+        bo=gbm_bo_create(gpu.gbm,columns,rows,GBM_FORMAT_ARGB8888,
                          GBM_BO_USE_LINEAR);
         need(bo,"owned GBM linear pair storage");
         need(gbm_bo_get_modifier(bo)==DRM_FORMAT_MOD_LINEAR,"actual linear GBM modifier");
         pitch=gbm_bo_get_stride(bo);fd=gbm_bo_get_fd(bo);
-        need(fd>=0&&pitch>=w*2,"GBM export/pitch");
+        need(fd>=0&&pitch>=row_bytes,"GBM export/pitch");
         const off_t bytes=lseek(fd,0,SEEK_END);
-        need(bytes>0&&uint64_t(bytes)>=uint64_t(pitch)*(h+8),"GBM exported extent");
+        need(bytes>0&&uint64_t(bytes)>=uint64_t(pitch)*rows,"GBM exported extent");
         length=bytes;need(lseek(fd,0,SEEK_SET)==0,"DMA-BUF size query restore");
-        printf("{\"type\":\"allocation\",\"kind\":\"gbm-linear-map\",\"view\":\"YUYV\",\"width\":%u,\"height\":%u,\"pitch\":%u,\"bytes\":%zu,\"modifier\":0}\n",w,h,pitch,length);
+        if(format==DRM_FORMAT_NV12){uv_offset=pitch*h;uv_pitch=pitch;}
+        printf("{\"type\":\"allocation\",\"kind\":\"gbm-linear-map\",\"view\":\"%s\",\"width\":%u,\"height\":%u,\"pitch\":%u,\"bytes\":%zu,\"modifier\":0}\n",format==DRM_FORMAT_NV12?"NV12":"YUYV",w,h,pitch,length);
       } catch(...) {
         if(fd>=0){close(fd);fd=-1;}
         if(bo){gbm_bo_destroy(bo);bo=nullptr;}
@@ -176,6 +195,7 @@ struct GbmAllocation {
       }
     }
     void write(const uint8_t *source,size_t stride,size_t available) {
+        need(format==DRM_FORMAT_YUYV,"packed producer format");
         need(source&&stride>=width*2&&stride<=SIZE_MAX/height&&
              available>=(height-1)*stride+width*2,"GBM mapped source extent");
         // Caller has completed both uses and destroyed the old field images.
@@ -188,6 +208,22 @@ struct GbmAllocation {
             memset(data+size_t(row)*mapped_pitch,0xa5,width*2);
         for(unsigned row=0;row<height;++row)
             memcpy(data+size_t(row)*mapped_pitch,source+row*stride,width*2);
+        gbm_bo_unmap(bo,handle);initialized=true;
+    }
+    void write_nv12(const uint8_t *y,size_t y_stride,size_t y_available,
+                    const uint8_t *uv,size_t uv_stride,size_t uv_available) {
+        need(format==DRM_FORMAT_NV12&&y&&uv&&y_stride>=width&&uv_stride>=width&&
+             y_stride<=SIZE_MAX/height&&uv_stride<=SIZE_MAX/(height/2)&&
+             y_available>=(height-1)*y_stride+width&&
+             uv_available>=(height/2-1)*uv_stride+width,"mapped NV12 plane extents");
+        glFinish();uint32_t mapped_pitch=0;void *handle=nullptr;
+        auto *data=static_cast<uint8_t *>(gbm_bo_map(bo,0,0,columns,rows,
+                                      GBM_BO_TRANSFER_WRITE,&mapped_pitch,&handle));
+        if(data&&mapped_pitch<width){gbm_bo_unmap(bo,handle);need(false,"NV12 transfer pitch");}
+        need(data,"NV12 writable transfer");
+        if(!initialized)for(unsigned row=0;row<rows;++row)memset(data+size_t(row)*mapped_pitch,0xa5,row_bytes);
+        for(unsigned row=0;row<height;++row)memcpy(data+size_t(row)*mapped_pitch,y+size_t(row)*y_stride,width);
+        for(unsigned row=0;row<height/2;++row)memcpy(data+size_t(height+row)*mapped_pitch,uv+size_t(row)*uv_stride,width);
         gbm_bo_unmap(bo,handle);initialized=true;
     }
     GbmAllocation(const GbmAllocation &)=delete;

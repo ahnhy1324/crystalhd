@@ -16,6 +16,17 @@ GST_DEBUG_CATEGORY_STATIC(field_debug);
 #define GST_CAT_DEFAULT field_debug
 
 namespace crystalhd_field {
+static size_t mapped_plane_available(const GstVideoFrame &frame,unsigned plane) {
+    need(plane<GST_VIDEO_MAX_PLANES,"video plane index");
+    const auto origin=reinterpret_cast<uintptr_t>(GST_VIDEO_FRAME_PLANE_DATA(&frame,plane));
+    size_t available=0;
+    for(const auto &map:frame.map) {
+        const auto base=reinterpret_cast<uintptr_t>(map.data);
+        if(base&&origin>=base&&origin-base<map.size)
+            available=std::max(available,map.size-size_t(origin-base));
+    }
+    need(available,"mapped video plane origin");return available;
+}
 struct Counters {
     std::atomic<guint64> pictures{0},fields{0},prerolls{0},redraws{0},swaps{0},
         cancelled{0},clipped{0},failures{0},allocations{0},images{0},retained{0},
@@ -434,6 +445,10 @@ struct Worker {
             clear_borders(window.width,window.height,(window.width-w)/2,(window.height-h)/2,w,h);
             renderer->draw_to(*views[interlaced?parity:0],interlaced,parity,0,
                 (window.width-w)/2,(window.height-h)/2,w,h,true,!interlaced,false);
+#ifdef CRYSTALHD_FIELD_OBSERVER
+            CRYSTALHD_FIELD_OBSERVER(retained,previous,parity,interlaced,window.width,window.height,
+                views[interlaced?parity:0]->image);
+#endif
         };
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
         for(;;) {
@@ -501,7 +516,8 @@ struct Worker {
                     throw std::runtime_error("one-field/repeat-field input is not qualified");
                 if(!gst_video_info_is_equal(&info,&previous)) {
                     retire();storage.reset();renderer.reset();
-                    storage=std::make_unique<GbmAllocation>(gpu,info.width,info.height);stats.allocations=1;
+                    storage=std::make_unique<GbmAllocation>(gpu,info.width,info.height,
+                        GST_VIDEO_INFO_FORMAT(&info)==GST_VIDEO_FORMAT_NV12?DRM_FORMAT_NV12:DRM_FORMAT_YUYV);stats.allocations=1;
                     // Only the window default framebuffer is used; tiny helper FBO.
                     renderer=std::make_unique<Renderer>(info.width,info.height,2,2);previous=info;
                 }
@@ -512,17 +528,26 @@ struct Worker {
                     need(gst_video_frame_map(&frame,&info,command->buffer,GST_MAP_READ),"input video mapping");
                     try {
                         const gint stride=GST_VIDEO_FRAME_PLANE_STRIDE(&frame,0);
-                        need(stride>=info.width*2,"positive YUY2 input stride");
                         const auto *data=static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&frame,0));
-                        const auto *base=frame.map[0].data;
-                        need(base&&data>=base&&size_t(data-base)<=frame.map[0].size,"mapped video plane origin");
-                        storage->write(data,stride,frame.map[0].size-size_t(data-base));
+                        if(GST_VIDEO_INFO_FORMAT(&info)==GST_VIDEO_FORMAT_NV12) {
+                            const gint uv_stride=GST_VIDEO_FRAME_PLANE_STRIDE(&frame,1);
+                            need(stride>=info.width&&uv_stride>=info.width,"positive NV12 input strides");
+                            storage->write_nv12(data,stride,mapped_plane_available(frame,0),
+                                static_cast<const uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&frame,1)),uv_stride,mapped_plane_available(frame,1));
+                        }else {
+                            need(stride>=info.width*2,"positive YUY2 input stride");
+                            storage->write(data,stride,mapped_plane_available(frame,0));
+                        }
                     }catch(...){gst_video_frame_unmap(&frame);throw;}
                     gst_video_frame_unmap(&frame);
                     const EGLint matrix=info.colorimetry.matrix==GST_VIDEO_COLOR_MATRIX_BT601?EGL_ITU_REC601_EXT:EGL_ITU_REC709_EXT;
-                    views[0]=std::make_unique<Image>(gpu,*storage,interlaced,0,matrix,false);
+                    const EGLint horizontal=GST_VIDEO_INFO_FORMAT(&info)==GST_VIDEO_FORMAT_NV12&&
+                        info.chroma_site==GST_VIDEO_CHROMA_SITE_MPEG2?EGL_YUV_CHROMA_SITING_0_EXT:EGL_YUV_CHROMA_SITING_0_5_EXT;
+                    views[0]=std::make_unique<Image>(gpu,*storage,interlaced,0,matrix,false,
+                        storage->format,storage->uv_offset,storage->uv_pitch,horizontal);
                     need(views[0]->texture,"first field import");stats.images=1;
-                    if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false);need(views[1]->texture,"second field import");stats.images=2;}
+                    if(interlaced){views[1]=std::make_unique<Image>(gpu,*storage,true,1,matrix,false,
+                        storage->format,storage->uv_offset,storage->uv_pitch,horizontal);need(views[1]->texture,"second field import");stats.images=2;}
                     retained=gst_buffer_ref(command->buffer);stats.retained=1;held_generation=command->generation;
                     preparation_ns=gst_util_get_timestamp()-prepare_begin;
                     retirement_ns=stats.retire_ns.load()-retirement_before;
@@ -668,11 +693,17 @@ static gboolean unlock_stop(GstBaseSink *sink) {
 }
 static gboolean set_caps(GstBaseSink *sink,GstCaps *caps) {
     auto *self=reinterpret_cast<GstCrystalhdField *>(sink);GstVideoInfo info{};
-    if(!gst_video_info_from_caps(&info,caps)||GST_VIDEO_INFO_FORMAT(&info)!=GST_VIDEO_FORMAT_YUY2||info.fps_n<=0||info.fps_d<=0||
+    if(!gst_video_info_from_caps(&info,caps)||
+       (GST_VIDEO_INFO_FORMAT(&info)!=GST_VIDEO_FORMAT_YUY2&&GST_VIDEO_INFO_FORMAT(&info)!=GST_VIDEO_FORMAT_NV12)||info.fps_n<=0||info.fps_d<=0||
        info.width<2||info.height<2||(info.width&1)||(info.height&1)||
        info.width>1920||info.height>1088||info.par_n<=0||info.par_d<=0||
        info.colorimetry.range!=GST_VIDEO_COLOR_RANGE_16_235||
        (info.colorimetry.matrix!=GST_VIDEO_COLOR_MATRIX_BT709&&info.colorimetry.matrix!=GST_VIDEO_COLOR_MATRIX_BT601))return FALSE;
+    const char *site=gst_structure_get_string(gst_caps_get_structure(caps,0),"chroma-site");
+    if(GST_VIDEO_INFO_FORMAT(&info)==GST_VIDEO_FORMAT_NV12&&
+       ((!site||(strcmp(site,"jpeg")&&strcmp(site,"mpeg2")))||(info.height%4)||
+        (info.interlace_mode!=GST_VIDEO_INTERLACE_MODE_PROGRESSIVE&&info.interlace_mode!=GST_VIDEO_INTERLACE_MODE_INTERLEAVED)||
+        (info.chroma_site!=GST_VIDEO_CHROMA_SITE_JPEG&&info.chroma_site!=GST_VIDEO_CHROMA_SITE_MPEG2)))return FALSE;
     std::lock_guard<std::mutex> lock(self->state->mutex);self->state->info=info;return TRUE;
 }
 static GstFlowReturn output(GstBaseSink *sink,GstBuffer *buffer,bool preroll) {
@@ -775,10 +806,12 @@ static void gst_crystalhd_field_class_init(GstCrystalhdFieldClass *klass) {
         "Swap submissions and fenced source retirements, not scanout; live snapshots may span a transition",
         GST_TYPE_STRUCTURE,GParamFlags(G_PARAM_READABLE|G_PARAM_STATIC_STRINGS)));
     gst_element_class_set_static_metadata(element,"Experimental CrystalHD GPU fields","Sink/Video",
-        "Owned linear YUY2 field views with pipeline-clocked XCB/EGL output","CrystalHD contributors");
+        "Owned linear YUY2/NV12 field views with pipeline-clocked XCB/EGL output","CrystalHD contributors");
     static GstStaticPadTemplate pad=GST_STATIC_PAD_TEMPLATE("sink",GST_PAD_SINK,GST_PAD_ALWAYS,
         GST_STATIC_CAPS("video/x-raw, format=(string)YUY2, width=(int)[2,1920], height=(int)[2,1088], "
-                        "framerate=(fraction)[1/1,60/1], interlace-mode=(string){progressive,interleaved,mixed}"));
+                        "framerate=(fraction)[1/1,60/1], interlace-mode=(string){progressive,interleaved,mixed}; "
+                        "video/x-raw, format=(string)NV12, width=(int)[2,1920], height=(int)[4,1088], "
+                        "framerate=(fraction)[1/1,60/1], interlace-mode=(string){progressive,interleaved}, chroma-site=(string){jpeg,mpeg2}"));
     gst_element_class_add_static_pad_template(element,&pad);
     base->start=start;base->stop=stop;base->unlock=unlock;base->unlock_stop=unlock_stop;
     base->set_caps=set_caps;base->preroll=preroll;base->render=render;base->get_times=get_times;

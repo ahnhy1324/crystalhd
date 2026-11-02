@@ -22,6 +22,8 @@
 /filters/gst/field-output/field-output-cpu-test
 /filters/gst/field-output/field-output-cpu-test-asan
 /filters/gst/field-output/field-window-test
+/filters/gst/field-output/field-nv12-test
+/filters/gst/field-output/egl-draw-closure-asan
 /filters/gst/gst-plugin-1.0/libgstcrystalhdmpeg1experimental.so.config
 /filters/gst/gst-plugin-1.0/gst-mpeg1-experimental-test
 /filters/gst/gst-plugin-1.0/mpeg1-natural-playback-test
