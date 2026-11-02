@@ -92,9 +92,18 @@ shelve the work or silently exclude implemented features.
    double-transition/GPU reuse checks pass with
    exact sourcePTS/retained YUYV/LAST/EPIPE and full baseline restoration.
    See the [transition receipt](tests/fixtures/issue538/same-size-range-staging-20261102.json).
-   Next qualify dynamic range renegotiation in unchanged Kodi, then broader
-   syntax/reorder and controlled endurance. Sampled Kodi RGB, own-probe GPU
-   checks and physical presentation retain their separate evidence limits.
+   Unchanged Kodi now passes limited→full in one60-picture file:798 fixed
+   points before/after at error0 and boundary/final LAST at30/60. A90-picture
+   limited→full→limited session preserves all pictures and G_FMT2→1→2, but
+   its final limited RGB fails at error20. Existing LOGVIDEO passes NARROW to
+   EGL. A decoder-free24-picture factorial probe independently reproduces
+   that error only when reusing the input external GL texture after FULL;
+   fresh textures avoid it, regardless of DMA-BUF/Picture-bundle reuse.
+   See the [render-boundary receipt](tests/fixtures/issue538/egl-range-rebind-20261102.json).
+   Broader syntax/reorder/endurance and the exact graphics implementation
+   site remain research. No external patch or driver pixel/range workaround
+   is applied. Sampled Kodi RGB, separate native/GPU controls and physical
+   presentation retain distinct evidence limits.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in
