@@ -37,8 +37,12 @@ field-output-cpu-test: ../../../tests/gst-field-output-cpu.cpp gstcrystalhdfield
 field-output-cpu-test-asan: ../../../tests/gst-field-output-cpu.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie $< $(LDFLAGS) $(LDLIBS) -o $@
 
+field-window-test: ../../../tests/gst-field-window.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) $(shell pkg-config --libs gstreamer-app-1.0) -o $@
+
 # NULL-only CPU contracts and plugin discovery; no display/device/worker starts.
-check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan
+# Compile the explicit X11/GPU regression too; running it remains opt-in.
+check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test
 	@set -eu; check_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/crystalhd-field-check.XXXXXX"); \
 	trap 'rm -rf -- "$$check_dir"' EXIT HUP INT TERM; \
 	GST_PLUGIN_PATH= GST_PLUGIN_PATH_1_0= GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_SYSTEM_PATH_1_0= \
@@ -53,6 +57,6 @@ check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan
 	grep -q 'field-stats' "$$check_dir/inspect.txt"
 
 clean:
-	rm -f libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
+	rm -f libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
 
 .PHONY: all check clean

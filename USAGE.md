@@ -348,6 +348,15 @@ per invocation and is not saved by the configuration manager. With `field-gpu`,
 omit `--weave` and use `--software-output-size native` to clear any saved
 software resize; either conflicting request is rejected before playback.
 
+The experimental sink accepts `GstVideoOverlay.set_window_handle()` during
+PLAYING or PAUSED. Keep the new X11 target and its ancestors alive while it is
+selected. After successful synchronous replacement, a previous parent outside
+that ancestry may be destroyed.
+Handle0 restores an owned standalone window. Invalid targets preserve the
+current output; `field-stats` reports `window-handle`, `window-replacements`
+and `window-rejections`. The GL context and retained field imports survive the
+change. This does not broaden format, live-input or physical display claims.
+
 ## Optional BCM70015 output scaling
 
 Use this option when Full-HD output is bandwidth-limited and a smaller image
