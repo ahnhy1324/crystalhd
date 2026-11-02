@@ -88,7 +88,8 @@ The explicit sink additionally accepts raw linear NV12 with declared
 and height divisible by4 up to1088. It accepts complete progressive or
 interleaved pictures; omitted/unknown/DV chroma site, mixed mode, ONEFIELD/RFF,
 negative strides and full range remain unqualified and are rejected.
-The Player's existing YUY2 output negotiation is unchanged.
+The Player's existing CrystalHD hardware decoder still outputs YUY2; software
+playbin negotiation can select the sink's new NV12 caps.
 
 Y and UV are copied separately into one owned linear GBM allocation, without
 CPU color conversion or full-height Bob materialization. A field's Y starts
@@ -153,6 +154,32 @@ only compiles it. This proves bounded layout/render equivalence, including
 chroma boundaries, rather than absolute chroma reconstruction/siting or an
 independent check of the common renderer. It adds no GPU sanitizer, timing,
 A/V, live-input or endurance acceptance; the strict LSan failure above remains.
+
+### Local connection/setup deadline — 2026-11-03
+
+The field Window still used blocking `xcb_connect()` after the Xv sink's
+separate setup repair. Its exact own caller remained blocked for3seconds on
+an owned local peer that accepted the socket without replying, then returned
+only when that peer closed. It now shares the joined one-second local
+socket/protocol-setup watchdog. Xv and field reserve separate bounded XDM
+client-ID ranges because a header-local counter is not shared across plugins.
+
+The [current-host receipt](field-setup-deadline-20261103.json) records six
+no/partial-response exchanges with no-authority/MIT/XDM in each ordinary and
+ASan/UBSan/leak field test, exact caller PID and FD retirement. These controls
+fail before any GL/device initialization. The native test then creates and
+retires a valid actual X11/EGL Window in the same process. Existing field
+window/NV12 regressions pass natively; all18 actual Xv groups pass ordinary
+and sanitizer builds. The field hardware-GL LSan failure remains separate.
+
+`make -C filters/gst/field-output check` runs CPU/owned-peer setup controls
+without a real display or GPU. Actual reopen is explicit:
+`filters/gst/field-output/field-setup-test --x11`.
+Field output now requires local `:N` or `unix/:N` DISPLAY; host/TCP displays
+are explicitly rejected and have no qualified remote fallback. This deadline
+does not interrupt Xauthority filesystem I/O or bound later EGL/atom/geometry
+calls, universal start/stop time, or system X-server restart. Those remaining
+interruption scopes are not completed by this setup fix.
 
 ### Live window replacement — 2026-11-02
 

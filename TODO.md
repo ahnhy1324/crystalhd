@@ -74,6 +74,13 @@ shelve the work or silently exclude implemented features.
    passes48 full-pixel comparisons including chroma boundaries at observed
    error0/255. Absolute chroma reconstruction/siting, live sources and
    field-GPU endurance remain open.
+   Own field Window connection/protocol setup now shares the bounded local
+   helper; a3second own-peer stall is repaired to approximately1second, with
+   six ordinary/sanitized auth exchanges, same-process actual display reopen
+   and native field regressions. See the
+   [setup receipt](tests/fixtures/issue530/field-setup-deadline-20261103.json).
+   Local DISPLAY is required; later EGL/replies and system-server restart
+   remain outside this setup deadline.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
    rejection, dormant pools and stop cancellation. See the

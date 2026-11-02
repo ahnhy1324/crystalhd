@@ -1,0 +1,210 @@
+{
+  "actual_X11": {
+    "actual-reopen-01": {
+      "TAP_groups": [],
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "8c37d4ef5913af7f6ef76804e8006f10ebda60bfdaf453362c5bf715cd74f869",
+      "seconds": 6.174145404016599,
+      "status": "PASS_FIELD_SETUP_ACTUAL_X11_REOPEN",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "74827adac6ab3220980aa85d6c4bdd00e867f597e001f99d4e91c5683c995c32"
+    },
+    "field-window-01": {
+      "TAP_groups": [],
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 48000,
+      "probe_sha256": "9634fbe028b4db6566e733c1e08d823abe6f211b2e0de0b889e275197ae3a01e",
+      "seconds": 4.735125510953367,
+      "status": "PASS_FIELD_WINDOW_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "28feb5d3115a3ab55411536ea789850f888044c68e54461bab632f3da994500e"
+    },
+    "nv12-native-01": {
+      "TAP_groups": [],
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "fef7c1351bd006f1bff33bc767484bcd4a3f4cd8031befbe9c1bb1360f124e84",
+      "seconds": 1.4458900819299743,
+      "status": "PASS_NV12_WORKER",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cbb8eaa306cc16320c0a48c51fd42c4dd40b059eb7d945548de401b57e9f20c5"
+    },
+    "xv-x11-native-01": {
+      "TAP_groups": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine"
+      ],
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "50d4a924961f844503b4e7febd1144e6bace6dace4254200fbf2d3efe878e788",
+      "seconds": 15.246520792949013,
+      "status": "PASS_XV_X11_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "856f0dd1790fca77e8ea782db97a8e6ba2b70f3776734c038fa642bac9333fb2"
+    },
+    "xv-x11-san-01": {
+      "TAP_groups": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine"
+      ],
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "e4a19b45f2d9a9a4967af63d763de615de5f37ab2e2343f3b762a61cabf7eed9",
+      "seconds": 15.860859460080974,
+      "status": "PASS_XV_ASAN_UBSAN_LSAN_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "a1022a05ed80eab597947413740a79981c7edc5b110d39c2e43c7728f4de18a0"
+    }
+  },
+  "base_commit": "3ac7e99c8c90ee177ec0903bb4b3fc2ce57cd1a3",
+  "before": {
+    "result": {
+      "exit": 0,
+      "peer_pid": 1724988,
+      "probe_sha256": "d43f2a29f9cf15b7a43296d143c8d3ea18daf1d5ebb8a4148601550248411d74",
+      "request_bytes": 12,
+      "retired_after_owned_peer_close": true,
+      "scope": "Exact own field Window constructor on an owned no-reply local peer; no user X server or graphics/card operations.",
+      "seconds": 3.0138620019424707,
+      "status": "REPRODUCED_OWN_FIELD_SETUP_STALL",
+      "still_running_after3s_without_setup_reply": true
+    },
+    "source_commit": "3ac7e99c8c90ee177ec0903bb4b3fc2ce57cd1a3",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_sha256": "61d570727626e2c7d0af070cec9810ae9880c5c780a12924f14320e628a6486d"
+  },
+  "boundary": {
+    "all_recorded_guards_equal": true,
+    "card_opens": 0,
+    "installed_runtime_verify": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "kernel_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel_rows": 0,
+    "kernel_window_start_local": "2026-11-03 06:16:34",
+    "maximum_temperature_mC": 48000,
+    "module": "3.10.13",
+    "module_swaps": 0
+  },
+  "date": "2026-11-03",
+  "device_free": {
+    "Xv_native_groups": [
+      "/xv/identity",
+      "/xv/setup-failure",
+      "/xv/setup-timeout",
+      "/xv/color-admission",
+      "/xv/unspecified-color-pixels"
+    ],
+    "Xv_native_log_sha256": "9ffc51fb3a1b763ec6d78add332dd208a6d2a48591cae37615e27e31197707ea",
+    "Xv_setup_sanitized": "PASS six owned wire exchanges + inherited controlled EPIPE signal-state checks",
+    "Xv_setup_sanitized_log_sha256": "f3f681b140d97b94455c253b8861f1fa76fc82ac817000106cd08d8a6452ac8d",
+    "field_CPU_groups_asan_ubsan_leaks": [
+      "/field/caps",
+      "/field/caps-rejection",
+      "/field/nv12-caps",
+      "/field/plane-mapping",
+      "/field/times",
+      "/field/clock",
+      "/field/command-ownership",
+      "/field/output-validation",
+      "/field/null-lifetime"
+    ],
+    "field_CPU_groups_native": [
+      "/field/caps",
+      "/field/caps-rejection",
+      "/field/nv12-caps",
+      "/field/plane-mapping",
+      "/field/times",
+      "/field/clock",
+      "/field/command-ownership",
+      "/field/output-validation",
+      "/field/null-lifetime"
+    ],
+    "field_check_log_sha256": "be7fb9d5c0d10dc8f7fe53920a1e4df1c4f1a649af93b2b4be3cca588d773c6b",
+    "field_discovery": "PASS",
+    "field_setup_checks": "No/partial reply for no-authority/MIT/XDM, :N.screen/unix/:N.screen, known private authority wire, exact own PID, EOF before peer deadline, joined watchdog/peer and FD return; nonlocal DISPLAY rejected. No GL/device in default test.",
+    "field_setup_elapsed_us": [
+      1000722,
+      1000457,
+      1000433,
+      1000421,
+      1000476,
+      1000371,
+      1001169,
+      1000986,
+      1001183,
+      1001256,
+      1001477,
+      1000948
+    ],
+    "field_setup_native_exchanges": 6,
+    "field_setup_sanitized_exchanges": 6
+  },
+  "implementation": {
+    "XDM_domains": "TU-local counters require separate ranges: Xv80000000..bfffffff, fieldc0000000..ffffffff. Each stops at end. Independently unwrapped synthetic wire client addresses verify Xv40000000..7fffffff and field00000000..3fffffff; repeated XDM exchanges use distinct addresses. This is not a real external XDM-server replay/authentication qualification.",
+    "compatibility": "Field output now explicitly requires local DISPLAY (:N / unix/:N). Previously xcb_connect would also attempt host/TCP displays; these were not qualified. Nonlocal DISPLAY now fails explicitly; no blocking remote fallback.",
+    "dependencies": "xau/xdmcp are now explicit field build/link inputs; both were already current libxcb runtime dependencies. All field implementation-including Makefile targets depend on shared header.",
+    "local_protocol": "Actual field Window uses existing joined owned-socket connect/setup watchdog with1s deadline; no abandoned worker or global signal handler. Shared header is C/C++ compatible. Local MIT/XDM authority preserved.",
+    "test_peer": "Existing owned Xv peer fixture is shared with field tests, preserving wire checks and adding exact own SO_PEERCRED PID binding."
+  },
+  "issue": 530,
+  "limits": [
+    "Bounds local socket connection/initial XCB protocol setup, not subsequent EGL initialization, atom/geometry replies or universal Window startup/stop time",
+    "Cannot interrupt Xauthority filesystem I/O; do not claim a universal1s process deadline",
+    "No system X-server interruption/restart, network/live-source, endurance, A/V or physical scanout claim",
+    "Field actual GL LSan remains independently reproduced FAIL under nv12-field-20261103.json; new setup sanitizer passes before GL and do not override it",
+    "Actual valid Window reopen is native; full Xv actual18 groups pass ASan/UBSan/leaks, while field NV12/window regressions are native only",
+    "No default promotion, external source edits, module transitions, stable1.3 publication or frozenRC2 asset changes"
+  ],
+  "related_issue": 513,
+  "source_commit": "f91fe2168f7d94af564d55113d3f7f009478dde9",
+  "source_files": {
+    "filters/gst/field-output/Makefile": "f661d7a6d3f2ab2a5cd60547f9d12b2ee8c6dd71bb3ed1c1e216a72dd44db98d",
+    "filters/gst/field-output/gstcrystalhdfield.cpp": "28b27cec032e153b1ec75698e3508d2e54f011cc8453803f95b330a1c5ab2a67",
+    "filters/gst/xv-output/Makefile": "c51b413c49a8e3b9c0a699fbf85e7843471f4dd5ba21cb8f38fb1382ec9335ab",
+    "filters/gst/xv-output/xv-connect.h": "48d0c2cf2bc6f835802a470ecd237b6680bd0f70766601d1ef18adfe9a7e6c66",
+    "tests/gst-field-setup.cpp": "270d6f919fd054a249b2cd828b73aaae332c22e1ceb10e6152a6f911e34d8901",
+    "tests/x11-setup-peer.h": "975aa57d6f9252e171064a06fa0e64e639302e17a098041b43eef020ede60df0",
+    "tests/xv-setup-fixture.h": "39133710518dba06bd82fe0027b05dba941748136207201ea5b62e8caf2c3fec"
+  },
+  "verdict": "PASS_BOUNDED_OWN_LOCAL_X11_SETUP_FIX"
+}

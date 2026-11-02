@@ -109,7 +109,7 @@
     "formats": "Existing YUY2 preserved; new linear NV12, limited BT.601/709, explicit JPEG or MPEG2 chroma site, even W 2..1920, H divisible by4 4..1088, complete progressive/interleaved pictures.",
     "ownership": "Existing paired-field retirement and exception RetainGuard preserved. Format/site changes retire previous generation before replacement; no CPU color conversion or full-height Bob outputs.",
     "planes": "Independent mapped source extents and strides; raw Y then UV copied into one coherent linear GBM allocation; Y field offset=parity*Ypitch, UV field offset=UVbase+parity*UVpitch, both field pitches doubled.",
-    "player": "Existing Player YUY2 negotiation unchanged. This qualifies the explicit sink raw-NV12 input, not a new decoder/Player NV12 path.",
+    "player": "Existing CrystalHD hardware decoder still outputs YUY2; software playbin can negotiate the new sink NV12 caps. The receipt tests the explicit raw-NV12 sink, not decoder/Player NV12 playback.",
     "reject": "Omitted/unknown/DV site, mixed NV12, ONEFIELD/RFF, full range and negative/short source strides are not accepted."
   },
   "independent_public_API_control": {
