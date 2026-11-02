@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h>
+#include <xcb/xv.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -23,6 +25,31 @@ static gpointer delay_connection, delayed_event;
 static gint release_delayed;
 static gint drop_type;
 static const char *self_path;
+/* Deliberate candidate-only layout mismatch: a rejection-path control,
+ * not a claim that this server advertises incompatible real ports. */
+static xcb_xv_port_t mismatch_port;
+static guint mismatch_width, mismatch_sequence;
+static xcb_xv_query_image_attributes_cookie_t test_image_attributes(
+    xcb_connection_t *connection, xcb_xv_port_t port, guint32 id, guint16 width, guint16 height)
+{
+  xcb_xv_query_image_attributes_cookie_t cookie =
+      xcb_xv_query_image_attributes(connection, port, id, width, height);
+  if (port == mismatch_port && width == mismatch_width) mismatch_sequence = cookie.sequence;
+  return cookie;
+}
+static int test_poll_reply(xcb_connection_t *connection, guint sequence,
+                          void **reply, xcb_generic_error_t **error)
+{
+  int ready = xcb_poll_for_reply(connection, sequence, reply, error);
+  if (ready && *error && (*error)->major_code == XCB_GET_IMAGE)
+    g_test_message("GetImage failed: error=%u resource=%u minor=%u sequence=%u",
+        (*error)->error_code, (*error)->resource_id, (*error)->minor_code, sequence);
+  if (ready && *reply && mismatch_port && sequence == mismatch_sequence) {
+    ((xcb_xv_query_image_attributes_reply_t *)*reply)->data_size += 4;
+    mismatch_sequence = 0;
+  }
+  return ready;
+}
 static int test_flush(xcb_connection_t *connection)
 {
   if (g_atomic_pointer_compare_and_exchange(&fail_flush_connection, connection, NULL)) return 0;
@@ -70,12 +97,16 @@ static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 #define shmctl test_shmctl
 #define xcb_poll_for_event test_poll_event
 #define xcb_flush test_flush
+#define xcb_poll_for_reply test_poll_reply
+#define xcb_xv_query_image_attributes test_image_attributes
 #include "../filters/gst/xv-output/gstcrystalhdxv.c"
 #undef shmget
 #undef shmat
 #undef shmctl
 #undef xcb_poll_for_event
 #undef xcb_flush
+#undef xcb_poll_for_reply
+#undef xcb_xv_query_image_attributes
 
 static guint own_segments(void)
 {
@@ -248,9 +279,9 @@ static void test_identity(void)
 static void test_setup_failure(void)
 {
   GError *error = NULL;
-  g_assert_null(context_new("remote.invalid:0", 0, NULL, &error));
+  g_assert_null(context_new("remote.invalid:0", 0, NULL, 0, &error));
   g_assert_error(error, GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_OPEN_READ_WRITE); g_clear_error(&error);
-  g_assert_null(context_new(":9876", 0, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+  g_assert_null(context_new(":9876", 0, NULL, 0, &error)); g_assert_nonnull(error); g_clear_error(&error);
   clean_contexts();
 }
 static void test_color_admission(void)
@@ -393,6 +424,17 @@ static void window_pixel_for_locked(XvContext *c, xcb_window_t window,
   xcb_get_image_reply_t *reply = reply_locked(c,
       xcb_get_image(c->connection, XCB_IMAGE_FORMAT_Z_PIXMAP, window,
           x, y, 1, 1, UINT32_MAX).sequence);
+  if (!reply) {
+    xcb_get_geometry_reply_t *geometry = reply_locked(c, xcb_get_geometry(c->connection, window).sequence);
+    xcb_get_window_attributes_reply_t *attributes = reply_locked(c,
+        xcb_get_window_attributes(c->connection, window).sequence);
+    xcb_translate_coordinates_reply_t *position = reply_locked(c,
+        xcb_translate_coordinates(c->connection, window, c->root, 0, 0).sequence);
+    g_test_message("pixel request=(%u,%u), cached=%ux%u, actual=%ux%u, map=%d, root-position=(%d,%d)",
+        x, y, c->width, c->height, geometry ? geometry->width : 0, geometry ? geometry->height : 0,
+        attributes ? attributes->map_state : -1, position ? position->dst_x : -1, position ? position->dst_y : -1);
+    free(geometry); free(attributes); free(position);
+  }
   g_assert_nonnull(reply); g_assert_cmpuint(reply->depth, ==, 24);
   g_assert_cmpint(xcb_get_image_data_length(reply), >=, 3);
   const guint8 *rgb = xcb_get_image_data(reply);
@@ -429,6 +471,22 @@ static void paused_resize(gboolean pooled)
     g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(source), buffer), ==, GST_FLOW_OK);
     gst_app_src_end_of_stream(GST_APP_SRC(source)); gst_object_unref(source);
   }
+  /* Pixel assertions need a viewable drawable. EOS/SHM ACK do not prove
+   * that a separate WM has mapped an application-managed window. Own an
+   * override-redirect fixture rather than changing the user's desktop policy. */
+  XvContext owner = {.wake_fd = -1}; g_mutex_init(&owner.lock); g_cond_init(&owner.changed);
+  int screen_number; owner.connection = xcb_connect(g_getenv("DISPLAY"), &screen_number);
+  g_assert_cmpint(xcb_connection_has_error(owner.connection), ==, 0);
+  xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(owner.connection));
+  for (int i = 0; i < screen_number && screens.rem; i++) xcb_screen_next(&screens);
+  g_assert_cmpint(screens.rem, >, 0); xcb_window_t window = xcb_generate_id(owner.connection);
+  guint32 values[] = {screens.data->black_pixel, TRUE};
+  xcb_create_window(owner.connection, XCB_COPY_FROM_PARENT, window, screens.data->root,
+      0, 0, 800, 450, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual,
+      XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT, values);
+  xcb_map_window(owner.connection, window); g_assert_true(barrier_locked(&owner));
+  GstElement *fixture_sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(fixture_sink), window); gst_object_unref(fixture_sink);
   gst_element_set_state(pipeline, GST_STATE_PLAYING); await_message(pipeline, GST_MESSAGE_EOS);
   g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
   GstState state;
@@ -478,6 +536,8 @@ static void paused_resize(gboolean pooled)
   g_mutex_unlock(&c->lock);
   gst_element_set_state(pipeline, GST_STATE_NULL); context_unref(c);
   gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
+  xcb_destroy_window(owner.connection, window); g_assert_true(barrier_locked(&owner));
+  xcb_disconnect(owner.connection); g_mutex_clear(&owner.lock); g_cond_clear(&owner.changed);
 }
 static void test_paused_resize_pool(void) { paused_resize(TRUE); }
 static void test_paused_resize_copy(void) { paused_resize(FALSE); }
@@ -759,9 +819,9 @@ static void test_live_window_replacement(void)
   GThread *thread = g_thread_new("xv-window-test", change_window, &job);
   end = g_get_monotonic_time() + XV_TIMEOUT_US / 2;
   g_mutex_lock(&c->lock);
-  while (!c->window_changing && !c->failed && !g_atomic_int_get(&job.finished))
+  while (!c->output_changing && !c->failed && !g_atomic_int_get(&job.finished))
     if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
-  g_assert_true(c->window_changing); g_assert_false(g_atomic_int_get(&job.finished));
+  g_assert_true(c->output_changing); g_assert_false(g_atomic_int_get(&job.finished));
   g_assert_cmpuint(c->window, ==, windows[0]); g_assert_cmpuint(c->pending, ==, 1);
   g_assert_cmpuint(c->epoch, ==, epoch); g_assert_cmpuint(memory->generation, ==, flight.generation);
   for (guint i = 0; i < XV_DEPTH; i++) if (c->flights[i].memory) {
@@ -830,6 +890,252 @@ static void test_live_window_replacement(void)
   g_mutex_clear(&owner.lock); g_cond_clear(&owner.changed); clean_contexts();
   g_test_message("Live two-window replacement: held old SHM ACK, source IDs/pixels/PTS and generations preserved; "
       "new window repainted, old target unchanged, invalid targets rejected, pool/GC retained, resources balanced");
+}
+typedef struct { GstElement *sink; guint port; gint finished; } PortJob;
+static gpointer change_port(gpointer data)
+{
+  PortJob *job = data; g_object_set(job->sink, "port", job->port, NULL);
+  g_atomic_int_set(&job->finished, TRUE); return NULL;
+}
+static guint grab_result(XvContext *holder, xcb_xv_port_t port)
+{
+  xcb_xv_grab_port_reply_t *r = reply_locked(holder,
+      xcb_xv_grab_port(holder->connection, port, XCB_CURRENT_TIME).sequence);
+  g_assert_nonnull(r); guint result = r->result; free(r); return result;
+}
+static void ungrab_test_port(XvContext *holder, xcb_xv_port_t port)
+{
+  xcb_void_cookie_t release = xcb_xv_ungrab_port_checked(holder->connection, port, XCB_CURRENT_TIME);
+  g_assert_true(barrier_locked(holder)); g_assert_true(checked_void_result_locked(holder, release));
+}
+static void test_live_port_handoff(void)
+{
+  if (!x11_enabled()) return;
+  XvContext holder = {.wake_fd = -1}; g_mutex_init(&holder.lock); g_cond_init(&holder.changed);
+  int screen_number; holder.connection = xcb_connect(g_getenv("DISPLAY"), &screen_number);
+  g_assert_cmpint(xcb_connection_has_error(holder.connection), ==, 0);
+  xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(holder.connection));
+  for (int i = 0; i < screen_number && screens.rem; i++) xcb_screen_next(&screens);
+  g_assert_cmpint(screens.rem, >, 0);
+  xcb_window_t target = xcb_generate_id(holder.connection);
+  guint32 values[] = {screens.data->black_pixel, TRUE};
+  xcb_create_window(holder.connection, XCB_COPY_FROM_PARENT, target, screens.data->root,
+      0, 0, 320, 240, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual,
+      XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT, values);
+  xcb_map_window(holder.connection, target); g_assert_true(barrier_locked(&holder));
+  GstBus *bus = gst_bus_new(); GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
+  gst_element_set_bus(sink, bus); gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), target);
+  g_assert_true(sink_start(GST_BASE_SINK(sink))); XvContext *c = sink_context(XV_SINK(sink));
+  xcb_xv_port_t original = c->port, candidate = 0;
+  xcb_xv_query_adaptors_reply_t *adaptors = reply_locked(&holder,
+      xcb_xv_query_adaptors(holder.connection, c->root).sequence);
+  g_assert_nonnull(adaptors);
+  xcb_xv_adaptor_info_iterator_t a = xcb_xv_query_adaptors_info_iterator(adaptors);
+  for (; a.rem && !candidate; xcb_xv_adaptor_info_next(&a)) {
+    if (!(a.data->type & XCB_XV_TYPE_IMAGE_MASK)) continue;
+    for (guint j = 0; j < a.data->num_ports && !candidate; j++) {
+      xcb_xv_port_t port = a.data->base_id + j; if (port == original) continue;
+      g_mutex_lock(&c->lock); gboolean compatible = port_advertised_locked(c, port); g_mutex_unlock(&c->lock);
+      if (compatible && grab_result(&holder, port) == XCB_GRAB_STATUS_SUCCESS) candidate = port;
+    }
+  }
+  free(adaptors);
+  if (!candidate) {
+    sink_stop(GST_BASE_SINK(sink)); context_unref(c); gst_object_unref(sink); gst_object_unref(bus);
+    xcb_disconnect(holder.connection); g_mutex_clear(&holder.lock); g_cond_clear(&holder.changed);
+    clean_contexts(); g_test_skip("A second free compatible UYVY port is required; other grabs untouched"); return;
+  }
+  GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info); GstBuffer *first, *second;
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &first, NULL), ==, GST_FLOW_OK);
+  solid_pool_buffer(first, &info, TRUE, 2); XvMemory *memory = buffer_memory(first);
+  guint64 epoch = c->epoch; xcb_gcontext_t gc = c->gc; xcb_window_t window = c->window;
+  /* This earlier-caps pool has no registered image. It still constrains handoff. */
+  GstVideoInfo old_info = info_for(160, 120); caps = gst_video_info_to_caps(&old_info);
+  GstQuery *dormant = gst_query_new_allocation(caps, TRUE); gst_caps_unref(caps);
+  g_assert_true(sink_propose_allocation(GST_BASE_SINK(sink), dormant));
+  g_atomic_pointer_set(&delay_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
+  g_atomic_int_set(&release_delayed, FALSE);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), first), ==, GST_FLOW_OK);
+  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  while (!g_atomic_pointer_get(&delayed_event) && g_get_monotonic_time() < end) g_usleep(1000);
+  g_assert_nonnull(g_atomic_pointer_get(&delayed_event));
+  g_object_set(sink, "port", candidate, NULL); window_warning(bus); /* held by our holder */
+  g_object_set(sink, "port", G_MAXUINT, NULL); window_warning(bus);
+  ungrab_test_port(&holder, candidate);
+  mismatch_port = candidate; mismatch_width = 160;
+  g_object_set(sink, "port", candidate, NULL); window_warning(bus);
+  mismatch_port = mismatch_sequence = 0;
+  g_assert_cmpuint(grab_result(&holder, candidate), ==, XCB_GRAB_STATUS_SUCCESS);
+  ungrab_test_port(&holder, candidate);
+  guint preferred; g_object_get(sink, "port", &preferred, NULL); g_assert_cmpuint(preferred, ==, 0);
+  g_mutex_lock(&c->lock);
+  XvFlight flight = {0};
+  for (guint i = 0; i < XV_DEPTH; i++) if (c->flights[i].memory) flight = c->flights[i];
+  g_assert_true(flight.memory == memory); g_assert_true(flight.buffer == first);
+  g_assert_cmpuint(c->port, ==, original); g_assert_cmpuint(c->port_rejections, ==, 3);
+  g_assert_cmpuint(c->port_switches, ==, 0); g_assert_cmpuint(c->pending, ==, 1);
+  g_assert_false(c->failed); g_assert_true(c->last_buffer == first); solid_memory(memory, &info, TRUE);
+  g_mutex_unlock(&c->lock);
+  PortJob job = {.sink = sink, .port = candidate}; GThread *thread = g_thread_new("xv-port-test", change_port, &job);
+  end = g_get_monotonic_time() + XV_TIMEOUT_US / 2;
+  g_mutex_lock(&c->lock);
+  while (!c->output_changing && !c->failed && !g_atomic_int_get(&job.finished))
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
+  g_assert_true(c->output_changing); g_assert_false(g_atomic_int_get(&job.finished));
+  g_assert_cmpuint(c->port, ==, original); g_assert_cmpuint(c->pending, ==, 1);
+  g_assert_cmpuint(c->epoch, ==, epoch); g_assert_cmpuint(memory->generation, ==, flight.generation);
+  for (guint i = 0; i < XV_DEPTH; i++) if (c->flights[i].memory) {
+    g_assert_true(c->flights[i].buffer == first); g_assert_true(c->flights[i].memory == memory);
+    g_assert_cmpuint(c->flights[i].sequence, ==, flight.sequence);
+    g_assert_cmpuint(c->flights[i].generation, ==, flight.generation);
+    g_assert_cmpuint(c->flights[i].epoch, ==, flight.epoch);
+    g_assert_cmpuint(c->flights[i].pts, ==, 40 * GST_MSECOND);
+  }
+  g_mutex_unlock(&c->lock);
+  g_atomic_int_set(&release_delayed, TRUE); wake_context(c); g_thread_join(thread);
+  g_atomic_pointer_set(&delay_connection, NULL); g_assert_null(g_atomic_pointer_get(&delayed_event));
+  await_redraw(c, 0, c->width, c->height);
+  g_assert_cmpuint(grab_result(&holder, original), ==, XCB_GRAB_STATUS_SUCCESS);
+  g_mutex_lock(&c->lock);
+  g_assert_cmpuint(c->port, ==, candidate); g_assert_cmpuint(c->port_switches, ==, 1);
+  g_assert_cmpuint(c->epoch, ==, epoch); g_assert_cmpuint(c->gc, ==, gc); g_assert_cmpuint(c->window, ==, window);
+  window_pixel_locked(c, c->width / 2, c->height / 2, TRUE); solid_memory(memory, &info, TRUE);
+  g_mutex_unlock(&c->lock);
+  /* Same-port selection and live auto reset change preferences without traffic. */
+  g_object_set(sink, "port", candidate, NULL); g_object_get(sink, "port", &preferred, NULL);
+  g_assert_cmpuint(preferred, ==, candidate); g_object_set(sink, "port", 0u, NULL);
+  g_object_get(sink, "port", &preferred, NULL); g_assert_cmpuint(preferred, ==, 0);
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &second, NULL), ==, GST_FLOW_OK);
+  solid_pool_buffer(second, &info, FALSE, 4);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), second), ==, GST_FLOW_OK);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  window_pixel_locked(c, c->width / 2, c->height / 2, FALSE);
+  solid_memory(memory, &info, TRUE); solid_memory(buffer_memory(second), &info, FALSE);
+  g_assert_cmpuint(c->port, ==, candidate); g_assert_cmpuint(c->port_switches, ==, 1);
+  g_assert_cmpuint(c->video_submitted, ==, 2); g_assert_cmpuint(c->copied_bytes, ==, 0);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(first), ==, 2); g_assert_cmpuint(GST_BUFFER_PTS(first), ==, 40 * GST_MSECOND);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(second), ==, 4); g_assert_cmpuint(GST_BUFFER_PTS(second), ==, 80 * GST_MSECOND);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged); g_mutex_unlock(&c->lock);
+  g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+  gst_buffer_unref(first); gst_buffer_unref(second); gst_query_unref(dormant);
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  g_mutex_lock(&c->lock);
+  g_assert_cmpuint(c->pending, ==, 0); g_assert_cmpuint(c->allocated, ==, c->freed);
+  g_assert_cmpuint(c->image_count, ==, 0); g_assert_null(c->pool_layouts);
+  g_assert_cmpuint(c->terminal, ==, 0); g_assert_cmpuint(c->stale, ==, 0);
+  g_assert_true(c->closed); g_assert_true(c->detached); g_assert_false(c->failed); g_assert_false(c->quarantined);
+  g_mutex_unlock(&c->lock); context_unref(c);
+  g_assert_cmpuint(grab_result(&holder, candidate), ==, XCB_GRAB_STATUS_SUCCESS);
+  ungrab_test_port(&holder, candidate); ungrab_test_port(&holder, original);
+  /* Exact startup selection survives a stop/restart. */
+  g_object_set(sink, "port", candidate, NULL); g_assert_true(sink_start(GST_BASE_SINK(sink)));
+  c = sink_context(XV_SINK(sink)); g_assert_cmpuint(c->port, ==, candidate);
+  caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  pool = make_pool(sink, &info);
+  g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &first, NULL), ==, GST_FLOW_OK);
+  solid_pool_buffer(first, &info, TRUE, 6); memory = buffer_memory(first);
+  g_atomic_pointer_set(&delay_connection, c->connection); g_atomic_int_set(&drop_type, c->completion_type);
+  g_atomic_int_set(&release_delayed, FALSE);
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), first), ==, GST_FLOW_OK);
+  end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  while (!g_atomic_pointer_get(&delayed_event) && g_get_monotonic_time() < end) g_usleep(1000);
+  g_assert_nonnull(g_atomic_pointer_get(&delayed_event));
+  PortJob cancelled = {.sink = sink, .port = original};
+  thread = g_thread_new("xv-port-stop-test", change_port, &cancelled);
+  end = g_get_monotonic_time() + XV_TIMEOUT_US / 2;
+  g_mutex_lock(&c->lock);
+  while (!c->output_changing && !c->failed && !g_atomic_int_get(&cancelled.finished))
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
+  g_assert_true(c->output_changing); g_assert_false(g_atomic_int_get(&cancelled.finished));
+  g_mutex_unlock(&c->lock);
+  gint64 stopped_at = g_get_monotonic_time();
+  g_assert_true(sink_stop(GST_BASE_SINK(sink))); g_thread_join(thread);
+  g_assert_cmpint(g_get_monotonic_time() - stopped_at, <, 2 * XV_TIMEOUT_US); window_warning(bus);
+  g_atomic_pointer_set(&delay_connection, NULL);
+  free(g_atomic_pointer_get(&delayed_event)); g_atomic_pointer_set(&delayed_event, NULL);
+  g_object_get(sink, "port", &preferred, NULL); g_assert_cmpuint(preferred, ==, candidate);
+  g_mutex_lock(&c->lock);
+  g_assert_true(c->closed); g_assert_true(c->detached); g_assert_false(c->quarantined); g_assert_false(c->failed);
+  g_assert_cmpuint(c->port_switches, ==, 0); g_assert_cmpuint(c->pending, ==, 0);
+  g_assert_cmpuint(c->acknowledged, ==, 0); g_assert_cmpuint(c->terminal, ==, 1);
+  solid_memory(memory, &info, TRUE); g_assert_cmpuint(GST_BUFFER_PTS(first), ==, 120 * GST_MSECOND);
+  g_mutex_unlock(&c->lock); gst_buffer_unref(first);
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  g_mutex_lock(&c->lock); g_assert_cmpuint(c->allocated, ==, c->freed);
+  g_assert_null(c->pool_layouts); g_mutex_unlock(&c->lock); context_unref(c);
+  g_assert_cmpuint(grab_result(&holder, candidate), ==, XCB_GRAB_STATUS_SUCCESS);
+  g_assert_cmpuint(grab_result(&holder, original), ==, XCB_GRAB_STATUS_SUCCESS);
+  ungrab_test_port(&holder, candidate); ungrab_test_port(&holder, original);
+  gst_object_unref(sink); gst_object_unref(bus); clean_contexts();
+  /* Exercise the public property in actual PAUSED/PLAYING states as well as
+   * the held-flight control above. Ordinary source buffers cover the copy path. */
+  GError *parse_error = NULL;
+  GstElement *pipeline = gst_parse_launch("appsrc name=input format=time ! "
+      "crystalhdxvsink name=output sync=true enable-last-sample=false", &parse_error);
+  g_assert_no_error(parse_error); g_assert_nonnull(pipeline);
+  GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "input");
+  sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  g_object_set(sink, "port", original, NULL);
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), target);
+  caps = gst_video_info_to_caps(&info); gst_app_src_set_caps(GST_APP_SRC(source), caps); gst_caps_unref(caps);
+  first = gst_buffer_new_allocate(NULL, info.size, NULL); solid_pool_buffer(first, &info, TRUE, 0);
+  second = gst_buffer_new_allocate(NULL, info.size, NULL); solid_pool_buffer(second, &info, FALSE, 1);
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+  g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(source), gst_buffer_ref(first)), ==, GST_FLOW_OK);
+  GstState state;
+  g_assert_cmpint(gst_element_get_state(pipeline, &state, NULL, 2 * GST_SECOND), ==, GST_STATE_CHANGE_SUCCESS);
+  g_assert_cmpint(state, ==, GST_STATE_PAUSED); c = sink_context(XV_SINK(sink));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c)); epoch = c->epoch;
+  guint64 redraw = c->redraw_submitted; g_assert_nonnull(c->last_buffer);
+  /* appsrc can make a writable GstBuffer header (e.g. DISCONT) while keeping
+   * the exact source GstMemory. Check storage/metadata, not wrapper identity. */
+  g_assert_true(gst_buffer_peek_memory(c->last_buffer, 0) == gst_buffer_peek_memory(first, 0));
+  g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, GST_BUFFER_PTS(first)); g_mutex_unlock(&c->lock);
+  g_object_set(sink, "port", candidate, NULL); await_redraw(c, redraw, 320, 240);
+  g_mutex_lock(&c->lock); window_pixel_locked(c, 160, 120, TRUE); g_mutex_unlock(&c->lock);
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_PLAYING), !=, GST_STATE_CHANGE_FAILURE);
+  g_assert_cmpint(gst_element_get_state(pipeline, &state, NULL, 2 * GST_SECOND), ==, GST_STATE_CHANGE_SUCCESS);
+  g_assert_cmpint(state, ==, GST_STATE_PLAYING);
+  g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(source), gst_buffer_ref(second)), ==, GST_FLOW_OK);
+  end = g_get_monotonic_time() + 2 * XV_TIMEOUT_US;
+  g_mutex_lock(&c->lock);
+  while (!c->failed && (!c->last_buffer || GST_BUFFER_PTS(c->last_buffer) != GST_BUFFER_PTS(second)))
+    if (!g_cond_wait_until(&c->changed, &c->lock, end)) break;
+  g_assert_nonnull(c->last_buffer);
+  g_assert_true(gst_buffer_peek_memory(c->last_buffer, 0) == gst_buffer_peek_memory(second, 0));
+  g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, GST_BUFFER_PTS(second));
+  g_assert_true(drain_locked(c)); redraw = c->redraw_submitted;
+  g_mutex_unlock(&c->lock);
+  g_object_set(sink, "port", original, NULL); await_redraw(c, redraw, 320, 240);
+  g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(source)), ==, GST_FLOW_OK);
+  await_message(pipeline, GST_MESSAGE_EOS);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_assert_cmpuint(c->port, ==, original); g_assert_cmpuint(c->port_switches, ==, 2);
+  g_assert_cmpuint(c->epoch, ==, epoch); g_assert_nonnull(c->last_buffer);
+  g_assert_true(gst_buffer_peek_memory(c->last_buffer, 0) == gst_buffer_peek_memory(second, 0));
+  g_assert_cmpuint(GST_BUFFER_PTS(first), ==, 0); g_assert_cmpuint(GST_BUFFER_PTS(second), ==, 20 * GST_MSECOND);
+  g_assert_cmpuint(c->submitted, ==, c->acknowledged); g_assert_cmpuint(c->copied_bytes, >, 0);
+  g_assert_cmpuint(c->terminal, ==, 0); g_assert_cmpuint(c->stale, ==, 0);
+  window_pixel_locked(c, 160, 120, FALSE);
+  GstStructure *public_stats = stats_locked(c); gchar *stats_text = gst_structure_to_string(public_stats);
+  g_test_message("Public PAUSED/PLAYING port handoff with natural EOS: %s", stats_text);
+  g_free(stats_text); gst_structure_free(public_stats); g_mutex_unlock(&c->lock);
+  g_assert_cmpint(gst_element_set_state(pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
+  gst_buffer_unref(first); gst_buffer_unref(second);
+  g_mutex_lock(&c->lock); g_assert_true(c->closed); g_assert_true(c->detached);
+  g_assert_cmpuint(c->allocated, ==, c->freed); g_assert_cmpuint(c->pending, ==, 0);
+  g_assert_false(c->failed); g_assert_false(c->quarantined); g_mutex_unlock(&c->lock);
+  context_unref(c); gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline); clean_contexts();
+  g_assert_cmpuint(grab_result(&holder, original), ==, XCB_GRAB_STATUS_SUCCESS);
+  g_assert_cmpuint(grab_result(&holder, candidate), ==, XCB_GRAB_STATUS_SUCCESS);
+  ungrab_test_port(&holder, original); ungrab_test_port(&holder, candidate);
+  xcb_disconnect(holder.connection);
+  g_mutex_clear(&holder.lock); g_cond_clear(&holder.changed); clean_contexts();
+  g_test_message("Live ports %u -> %u: busy/missing/dormant-pool mismatch rejected; held ACK drained; "
+      "white retained redraw and black next frame observed; source/PTS/pool/GC preserved; exact ports reacquired; stop cancels held-ACK replacement", original, candidate);
 }
 static void test_submit_flush_failure(void)
 {
@@ -1341,6 +1647,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
   g_test_add_func("/xv/x11/live-window-replacement", test_live_window_replacement);
+  g_test_add_func("/xv/x11/live-port-handoff", test_live_port_handoff);
   g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);

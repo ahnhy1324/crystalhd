@@ -1,0 +1,307 @@
+{
+  "actual_public_pipeline": {
+    "ACK": 5,
+    "NULL": "allocated=freed; closed/detached; no failure/quarantine; both exact ports reacquired",
+    "RGB_readback": "white retained after PAUSED switch, black retained after PLAYING switch",
+    "committed_handoffs": 2,
+    "copied_bytes": 768000,
+    "epoch_preserved": true,
+    "input": "two320x240 BT601 UYVY appsrc source pictures at0/20ms",
+    "natural_EOS": true,
+    "pending": 0,
+    "ports": [
+      95,
+      96,
+      95
+    ],
+    "redraws": 2,
+    "requests": 5,
+    "source_storage": "same original GstMemory; appsrc may copy GstBuffer header",
+    "states": [
+      "PAUSED",
+      "PLAYING"
+    ],
+    "terminal_retired": 0,
+    "video_calls_including_preroll": 3
+  },
+  "api": {
+    "before_start": "0 selects first free UYVY; nonzero requires exact port",
+    "default": 0,
+    "live_nonzero": "Acquire compatible candidate before draining old requests; commit preserves window/GC/pools/source epoch; repaint retained picture",
+    "live_zero": "Keep active port and clear next-start preference",
+    "property": "port",
+    "stats": [
+      "active-port",
+      "port-switches",
+      "port-rejections"
+    ]
+  },
+  "base_source": "e75109449ba8c3308206c33ac60a1680199d00e3",
+  "boundary": {
+    "all_run_boundaries_equal": true,
+    "card_opens": 0,
+    "desktop_policy_changes": 0,
+    "external_code_changes": 0,
+    "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+    "kernel_suspicious_rows": 0,
+    "module_swaps": 0,
+    "runtime_baseline_verify": {
+      "command": "sudo -n python3 -B /home/mache/.cache/crystalhd-v13-rc1-install-20261101/runtime-baseline.py verify",
+      "leaves": 36,
+      "passed": true
+    }
+  },
+  "code_files": {
+    "filters/gst/xv-output/gstcrystalhdxv.c": {
+      "bytes": 60880,
+      "sha256": "1cce7fe33117d3428934fffe60ea561beba99758eb031abe015e9f9e73298611"
+    },
+    "tests/gst-xv-output.c": {
+      "bytes": 97114,
+      "sha256": "c5959c26874a78bb2da99c4a3e318561cfffb07bfc2541085b7e1e3814f06762"
+    }
+  },
+  "configuration_contracts": {
+    "CI_selection_groups": 38,
+    "canonical_managed_keys": 21,
+    "files": {
+      "CONFIGURATION-SCHEMA.md": "9cf91f02c4300dd0f9eedde15586e0ae64ba8173946770ead49f631f34f71b2c",
+      "CONFIGURATION.md": "ff5d678936e4c437cb7cafd956a83ce6e19d12fe70c51836a95164d83a918ba3",
+      "tests/configuration-inventory.test.py": "1d836eb752ae553a460dc8b2aeaa0e3d54e3c85f2be227859cf1a01646825f42",
+      "tests/configuration-schema.test.py": "a3bd857d150ac219975817a97923d30ae570bfa2c5528f3c53a7365bbfce681a"
+    },
+    "initial_CI_docs_failure": {
+      "reason": "New writable port property missing from configuration inventory; corrected inventory/schema and exact count/boundary expectations",
+      "run": 41384412420
+    },
+    "inventory": "PASS",
+    "logs": {
+      "ci-plan-final.log": "9efb90de7baf05ca147a11106c9f37f672d5ff9f6b1b91d8b9d96a85e2ee4f77",
+      "docs-contract-final.log": "f087aee0fa937e5822bfb95b2f74e6a39afb0d5085e6ef57fd5afe5b9224ad7a"
+    },
+    "new_port_disposition": "external-gst-output; per-element only, no saved profile/preset/manager key",
+    "production_surfaces": 41,
+    "schema_groups": 16
+  },
+  "date": "2026-11-02",
+  "direct_pool_control": {
+    "RGB_readback": "retained white and following black at window center",
+    "exact_port_reacquisition": true,
+    "exact_startup_port": true,
+    "held_actual_completion": true,
+    "incompatible_scope": "Synthetic candidate-reply mismatch only; no claim of a real incompatible hardware port",
+    "normal_retirement": "all submissions acknowledged; pending/stale/terminal/quarantine0; allocated=freed; own contexts/SHM0",
+    "ports": [
+      95,
+      96
+    ],
+    "preserved": [
+      "exact old flight buffer/memory/sequence/generation/epoch/PTS before ACK",
+      "full neutral UYVY source raster and source IDs/PTS",
+      "window/GC/pool/source epoch at commit"
+    ],
+    "rejected": [
+      "privately-held busy target",
+      "missing G_MAXUINT port",
+      "test-injected candidate-only160x120 layout mismatch for an unallocated old-caps pool"
+    ],
+    "same_port_and_live_zero": true
+  },
+  "host": {
+    "AC_required": true,
+    "card": "BCM70015 (not opened in these tests)",
+    "cpu": "Core2 Duo T8100 / ThinkPad X61",
+    "display": ":0",
+    "gpu": "Intel965GM",
+    "module": "3.10.13",
+    "srcversion": "F76E163690F147B91495DDD",
+    "stop_temperature_mC": 75000
+  },
+  "issue": 513,
+  "layout_contract": "Exact width/height/plane count/data_size/pitch/offset on all images, active caps and all proposed pools, including unallocated old-caps pools. Gate submissions/allocations; drain old flights; revalidate registry. Capacity waits requery active-port layout after wake.",
+  "not_claimed": [
+    "CrystalHD decode or new A/V qualification",
+    "physical scanout or unique cadence from SHM ACKs",
+    "system X-server restart/interruption",
+    "matched packed-vs-linear thermal attribution or endurance",
+    "other GPUs/OSes/i386 hardware",
+    "new zero-loss gate or RC2 asset change"
+  ],
+  "ordinary": {
+    "X11_groups": 17,
+    "build_log": "build-07.log",
+    "build_log_sha256": "1ff0d05a4b3740b9583dca3a794ca3ccfefe3bc01b8af97123d709d1f0ff1d4f",
+    "cpu_groups": 4,
+    "plugin_discovery": "PASS",
+    "run": "x11-regression-05"
+  },
+  "policy": "Accepted renderer/QoS/expiry loss and source-qualified no-drift A/V acceptance unchanged. Original #538 heap subtask remains excluded; #538 stays open.",
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue513-port-handoff-run-20261102",
+  "runs": {
+    "asan-regression-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "files": {
+        "result.json": "ae5a8b7ad9fc5237787673a7099214abea2bf335a9265d1178a67399278b165f",
+        "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout.log": "eb9cf9089abb8b3f6665ebfa61e281140de2043388dd49f29cc97cb36d570c57"
+      },
+      "maximum_temperature_mC": 55000,
+      "seconds": 1.2399018249707296,
+      "status": "PASS_XV_ASAN_UBSAN_LSAN_REGRESSION"
+    },
+    "asan-x11-regression-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "files": {
+        "result.json": "8529620dc1cec5dff3c1ff349cbacb457ca8081d04d49041103c14cbca65f318",
+        "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout.log": "411e32087badadff7ce976fbd9d0ace93d2bc700897cd74e83af783c3ca2713b"
+      },
+      "maximum_temperature_mC": 50000,
+      "seconds": 13.184118604054675,
+      "status": "PASS_XV_ASAN_UBSAN_LSAN_REGRESSION"
+    },
+    "paused-diagnostic-01": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "Bounded diagnostic: GetImage BadMatch (error8), actual/cached960x540, map_state0 (unmapped), root position0,0.",
+      "files": {
+        "result.json": "7ca3159eb71c1b85c8afcb77087bf4f9b6ddc5fa36bf611d964a14f228c407a5",
+        "stderr.log": "8cd06a56939b43e26633b5fcb1947792aa3545e8147d60f147ca2e5947ee64f6",
+        "stdout.log": "716ae10ce1cec570d2871ee96fe95cf41bcd7473af9f6cabd4cd49554a8853da"
+      },
+      "maximum_temperature_mC": 51000,
+      "seconds": 2.3707269789883867,
+      "status": "FAIL"
+    },
+    "port-01": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "Initial managed-window RGB readback failed (GetImage reply absent); deterministic own mapped window used for corrected control. No product-root-cause attribution from this attempt.",
+      "files": {
+        "result.json": "d5a6d9c022edb6eed4e7ac3898e45d7733180aa1984c5c4f1058579e5ca00ba9",
+        "stderr.log": "26d2d7cd7ae64cdd63889c54ad34e8b55d0621269c0f372cc691fb86aa14d6fe",
+        "stdout.log": "984a4a2c71f49647485fe0066b0646a3b855c40fde93e49255393309336f0f48"
+      },
+      "maximum_temperature_mC": 49000,
+      "seconds": 2.379321228945628,
+      "status": "FAIL"
+    },
+    "port-02": {
+      "boundary_equal": true,
+      "exit": 0,
+      "files": {
+        "result.json": "92c6cf1ffce2fe8d292bda8aeb4202ad24a7655ca69be58fabc75a2d14c91bbf",
+        "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout.log": "46a93aa98c2bad67a0e1f146afaa852c1797677212cda7219e9fe97d056ccdfc"
+      },
+      "maximum_temperature_mC": 51000,
+      "seconds": 1.237548755016178,
+      "status": "PASS_LIVE_XV_PORT_HANDOFF"
+    },
+    "port-03": {
+      "boundary_equal": true,
+      "exit": 0,
+      "files": {
+        "result.json": "741bc6d650ecfebfd78603371900bec335b9403cf4852b6726544374b052b868",
+        "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout.log": "a396e4ec40ee374d43d2f3e878c7b53b0fe10c36075707f0ef96a9a30dc9422b"
+      },
+      "maximum_temperature_mC": 52000,
+      "seconds": 1.3421858730725944,
+      "status": "PASS_LIVE_XV_PORT_HANDOFF"
+    },
+    "x11-regression-01": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "Existing PAUSED managed-window pixel check failed GetImage.",
+      "files": {
+        "result.json": "ddc411a399cb0b177646197219866adf42cfa8c96bd75b2b0003d518a6dc65d0",
+        "stderr.log": "26d2d7cd7ae64cdd63889c54ad34e8b55d0621269c0f372cc691fb86aa14d6fe",
+        "stdout.log": "18f5e2b543a55901cb1b6bbdfe8ebfdbc90981ecc395bd4434fccac336461278"
+      },
+      "maximum_temperature_mC": 55000,
+      "seconds": 4.3273063719971105,
+      "status": "FAIL"
+    },
+    "x11-regression-02": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "Bounded1s visibility wait still found managed window not viewable. SHM completion/EOS is not a WM mapping proof.",
+      "files": {
+        "result.json": "d2770f3f426264c5e8550f3259d0db5b5b56297f43d8f68177293aa64ab5a229",
+        "stderr.log": "03b8a95fc17899480a53ce67a7786a55b1bb33b756a362f87d4dd288ba92ebb9",
+        "stdout.log": "564c8bd342ff98a9a2243fd0e827d5a797c95a2d181a2e13821132febd722b22"
+      },
+      "maximum_temperature_mC": 52000,
+      "seconds": 5.457960913074203,
+      "status": "FAIL"
+    },
+    "x11-regression-03": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "First own-window fixture used4:3 geometry, incorrectly eliminating expected black bars. Corrected fixture uses800x450 before640x360 resize.",
+      "files": {
+        "result.json": "599dfcdc8625241a753449b7bc5d9f84017e603002a547f4f3984b8134fc44b7",
+        "stderr.log": "db70691ad3868f633d9c82eae6d4eb34fbd543ff63a1757494b5431d8fa1cb46",
+        "stdout.log": "384f2d4e8ac79b240e67404b055620f965528d7716d7a9a1cfaa673d6f8337bd"
+      },
+      "maximum_temperature_mC": 53000,
+      "seconds": 4.326430854038335,
+      "status": "FAIL"
+    },
+    "x11-regression-04": {
+      "boundary_equal": true,
+      "exit": -6,
+      "failure_and_disposition": "Added actual appsrc pipeline incorrectly demanded identical GstBuffer header address. appsrc may copy header while retaining source GstMemory; corrected checks require same memory and original PTS plus RGB output.",
+      "files": {
+        "result.json": "491aa01d93c9a5f6a0c38eaf84fe373ff756c55d4a9caa27a261ca5f009f0921",
+        "stderr.log": "56279e8d67317f832985103463f36d1c78db3c955789f1c06ca20213d3a3b84a",
+        "stdout.log": "f382d1dcd2378d335da53e1b66895ee14431a71528a9041933062f67ad30f018"
+      },
+      "maximum_temperature_mC": 53000,
+      "seconds": 12.658768333029002,
+      "status": "FAIL"
+    },
+    "x11-regression-05": {
+      "boundary_equal": true,
+      "exit": 0,
+      "files": {
+        "result.json": "98b3f10ba6eb3f16c68781c770200b5610a4f52ef530e97862bc2949962cb058",
+        "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout.log": "ed50ef2eaa8e55a24210384f7f63d96855080d13aaf8b7598bb7dba110f0c0af"
+      },
+      "maximum_temperature_mC": 52000,
+      "seconds": 12.762139903963543,
+      "status": "PASS_XV_X11_REGRESSION"
+    }
+  },
+  "sanitizers": {
+    "CPU_groups": 4,
+    "CPU_run": "asan-regression-01",
+    "X11_groups": 17,
+    "X11_run": "asan-x11-regression-01",
+    "address": true,
+    "leaks": true,
+    "stderr_bytes": {
+      "asan-regression-01": 0,
+      "asan-x11-regression-01": 0
+    },
+    "undefined": true
+  },
+  "schema": "crystalhd.issue513.xv-live-port.v1",
+  "scope": "Own optional crystalhdxvsink; explicit same-layout UYVY port handoff on current Intel965 local X11. Active nonblocking research, not a release-default promotion.",
+  "stop_cancellation": {
+    "ACK": 0,
+    "bounded_stop_us_less_than": 2000000,
+    "candidate_and_active_port_reacquired": true,
+    "committed_handoffs": 0,
+    "detach_proved": true,
+    "held_actual_completion": true,
+    "no_successful_ACK_or_EOS_claim": true,
+    "preference_preserved": true,
+    "source_pixels_PTS_preserved": true,
+    "terminal_retired": 1
+  }
+}

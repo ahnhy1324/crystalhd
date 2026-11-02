@@ -1,0 +1,49 @@
+{
+  "change": "Clear test owners and collect cycles on main GTK thread; retain destroy/join/drain assertions. Enable verbose test names and Python faulthandler for future original SIGSEGV attribution. No UI runtime/external code change. Remove exploratory proxy/native oracle from maintained tests because it did not prove the original failure.",
+  "date": "2026-11-02",
+  "files": {
+    "Makefile": "327787eff0c496c7b6b5377b977e8006ff72169414ca6b8dd7f26812db73ddbc",
+    "tests/crystalhd-settings-gtk.test.py": "3a5ffa41668f156f87112ea0c8693ef493d7c553828364138b32c1a299d659b7"
+  },
+  "integration": "Ordinary source integration permitted by maintainer; no complete-release quality PASS inferred",
+  "logs": {
+    "gtk24/gc-baseline-native.log": "84c86a402da2f13b0779a3505b75a5717883088b70278a5ad49badd663a4816e",
+    "gtk24/gc-baseline-oracle.log": "5457b4e844da3a352704e5e298d78dda75d05410d49c99ee6c54c667805e2021",
+    "gtk24/gc-trace-01.log": "f59801cb8bf35f2b4d3f9b7fc89d8d1709d3d2823f6a3b5ef1dcfb4283cda96d",
+    "gtk24/gc-trace-fixed-01.log": "d23557275c59b7416c48942be22b8e9b5b09425c6f458e6c98437456208e4e94",
+    "gtk24/ordinary-06.log": "1e9344743a13a8996db19d14fb1d2d6943043a5dbb44b0f8d98aabb35786df57",
+    "gtk24/settings-ui-fixed-02.log": "d9a8681ebedde4ac14f8216ed30cf98496d8a0a5b61fede094ccf16a72a926e7",
+    "gtk26-gc-native.log": "e8f28ba352984285693d9d9a7158b3aea528cd9d10737e1b826d9e0798b2370f",
+    "gtk26-settings-ui-fixed.log": "6196a17ec8a1ed066ea7a4bdb7bf348fdb66821f1b590426f7ac67a272434d7e",
+    "gtk26-tray-fixed.log": "18fd2f3306fd7d092e9114fd8701a54ce1b570ab1d93aa3dfaa44c1adbf43feb"
+  },
+  "observations": {
+    "Ubuntu24_private_tray": "NOT_QUALIFIED: isolated UID absent from private passwd/runtime-dir setup caused D-Bus startup failure; no project regression claim",
+    "fixed_Ubuntu24_GTK31": "PASS ordinary and forced-GC diagnostic; no native-crash fix claim",
+    "fixed_Ubuntu26_GTK31": "PASS ordinary and diagnostic",
+    "fixed_Ubuntu26_tray": "PASS private watcher panel loss/recovery and single-instance activation",
+    "forced_worker_GC_Python_proxies": {
+      "baseline": 62,
+      "first_fixed_Ubuntu24": 0,
+      "fixed_Ubuntu26": 7,
+      "interpretation": "Python proxy finalization alone is not native GTK destruction; strict proxy-zero oracle rejected",
+      "other_baseline": 54
+    },
+    "native_GObject_finalizers_off_main": {
+      "baseline_Ubuntu24": 0,
+      "fixed_Ubuntu26": 0,
+      "interpretation": "Does not establish native lifetime defect as original crash cause"
+    },
+    "unchanged_Ubuntu24_GTK31": "PASS ordinary; original assertion not reproduced"
+  },
+  "original_failure": {
+    "event": "After17 completed GTK tests, _gtk_css_rgba_value_get_rgba assertion then SIGSEGV",
+    "job": 125083261154,
+    "prior_same_failure": "Also present before Xv port changes in complete-core Ubuntu24 CI",
+    "root_cause": "UNRESOLVED; no GTK/FFmpeg/Kodi/external code defect inferred",
+    "run": 41384822456
+  },
+  "private_evidence_root": "/home/mache/.cache/crystalhd-integration-20261102",
+  "schema": "crystalhd.issue400.gtk-ci-investigation.v1",
+  "stable_release": "DEFERRED_BY_USER"
+}
