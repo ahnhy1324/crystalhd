@@ -22,6 +22,7 @@
   },
   "limits": [
     "Current BCM70015/X61/965GM640x360 short ordinary nonreference-B progressive POC0 scope; actual LSB width5 wraps within30 pictures. No monotonic raw POC assumption.",
+    "Appended segments retain the probe's existing 1<<32 microseconds per-segment identity offset. Exact PTS preservation does not establish a continuous playback/A/V timeline.",
     "PPS bottom flag1 signed delta is CPU-prefix coverage only; encoded/hardware sources use flag0. No B-pyramid/reference-B, POC1, fields/MBAFF/FMO/ASO/redundant/partition/extensions or endurance qualification.",
     "Independent per-picture full-byte equality/sourcePTS and unique software-validated tags qualify this own native probe. No actual hardware private-snapshot readback, Kodi rendering, A/V or physical presentation claim. Own GPU uses fresh input GL texture; existing reused-texture return-to-limited graphics failure remains.",
     "The prior source called single-slice B2 was configured -bf2 but independently traced as I/P only, actual B0. Its old PASS is preserved as an I/P regression; it never established actual B-frame coverage. New sources contain19 actual B pictures each.",

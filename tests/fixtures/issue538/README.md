@@ -418,3 +418,8 @@ not qualify reference-B/pyramid, POC1, fields/MBAFF/FMO/ASO/redundant/extension
 syntax, endurance or actual hardware snapshot readback. Actual Kodi rendering
 and physical presentation remain separate. The measured reused-external-texture
 return-to-limited failure is unchanged; this own GPU probe uses fresh textures.
+
+Appended segments retain the probe's existing timestamp identity offset:
+`1<<32` microseconds for segment1 and `2<<32` for segment2. Exact sourcePTS
+comparison includes those offsets; it does not establish a continuous playback
+or A/V timeline.
