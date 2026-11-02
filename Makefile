@@ -159,7 +159,7 @@ configuration-check:
 	$(PYTHON3) -B tests/crystalhd-config.test.py
 
 settings-ui-check:
-	$(PYTHON3) -B tests/crystalhd-settings-gtk.test.py
+	$(PYTHON3) -X faulthandler -B tests/crystalhd-settings-gtk.test.py -v
 	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
 .PHONY: kodi-settings-check kodi-settings-package candidate-package-check package-candidate

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Real GTK controls with private INI files. Requires a display or xvfb-run."""
+import gc
 import importlib.util
 import os
 from pathlib import Path
@@ -322,7 +323,15 @@ class GtkSettingsTests(unittest.TestCase):
                 if worker is not None:
                     worker.join(3)
                     self.assertFalse(worker.is_alive(), 'test worker did not retire')
-        drain();self.temp.cleanup()
+        # Retire test-owned references and cycles on the GTK thread before
+        # another test starts its inspection worker. Python wrapper collection
+        # does not by itself prove native GTK destruction or a crash cause.
+        self.windows.clear()
+        app = worker = None
+        drain()
+        gc.collect()
+        drain()
+        self.temp.cleanup()
 
     def write(self,text):
         self.path.write_text(text,encoding='utf-8');self.path.chmod(0o600)
