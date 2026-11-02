@@ -358,3 +358,22 @@ textures return at error0. The strict exit1 is the expected reproduction of
 this measured failure, never a PASS. Other implementations can return0 if
 every RGB check passes. Kodi's actual NARROW import logs and the independent
 native90-picture point/raw/GPU controls retain their separate attribution.
+
+[Progressive POC2 multi-slice qualification](progressive-multislice-range-20261102.json)
+adds real two/four-slice limited/full sources, independent software YUYV,
+old-module range failures, corrected native/GPU results and production-ledger
+CPU controls. Generate the four complete sources without a device:
+
+```sh
+python3 -B tests/native-multislice-fixture.py --output /tmp/multislice-sources
+```
+
+The output directory must be new. Retained actual hardware source hashes belong
+to the frozen encoder build; other encoders can change exact bytes. The JSON
+manifest and trace logs declare the syntax, range, sourcePTS and independent
+reference of each newly generated source before hardware use. Constant chroma
+makes software420→packed422 reference construction unambiguous. The public
+`h264-multislice-prefixes` files retain fixed independently traced CPU inputs.
+Their VCL arrays are first16-byte prefixes only. POC0/1/field cache-guard checks
+and the separate single-slice B2 regression must not be promoted to broader
+multi-slice field/B-frame acceptance.

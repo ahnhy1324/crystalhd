@@ -1,0 +1,476 @@
+{
+  "CPU_validation": {
+    "SPS": "15 independent existing goldens/780 checks ordinary+ASan/UBSan",
+    "build_log_sha256": "9d5d8da0cd544e3737542d8516bd7c682bc6f4a13ff95201a7b93ffcb8c54330",
+    "cache_state_bytes": 3344,
+    "ledger": "Extracted production mapped input, limited/full same-ID redefinition, immutable prior snapshot, reordered completion withPTS0/UINT64_MAX, reset/stale epoch ordinary+ASan/UBSan PASS.",
+    "multi_slice": "43 checks ordinary+ASan/UBSan: actual prefix positives, isolated key/order/bounds/parameter/truncation negatives. POC0/1/field negatives mutate cache guards; not independently encoded field/POC1 qualification.",
+    "native_build": "PASS Werror",
+    "node": "7 API shapes/14 ordinary+sanitized variants each765 scenarios6157 checks,8 existing compiled semantic negatives rejected; buffer/OUTPUT/controller regressions pass.",
+    "node_log_sha256": "c0aae578266c23db9799987df04702757b4ff43f472c310d8ba1e056b35a97ee",
+    "parser_log_sha256": "f34fa3ca2bbd0e843691d7410d96c12bc07a48a7cefbee51acf8ff46c429edec",
+    "single_slice": "69 existing checks ordinary+ASan/UBSan",
+    "snapshot_bytes": 24
+  },
+  "date": "2026-11-02",
+  "implementation": {
+    "PPS": "Keep old ID prefix semantics; separately qualify one slice group with no redundant picture by reading through its redundant flag.",
+    "SPS": "Retain frame_num width, POC type, progressive flag and bounded map-unit count; geometry is never used for allocation.",
+    "picture": "Progressive POC2 ordered type1/5 I/P/B header prefixes require equal PPS/frame_num/IDR/id/reference status and strictly increasing in-bounds first_mb. SPS/PPS changes after the first slice keep the AU UNKNOWN.",
+    "unchanged": "Existing single-first-slice observations,8MiB/128NAL bounds, fixed caches, immutable epoch/generation token snapshots and RX staging. No whole-syntax or full decoded-picture identity claim."
+  },
+  "limits": [
+    "Native640x360 progressive POC2 High/B0 two/four-slice scope. No multi-slice B-frame/reorder/endurance, POC0/1, fields/MBAFF, FMO/ASO, redundant or partition/extension qualification.",
+    "The30-picture single-slice B2 case preserves old behavior; it does not qualify multi-slice B frames.",
+    "No new Kodi rendering, physical scanout or A/V claim; current EGL texture-reuse limitation remains independent, and own GPU imports stay fresh.",
+    "Prefix observations do not prove firmware parameter adoption or whole decoded-picture identity. Native full bytes/sourcePTS/EOS keep their declared fixture/route scope.",
+    "External sources/binaries, installed payloads, original538heap exclusion/reason, nonempty STOP/START rejection and stable1.3 deferral unchanged; #538 stays open."
+  ],
+  "loaded_GNU_build_id": "7f578d58ea86cd28e71ca0ed464aac2e667998c6",
+  "module_identity_scope": "Pinned file digest, normal insmod completion and exact live GNU build-id equality; header-only changes retain the prior srcversion, which alone is not attribution.",
+  "module_sha256": "53cbfb338371fdcd62993a2d3ac55b20ac4bc5228044a78e288c1f2308f279a1",
+  "module_source": "605e5b41ae74f8aaffa17f6ff37059a9595c9171",
+  "post_fix": {
+    "GPU_RGB_pictures": 180,
+    "cases": [
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 1,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 30,
+        "YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 0,
+        "fixed_RGB_tolerance": 2,
+        "frames": 30,
+        "last": 1,
+        "maximum_RGB_error": 1,
+        "name": "slices2-full",
+        "output_completed": 30,
+        "segment_quantization": [],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "9263de29e10240b381f8d84073d9bb5327bb7096bdc985f11479028673502f0f"
+      },
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 2,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 30,
+        "YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 0,
+        "fixed_RGB_tolerance": 2,
+        "frames": 30,
+        "last": 1,
+        "maximum_RGB_error": 0,
+        "name": "slices2-limited",
+        "output_completed": 30,
+        "segment_quantization": [],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "0c634a67a332b85d7c6f98564dc0ac56c5c9cdef595b565c7cc27a07b89aa292"
+      },
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 1,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 30,
+        "YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 0,
+        "fixed_RGB_tolerance": 2,
+        "frames": 30,
+        "last": 1,
+        "maximum_RGB_error": 1,
+        "name": "slices4-full",
+        "output_completed": 30,
+        "segment_quantization": [],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "56be259ef8c4e6de11acf2bf7408f5335dfd85611ac6f902caa4e77d488c9bcd"
+      },
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 2,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 30,
+        "YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 0,
+        "fixed_RGB_tolerance": 2,
+        "frames": 30,
+        "last": 1,
+        "maximum_RGB_error": 0,
+        "name": "slices4-limited",
+        "output_completed": 30,
+        "segment_quantization": [],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "df94264f807a17c96ea9855c2a2637328b27f59b4afce4a56f8c63d3bc3439fe"
+      },
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 1,
+            "transfer": 1
+          },
+          {
+            "colorspace": 3,
+            "frames_before": 30,
+            "matrix": 2,
+            "quantization": 2,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 60,
+        "YUYV_sha256": "af52ad62df5143a19033cccaa53f77457061e703cdd17ad0e102dc78715c4c3f",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 1,
+        "fixed_RGB_tolerance": 2,
+        "frames": 60,
+        "last": 1,
+        "maximum_RGB_error": 1,
+        "name": "slices2full-to4limited",
+        "output_completed": 60,
+        "segment_quantization": [
+          1,
+          2
+        ],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "35d88a32228a734a52229e67819458fa7e44516a96f20854acc0a785987efc09"
+      },
+      {
+        "CAPTURE_formats": [
+          {
+            "colorspace": 3,
+            "frames_before": 0,
+            "matrix": 2,
+            "quantization": 1,
+            "transfer": 1
+          }
+        ],
+        "GPU_pictures": 0,
+        "YUYV_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "after_last_epipe": 1,
+        "dynamic_boundaries": 0,
+        "fixed_RGB_tolerance": null,
+        "frames": 30,
+        "last": 1,
+        "maximum_RGB_error": null,
+        "name": "single-slice-b2-regression",
+        "output_completed": 30,
+        "segment_quantization": [],
+        "status": "PASS",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "95cb3cb6a23b502de2d251a6e972840edb7c5fba9c7692853009d1c9e9819dc9"
+      }
+    ],
+    "native_boundary_log": [
+      "[609052.150362] crystalhd 0000:02:00.0: Native range boundary: pts=4294967296000 range=1->2 phase=1 count=3 tx=0 eos_tx=0"
+    ],
+    "native_pictures": 210,
+    "private_receipt_sha256": "98446f6149da1bede36cee94aa88685e31dbaf14f6a0f27f197f0f7584eee44d",
+    "timestamp_scope": "The next-input transition adds1<<32 microseconds to the second segment; exact sourcePTS after that declared offset, not continuous joined-media A/V clock."
+  },
+  "pre_fix": {
+    "cases": [
+      {
+        "actual_format": [
+          "format width=640 height=360 stride=1280 sizeimage=462372 output_streaming=1 quantization=2 colorspace=3 xfer=1 matrix=2 frames_before=0"
+        ],
+        "complete_picture_census": "NOT_COMPLETED_EARLY_STRICT_FAILURE",
+        "exit_code": 1,
+        "failure": "FAIL: CAPTURE source range mismatch before buffer exposure",
+        "name": "slices2-full",
+        "status": "FAIL_SOURCE_RANGE_BEFORE_BUFFER_EXPOSURE",
+        "stderr_sha256": "5484804ec0acc58008358015df08ea1d7c4b55580e7bc9ef16584c57ebfb5ef7",
+        "stdout_sha256": "081c7f3dc5c4012bfa38f5b6357f652a11d60d377b8a5123a8a06f259f6bdb6e"
+      },
+      {
+        "actual_format": [
+          "format width=640 height=360 stride=1280 sizeimage=462372 output_streaming=1 quantization=2 colorspace=3 xfer=1 matrix=2 frames_before=0"
+        ],
+        "complete_picture_census": "NOT_COMPLETED_EARLY_STRICT_FAILURE",
+        "exit_code": 1,
+        "failure": "FAIL: CAPTURE source range mismatch before buffer exposure",
+        "name": "slices4-full",
+        "status": "FAIL_SOURCE_RANGE_BEFORE_BUFFER_EXPOSURE",
+        "stderr_sha256": "5484804ec0acc58008358015df08ea1d7c4b55580e7bc9ef16584c57ebfb5ef7",
+        "stdout_sha256": "e5d21d0cd1303b107a006fe9fac4489609292579d89b375bd0fb4548b233c9de"
+      }
+    ],
+    "kernel_errors": false,
+    "maximum_temperature_mC": 52000,
+    "module_sha256": "9ea1e89421ff04033f84418feebdc01c45fc903c2daa06f8e9c432e32fca30c4",
+    "module_source": "2d6ad43fc743593fd95c02282cedd141d38d8db2",
+    "private_receipt_sha256": "4b26070b73717fd6786484d5f16e26bd6db17dbf4ecfb14b2b4bf6fa552a825f",
+    "restored": true
+  },
+  "private_evidence_label": "crystalhd-issue538-multislice-run-20261102",
+  "restoration": {
+    "exact_hardware_debug_baseline_equal": true,
+    "installed_runtime": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "kernel_errors": false,
+    "maximum_temperature_mC": 57000,
+    "module_inventory_equal": true,
+    "pin_net": 0,
+    "ref": 0,
+    "restored": true,
+    "runtime_verify_sha256": "bdb67573d41a118c007bc041d680b12c4b923a70a3cf33dc4df0fec27a65eabb",
+    "stable_module_srcversion": "F76E163690F147B91495DDD",
+    "video_nodes": []
+  },
+  "schema": "crystalhd.progressive-poc2-multislice.v1",
+  "source_fixture": {
+    "cases": [
+      {
+        "annexb_sha256": "587b39643d23cdb21c4e95e6db9d470cc3d977e9c8268c454d7af7a70bd51ef0",
+        "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+        "first_mb": [
+          0,
+          480
+        ],
+        "frame_num_bits": 4,
+        "frame_pts": [
+          0,
+          512,
+          1024,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120,
+          5632,
+          6144,
+          6656,
+          7168,
+          7680,
+          8192,
+          8704,
+          9216,
+          9728,
+          10240,
+          10752,
+          11264,
+          11776,
+          12288,
+          12800,
+          13312,
+          13824,
+          14336,
+          14848
+        ],
+        "media_sha256": "6353b410261ac58299e379bb8e589270d8328a5f9b4da1ed1c28c82ca274e416",
+        "pic_height_in_map_units": 23,
+        "pic_width_in_mbs": 40,
+        "range": "full",
+        "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "slices": 2,
+        "stem": "slices2-full",
+        "time_base": "1/15360",
+        "trace_sha256": "f98541cddd10820c6ee79cfd001bf07c2e1242643d210608720d206d50fe6cb0"
+      },
+      {
+        "annexb_sha256": "b7a04d77821914ef191d9298767503dcfefd8e5f4e3ab940674adcff68d1f434",
+        "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+        "first_mb": [
+          0,
+          480
+        ],
+        "frame_num_bits": 4,
+        "frame_pts": [
+          0,
+          512,
+          1024,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120,
+          5632,
+          6144,
+          6656,
+          7168,
+          7680,
+          8192,
+          8704,
+          9216,
+          9728,
+          10240,
+          10752,
+          11264,
+          11776,
+          12288,
+          12800,
+          13312,
+          13824,
+          14336,
+          14848
+        ],
+        "media_sha256": "48e35d2dcfc43f758eaceef9835d5c5a6eaf8b6a6bd1afa7350687bf50efea36",
+        "pic_height_in_map_units": 23,
+        "pic_width_in_mbs": 40,
+        "range": "limited",
+        "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "slices": 2,
+        "stem": "slices2-limited",
+        "time_base": "1/15360",
+        "trace_sha256": "f5d79e4085c85f2b3aef6cf6c437269f3c525d29e78a1b60f30f81cdf48d196f"
+      },
+      {
+        "annexb_sha256": "37735a59249282ff78512403cf2cb7d5baaf9e61f1c3cfbf3f36e625cbfe296a",
+        "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+        "first_mb": [
+          0,
+          240,
+          480,
+          680
+        ],
+        "frame_num_bits": 4,
+        "frame_pts": [
+          0,
+          512,
+          1024,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120,
+          5632,
+          6144,
+          6656,
+          7168,
+          7680,
+          8192,
+          8704,
+          9216,
+          9728,
+          10240,
+          10752,
+          11264,
+          11776,
+          12288,
+          12800,
+          13312,
+          13824,
+          14336,
+          14848
+        ],
+        "media_sha256": "cff34fd98a585147db6268925fa9315f00bbce591f28adba3b91fef1e173d257",
+        "pic_height_in_map_units": 23,
+        "pic_width_in_mbs": 40,
+        "range": "full",
+        "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "slices": 4,
+        "stem": "slices4-full",
+        "time_base": "1/15360",
+        "trace_sha256": "436336e260a3e628a55ae1a50f74957a367bbb1191c17049437d7560c74e155c"
+      },
+      {
+        "annexb_sha256": "167f844290f845d3392819d2b5ef90af7afd5b922b7c2b7220145ca7365fe45b",
+        "decoded_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+        "first_mb": [
+          0,
+          240,
+          480,
+          680
+        ],
+        "frame_num_bits": 4,
+        "frame_pts": [
+          0,
+          512,
+          1024,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096,
+          4608,
+          5120,
+          5632,
+          6144,
+          6656,
+          7168,
+          7680,
+          8192,
+          8704,
+          9216,
+          9728,
+          10240,
+          10752,
+          11264,
+          11776,
+          12288,
+          12800,
+          13312,
+          13824,
+          14336,
+          14848
+        ],
+        "media_sha256": "8ca3913a3da17601aa1914bc53becbd3a66d6e6778c14d9ca09ce44b4aa48d0a",
+        "pic_height_in_map_units": 23,
+        "pic_width_in_mbs": 40,
+        "range": "limited",
+        "reference_sha256": "6e760076f3bd1ed8c72bfc6a39c00238b0ff421d3a48402b07a6b62e35e9d212",
+        "slices": 4,
+        "stem": "slices4-limited",
+        "time_base": "1/15360",
+        "trace_sha256": "a669793b0552cf7eb973ee0a9a4d1e6de0decedb26189bfc7c6b663f95b70231"
+      }
+    ],
+    "frames_per_case": 30,
+    "generator": "tests/native-multislice-fixture.py",
+    "generator_sha256": "a384800c82c8d121f97a6dda9845d6ec9fbfce4c7c23fa0d5c47ad8f09a48b7b",
+    "height": 360,
+    "independent_validation": "Unchanged FFmpeg trace_headers confirms High8bit420/POC2/progressive/group0/no redundant/CICP1/1/1/range. All30 software pictures and unique ordered sourcePTS per case. Full/limited coded YUV equality and whole-plane constant chroma permit an exact packed YUYV oracle.",
+    "input_YUV_sha256": "d642c4637cb520b6db0517cd62927a5e31f3f61ebd3dc9759b88c1f14fd7324a",
+    "prefix_goldens": "tests/fixtures/issue538/h264-multislice-prefixes-20261102.h",
+    "prefix_goldens_sha256": "dcc20671d85fe25133a3cc601c8dc8bffb43233c3e5a527cb326be2ede36b30a",
+    "scope": "Real B0 I/P two/four-slice sources. CPU VCL arrays retain first16 bytes, not complete coded pictures.",
+    "width": 640
+  },
+  "srcversion": "FEB8DC48436425D92497DA7",
+  "status": "PASS_SCOPED_NATIVE_RANGE_ASSOCIATION"
+}

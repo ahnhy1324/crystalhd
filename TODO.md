@@ -100,8 +100,16 @@ shelve the work or silently exclude implemented features.
    that error only when reusing the input external GL texture after FULL;
    fresh textures avoid it, regardless of DMA-BUF/Picture-bundle reuse.
    See the [render-boundary receipt](tests/fixtures/issue538/egl-range-rebind-20261102.json).
-   Broader syntax/reorder/endurance and the exact graphics implementation
-   site remain research. No external patch or driver pixel/range workaround
+   Progressive POC2 multi-slice range association is now implemented: matching
+   picture headers, one slice group/no redundant picture and increasing bounded
+   first_mb qualify2/4-slice inputs. Actual four limited/full cases, a same-size
+   2-slice FULL→4-slice LIMITED transition and old single-slice B2 regression
+   preserve210 pictures/full YUYV/sourcePTS/final LAST/EPIPE;180 GPU pictures
+   pass at maximum RGB error1. Pre-fix FULL failures remain preserved in the
+   [receipt](tests/fixtures/issue538/progressive-multislice-range-20261102.json).
+   POC0/1 multi-slice, fields/FMO/ASO/redundant/extensions, multi-slice reorder/
+   endurance and the exact graphics implementation site remain research.
+   No external patch or driver pixel/range workaround
    is applied. Sampled Kodi RGB, separate native/GPU controls and physical
    presentation retain distinct evidence limits.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
