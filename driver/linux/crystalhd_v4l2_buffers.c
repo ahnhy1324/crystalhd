@@ -282,6 +282,47 @@ BC_STATUS crystalhd_v4l2_capture_complete(
 	return sts;
 }
 
+int crystalhd_v4l2_capture_copy_out(struct crystalhd_v4l2_capture_buffer *buffer,
+	const struct crystalhd_rx_image *image, void *dst, u32 capacity)
+{
+	u32 size;
+
+	if (!buffer || !image || !dst || crystalhd_v4l2_capture_owned(buffer) ||
+	    crystalhd_v4l2_capture_size(buffer->width, buffer->height, &size) ||
+	    !buffer->vaddr || buffer->rx.capacity < size || !buffer->cpu_synced ||
+	    vb2_plane_size(&buffer->m2m.vb.vb2_buf, 0) < size ||
+	    image->width != buffer->width || image->height != buffer->height ||
+	    image->stride_bytes != buffer->width * 2 ||
+	    image->payload_bytes != buffer->width * buffer->height * 2 ||
+	    image->payload_bytes > capacity)
+		return -EINVAL;
+	memcpy(dst, buffer->vaddr, image->payload_bytes);
+	return 0;
+}
+
+int crystalhd_v4l2_capture_copy_in(struct crystalhd_v4l2_capture_buffer *buffer,
+	const void *src, u32 bytes, u32 width, u32 height)
+{
+	u32 size;
+
+	if (!buffer || !src || crystalhd_v4l2_capture_owned(buffer) ||
+	    crystalhd_v4l2_capture_size(width, height, &size) ||
+	    !buffer->vaddr || !buffer->sgt || buffer->width != width ||
+	    buffer->height != height || buffer->rx.capacity < size ||
+	    vb2_plane_size(&buffer->m2m.vb.vb2_buf, 0) < size ||
+	    bytes != width * height * 2)
+		return -EINVAL;
+	crystalhd_capture_cpu(NULL, &buffer->rx);
+	memcpy(buffer->vaddr, src, bytes);
+	/* Publish CPU production to physical backing, then finish CPU-owned.
+	 * The replacement may be consumed through EXPBUF by another device.
+	 */
+	crystalhd_capture_device(NULL, &buffer->rx);
+	crystalhd_capture_cpu(NULL, &buffer->rx);
+	crystalhd_v4l2_skip_finish(&buffer->m2m.vb.vb2_buf, true);
+	return 0;
+}
+
 bool crystalhd_v4l2_capture_retire(struct crystalhd_v4l2_capture_buffer *buffer)
 {
 	unsigned long flags;

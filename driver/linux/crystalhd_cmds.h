@@ -306,6 +306,13 @@ BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *ctx,
 				    struct crystalhd_rx_completion *result);
+/* Confirm an already empty native RX boundary without stopping DMA/firmware
+ * or releasing any packet. Caller preserves device/session lifetime and
+ * excludes new RX submission until CAPTURE renegotiation. Only success
+ * advances the saved dequeue epoch and publishes FMT_CHG; BUSY is unchanged.
+ */
+BC_STATUS crystalhd_rx_pause_metadata_idle(struct crystalhd_cmd *ctx,
+					 uint64_t capture_epoch);
 BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 				  uint32_t pause_threshold,
 				  uint32_t resume_threshold);

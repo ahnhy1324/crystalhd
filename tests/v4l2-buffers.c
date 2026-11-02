@@ -429,12 +429,71 @@ static void completion_errors(void)
     teardown(&f);
 }
 
+static void staged_cpu_production(void)
+{
+    struct fixture source, replacement;
+    struct crystalhd_rx_completion result;
+    struct crystalhd_rx_image image, wrong;
+    u8 stage[272], expected[256];
+    unsigned before;
+    memset(stage, 0x6b, sizeof(stage));
+    setup(&source);
+    check(!crystalhd_v4l2_capture_prepare(&source.buffer, 16, 8));
+    check(crystalhd_v4l2_capture_submit(&source.cmd, &source.buffer) == BC_STS_SUCCESS);
+    image = (struct crystalhd_rx_image){.width=16,.height=8,.stride_bytes=32,.payload_bytes=256};
+    check(crystalhd_v4l2_capture_copy_out(&source.buffer, &image, stage+8, 256) == -EINVAL);
+    check(crystalhd_v4l2_capture_copy_in(&source.buffer, stage+8, 256, 16, 8) == -EINVAL);
+    for (unsigned i=0;i<256;i++) source.backing[i]=(u8)(i*37U);
+    result=picture(&source);
+    check(crystalhd_v4l2_capture_complete(&source.buffer,&result,&image)==BC_STS_SUCCESS);
+    memcpy(expected,source.pixels,256);before=cpu_syncs;
+    wrong=image;wrong.stride_bytes--;
+    check(crystalhd_v4l2_capture_copy_out(&source.buffer,&wrong,stage+8,256)==-EINVAL);
+    check(crystalhd_v4l2_capture_copy_out(&source.buffer,&image,stage+8,255)==-EINVAL);
+    for(unsigned i=0;i<sizeof(stage);i++) check(stage[i]==0x6b);
+    check(!crystalhd_v4l2_capture_copy_out(&source.buffer,&image,stage+8,256));
+    check(cpu_syncs==before && !memcmp(stage+8,expected,256));
+    check(stage[0]==0x6b && stage[7]==0x6b && stage[264]==0x6b && stage[271]==0x6b);
+    u32 first;memcpy(&first,stage+8,4);check(first==0xaabbccdd);
+    teardown(&source); /* No source allocation survives the CAPTURE boundary. */
+
+    setup(&replacement);
+    check(!crystalhd_v4l2_capture_prepare(&replacement.buffer,16,8));
+    memset(replacement.backing,0xcc,alias_bytes);memset(replacement.pixels,0xdd,alias_bytes);
+    check(crystalhd_v4l2_capture_copy_in(&replacement.buffer,stage+8,255,16,8)==-EINVAL);
+    check(crystalhd_v4l2_capture_copy_in(&replacement.buffer,stage+8,256,18,8)==-EINVAL);
+    check(!cpu_syncs && !device_syncs && replacement.pixels[0]==0xdd);
+    check(!crystalhd_v4l2_capture_copy_in(&replacement.buffer,stage+8,256,16,8));
+    check(cpu_syncs==2 && device_syncs==1 && replacement.buffer.cpu_synced &&
+          finish_skipped(&replacement.buffer.m2m.vb.vb2_buf));
+    allocator_finish(&replacement.buffer.m2m.vb.vb2_buf);
+    check(!memcmp(replacement.backing,expected,256) && !memcmp(replacement.pixels,expected,256));
+    check(replacement.backing[256]==0xcc && replacement.backing[alias_bytes-1]==0xcc);
+    before=cpu_syncs;
+    for(unsigned state=CRYSTALHD_CAPTURE_CORE;state<=CRYSTALHD_CAPTURE_RETIRED;state++) {
+        replacement.buffer.owner=state;
+        check(crystalhd_v4l2_capture_copy_in(&replacement.buffer,stage+8,256,16,8)==-EINVAL);
+        check(crystalhd_v4l2_capture_copy_out(&replacement.buffer,&image,stage+8,256)==-EINVAL);
+        check(cpu_syncs==before && !memcmp(replacement.backing,expected,256));
+    }
+    replacement.buffer.owner=CRYSTALHD_CAPTURE_CPU;
+    check(!crystalhd_v4l2_capture_prepare(&replacement.buffer,16,8));
+    check(!finish_skipped(&replacement.buffer.m2m.vb.vb2_buf));
+    check(crystalhd_v4l2_capture_submit(&replacement.cmd,&replacement.buffer)==BC_STS_SUCCESS);
+    result=picture(&replacement);
+    check(crystalhd_v4l2_capture_complete(&replacement.buffer,&result,&image)==BC_STS_SUCCESS);
+    allocator_finish(&replacement.buffer.m2m.vb.vb2_buf);
+    memcpy(&first,replacement.backing,4);check(first==0xaabbccdd);
+    teardown(&replacement);
+}
+
 int main(void)
 {
     mapping_and_pixels();
     cancellation_and_failed_stop();
     invalid_mapping();
     completion_errors();
+    staged_cpu_production();
     printf("V4L2 direct SG capture: %u checks passed\n", checks);
     return 0;
 }

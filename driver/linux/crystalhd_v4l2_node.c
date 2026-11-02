@@ -94,6 +94,12 @@ struct crystalhd_v4l2_file {
 	struct vb2_v4l2_buffer *pending_last;
 	struct crystalhd_rx_metadata last_metadata;
 	u64 last_epoch;
+	struct {
+		void *data;
+		u32 bytes, width, height, sequence;
+		u64 timestamp, epoch;
+		struct chd_h264_range_snapshot input_range;
+	} staged;
 };
 
 /* Linux 7.0 passes NULL in the reserved ioctl callback argument. The
@@ -403,12 +409,58 @@ static void chd_return_ready(struct crystalhd_v4l2_file *f, bool output)
 	}
 }
 
+static void chd_clear_staged(struct crystalhd_v4l2_file *f)
+{
+	kvfree(f->staged.data);
+	memset(&f->staged, 0, sizeof(f->staged));
+}
+
+static int chd_deliver_staged(struct crystalhd_v4l2_file *f)
+{
+	struct vb2_v4l2_buffer *vb;
+	struct crystalhd_v4l2_capture_buffer *b;
+	int rc;
+
+	if (!f->staged.data)
+		return 0;
+	if (f->staged.epoch != f->decoder.epoch)
+		return -ESTALE;
+	vb = v4l2_m2m_dst_buf_remove(f->fh.m2m_ctx);
+	if (!vb)
+		return 0;
+	b = container_of(vb, struct crystalhd_v4l2_capture_buffer, m2m.vb);
+	rc = crystalhd_v4l2_capture_copy_in(b, f->staged.data, f->staged.bytes,
+					f->staged.width, f->staged.height);
+	if (rc) {
+		vb->field = V4L2_FIELD_NONE;
+		vb->sequence = f->staged.sequence;
+		vb->vb2_buf.timestamp = f->staged.timestamp;
+		vb->flags &= ~V4L2_BUF_FLAG_LAST;
+		vb->flags |= V4L2_BUF_FLAG_ERROR;
+		vb2_set_plane_payload(&vb->vb2_buf, 0, 0);
+		v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
+		return rc;
+	}
+	b->decoder_epoch = f->staged.epoch;
+	b->input_range = f->staged.input_range;
+	vb->field = V4L2_FIELD_NONE;
+	vb->sequence = f->staged.sequence;
+	vb->vb2_buf.timestamp = f->staged.timestamp;
+	vb->flags &= ~(V4L2_BUF_FLAG_LAST | V4L2_BUF_FLAG_ERROR);
+	vb2_set_plane_payload(&vb->vb2_buf, 0, f->staged.bytes);
+	v4l2_m2m_buf_done(vb, VB2_BUF_STATE_DONE);
+	chd_clear_staged(f);
+	return 0;
+}
+
 static int chd_start_capture(struct crystalhd_v4l2_file *f,
 			     struct crystalhd_cmd *cmd)
 {
 	BC_STATUS sts;
 	u32 i;
 
+	if (f->staged.data || f->pending_last)
+		return 0;
 	if (!f->format_known) {
 		for (i = 0; i < CHD_DISCOVERY_BUFFERS; i++) {
 			struct crystalhd_v4l2_discovery *d = &f->discovery[i];
@@ -438,10 +490,9 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 	struct crystalhd_v4l2_capture_buffer *b;
 	BC_STATUS sts;
 	u32 i;
+	int rc;
 
 	if (!f->capture_streaming || !f->format_known || f->format_pending)
-		return 0;
-	if (f->pending_last)
 		return 0;
 	/* One native registration at a time prevents a second picture DMA from
 	 * crossing an unacknowledged format boundary. Client queues stay buffered.
@@ -449,6 +500,9 @@ static int chd_submit_capture(struct crystalhd_v4l2_file *f,
 	for (i = 0; i < ARRAY_SIZE(f->active); i++)
 		if (f->active[i])
 			return 0;
+	rc = chd_deliver_staged(f);
+	if (rc || f->staged.data || f->pending_last)
+		return rc;
 	/* Keep one client-queued buffer for genuine drain completion while
 	 * pictures remain. Otherwise an asynchronous sink can briefly hold the
 	 * entire pool and mistake that backpressure for EOF. A returned buffer
@@ -562,6 +616,75 @@ static int chd_format(struct crystalhd_v4l2_file *f,
 	return 0;
 }
 
+static int chd_stage_range(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd,
+	struct crystalhd_v4l2_capture_buffer *b, const struct crystalhd_rx_image *image,
+	u64 timestamp, u64 capture_epoch)
+{
+	struct v4l2_event event = { .type = V4L2_EVENT_SOURCE_CHANGE };
+	struct vb2_v4l2_buffer *vb = &b->m2m.vb;
+	u32 quantization, i;
+	void *copy;
+	BC_STATUS sts;
+	int rc;
+
+	if (!b->input_range.associated || !b->input_range.range_present)
+		return 0;
+	quantization = b->input_range.full_range ?
+		V4L2_QUANTIZATION_FULL_RANGE : V4L2_QUANTIZATION_LIM_RANGE;
+	if (quantization == f->capture.quantization)
+		return 0;
+	if (f->staged.data || b->decoder_epoch != f->decoder.epoch ||
+	    image->width != f->capture.width || image->height != f->capture.height ||
+	    image->payload_bytes != image->width * image->height * 2)
+		return -EPROTO;
+	for (i = 0; i < ARRAY_SIZE(f->active); i++)
+		if (f->active[i])
+			return -EBUSY;
+	copy = kvcalloc(1, image->payload_bytes, GFP_KERNEL);
+	if (!copy)
+		return -ENOMEM;
+	rc = crystalhd_v4l2_capture_copy_out(b, image, copy, image->payload_bytes);
+	if (rc)
+		goto free_copy;
+	/* The single completed RX registration is already CPU-owned. Confirm
+	 * that no other DMA/ready packet exists; never flush a real picture.
+	 */
+	sts = crystalhd_rx_pause_metadata_idle(cmd, capture_epoch);
+	if (sts != BC_STS_SUCCESS) {
+		rc = crystalhd_status_to_errno(sts);
+		goto free_copy;
+	}
+	f->staged.data = copy;
+	f->staged.bytes = image->payload_bytes;
+	f->staged.width = image->width;
+	f->staged.height = image->height;
+	f->staged.timestamp = timestamp;
+	f->staged.sequence = vb->sequence;
+	f->staged.epoch = b->decoder_epoch;
+	f->staged.input_range = b->input_range;
+	f->capture_started = false;
+	f->format_pending = true;
+	dev_dbg(&cmd->adp->pdev->dev,
+		"Native range boundary: pts=%llu range=%u->%u phase=%u count=%u tx=%u eos_tx=%u\n",
+		timestamp, f->capture.quantization, quantization, f->decoder.phase,
+		f->decoder.count, f->tx_active, f->drain_tx_done);
+	f->capture.quantization = quantization;
+	event.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION;
+	v4l2_event_queue_fh(&f->fh, &event);
+	/* This empty LAST closes the old CAPTURE format, not decoder drain.
+	 * The actual picture survives independently of this vb2 allocation.
+	 */
+	vb->vb2_buf.timestamp = 0;
+	memset(&b->input_range, 0, sizeof(b->input_range));
+	vb2_set_plane_payload(&vb->vb2_buf, 0, 0);
+	vb->flags |= V4L2_BUF_FLAG_LAST;
+	v4l2_m2m_buf_done(vb, VB2_BUF_STATE_DONE);
+	return 1;
+free_copy:
+	kvfree(copy);
+	return rc;
+}
+
 static int chd_receive(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd)
 {
 	struct crystalhd_rx_completion result;
@@ -631,6 +754,16 @@ static int chd_receive(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd)
 		vb->sequence = f->sequence++;
 		vb->flags &= ~(V4L2_BUF_FLAG_LAST | V4L2_BUF_FLAG_ERROR);
 		if (!rc && pixels == BC_STS_SUCCESS) {
+			rc = chd_stage_range(f, cmd, b, &image, timestamp, result.capture_epoch);
+			if (rc) {
+				if (rc < 0) {
+					vb->vb2_buf.timestamp = timestamp;
+					vb2_set_plane_payload(&vb->vb2_buf, 0, 0);
+					vb->flags |= V4L2_BUF_FLAG_ERROR;
+					v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
+				}
+				return rc < 0 ? rc : 0;
+			}
 			vb->vb2_buf.timestamp = timestamp;
 			vb2_set_plane_payload(&vb->vb2_buf, 0, image.payload_bytes);
 			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_DONE);
@@ -664,7 +797,7 @@ static int chd_finish_last(struct crystalhd_v4l2_file *f)
 	u64 timestamp;
 	int rc;
 
-	if (!vb || f->tx_active || !f->drain_tx_done)
+	if (!vb || f->staged.data || f->tx_active || !f->drain_tx_done)
 		return 0;
 	rc = crystalhd_v4l2_decoder_complete(&f->decoder, &f->last_metadata,
 					   f->last_epoch, &timestamp);
@@ -1044,6 +1177,7 @@ static int chd_reset_channel(struct crystalhd_v4l2_file *f, bool release)
 			v4l2_m2m_buf_done(f->pending_last, VB2_BUF_STATE_ERROR);
 			f->pending_last = NULL;
 		}
+		chd_clear_staged(f);
 		chd_return_active(f);
 		f->capture_started = false;
 		f->drain_requested = false;
@@ -1230,6 +1364,7 @@ static void chd_file_destroy(void *private)
 	/* The lease's final cleanup runs after safe whole-session retirement,
 	 * outside device barriers and after file release joined our work.
 	 */
+	chd_clear_staged(f);
 	chd_return_active(f);
 	if (f->pending_last)
 		v4l2_m2m_buf_done(f->pending_last, VB2_BUF_STATE_ERROR);

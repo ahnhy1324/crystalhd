@@ -61,5 +61,13 @@ BC_STATUS crystalhd_v4l2_capture_complete(
 		struct crystalhd_rx_image *image);
 bool crystalhd_v4l2_capture_retire(struct crystalhd_v4l2_capture_buffer *buffer);
 bool crystalhd_v4l2_capture_owned(struct crystalhd_v4l2_capture_buffer *buffer);
+/* CPU-only copying around metadata renegotiation. copy_out requires the
+ * completed CPU-synchronized image. copy_in publishes CPU-written backing
+ * and prevents vb2 finish from invalidating it. Neither takes a core lease.
+ */
+int crystalhd_v4l2_capture_copy_out(struct crystalhd_v4l2_capture_buffer *buffer,
+	const struct crystalhd_rx_image *image, void *dst, u32 capacity);
+int crystalhd_v4l2_capture_copy_in(struct crystalhd_v4l2_capture_buffer *buffer,
+	const void *src, u32 bytes, u32 width, u32 height);
 
 #endif
