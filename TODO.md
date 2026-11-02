@@ -65,11 +65,15 @@ shelve the work or silently exclude implemented features.
    rejection, dormant pools and stop cancellation. See the
    [receipt](tests/fixtures/issue513/xv-live-port-20261102.json).
    X-server interruption and matched endurance/attribution remain active research.
-3. #538: the private SPS/VUI range-prefix reader now distinguishes explicit
-   limited/full from absent source flags;15 independent header goldens and780
-   ordinary/sanitized CPU checks pass. Next connect PPS/VCL identity and
-   admission-token snapshots before applying source range to native output.
-   [Receipt](tests/fixtures/issue538/h264-sps-range-20261102.json).
+3. #538: SPS prefix #624 is merged. The admission-binding follow-up now
+   observes PPS/SPS/single-first-slice prefixes, snapshots range/SPS generation
+   per token and returns the matching observation to private CAPTURE storage.
+   Same-ID redefinition, reorder, EAGAIN, TX failure, reset and EOS tests pass;
+   fresh current-host32/64 API and180x2 native hash/PTS/EOS/reopen regressions
+   restore the exact baseline. See the
+   [receipt](tests/fixtures/issue538/input-range-observations-20261102.json).
+   Next qualify the source/output-format boundary and actual pixel/client
+   range semantics before applying observations to CAPTURE quantization.
    Nonempty STOP/START retains its firmware-DPB-loss rejection. Only the
    original heap subtask is excluded.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in

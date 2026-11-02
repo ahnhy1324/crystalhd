@@ -1,0 +1,245 @@
+{
+  "CPU": {
+    "SPS_checks_each_ordinary_and_ASan_UBSan_leaks": 780,
+    "SPS_goldens": 15,
+    "association_cases": [
+      "sameSPS-ID limited/full and immutable earlier observation",
+      "PPS reconnect including suffix unknown/current and updated next VCL",
+      "damaged SPS/PPS and stale cache invalidation",
+      "absent range vs explicit limited/full",
+      "multiVCL/partition/extensions/nonfirst slices/AUD ambiguity",
+      "large VCL beyond4096bytes, exact128 vs129NAL bound, >8MiB",
+      "mixed starts/zero padding/empty trailing NAL",
+      "generation exhaustion/reset"
+    ],
+    "association_checks_each_ordinary_and_ASan_UBSan_leaks": 69,
+    "capture_checks_each_two_API_layouts_and_ordinary_ASan": 86,
+    "compiled_semantic_negatives_rejected": 8,
+    "node_API_versions": [
+      "5.15",
+      "6.1",
+      "6.6",
+      "6.12",
+      "6.18",
+      "7.0",
+      "7.2.8"
+    ],
+    "node_each_ordinary_and_sanitized": {
+      "checks": 5971,
+      "failures": 0,
+      "scenarios": 725
+    },
+    "output_checks_each_two_API_layouts_and_ordinary_ASan": 2958,
+    "production_controller": "Original ledger/drain tests plus redefinition/reordered completion/duplicatePTS/EAGAIN no mutation/no mapped read/source failure/TX retention/epoch/reset/RX-before-TX-return/EILSEQ/EOS output preservation, ordinary+ASan/UBSan",
+    "size_scope": "These are current64-bit ABI measurements, not fixed32-bit ABI sizes.",
+    "x86_64_measured_sizes_bytes": {
+      "decoder": 13096,
+      "snapshot": 24,
+      "state": 2832
+    }
+  },
+  "actual_native": {
+    "API32_on_current_x86_64_host": 141,
+    "API64": 141,
+    "aggregate_YUYV_SHA256_each": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "baseline_boundary_equal": true,
+    "cases": [
+      {
+        "exit": 0,
+        "module": {
+          "refcnt": "0",
+          "srcversion": "F82D0AF5467C90E7CE5452C",
+          "version": "3.10.17"
+        },
+        "name": "native-api64",
+        "seconds": 0.10586274298839271,
+        "status": "PASS"
+      },
+      {
+        "exit": 0,
+        "module": {
+          "refcnt": "0",
+          "srcversion": "F82D0AF5467C90E7CE5452C",
+          "version": "3.10.17"
+        },
+        "name": "native-api32",
+        "seconds": 0.10458105697762221,
+        "status": "PASS"
+      },
+      {
+        "exit": 0,
+        "module": {
+          "refcnt": "0",
+          "srcversion": "F82D0AF5467C90E7CE5452C",
+          "version": "3.10.17"
+        },
+        "name": "native-min2-ownership",
+        "seconds": 7.127167014987208,
+        "status": "PASS"
+      }
+    ],
+    "geometry": "640x360 YUYV",
+    "kernel_errors": false,
+    "maximum_temperature_mC": 56000,
+    "module_inventory_equal": true,
+    "picture_cycles": 2,
+    "pictures_each": 180,
+    "private_snapshot_readback": "NOT_MEASURED on hardware; values/ordering tested in extracted production CPU controller/node. Actual hardware run is input/DMA/decode/PTS/retirement regression.",
+    "receipt_sha256": "9f30fdf870ebac5a5e373430ee63cad60c6eec476120d42a9e0364bcf24d5e63",
+    "restored": true,
+    "runtime_baseline_verify": {
+      "leaves": 36,
+      "passed": true
+    },
+    "source": "14b7ab3c52e79f806f4e64006718b68e62eb5df8",
+    "source_PTS_oracle": "Unchanged pinned native probe checks source/returned PTS; natural LAST/EPIPE, empty STOP, failed STREAMON, admission/legacy arbitration and reopen checks pass.",
+    "source_bindings": {
+      "files": {
+        "driver/linux/crystalhd_v4l2.c": "beb7dc16818a6303abfd96a8cc18b8ce50f7ce3fc912f69a0219739e79061790",
+        "driver/linux/crystalhd_v4l2.h": "3bf1c95b06875a040fedf85e62e2836b0e0c18043a60e9bfdb3061c1aeaaca98",
+        "driver/linux/crystalhd_v4l2_buffers.c": "8e615deead2760edfd6bdcdb150cf818be7cbb2fdaeb7c6197c5c06e4386486e",
+        "driver/linux/crystalhd_v4l2_buffers.h": "63009d0135b94baddbc6fe6691eaa8f0d290e7acbdd181b3e08d0a92d2a74a61",
+        "driver/linux/crystalhd_v4l2_compat.h": "cfb65e5c7cbea2dba50ecced7cc661fbf5d21d6b982f4e93d45a5d7c01b8b23c",
+        "driver/linux/crystalhd_v4l2_decoder.c": "86fbd70966b41c06a4c1c3463f50b11bea0e1cc2e799b292ca629b2508138a26",
+        "driver/linux/crystalhd_v4l2_decoder.h": "83df9797c6a445b26cbd7b463083281ee3af91a2b80322a750c09f686f4be4ee",
+        "driver/linux/crystalhd_v4l2_node.c": "f438dd6eb7c094b7e0586b85b9266a346d012c21df9b4fb7ffdd55667dcd6d98",
+        "driver/linux/crystalhd_v4l2_node.h": "d8107042d7fd5ef4bc987704050f1527241750530b61b6614d83862c7426e264",
+        "driver/linux/crystalhd_v4l2_output.c": "8a8323ca7118747d820a3d3e5456cf302b0988a154287eb75848abd299ba9c4b",
+        "driver/linux/crystalhd_v4l2_output.h": "f9cf8c1d8addb08769a62692447021538077077e23b7fd919cafa1ff1c3a4266"
+      },
+      "module_sha256": "769835aeb2e55b662e71f669947ca63fac0b4167a85e9694d5220f78fbb53d31",
+      "module_srcversion": "F82D0AF5467C90E7CE5452C",
+      "reused_unchanged_probe_hashes": {
+        "v4l2-api32": "7f559dc54af78409c940c80dad17647bb043bbd644069ab1156db5563a837695",
+        "v4l2-api64": "0da8281c15ee219ff16870369bf541d37f7160a861b782cb008392e2813071b0",
+        "v4l2-decode": "768c78c98db178eb9973056346ad33cd5af06b338b8cdbd045dd177cf87ecc18"
+      },
+      "source": "14b7ab3c52e79f806f4e64006718b68e62eb5df8"
+    },
+    "status": "PASS_INPUT_OBSERVATION_NATIVE_REGRESSION",
+    "total_pictures": 360
+  },
+  "date": "2026-11-02",
+  "independent_nal_oracle": {
+    "nal_hex": {
+      "PPS": "68cb83cb20",
+      "PPS31": "688202e0f2c8",
+      "SPS_ABSENT": "6742001eda2590",
+      "SPS_FULL": "6742c00ad9096c05b810100a000003000200000300041e244c90",
+      "SPS_ID31": "6742001e0416896ffc0010000fdc04040408",
+      "SPS_LIMITED": "6742c00ad9096c05a810100a000003000200000300041e244c90",
+      "VCL": "658884057fffff0f45000142df275d78"
+    },
+    "pps31_trace_exit": 0,
+    "pps31_trace_sha256": "4ca2d6d23c8ef35f94169e8d595d637a4786dfff2c423231e83d6864a84892fb",
+    "source_media_sha256": "c3cf52d31d921502511076c603ef1ce3daa0e6d0ae605ab46ac2cea78e31b141",
+    "source_trace": "/home/mache/.cache/crystalhd-issue538-sps-range-run-20261102/x264-baseline-limited.trace"
+  },
+  "input_contract": {
+    "association_scope": "Exactly one type1/5 VCL with first_mb0 and a readable threeUE prefix. This is observed input association, not complete frame_num/field/POC identity, full parameter syntax or firmware adoption proof.",
+    "capture": "Clear private observation before registration, copy matching row on completion; G_FMT/quantization remain caller/source-word policy.",
+    "completion": "Only matched0/-EILSEQ copy/consume snapshot; stale/nonpicture/errors/EOS leave caller snapshot untouched. RX-before-TX-return safe.",
+    "framing": "AnnexB with3/4byte starts and leading/trailing zeros; at most8MiB and128NALs",
+    "generations": "No wrap; exhaustion gives UNKNOWN until decoder epoch reset; existing token snapshots remain unchanged",
+    "mapped_source": "Prepared non-core-owned source is CPU-synchronized before read; transport retains original direct/staged device-sync and leases.",
+    "parameters": "32SPS/256PPS fixed caches; PPS stores SPS ID; VCL snapshots current SPS generation/value",
+    "preflight": "Phase/capacity/token/slot checks before CPU access or parser state change. Failed mapped-source validation leaves decoder state/outputs unchanged.",
+    "reset": "Clear rows and parameter state; tokens are not reused, epoch checks remain.",
+    "uncertainty": "Malformed/unsupported/ambiguous observations become UNKNOWN without rejecting the existing decode path; stale parameter reuse prevented by conservative invalidation"
+  },
+  "kernel_build": {
+    "Werror": true,
+    "host_kernel": "7.0.0-38-generic",
+    "install": "Private insmod only; no DKMS/source registration, package or installed payload update.",
+    "module_sha256": "769835aeb2e55b662e71f669947ca63fac0b4167a85e9694d5220f78fbb53d31",
+    "module_version": "3.10.17",
+    "native": true,
+    "source_binding_sha256": "cdfc16c63ad6ed551b6a8d82c4cfeff1c8f16cbf6ce285983a56ec3cb733f5d2",
+    "srcversion": "F82D0AF5467C90E7CE5452C"
+  },
+  "logs": {
+    "adapters-02.log": "5ae45654cb44ae3745fdb095535999dbfa50224e25bd0eeee2cc478990f744ea",
+    "adapters-03.log": "32f12d69b08744ba0d1afe20862844242d435029187d3d43241d9b7d6df8591c",
+    "association-01.log": "09cacba9ca9ff68f98d2cbf4794bec631f8f9b3212377a8d43b0431038acbc18",
+    "association-final.log": "cd4a34e8ab39bc3171fcd0036fb24c5b143b982018c7dd480ee0861a9205c975",
+    "baseline-adapters-01.log": "e45c45675d786cbc6f31927987f3b7df8612db1e6685ef36be1a85afc4d65ac7",
+    "native-build-final.log": "0b216a5d316335cdfebcf27a75fb6da873ddee4099902b00f88e2278ed237c7d"
+  },
+  "next": "Qualify source/output-format boundary and actual pixel/client range semantics before applying observations to CAPTURE quantization. Broader multi-slice/full parameter validation and actual hardware snapshot census remain separate.",
+  "policy": "Stable1.3 deferred; original538heap exclusion/reason and nonemptySTOP/START rejection preserved; external code/firmware/assets/defaults and accepted loss/logAV policies unchanged.",
+  "private_evidence_root": "/home/mache/.cache/crystalhd-issue538-range-binding-run-20261102",
+  "retained_test_failure": "adapters-02: new observation test left the shared mapped transport call counter at1 before the original mapped_checks expected4 calls. Reset the test-owned mapped fixture afterward; original assertions retained. This was test isolation, not transport repair.",
+  "schema": "crystalhd.issue538.input-range-observations.v1",
+  "scope": "Production native admission -> immutable token-row input-prefix observation -> correlated private CAPTURE buffer. No output quantization, G_FMT or pixel conversion change.",
+  "source_files": {
+    "Makefile": {
+      "bytes": 27221,
+      "sha256": "2bae0f8141e94266a949aeb8a95a09c7173e91a2d8338f02749790990062345a"
+    },
+    "driver/linux/crystalhd_v4l2_buffers.c": {
+      "bytes": 9619,
+      "sha256": "8e615deead2760edfd6bdcdb150cf818be7cbb2fdaeb7c6197c5c06e4386486e"
+    },
+    "driver/linux/crystalhd_v4l2_buffers.h": {
+      "bytes": 2665,
+      "sha256": "63009d0135b94baddbc6fe6691eaa8f0d290e7acbdd181b3e08d0a92d2a74a61"
+    },
+    "driver/linux/crystalhd_v4l2_decoder.c": {
+      "bytes": 8838,
+      "sha256": "86fbd70966b41c06a4c1c3463f50b11bea0e1cc2e799b292ca629b2508138a26"
+    },
+    "driver/linux/crystalhd_v4l2_decoder.h": {
+      "bytes": 5175,
+      "sha256": "83df9797c6a445b26cbd7b463083281ee3af91a2b80322a750c09f686f4be4ee"
+    },
+    "driver/linux/crystalhd_v4l2_node.c": {
+      "bytes": 54634,
+      "sha256": "f438dd6eb7c094b7e0586b85b9266a346d012c21df9b4fb7ffdd55667dcd6d98"
+    },
+    "driver/linux/crystalhd_v4l2_output.c": {
+      "bytes": 8761,
+      "sha256": "8a8323ca7118747d820a3d3e5456cf302b0988a154287eb75848abd299ba9c4b"
+    },
+    "driver/linux/crystalhd_v4l2_output.h": {
+      "bytes": 2688,
+      "sha256": "f9cf8c1d8addb08769a62692447021538077077e23b7fd919cafa1ff1c3a4266"
+    },
+    "include/crystalhd_h264_range_binding.h": {
+      "bytes": 5402,
+      "sha256": "f27a53716b5d07f7cfc3af71c938bf0ba7a3b3b4a6855ed013f3004567ea4835"
+    },
+    "include/crystalhd_h264_sps_range.h": {
+      "bytes": 6093,
+      "sha256": "94b3e6cecfbeb93f1422005ea2b4256793982a72897b6123b345af3f73d72469"
+    },
+    "tests/fixtures/issue538/h264-range-nals-20261102.h": {
+      "bytes": 896,
+      "sha256": "a30d7d6a84a1e4ae9291928156f1b56c5cbdf4231a37ed33c7f0e382e91403d0"
+    },
+    "tests/h264-range-binding.c": {
+      "bytes": 7263,
+      "sha256": "71a3d0f9cc887c4c29685cff466ad864545aee6d39c4ddfabfb819110e8d3c73"
+    },
+    "tests/h264-range-binding.test.py": {
+      "bytes": 952,
+      "sha256": "30e51e6f27f1660b83facc38989629b524fab3b0347b15c404001fe9f795547f"
+    },
+    "tests/v4l2-buffers.c": {
+      "bytes": 16011,
+      "sha256": "ce06e466e5122e7e686f7c3a0506a744b0f7a6091617913ccd6fa8e7877dd3da"
+    },
+    "tests/v4l2-decoder.c": {
+      "bytes": 25444,
+      "sha256": "dcd807a292dad47f92e33e345dc2e8cda0abedf6a041bb8eb8b251697aa69f52"
+    },
+    "tests/v4l2-node.c": {
+      "bytes": 116389,
+      "sha256": "79b411cce2c00ac023c8346a3e43b1c50a1c1165f4f95605bd72bd2c8409e224"
+    },
+    "tests/v4l2-output.c": {
+      "bytes": 22593,
+      "sha256": "e843d5d64da828b2d7248f354c03ce9ec67819823864eeba4fcfe98e00753be2"
+    }
+  },
+  "tested_code_commit": "14b7ab3c52e79f806f4e64006718b68e62eb5df8"
+}
