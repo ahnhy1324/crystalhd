@@ -1017,6 +1017,14 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
                 const Segment &segment = input.segments[segment_index];
                 require(width == segment.width && height == segment.height,
                     "CAPTURE geometry does not match the expected fixture segment");
+                if (input.segments.size() > 1 && frames == segment.begin) {
+                    v4l2_format observed{}; observed.type = capture.type;
+                    checked(fd, VIDIOC_G_FMT, &observed, "segment first-picture G_FMT");
+                    printf("segment_format segment=%zu first_frame=%zu quantization=%u "
+                        "colorspace=%u xfer=%u matrix=%u\n", segment_index, frames,
+                        observed.fmt.pix.quantization, observed.fmt.pix.colorspace,
+                        observed.fmt.pix.xfer_func, observed.fmt.pix.ycbcr_enc);
+                }
                 require(b.bytesused >= uint64_t(height - 1) * stride + width * 2,
                     "CAPTURE bytesused smaller than visible picture");
 #ifdef CRYSTALHD_TEST_GPU
@@ -1144,8 +1152,6 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     require(source_change && frames, "no decoded frames/source change");
     require(late_admission_done, "late admission backpressure check was not reached");
     require(frames == input.packets.size(), "frame count differs from access-unit count");
-    require(resolution_boundaries == input.segments.size() - 1,
-        "missing dynamic resolution boundary handshakes");
     for (const auto &entry : expected_timestamps) require(!entry.second, "missing CAPTURE timestamps");
     v4l2_buffer after_last{};
     after_last.type = capture.type; after_last.memory = V4L2_MEMORY_MMAP;
@@ -1154,6 +1160,11 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     require(!seek_at || seek_done, "requested seek was never executed");
     std::string digest = hash(aggregate.get());
     require(expected_hash.empty() || digest == expected_hash, "aggregate YUYV SHA256 mismatch");
+    if (input.segments.size() > 1)
+        printf("decode_census frames=%zu output_completed=%zu last=1 after_last_epipe=1 "
+            "yuyv_sha256=%s\n", frames, completed, digest.c_str());
+    require(resolution_boundaries == input.segments.size() - 1,
+        "missing dynamic resolution boundary handshakes");
     printf("PASS frames=%zu output_completed=%zu last=1 after_last_epipe=1 seek=%u dynamic_boundaries=%u idle_before_stop_ms=%u yuyv_sha256=%s\n",
         frames, completed, seek_done ? 1 : 0, resolution_boundaries, idle_before_stop_ms, digest.c_str());
 #ifdef CRYSTALHD_TEST_GPU
