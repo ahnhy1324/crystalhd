@@ -43,6 +43,9 @@ field-window-test: ../../../tests/gst-field-window.cpp gstcrystalhdfield.cpp ../
 field-nv12-test: ../../../tests/gst-field-nv12.cpp gstcrystalhdfield.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) $(shell pkg-config --libs gstreamer-app-1.0) -o $@
 
+nv12-field-equivalence: ../../../tests/nv12-field-equivalence.cpp ../../../tests/field-view-gpu.h ../../../tests/yuy2-gpu.h
+	$(CXX) $(shell pkg-config --cflags egl glesv2 gbm libdrm) $(CXXFLAGS) $< $(LDFLAGS) $(shell pkg-config --libs egl glesv2 gbm libdrm) -pthread -o $@
+
 # Independent public-API closure control; no project or GStreamer inputs.
 # Build and execution stay explicit, outside all/check and device-free CI.
 egl-draw-closure-asan: ../../../tests/egl-draw-closure.cpp
@@ -50,7 +53,7 @@ egl-draw-closure-asan: ../../../tests/egl-draw-closure.cpp
 
 # NULL-only CPU contracts and plugin discovery; no display/device/worker starts.
 # Compile the explicit X11/GPU regression too; running it remains opt-in.
-check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test field-nv12-test
+check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test field-nv12-test nv12-field-equivalence
 	@set -eu; check_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/crystalhd-field-check.XXXXXX"); \
 	trap 'rm -rf -- "$$check_dir"' EXIT HUP INT TERM; \
 	GST_PLUGIN_PATH= GST_PLUGIN_PATH_1_0= GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_SYSTEM_PATH_1_0= \
@@ -65,6 +68,6 @@ check: libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan 
 	grep -q 'field-stats' "$$check_dir/inspect.txt"
 
 clean:
-	rm -f libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test field-nv12-test egl-draw-closure-asan wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
+	rm -f libgstcrystalhdfield.so field-output-cpu-test field-output-cpu-test-asan field-window-test field-nv12-test nv12-field-equivalence egl-draw-closure-asan wait-probe/libgstcrystalhdfield.so wait-probe/no-vsync/libgstcrystalhdfield.so wait-probe/libcrystalhdhostwait.so
 
 .PHONY: all check clean
