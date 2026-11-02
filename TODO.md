@@ -10,14 +10,16 @@ qualification in [#473](https://github.com/ahnhy1324/crystalhd/issues/473).
 Fresh final-package checks, explicit maintainer GO and public-asset verification
 are complete. The full integration candidate is `1.3.0-rc.2` / `3.10.17`,
 with the agreed current-equipment RC qualification and companion packaging
-complete; RC publication and stable promotion retain separate decisions.
+complete. RC2 and all 13 public assets are published and verified;
+stable 1.3 promotion is explicitly deferred.
 Previous stable releases and RCs remain unchanged.
 The [qualification summary](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 distinguishes fresh final-package checks from scoped RC2 evidence reuse.
 Selected v1.2 CPU Bob, card scaling and reliability work is published;
-broader performance and research remain in
-[#472](https://github.com/ahnhy1324/crystalhd/issues/472) and do not expand the
-scope to general full-rate FHD or hardware deinterlacing.
+broader performance and research continue in their owning #91/#436/#445/
+#510/#538 issues. Closed [#472](https://github.com/ahnhy1324/crystalhd/issues/472)
+retains the completed bounded attempts and stop decisions; it does not expand
+the scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-11-02
 
@@ -25,8 +27,11 @@ Master now integrates #619/#620/#621/#622: complete core, native companion,
 live field-window replacement and same-layout Xv port handoff. The
 [master integration receipt](tests/fixtures/issue510/master-integration-20261102.json)
 records both Ubuntu userspaces, all ten kernel/architecture lanes, contracts
-and final CI gate passing. Stable1.3 publication is explicitly deferred by the
-maintainer. #623 retains the intermittent GTK CI crash investigation; a later
+and final CI gate passing. Stable 1.3 publication is explicitly deferred by the
+maintainer. Closed-issue rows below now reflect their final dated
+#607/#539/#429/#471/#472 dispositions. A checked closure/disposition row does
+not promote unavailable targets, rejected prototypes or historical unchecked
+tests to PASS. #623 retains the intermittent GTK CI crash investigation; a later
 successful run does not establish its root cause. Published RC2 stays frozen.
 
 The published RC2 core remains frozen at940/module17 on
@@ -48,8 +53,8 @@ its source/UI checkpoint does not authorize excluding already-developed work.
 - [x] Complete the current-equipment runtime distribution work in #607 and
   package the complete candidate with its own qualification receipt.
 - [x] Record the [published complete RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
-  disposition and independently verify all13 public assets; #607 is closed.
-  Stable1.3 remains a separate step.
+  disposition and independently verify all 13 public assets; #607 is closed.
+  Stable 1.3 remains a separate step.
 
 ### Active research execution — 2026-11-02
 
@@ -172,8 +177,10 @@ All four package files reproduce byte-for-byte. A fresh Git-free build produces
 the exact hardware-tested VA/DIL bytes and passes real DRM import, full replay,
 configuration-preserving install, removal, repeated removal and exact-payload
 reinstall. [Scoped follow-up receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json).
-This completes source/UI private packaging; the separate public native FFmpeg
-runtime/clean-target work remains in #607. Earlier candidate files stay frozen.
+This completes the earlier source/UI private packaging checkpoint. Its public
+native-runtime/clean-target follow-up moved to #607, now closed after bounded
+current-cohort RC2 delivery. An independent booted OS remains unavailable/
+NOT_RUN. Earlier candidate files stay frozen.
 
 ### Private native-runtime follow-up — 2026-11-01
 
@@ -187,10 +194,14 @@ runtime/clean-target work remains in #607. Earlier candidate files stay frozen.
   retaining exact seven-library mapping checks. Both packages pass device-free
   metadata; the neutral package passes50 independent software frames, full NV12
   and PTS. [Scoped receipt](tests/fixtures/issue607/package-acceptance-20261101.json).
-- [ ] #607 complete acquisition/build burden, independent clean OS, each new
-  package's native Kodi/A/V/EOS/reopen acceptance and public source/notices/
-  reproducible-build/maintenance decision. **PUBLIC_NOT_READY**; the new
-  files/software proof does not replace the frozen source/UI qualification.
+- [x] [#607: record completed current-cohort RC2 delivery](https://github.com/ahnhy1324/crystalhd/issues/607).
+  The 2026-11-02 final disposition supersedes this subsection's older
+  **PUBLIC_NOT_READY**: build/source/notices/costs, fresh-userspace/native
+  acceptance and the declared maintenance/distribution decision are recorded;
+  all 13 published RC2 assets are independently verified. An independently
+  booted clean OS is unavailable/NOT_RUN and excluded from this cohort,
+  not a passing test. Stable 1.3 remains deferred; broader controls stay with
+  their research owners. Original earlier package evidence remains frozen.
 
 - [x] Add a read-only native host prerequisite observer: current loaded stable
   module3.10.13 has no native decoding video node; explicit old-module identity
@@ -267,8 +278,9 @@ hosted result must be recorded separately from earlier individual runs.
   chroma/outputPTS and per-object GPU return remain unqualified.
 - [x] Runtime manifest/provider/SONAME/interpreter preflight:17 controls and
   actual retained package/Platform file inspection pass. This existing-host
-  files-only proof retains completed #539 scope; clean OS/public distribution
-  remain with #607.
+  files-only proof retains completed #539 scope. Its public/clean-target
+  follow-up moved to #607, now closed after bounded current-cohort RC2
+  delivery; an independent booted OS remains unavailable/NOT_RUN.
 - [x] GUI catalogue extraction/check/install and accessible editable-label
   relations:20 model/install tests,28 real GTK controls, private-bus recovery
   and single-instance checks pass. Korean #601 now has150 reviewed messages,
@@ -350,8 +362,9 @@ its exact-source and acceptance scope in the owning issue.
   additional adapters and broader desktop/native-i386 GUI acceptance.
 - [x] [#539: bounded compilerless private-runtime proof](https://github.com/ahnhy1324/crystalhd/issues/539)
   — fresh-prefix activation/removal/re-extraction on the compatible existing
-  host is complete. Clean-target acceptance, minimum upstream changes, full
-  user-effort accounting and public distribution remain open.
+  host is complete and the issue is closed. Its later public/clean-target/
+  burden handoff is disposed in #607's bounded current-cohort RC2 delivery;
+  an independent booted OS remains unavailable/NOT_RUN.
 - [x] [#530: opt-in EGL field-view prototype and measured discriminators](https://github.com/ahnhy1324/crystalhd/issues/530)
   — bounded synthetic/native/window/retirement work is recorded on its
   unmerged research branch. The approximately 53 ms swap tail, field expiry
@@ -366,9 +379,11 @@ its exact-source and acceptance scope in the owning issue.
   distinct final `1.2.0` / `3.10.13` package, maintainer GO and downloaded
   public archive are qualified and published; original evidence and limits
   remain unchanged.
-- [ ] [#472: v1.2 best-effort experiments and stop rules](https://github.com/ahnhy1324/crystalhd/issues/472)
-  — retain optional Kick, memory, FHD/Atom, Moonlight and hardware-research
-  follow-up without making it a release blocker or support claim.
+- [x] [#472: bounded best-effort attempts and stop decisions](https://github.com/ahnhy1324/crystalhd/issues/472)
+  — closed completed on 2026-10-31 for the documented bounded scope.
+  Optional Kick, memory, FHD/Atom, Moonlight and hardware-research follow-up
+  continues in its owning research issues. Historical unchecked results stay
+  unproved; completing an attempt does not establish playback/support PASS.
 
 - [x] [#430: v1.1.0 release qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/430)
   — final-source CI/build/archive, direct/DKMS installation/RC5 rollback and
@@ -385,13 +400,18 @@ its exact-source and acceptance scope in the owning issue.
   Selected local-player dialogue A/V has
   subjective acceptance; quantitative timing, other frontends and external
   final-package acceptance are not inferred from automated tests.
-- [ ] [#429: External i386/BCM70015 acceptance](https://github.com/ahnhy1324/crystalhd/issues/429)
-  — retain the RC3 failures and scoped RC4 results. The
+- [x] [#429: historical external acceptance disposition](https://github.com/ahnhy1324/crystalhd/issues/429)
+  — closed not_planned on 2026-10-31 for the unavailable remaining reporter/
+  current-stack matrix. This records disposition, not full acceptance PASS.
+  Retain the RC3 failures and scoped RC4 results. The
   [new RC5 reporter run](https://github.com/ahnhy1324/crystalhd/issues/429#issuecomment-6257883927)
   adds three-version Kodi long-playback/EOS/reopen, native scalar VA playback
   and short progressive/Off physical A/V measurements. Exact Kodi output
   identity, interlaced Bob A/V, hour-long measured A/V drift and out-of-policy
-  B-pyramid recovery remain open; these are not new 1.2 Bob acceptance.
+  B-pyramid recovery remain unproved in this historical matrix; continuing
+  work belongs to #91/#436/#445/#538. The later actual Atom 1.2 readback/control
+  report and own admission defect #614, fixed via #615, retain their separate
+  scope; no current 1.3 Atom or new 1.2 Bob acceptance is inferred.
 - [x] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
   — the real-content failure is reproduced and the development extended-input
   guard passes bounded native rejection/fresh-reopen controls, intentionally
@@ -428,10 +448,12 @@ its exact-source and acceptance scope in the owning issue.
   recorded. Broader native pixels/color, displayed cadence, physical A/V,
   other hardware and endurance remain open. Only the shutdown heap-abort
   investigation is excluded for the reason above; the issue remains open.
-- [ ] [#539: public no-build Kodi runtime](https://github.com/ahnhy1324/crystalhd/issues/539)
-  — the private same-host compilerless proof is complete; clean-target
-  acceptance, minimum upstream delta, full setup-cost measurement and a
-  public distribution/maintenance decision remain open.
+- [x] [#539: compatible-host compilerless proof and handoff](https://github.com/ahnhy1324/crystalhd/issues/539)
+  — closed completed on 2026-10-31 for the original installation/removal/
+  re-extraction feasibility deliverable. Public/clean-target/burden work moved
+  to #607, whose 2026-11-02 current-cohort RC2 delivery is now complete.
+  Independent booted-OS acceptance remains unavailable/NOT_RUN; closure does
+  not establish arbitrary-host or zero-setup availability.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
   loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
@@ -496,14 +518,18 @@ its exact-source and acceptance scope in the owning issue.
   acceptance remain open; the fixed default and DMA quarantine stay intact.
   See the [retirement results](HARDWARE-2026-09-13.md#rx-pool-retirement-and-reopen-2026-10-24).
   The former fixed-size pool alone was not evidence of a DMA overrun.
-- [ ] [#471: Decoded-output traffic and conversion](https://github.com/ahnhy1324/crystalhd/issues/471)
-  — #477 records native/centered YUY2 completion spans, distinct from wire
-  accounting and RX allocation. Next locate packed-4:2:2 decode-format,
-  export/import and renderer negotiation boundaries in unmodified clients.
+- [x] [#471: bounded output-cost measurements and prototype decisions](https://github.com/ahnhy1324/crystalhd/issues/471)
+  — closed completed on 2026-10-31. Bounded measurements and rejected-copy
+  decisions are complete; historical FAILs and unsupported stock packed
+  negotiation remain. Broader available-host acceptance belongs to #91/#436/
+  #445/#510, native playback to #538, and centered output to #477.
+  Native/centered YUY2 completion spans remain distinct from wire accounting
+  and RX allocation.
   #508 reuses repeated CPU Bob resampling and accepts standard VA FAST with
   unchanged nearest pixels; [scaler comparisons and native checks](HARDWARE-2026-09-13.md#output-scaling-cost-2026-10-25)
   retain their stage/batch limits. NV12 decode/VPP format negotiation is
-  measured; packed export/EGL/rendering and displayed cadence remain open.
+  measured; broader stock-client packed negotiation and displayed cadence
+  remain with those research owners.
   #509 additionally reduces ordinary NV12 VPP clearing/resampling; native
   pixel/PTS checks pass. Whole-Player nearest/bilinear comparisons retain
   presentation deficits, so lower CPU does not promote a zero-loss profile.
