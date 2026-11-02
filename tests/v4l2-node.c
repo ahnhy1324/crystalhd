@@ -53,6 +53,7 @@ enum { CHD_V4L2_OFF, CHD_V4L2_RUNNING, CHD_V4L2_DRAINING, CHD_V4L2_DRAINED, CHD_
 #define VB2_BUF_STATE_ERROR 1
 #define VB2_BUF_STATE_DONE 2
 #define dev_err(...) ((void)0)
+#define dev_dbg(...) ((void)0)
 #define clamp_t(t, v, lo, hi) ((t)(v) < (t)(lo) ? (t)(lo) : (t)(v) > (t)(hi) ? (t)(hi) : (t)(v))
 #define V4L2_PIX_FMT_H264 1
 #define V4L2_PIX_FMT_YUYV 2
@@ -84,7 +85,7 @@ struct v4l2_m2m_buffer { struct vb2_v4l2_buffer vb; struct v4l2_m2m_buffer *next
 struct crystalhd_v4l2_output_buffer { struct { struct vb2_v4l2_buffer vb; } m2m; bool owned; };
 struct crystalhd_rx_format_metadata { u64 firmware_timestamp; bool valid; };
 struct crystalhd_rx_metadata { bool valid, eos_trailer; u32 picture_number, picture_flags; };
-struct crystalhd_rx_image { unsigned payload_bytes; };
+struct crystalhd_rx_image { unsigned width, height, stride_bytes, payload_bytes; };
 struct v4l2_event { unsigned type; union { struct { u32 changes; } src_change; } u; };
 enum { CRYSTALHD_DECODER_CHANNEL_CONFIGURED = 1,
     CRYSTALHD_DECODER_CHANNEL_STARTED = 2 };
@@ -273,7 +274,12 @@ static bool access_exclusive;
 static void (*transport_hook)(void);
 static void (*tx_join_hook)(void);
 static bool eos_receive;
-static bool error_receive;
+static bool error_receive, picture_receive, metadata_case;
+static bool stage_alloc_fail;
+static int stage_out_error, stage_in_error;
+static void *stage_allocation;
+static unsigned char stage_source[256], stage_destination[256];
+static struct chd_h264_range_snapshot ordinary_range;
 static int decode_error_result;
 static struct crystalhd_hw pause_hw;
 static struct pci_dev pause_pci;
@@ -308,13 +314,21 @@ static bool allocation_fails(enum allocation_edge edge)
 static void *kvcalloc(size_t count, size_t size, int flags)
 {
     void *result;
+    if (count == 1 && size == sizeof(stage_source)) {
+        assert(flags == GFP_KERNEL && !stage_allocation);
+        if (stage_alloc_fail) return NULL;
+        stage_allocation = calloc(count, size); assert(stage_allocation); return stage_allocation;
+    }
     assert(count == 1094 && size == sizeof(struct page *) && flags == GFP_KERNEL);
     array_calls++;
     if (allocation_fails(ARRAY_EDGE)) return NULL;
     result = calloc(count, size); assert(result); live_arrays++; return result;
 }
 static void kvfree(void *pointer)
-{ if (pointer) { assert(live_arrays); live_arrays--; free(pointer); } }
+{
+    if (pointer && pointer == stage_allocation) { free(pointer); stage_allocation = NULL; return; }
+    if (pointer) { assert(live_arrays); live_arrays--; free(pointer); }
+}
 static struct page *alloc_pages(int flags, unsigned order)
 {
     struct page *pages;
@@ -469,7 +483,7 @@ static void v4l2_event_queue_fh(struct v4l2_fh *fh, struct v4l2_event *event)
 {
     assert(fh == &fixture.fh);
     if (event->type == V4L2_EVENT_EOS) { eos_events++; return; }
-    assert(format_case && event->type == V4L2_EVENT_SOURCE_CHANGE &&
+    assert((format_case || metadata_case) && event->type == V4L2_EVENT_SOURCE_CHANGE &&
            !hardware_owned && !detached_owned && !last_buffer.done);
     format_events++;
     announced_format = fixture.capture;
@@ -499,7 +513,12 @@ static int crystalhd_device_enter(u64 generation, bool exclusive,
 }
 static void crystalhd_device_exit(struct crystalhd_device_access *a)
 { assert(access_active && a->adp == &adapter); access_active = false; exits++; }
-static int crystalhd_status_to_errno(BC_STATUS status) { return status; }
+static int crystalhd_status_to_errno(BC_STATUS status)
+{
+    if (metadata_case && status != BC_STS_SUCCESS)
+        return status == BC_STS_BUSY ? -EBUSY : -EIO;
+    return status;
+}
 static BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *c, void *owner)
 {
     assert(access_active && c == &adapter.cmds && owner == &lease);
@@ -732,6 +751,11 @@ static int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
         struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp)
 {
     (void)metadata; (void)epoch; *timestamp = 0;
+    if (!metadata->eos_trailer && metadata->picture_number == 17) {
+        assert(fixture.run_lock.held && epoch == d->epoch && d->count);
+        assert(d->phase == CHD_V4L2_RUNNING || d->phase == CHD_V4L2_DRAINING);
+        d->count--; *timestamp = UINT64_C(0x987654321); completed++; return 0;
+    }
     if (metadata->picture_flags & CRYSTALHD_PICTURE_FLAG_DECODE_ERROR) {
         assert(fixture.run_lock.held);
         if (decode_error_result == -EILSEQ) { d->count--; *timestamp = UINT64_C(0x1234567890); }
@@ -748,8 +772,7 @@ static int crystalhd_v4l2_decoder_complete_observed(struct crystalhd_v4l2_decode
 {
     int rc = crystalhd_v4l2_decoder_complete(d, metadata, epoch, timestamp);
     if (rc == 0 || rc == -EILSEQ)
-        *range = (struct chd_h264_range_snapshot){.associated=true, .range_present=true,
-            .full_range=true, .sps_id=3, .pps_id=5, .sps_generation=7};
+        *range = ordinary_range;
     return rc;
 }
 static int range_lookup_rc = -ESTALE;
@@ -793,11 +816,16 @@ static BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *cmd,
                                          struct crystalhd_rx_completion *result)
 {
     assert(cmd == &adapter.cmds && fixture.run_lock.held);
-    if (!eos_receive && !error_receive) return BC_STS_NO_DATA;
+    if (!eos_receive && !error_receive && !picture_receive) return BC_STS_NO_DATA;
     eos_receive = false;
     memset(result, 0, sizeof(*result)); result->cookie = &last_capture;
     result->metadata.valid = result->metadata.eos_trailer = true;
     result->metadata.picture_number = 0xffffffffU;
+    result->capture_epoch = pause_hw.rx_cancel_epoch;
+    if (picture_receive) {
+        picture_receive = false; result->metadata.eos_trailer = false;
+        result->metadata.picture_number = 17;
+    }
     if (error_receive) {
         error_receive = false;
         result->flags = COMP_FLAG_DATA_VALID;
@@ -809,6 +837,7 @@ static BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *cmd,
 }
 static BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *,
                                           struct crystalhd_rx_completion *);
+static BC_STATUS crystalhd_rx_pause_metadata_idle(struct crystalhd_cmd *, uint64_t);
 static struct vb2_v4l2_buffer *v4l2_m2m_next_dst_buf(struct v4l2_m2m_ctx *m)
 { assert(m == &queues); return m->dst_ready ? &m->dst_ready->vb : NULL; }
 static void crystalhd_v4l2_capture_retire(struct crystalhd_v4l2_capture_buffer *b)
@@ -821,7 +850,11 @@ static void crystalhd_v4l2_capture_retire(struct crystalhd_v4l2_capture_buffer *
 }
 static BC_STATUS crystalhd_v4l2_capture_complete(struct crystalhd_v4l2_capture_buffer *b,
         struct crystalhd_rx_completion *result, struct crystalhd_rx_image *image)
-{ (void)image; assert(b == &last_capture && result->cookie == b); b->owned = false;
+{ assert(b == &last_capture && result->cookie == b); b->owned = false; memset(image,0,sizeof(*image));
+  if (result->metadata.picture_number == 17) {
+      image->width=b->width;image->height=b->height;image->stride_bytes=b->width*2;
+      image->payload_bytes=b->width*b->height*2; detached_owned=false; return BC_STS_SUCCESS;
+  }
   return result->metadata.picture_flags & CRYSTALHD_PICTURE_FLAG_DECODE_ERROR ?
       BC_STS_IO_ERROR : BC_STS_NO_DATA; }
 static bool crystalhd_v4l2_capture_owned(struct crystalhd_v4l2_capture_buffer *b)
@@ -830,6 +863,22 @@ static int crystalhd_v4l2_capture_prepare(struct crystalhd_v4l2_capture_buffer *
 {
     assert(fixture.run_lock.held && !b->owned);
     b->width = width; b->height = height; return 0;
+}
+static int crystalhd_v4l2_capture_copy_out(struct crystalhd_v4l2_capture_buffer *b,
+        const struct crystalhd_rx_image *image, void *dst, u32 capacity)
+{
+    assert(fixture.run_lock.held && b==&last_capture && !b->owned);
+    assert(image->payload_bytes==sizeof(stage_source) && capacity==sizeof(stage_source));
+    if (stage_out_error) return stage_out_error;
+    memcpy(dst,stage_source,sizeof(stage_source));return 0;
+}
+static int crystalhd_v4l2_capture_copy_in(struct crystalhd_v4l2_capture_buffer *b,
+        const void *src, u32 bytes, u32 width, u32 height)
+{
+    assert(fixture.run_lock.held && b==&last_capture && !b->owned);
+    assert(bytes==sizeof(stage_destination) && width==16 && height==8);
+    if (stage_in_error) return stage_in_error;
+    memcpy(stage_destination,src,bytes);return 0;
 }
 static void crystalhd_rx_buffer_release(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
 static unsigned long jiffies;
@@ -882,6 +931,8 @@ static void reset(bool running)
     range_lookup_rc = -ESTALE; range_lookup_calls = 0;
     memset(&range_lookup_value, 0, sizeof(range_lookup_value));
     assert(!access_active);
+    chd_clear_staged(&fixture);
+    assert(!stage_allocation);
     for (unsigned i = 0; i < CHD_DISCOVERY_BUFFERS; i++) {
         assert(!fixture.discovery[i].owned);
         chd_discovery_free(&fixture.discovery[i]);
@@ -903,7 +954,10 @@ static void reset(bool running)
     tx_queues = tx_joins = transports = completed = eos_events = 0;
     transport_error = 0; transport_hook = NULL; tx_join_hook = NULL; source = source_next = NULL;
     eos_receive = false;
-    error_receive = false; decode_error_result = -EILSEQ;
+    error_receive = picture_receive = metadata_case = stage_alloc_fail = false;
+    stage_out_error = stage_in_error = 0; decode_error_result = -EILSEQ;
+    ordinary_range=(struct chd_h264_range_snapshot){.associated=true,.range_present=true,
+        .full_range=true,.sps_id=3,.pps_id=5,.sps_generation=7};
     format_case = retire_stays_owned = false;
     format_events = format_retires = 0; retired_buffer = NULL;
     memset(&announced_format, 0, sizeof(announced_format));
@@ -1451,6 +1505,143 @@ static void rx_idle_snapshot_cases(void)
         if (fast) CHECK(!hardware_owned);
         else if (failure != 18) CHECK(hardware_owned);
     }
+}
+
+static void metadata_idle_cases(void)
+{
+    for(unsigned mode=0;mode<13;mode++) {
+        reset(false);prepare_idle_snapshot();
+        BC_STATUS wanted=BC_STS_SUCCESS;u64 epoch=23;
+        if(mode==1){epoch--;wanted=BC_STS_IO_USER_ABORT;}
+        if(mode==2){adapter.cmds.state=0;wanted=BC_STS_IO_USER_ABORT;}
+        if(mode>=3 && mode<=5){pause_queues[mode-3].count=1;wanted=BC_STS_BUSY;}
+        if(mode==6){pause_hw.rx_fallback_head=pause_packets;wanted=BC_STS_BUSY;}
+        if(mode==7){pause_pci.device++;wanted=BC_STS_NOT_IMPL;}
+        if(mode==8){pause_hw.dma_fault=true;wanted=BC_STS_IO_ERROR;}
+        if(mode==9){pause_hw.rx_list_sts[0]=rx_sts_waiting;irq_drain_hook=finish_pending_irq;}
+        if(mode==10){irq_drain_hook=fault_pending_irq;wanted=BC_STS_IO_ERROR;}
+        if(mode==11){epoch=pause_hw.rx_cancel_epoch=UINT64_MAX;wanted=BC_STS_IO_ERROR;}
+        if(mode==12)wanted=BC_STS_INV_ARG;
+        u64 saved_epoch=pause_hw.rx_cancel_epoch;u32 saved_flags=adapter.cmds.state;
+        CHECK(crystalhd_rx_pause_metadata_idle(mode==12?NULL:&adapter.cmds,epoch)==wanted);
+        CHECK(!pause_stops && !pause_releases && !pause_hw.fetch_sem.held && !irq_disabled);
+        CHECK(pause_hw.rx_cancel_epoch==saved_epoch+(wanted==BC_STS_SUCCESS));
+        CHECK(adapter.cmds.state==(saved_flags|(wanted==BC_STS_SUCCESS?BC_LINK_FMT_CHG:0)));
+        CHECK(pause_hw.RxCaptureState==1 && pause_hw.PicQSts==0x5a &&
+              pause_hw.rx_pkt_pool_head==pause_packets && detached_owned);
+    }
+}
+
+static void prepare_staged_picture(bool draining)
+{
+    reset(true);prepare_idle_snapshot();hardware_owned=detached_owned=false;metadata_case=true;
+    fixture.capture.width=last_capture.width=16;fixture.capture.height=last_capture.height=8;
+    fixture.capture.quantization=V4L2_QUANTIZATION_LIM_RANGE;fixture.decoder.epoch=5;
+    fixture.decoder.count=1;fixture.sequence=9;last_capture.decoder_epoch=5;
+    last_capture.owned=true;fixture.active[0]=&last_capture;picture_receive=true;
+    if(draining){fixture.decoder.phase=CHD_V4L2_DRAINING;fixture.drain_requested=true;fixture.tx_active=true;}
+    for(unsigned i=0;i<sizeof(stage_source);i++)stage_source[i]=(unsigned char)(i*31U);
+}
+
+static void staged_range_cases(void)
+{
+    for(unsigned draining=0;draining<2;draining++) {
+        unsigned char saved[256];struct vb2_v4l2_buffer eos={0};
+        struct v4l2_requestbuffers req={.type=V4L2_BUF_TYPE_VIDEO_CAPTURE,.memory=V4L2_MEMORY_MMAP};
+        prepare_staged_picture(draining);memcpy(saved,stage_source,sizeof(saved));
+        mutex_lock(&fixture.run_lock);
+        CHECK(!chd_receive(&fixture,&adapter.cmds));
+        CHECK(completed==1 && !fixture.decoder.count && fixture.staged.data &&
+              !memcmp(fixture.staged.data,saved,sizeof(saved)) &&
+              fixture.staged.timestamp==UINT64_C(0x987654321) && fixture.staged.sequence==9);
+        CHECK(fixture.format_pending && !fixture.capture_started && format_events==1 &&
+              announced_format.quantization==V4L2_QUANTIZATION_FULL_RANGE && announced_pending &&
+              last_buffer.done==VB2_BUF_STATE_DONE && last_buffer.flags==V4L2_BUF_FLAG_LAST &&
+              !last_buffer.vb2_buf.payload && !eos_events && !pause_stops && !pause_releases);
+        void *held=fixture.staged.data;
+        CHECK(pause_hw.rx_cancel_epoch==24 && fixture.decoder.epoch==5);
+        mutex_unlock(&fixture.run_lock);
+        CHECK(!chd_streamoff(&handle,NULL,V4L2_BUF_TYPE_VIDEO_CAPTURE));
+        CHECK(!tx_joins && fixture.staged.data==held && fixture.tx_active==!!draining);
+        CHECK(!chd_reqbufs(&handle,NULL,&req) && fixture.staged.data==held);
+        req.count=2;CHECK(!chd_reqbufs(&handle,NULL,&req));
+        memset(stage_source,0xee,sizeof(stage_source));
+        memset(&last_capture,0,sizeof(last_capture));last_capture.width=16;last_capture.height=8;
+        last_capture.decoder_epoch=999;queues.dst_ready=&last_capture.m2m;
+        CHECK(!chd_streamon(&handle,NULL,V4L2_BUF_TYPE_VIDEO_CAPTURE));
+        mutex_lock(&fixture.run_lock);
+        if(draining) {
+            fixture.pending_last=&eos;fixture.last_epoch=5;fixture.drain_tx_done=true;fixture.tx_active=false;
+            CHECK(!chd_finish_last(&fixture) && !eos.done && !eos_events);
+        }
+        CHECK(!chd_submit_capture(&fixture,&adapter.cmds));
+        CHECK(!fixture.staged.data && !stage_allocation && !capture_submits &&
+              !memcmp(stage_destination,saved,sizeof(saved)) &&
+              last_buffer.done==VB2_BUF_STATE_DONE && last_buffer.vb2_buf.payload==256 &&
+              last_buffer.vb2_buf.timestamp==UINT64_C(0x987654321) && last_buffer.sequence==9 &&
+              !last_buffer.flags && last_capture.decoder_epoch==5 &&
+              last_capture.input_range.full_range && last_capture.input_range.sps_generation==7 && completed==1);
+        if(draining)CHECK(!chd_finish_last(&fixture) && eos.done==VB2_BUF_STATE_DONE &&
+                          (eos.flags&V4L2_BUF_FLAG_LAST) && eos_events==1 && completed==2);
+        mutex_unlock(&fixture.run_lock);
+    }
+    {
+        struct v4l2_decoder_cmd start={.cmd=V4L2_DEC_CMD_START};
+        prepare_staged_picture(false);fixture.capture.quantization=V4L2_QUANTIZATION_FULL_RANGE;
+        ordinary_range.full_range=false;mutex_lock(&fixture.run_lock);
+        CHECK(!chd_receive(&fixture,&adapter.cmds));
+        CHECK(fixture.staged.data && fixture.capture.quantization==V4L2_QUANTIZATION_LIM_RANGE);
+        mutex_unlock(&fixture.run_lock);
+        struct vb2_buffer reuse[2]={{.size=256},{.size=256}};
+        QUEUE_COUNT(&queues.dst)=2;queues.dst.bufs[0]=&reuse[0];queues.dst.bufs[1]=&reuse[1];
+        CHECK(!chd_decoder_cmd(&handle,NULL,&start) && !fixture.format_pending && fixture.staged.data);
+        last_buffer.done=0;queues.dst_ready=&last_capture.m2m;mutex_lock(&fixture.run_lock);
+        CHECK(!chd_submit_capture(&fixture,&adapter.cmds) && !fixture.staged.data &&
+              !last_capture.input_range.full_range && !last_buffer.flags &&
+              last_buffer.vb2_buf.timestamp==UINT64_C(0x987654321));
+        mutex_unlock(&fixture.run_lock);
+    }
+    for(unsigned failure=0;failure<4;failure++) {
+        prepare_staged_picture(false);
+        if(failure==0)stage_alloc_fail=true;
+        if(failure==1)stage_out_error=-EIO;
+        if(failure==2)pause_queues[0].count=1;
+        if(failure==3)pause_hw.dma_fault=true;
+        last_buffer.vb2_buf.timestamp=123;
+        mutex_lock(&fixture.run_lock);
+        CHECK(chd_receive(&fixture,&adapter.cmds)!=0);
+        CHECK(!fixture.staged.data && !stage_allocation && !format_events && !eos_events &&
+              last_buffer.done==VB2_BUF_STATE_ERROR && last_buffer.vb2_buf.timestamp==UINT64_C(0x987654321) &&
+              !(last_buffer.flags&V4L2_BUF_FLAG_LAST) &&
+              fixture.capture.quantization==V4L2_QUANTIZATION_LIM_RANGE && pause_hw.rx_cancel_epoch==23 &&
+              !pause_stops && !pause_releases);
+        mutex_unlock(&fixture.run_lock);
+    }
+    for(unsigned mode=0;mode<3;mode++) {
+        prepare_staged_picture(false);
+        if(mode==0)ordinary_range.associated=false;
+        if(mode==1)ordinary_range.range_present=false;
+        if(mode==2)fixture.capture.quantization=V4L2_QUANTIZATION_FULL_RANGE;
+        mutex_lock(&fixture.run_lock);CHECK(!chd_receive(&fixture,&adapter.cmds));
+        CHECK(!fixture.staged.data && !format_events && !last_buffer.flags &&
+              last_buffer.done==VB2_BUF_STATE_DONE && last_buffer.vb2_buf.payload==256);
+        mutex_unlock(&fixture.run_lock);
+    }
+    for(unsigned failure=0;failure<2;failure++) {
+        prepare_staged_picture(false);mutex_lock(&fixture.run_lock);
+        CHECK(!chd_receive(&fixture,&adapter.cmds));last_buffer.done=0;last_buffer.flags=0;
+        queues.dst_ready=&last_capture.m2m;
+        if(failure==0)fixture.decoder.epoch++;
+        else {stage_in_error=-EIO;last_buffer.vb2_buf.timestamp=123;last_buffer.flags=V4L2_BUF_FLAG_LAST;}
+        CHECK(chd_deliver_staged(&fixture)==(failure?-EIO:-ESTALE));
+        CHECK(fixture.staged.data && stage_allocation && !eos_events && completed==1);
+        if(failure)CHECK(last_buffer.done==VB2_BUF_STATE_ERROR &&
+            last_buffer.vb2_buf.timestamp==UINT64_C(0x987654321) &&
+            last_buffer.sequence==9 && !(last_buffer.flags&V4L2_BUF_FLAG_LAST));
+        mutex_unlock(&fixture.run_lock);
+        CHECK(!chd_reset_channel(&fixture,true) && !fixture.staged.data && !stage_allocation);
+    }
+    reset(false);
 }
 
 static void schedule_tx(void)
@@ -2365,6 +2556,8 @@ int main(void)
     allocation_failure_cases();
     format_pause_cases();
     rx_idle_snapshot_cases();
+    metadata_idle_cases();
+    staged_range_cases();
     async_tx_cases();
     stateful_lifecycle_cases();
     colorimetry_cases();

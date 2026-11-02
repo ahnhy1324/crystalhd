@@ -307,3 +307,27 @@ PY
 First verify whole input/oracle/raw hashes against the receipt. The full metadata
 replay also uses the pinned private observer ABI/reader and continuous A/B traces;
 CRC/image replay alone does not reconstruct the lease proof or a new hardware run.
+
+Actual full-scale Kodi720p/FHD and same-size range transitions (2026-11-02)
+are recorded in [the Kodi receipt](kodi-fullscale-20261102.json) and
+[the transition receipt](same-size-range-staging-20261102.json). The former
+contains both original/corrected-module batches, source extrema and sampled
+RGB results; the latter preserves pre-fix diagnostic and strict failures
+separately from the corrected control, both range directions, final-picture
+DRAINING and EXPBUF/GPU passes. Neither completes broader #538 acceptance.
+
+Generate independent source-only fixtures without opening a device:
+
+```sh
+python3 -B tests/native-kodi-fullscale-fixture.py --width 1280 --output /tmp/fullscale720
+python3 -B tests/native-kodi-fullscale-fixture.py --width 1920 --output /tmp/fullscale1080
+```
+
+Use a new output directory. Encoding uses the installed unmodified FFmpeg and
+libx264; exact media hashes can vary with encoder builds. Replay a retained
+capture against its corresponding frozen software source with
+`tests/native-picture-oracle.py`, `--frames 30 --minimum-source-y 128
+--minimum-samples 100 --matrix bt709 --range full` and the receipt's exact
+geometry, reference/capture hashes. The two new TSV files preserve every fixed
+YUV/expected-RGB/captured-RGB row. They do not substitute for all-pixel or
+physical presentation measurements.

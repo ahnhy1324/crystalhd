@@ -830,7 +830,8 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     const std::vector<std::string> &expected_segments, bool after_empty_drain,
     const std::vector<std::string> &contract_hashes, LegacyLibrary *legacy,
     const std::string &late_admission_device, const std::string &gpu_mode,
-    unsigned capture_buffers, unsigned range_hint, unsigned expected_range)
+    unsigned capture_buffers, unsigned range_hint, unsigned expected_range,
+    const std::vector<unsigned> &expected_segment_ranges)
 {
 #ifdef CRYSTALHD_TEST_GPU
     std::unique_ptr<CaptureRenderer> renderer;
@@ -1017,6 +1018,17 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
                 const Segment &segment = input.segments[segment_index];
                 require(width == segment.width && height == segment.height,
                     "CAPTURE geometry does not match the expected fixture segment");
+                if ((input.segments.size() > 1 || !expected_segment_ranges.empty()) && frames == segment.begin) {
+                    v4l2_format observed{}; observed.type = capture.type;
+                    checked(fd, VIDIOC_G_FMT, &observed, "segment first-picture G_FMT");
+                    printf("segment_format segment=%zu first_frame=%zu quantization=%u "
+                        "colorspace=%u xfer=%u matrix=%u\n", segment_index, frames,
+                        observed.fmt.pix.quantization, observed.fmt.pix.colorspace,
+                        observed.fmt.pix.xfer_func, observed.fmt.pix.ycbcr_enc);
+                    require(expected_segment_ranges.empty() ||
+                        observed.fmt.pix.quantization == expected_segment_ranges[segment_index],
+                        "CAPTURE segment source range mismatch");
+                }
                 require(b.bytesused >= uint64_t(height - 1) * stride + width * 2,
                     "CAPTURE bytesused smaller than visible picture");
 #ifdef CRYSTALHD_TEST_GPU
@@ -1144,8 +1156,6 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     require(source_change && frames, "no decoded frames/source change");
     require(late_admission_done, "late admission backpressure check was not reached");
     require(frames == input.packets.size(), "frame count differs from access-unit count");
-    require(resolution_boundaries == input.segments.size() - 1,
-        "missing dynamic resolution boundary handshakes");
     for (const auto &entry : expected_timestamps) require(!entry.second, "missing CAPTURE timestamps");
     v4l2_buffer after_last{};
     after_last.type = capture.type; after_last.memory = V4L2_MEMORY_MMAP;
@@ -1154,6 +1164,17 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     require(!seek_at || seek_done, "requested seek was never executed");
     std::string digest = hash(aggregate.get());
     require(expected_hash.empty() || digest == expected_hash, "aggregate YUYV SHA256 mismatch");
+    if (input.segments.size() > 1)
+        printf("decode_census frames=%zu output_completed=%zu last=1 after_last_epipe=1 "
+            "yuyv_sha256=%s\n", frames, completed, digest.c_str());
+    size_t required_boundaries = 0;
+    for (size_t i = 1; i < input.segments.size(); ++i)
+        required_boundaries += input.segments[i].width != input.segments[i - 1].width ||
+            input.segments[i].height != input.segments[i - 1].height ||
+            (!expected_segment_ranges.empty() && expected_segment_ranges[i] != expected_segment_ranges[i - 1]);
+    require(resolution_boundaries >= required_boundaries &&
+        resolution_boundaries <= input.segments.size() - 1,
+        "missing dynamic resolution boundary handshakes");
     printf("PASS frames=%zu output_completed=%zu last=1 after_last_epipe=1 seek=%u dynamic_boundaries=%u idle_before_stop_ms=%u yuyv_sha256=%s\n",
         frames, completed, seek_done ? 1 : 0, resolution_boundaries, idle_before_stop_ms, digest.c_str());
 #ifdef CRYSTALHD_TEST_GPU
@@ -1167,6 +1188,7 @@ int main(int argc, char **argv)
     try {
         std::string path, input_path, raw_path, expected_hash, gpu_mode;
         std::vector<std::string> next_inputs, expected_segments;
+        std::vector<unsigned> expected_segment_ranges;
         unsigned timeout = 60, repeat = 1; bool stress = false, demux_only = false, busy = false;
         bool contracts = false, empty_stop = false, failed_streamon = false, late_admission = false;
         bool legacy_arbitration = false, range_hint_set = false;
@@ -1184,6 +1206,7 @@ int main(int argc, char **argv)
                      "       [--seek-at N --expect-sha256 HEX] [--idle-before-stop-ms 250]\n"
                      "       [--check-busy] (second native session must fail STREAMON with EBUSY)\n"
                      "       [--next-input fixture.mp4 ...] [--expect-segment-sha256 HEX ...]\n"
+                     "       [--expect-segment-range limited|full ...] (one per input segment)\n"
                      "       [--contract-preflight|--stop-queued] (STOP boundary/empty-drain contracts)\n"
                      "       [--empty-stop] (standalone empty STOP/LAST/EPIPE/START, then full decode)\n"
                      "       [--failed-streamon] (no REQBUFS failure must release its new session lease)\n"
@@ -1218,12 +1241,13 @@ int main(int argc, char **argv)
             else if (arg == "--timeout") timeout = std::stoul(value);
             else if (arg == "--repeat") repeat = std::stoul(value);
             else if (arg == "--capture-buffers") capture_buffers = std::stoul(value);
-            else if (arg == "--range-hint" || arg == "--expect-range") {
+            else if (arg == "--range-hint" || arg == "--expect-range" || arg == "--expect-segment-range") {
                 require(value == "limited" || value == "full" ||
                     (arg == "--range-hint" && value == "default"), "invalid range option");
                 unsigned range = value == "full" ? V4L2_QUANTIZATION_FULL_RANGE :
                     value == "limited" ? V4L2_QUANTIZATION_LIM_RANGE : 0;
                 if (arg == "--range-hint") { range_hint = range; range_hint_set = true; }
+                else if (arg == "--expect-segment-range") expected_segment_ranges.push_back(range);
                 else expected_range = range;
             }
             else if (arg == "--seek-at") seek_at = std::stoul(value);
@@ -1246,6 +1270,10 @@ int main(int argc, char **argv)
         for (const auto &next_input : next_inputs) append_input(input, demux(next_input, stress));
         require(expected_segments.empty() || expected_segments.size() == input.segments.size(),
             "provide one --expect-segment-sha256 per fixture segment");
+        require(expected_segment_ranges.empty() || expected_segment_ranges.size() == input.segments.size(),
+            "provide one --expect-segment-range per fixture segment");
+        require(!expected_range || expected_segment_ranges.empty(),
+            "choose global --expect-range or per-segment ranges");
         require(seek_at < input.packets.size() && idle_before_stop_ms <= 5000,
             "seek-at must precede fixture end; idle-before-stop-ms must be <=5000");
         require(!seek_at || !expected_hash.empty(), "--seek-at requires --expect-sha256 for full restarted-epoch validation");
@@ -1264,7 +1292,7 @@ int main(int argc, char **argv)
             require(next_inputs.empty() && !contracts && !empty_stop && !failed_streamon && !late_admission &&
                 !legacy_arbitration && !busy && !seek_at && repeat == 1 &&
                 raw_path.empty() && expected_hash.empty() && expected_segments.empty() && gpu_mode.empty() &&
-                !range_hint && !expected_range,
+                !range_hint && !expected_range && expected_segment_ranges.empty(),
                 "--legacy-contract is a separate legacy-only mode; native options/hashes are not applied");
             legacy_contract(input, legacy_prefix, timeout);
             return 0;
@@ -1298,7 +1326,8 @@ int main(int argc, char **argv)
             decode(device.fd, output, capture, input, timeout, raw, expected_hash,
                 seek_at, idle_before_stop_ms, busy ? path : std::string(), expected_segments,
                 (contracts || empty_stop) && !i, contract_hashes, legacy.get(),
-                late_admission ? path : std::string(), gpu_mode, capture_buffers, range_hint, expected_range);
+                late_admission ? path : std::string(), gpu_mode, capture_buffers, range_hint, expected_range,
+                expected_segment_ranges);
         }
         return 0;
     } catch (const std::exception &e) {

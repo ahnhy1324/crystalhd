@@ -1942,6 +1942,41 @@ BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *ctx,
 	return sts;
 }
 
+BC_STATUS crystalhd_rx_pause_metadata_idle(struct crystalhd_cmd *ctx,
+					 uint64_t capture_epoch)
+{
+	BC_STATUS sts;
+
+	if (!ctx || !ctx->hw_ctx || !ctx->adp || !ctx->adp->pdev)
+		return BC_STS_INV_ARG;
+	if (ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return BC_STS_NOT_IMPL;
+	down(&ctx->hw_ctx->fetch_sem);
+	if (capture_epoch != ctx->hw_ctx->rx_cancel_epoch ||
+	    !(ctx->state & BC_LINK_CAP_EN)) {
+		sts = BC_STS_IO_USER_ABORT;
+		goto out;
+	}
+	/* Drain any running ISR before observing the complete RX inventory.
+	 * Never use the stop/flush fallback here: it can discard real pictures.
+	 */
+	disable_irq(ctx->adp->pdev->irq);
+	if (READ_ONCE(ctx->hw_ctx->dma_fault) ||
+	    ctx->hw_ctx->rx_cancel_epoch == ~(uint64_t)0)
+		sts = BC_STS_IO_ERROR;
+	else if (!crystalhd_hw_rx_idle(ctx->hw_ctx))
+		sts = BC_STS_BUSY;
+	else {
+		ctx->hw_ctx->rx_cancel_epoch++;
+		ctx->state |= BC_LINK_FMT_CHG;
+		sts = BC_STS_SUCCESS;
+	}
+	enable_irq(ctx->adp->pdev->irq);
+out:
+	up(&ctx->hw_ctx->fetch_sem);
+	return sts;
+}
+
 static void bc_cproc_copy_pib(struct C011_PIB *dst,
 			      const struct C011_PIB *src)
 {
