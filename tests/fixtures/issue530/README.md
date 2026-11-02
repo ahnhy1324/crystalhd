@@ -139,6 +139,21 @@ This is research integration, not stable-release qualification or promotion.
 Live sources, nonflat chroma phase, field-clock/A/V qualification for NV12 and
 field-GPU endurance remain active work. Frozen RC2 assets are unchanged.
 
+The separate [materialized-field comparison](nv12-field-equivalence-20261103.json)
+now covers dense nonflat UV values without pixel exclusions. It independently
+extracts Y rows `2*r+parity` and UV rows `2*r+parity` into a separate half-height
+ordinary NV12 allocation, then holds the production renderer/sampling constant
+while comparing it with the offset/double-pitch field view. All48 comparisons
+pass across3 output geometries,2 source generations,601/709, JPEG/MPEG2 and
+both parities:43,422,720 pixels, observed maximum RGB difference0/255 at fixed
+tolerance2. Deliberately selecting the opposite UV field changes688,184 RGB
+components by more than2, confirming that this comparison detects that fault.
+Run explicitly with `filters/gst/field-output/nv12-field-equivalence`; `check`
+only compiles it. This proves bounded layout/render equivalence, including
+chroma boundaries, rather than absolute chroma reconstruction/siting or an
+independent check of the common renderer. It adds no GPU sanitizer, timing,
+A/V, live-input or endurance acceptance; the strict LSan failure above remains.
+
 ### Live window replacement — 2026-11-02
 
 The worker applies checked reparent requests while preserving the same owned

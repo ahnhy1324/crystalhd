@@ -70,7 +70,10 @@ shelve the work or silently exclude implemented features.
    plane/field/pixel/EOS/reopen checks pass; actual GL LeakSanitizer remains FAIL,
    reproduced independently with ordinary GLES drawing. See the
    [NV12 receipt](tests/fixtures/issue530/nv12-field-20261103.json).
-   Nonflat chroma interpolation, live sources and field-GPU endurance remain open.
+   A separate [materialized-field comparison](tests/fixtures/issue530/nv12-field-equivalence-20261103.json)
+   passes48 full-pixel comparisons including chroma boundaries at observed
+   error0/255. Absolute chroma reconstruction/siting, live sources and
+   field-GPU endurance remain open.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
    rejection, dormant pools and stop cancellation. See the
