@@ -52,6 +52,7 @@ KODI_LOG_LINE = re.compile(rb'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} T:([1-9
                            rb'(trace|debug|info|warning|error|critical) <([^>\r\n]+)>: (.*)')
 CPU_COPY_INIT = b'VAAPI output: Initializing ffmpeg postproc'
 CPU_COPY_READY = b'VAAPI::CFFmpegPostproc::Init  - skip deinterlacing'
+CPU_COPY_REMOVED = b'VAAPI output: Current postproc does not want new deinterlace mode, removing'
 CPU_COPY_SCOPE = ('Original Kodi22RC1/App FFmpeg, explicit OWN centered observer; requested Off CPU-copy route. '
                   'Actual ffmpeg-postproc selection, selected source payloads and ordinary controls are checked. '
                   'No normal-backend stock compatibility, release, GPU return or post-filter cadence qualification.')
@@ -146,7 +147,7 @@ def audit_cpu_copy_route_log(raw, begin, end, owned_pid):
     first = KODI_LOG_LINE.fullmatch(raw.split(b'\n', 1)[0].removeprefix(b'\xef\xbb\xbf'))
     require(first is not None and int(first[1]) == owned_pid,
             'original route log startup thread differs from owned application PID')
-    pending, pairs = defaultdict(list), []
+    pending, pairs, reinitialized, removed, proven = defaultdict(list), [], [], [], {}
     offset = begin
     for line in raw[begin:end].splitlines(keepends=True):
         match = KODI_LOG_LINE.fullmatch(line[:-1])
@@ -157,16 +158,31 @@ def audit_cpu_copy_route_log(raw, begin, end, owned_pid):
                         b'VAAPI/ffpp error:')) or
                       (message.startswith(b'VAAPI::CFFmpegPostproc::Init') and message != CPU_COPY_READY))
             require(not reject, 'original route log reports another postproc path or CPU-copy failure')
+            if message == CPU_COPY_REMOVED:
+                require(level == b'debug' and component == b'video', 'CPU-copy removal lacks original video debug context')
+                require(not pending[tid], 'CPU-copy class removed before its initialization completed')
+                proven.pop(tid, None)
+                removed.append({'tid': tid, 'offset': offset})
             if message in (CPU_COPY_INIT, CPU_COPY_READY):
                 require(level == b'debug' and component == b'video', 'CPU-copy marker lacks original video debug context')
                 if message == CPU_COPY_INIT:pending[tid].append(offset)
                 else:
-                    require(pending[tid], 'CPU-copy completion lacks its same-thread initialization')
-                    pairs.append({'tid': tid, 'initializing_offset': pending[tid].pop(0), 'completed_offset': offset})
+                    if pending[tid]:
+                        pair = {'tid': tid, 'initializing_offset': pending[tid].pop(0), 'completed_offset': offset}
+                        pairs.append(pair); proven[tid] = pair
+                    else:
+                        # Original CFFmpegPostproc::Flush closes/reinitializes
+                        # the already selected object without another factory
+                        # message. Keep this distinct from a class selection.
+                        require(tid in proven, 'CPU-copy completion lacks its same-thread initialization')
+                        reinitialized.append({'tid': tid, 'completed_offset': offset,
+                            'selection_initializing_offset': proven[tid]['initializing_offset'],
+                            'selection_completed_offset': proven[tid]['completed_offset']})
         offset += len(line)
-    require(pairs and not any(pending.values()), 'one complete actual CPU-copy initialization is required in each play')
+    require(pairs and proven and not any(pending.values()), 'one complete actual CPU-copy initialization is required in each play')
     return {'status': 'PASS', 'render_route': 'cpu-copy', 'method': 0, 'actual_deintmethod': 'none',
             'owned_pid': owned_pid, 'begin': begin, 'end': end, 'completed_initializations': pairs,
+            'completed_reinitializations': reinitialized, 'class_removals': removed,
             'scope': 'Original same-process log records explicit ffmpeg postproc and completed Off CPU-copy Init; worker IDs are thread IDs.'}
 
 

@@ -309,6 +309,9 @@ same worker must also log the completed Off/NONE initialization
 (`VAAPI::CFFmpegPostproc::Init  - skip deinterlacing`). Fresh owned Kodi-log
 identity and separate byte windows bind these observations to each play;
 the `T:` field on postproc messages identifies the worker, not the process.
+Original `CFFmpegPostproc::Flush()` calls `Close()` then `Init(m_diMethod)`
+on the retained object. Repeated Off completion on a worker already selected
+in this play is recorded as reinitialization; it cannot establish a new route.
 The
 original App's `lib/kodi/system/libsse4-x86_64-linux.so` is frozen and its mapped
 provider is checked while the owned application is paused.

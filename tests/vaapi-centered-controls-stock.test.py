@@ -479,6 +479,35 @@ class CpuCopyRouteLogTests(unittest.TestCase):
         result = self.audit(self.pair() + self.pair(888))
         self.assertEqual(len(result['completed_initializations']), 2)
 
+    def test_original_flush_reinitializes_proven_same_worker_without_factory_message(self):
+        result = self.audit(self.pair() + self.line(M.CPU_COPY_READY.decode()) * 3)
+        self.assertEqual(len(result['completed_initializations']), 1)
+        self.assertEqual(len(result['completed_reinitializations']), 3)
+        selected = result['completed_initializations'][0]
+        for repeated in result['completed_reinitializations']:
+            self.assertEqual(repeated['tid'], selected['tid'])
+            self.assertEqual(repeated['selection_initializing_offset'], selected['initializing_offset'])
+            self.assertEqual(repeated['selection_completed_offset'], selected['completed_offset'])
+
+    def test_ready_cannot_reuse_other_worker_or_unfinished_factory_selection(self):
+        for records in (self.pair() + self.line(M.CPU_COPY_READY.decode(), 888),
+                        self.pair() + self.line(M.CPU_COPY_INIT.decode()),
+                        self.line(M.CPU_COPY_READY.decode()) * 3):
+            with self.subTest(records=records), self.assertRaises(ValueError):self.audit(records)
+
+    def test_class_removal_invalidates_flush_only_completion_until_fresh_factory_pair(self):
+        removed = self.line(M.CPU_COPY_REMOVED.decode())
+        for records in (self.pair() + removed + self.line(M.CPU_COPY_READY.decode()),
+                        self.pair() + removed,
+                        self.line(M.CPU_COPY_INIT.decode()) + removed + self.line(M.CPU_COPY_READY.decode())):
+            with self.subTest(records=records), self.assertRaises(ValueError):self.audit(records)
+        result = self.audit(self.pair() + removed + self.pair() + self.line(M.CPU_COPY_READY.decode()))
+        self.assertEqual(len(result['completed_initializations']), 2)
+        self.assertEqual(len(result['class_removals']), 1)
+        self.assertEqual(len(result['completed_reinitializations']), 1)
+        self.assertEqual(result['completed_reinitializations'][0]['selection_initializing_offset'],
+                         result['completed_initializations'][1]['initializing_offset'])
+
     def test_initialization_intent_or_completion_alone_cannot_qualify(self):
         cases = (self.line(M.CPU_COPY_INIT.decode()), self.line(M.CPU_COPY_READY.decode()),
                  self.line(M.CPU_COPY_READY.decode()) + self.line(M.CPU_COPY_INIT.decode()),
