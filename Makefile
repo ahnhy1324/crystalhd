@@ -7,6 +7,8 @@ DATADIR ?= $(PREFIX)/share
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 PYTHON3 ?= python3
+# Optional native crash capture for the GTK suite; the private-bus tray stays separate.
+GTK_TEST_DEBUGGER ?=
 CONFIG_PRESET_MANIFEST := share/crystalhd/config-presets-v1.json
 
 DRIVER_ARGS := KVER="$(KVER)" KDIR="$(KDIR)" DESTDIR="$(DESTDIR)"
@@ -159,7 +161,7 @@ configuration-check:
 	$(PYTHON3) -B tests/crystalhd-config.test.py
 
 settings-ui-check:
-	$(PYTHON3) -X faulthandler -B tests/crystalhd-settings-gtk.test.py -v
+	$(GTK_TEST_DEBUGGER) $(PYTHON3) -X faulthandler -B tests/crystalhd-settings-gtk.test.py -v
 	dbus-run-session -- $(PYTHON3) -B tests/crystalhd-settings-tray.test.py
 
 .PHONY: kodi-settings-check kodi-settings-package candidate-package-check package-candidate

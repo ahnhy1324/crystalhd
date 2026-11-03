@@ -127,6 +127,23 @@ the resulting integration. Do not bypass protection or auto-delete branches.
 Run relevant [developer checks](README.md#developer-checks). Hardware evidence should identify the installed components, device, test input, frame/PTS/pixel results, errors, and clean teardown. If hardware is unavailable, say **NOT RUN**; CI/build success does not prove physical playback.
 
 `make settings-ui-check` includes real GTK validation-description regressions.
+For the unresolved Ubuntu24 CSS assertion/SIGSEGV in #623, CI runs that same
+GTK suite once under native crash capture. With GDB and the distribution's
+Python debug symbols installed, the optional local invocation is:
+
+```sh
+xvfb-run -a make settings-ui-check \
+  GTK_TEST_DEBUGGER='gdb --quiet --nx --batch --return-child-result -x tests/gtk-native-backtrace.gdb --args'
+```
+
+The wrapper records all-thread native and best-effort Python stacks on a fatal
+signal, then passes that signal through, including faulthandler's re-raise.
+A captured fatal signal fails the check even if a handler later exits zero.
+Ordinary unittest exit codes are preserved. The tray still runs separately
+under its existing private bus. No automatic retry, fatal-warning override,
+test reordering or runtime workaround is added. GDB changes scheduling; a
+clean instrumented run does not establish the original crash cause or a fix.
+
 For an explicit cross-process accessibility check, with GTK3, the Atspi2 GI
 typelib and an X display available, run
 `timeout --signal=TERM 65 python3 -B tests/crystalhd-settings-atspi.test.py --source=. --report=NEW.json`.
