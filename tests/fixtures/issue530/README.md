@@ -190,6 +190,34 @@ groups pass with each version's actual libraries. The private1.24 library
 run uses current-host GLib and is not a native Ubuntu24 OS qualification.
 Production admission and quality conditions are unchanged.
 
+### Window handoff response deadline — 2026-11-03
+
+The own `replace()` path now shares one absolute1s response deadline across
+own/target geometry, ancestry queries and checked standalone creation,
+reparent, configure and old-parent unsubscribe completions. A later reply
+barrier precedes checked-error retrieval, avoiding an implicit extra sync.
+Read-only rejection on a live connection leaves the current attachment intact.
+After a mutation, a missing completion instead reports an error and retires
+the worker; it cannot safely promise that the old server attachment survived.
+Cached binding fields commit together only after required completions.
+
+The [current-host receipt](field-window-handoff-20261103.json) records15 new
+owned-peer embedding controls in each native and ASan/UBSan/leak run: delayed
+success, missing replies, bad/foreign/descendant targets, shared ancestry and
+geometry/reparent budgets, mutation errors/timeouts/disconnect and an explicitly
+retired old parent. Exact request/discard and binding/FD/thread retirement
+checks accompany the43 total peer controls per variant. Both variants reopen
+an actual no-draw X11/EGL Window in the same process. CPU9 per variant, native
+live-window/field/pixel/control/retirement and NV12-worker regressions pass.
+Standalone creation succeeds in the native window regression; its negative
+creation-response cases are not separately exercised by these15 controls.
+
+This bounds explicit response waits after the initial flush. XID replenishment
+inside the standalone allocator, write congestion, EGL and whole-Window or
+system-server restart remain outside the bound. Sanitized no-draw reopen does
+not replace the separately failing hardware-GL drawing LeakSanitizer result.
+No new decoder, A/V, physical scanout or endurance qualification follows.
+
 ### Live window replacement — 2026-11-02
 
 The worker applies checked reparent requests while preserving the same owned

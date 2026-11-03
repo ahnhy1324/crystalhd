@@ -32,7 +32,10 @@ the scope to general full-rate FHD or hardware deinterlacing.
 
 ## Current priorities — 2026-11-03
 
-The current audit finds 13 open owning issues and no open PR in this fork.
+The current audit finds 13 open owning issues. Changes to master now use a
+task branch and PR, independent review and the required current-base `CI gate`.
+GitHub protection applies to administrators; force push and deletion are
+disabled, and automatic branch deletion stays off.
 [Upstream PR #9](https://github.com/yeradis/crystalhd/pull/9) is open; preserve
 all three `upstream/` submission branches. Stable 1.2 is published. The complete
 1.3 RC2 and its 13 public assets are frozen; stable 1.3 remains deferred.
@@ -48,15 +51,15 @@ not new hardware or release qualification.
 
 | Order | Existing owner and next work | Completion or disposition |
 | --- | --- | --- |
-| 1 | #530: bound the remaining `replace()` / ancestry-query / checked handoff response waits in our Window code. The handoff branch is preparation only; resize is already complete. | Share a response budget. Reject read-only failures without changing attachment; treat an indeterminate post-mutation timeout as an error requiring cleanup. Preserve existing window/field lifetime regressions. |
-| 2, parallel | #623: investigate the intermittent GTK CSS assertion/SIGSEGV, starting from the test-order hypothesis about validation teardown and the next window. The failure location is not established. | Capture the failing native/Python stack and identify the wrong operation. Fix our defect if established; call an external cause a known issue only with evidence. A later green CI run is not a root-cause fix. |
-| 3 | #513: measure the implemented FIFO/latest-frame modes on the current card/audio route. | Matched latency, CPU, queue age, intentional replacement/QoS and no-drift log observations. Record no benefit if that is the result; do not promote a default without evidence. |
-| 4 | #445/#477: extend selected stock-client seek/Stop/reopen and centered Off/CPU-fallback/29.97 cases. | Source-bound pixels/PTS, ROI/borders and object return conclusions for the selected cases, using the accepted renderer/QoS policy. |
-| 5 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
-| 6 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
-| 7 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
-| 8 | #400: current-desktop Orca/accessibility and specifically proposed frontend adapters. | Actual user interaction for the named route. Existing AT-SPI validation state, Korean UI and settings storage are complete within their scope. |
-| 9, parallel research | #92/#204: source-picture ownership and processing-engine completion. | A coherent acquire/hold/publish/complete/release contract or a precise evidenced limitation. Standalone scaler/CSC/DNR work follows that contract. |
+| Completed subset | #530: explicit `replace()` geometry/ancestry and checked handoff completion waits now share a response deadline; resize was already complete. | Read-only rejection preserves attachment; an indeterminate mutation fails through worker cleanup. [Current-host receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): 15 new embedding controls per native/sanitized variant, actual no-draw reopen and native window/NV12 regressions pass. XID refill, writes, EGL and broader #530 research remain outside this completed subset. |
+| 1 | #623: investigate the intermittent GTK CSS assertion/SIGSEGV, starting from the test-order hypothesis about validation teardown and the next window. The failure location is not established. | Capture the failing native/Python stack and identify the wrong operation. Fix our defect if established; call an external cause a known issue only with evidence. A later green CI run is not a root-cause fix. |
+| 2 | #513: measure the implemented FIFO/latest-frame modes on the current card/audio route. | Matched latency, CPU, queue age, intentional replacement/QoS and no-drift log observations. Record no benefit if that is the result; do not promote a default without evidence. |
+| 3 | #445/#477: extend selected stock-client seek/Stop/reopen and centered Off/CPU-fallback/29.97 cases. | Source-bound pixels/PTS, ROI/borders and object return conclusions for the selected cases, using the accepted renderer/QoS policy. |
+| 4 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
+| 5 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
+| 6 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
+| 7 | #400: current-desktop Orca/accessibility and specifically proposed frontend adapters. | Actual user interaction for the named route. Existing AT-SPI validation state, Korean UI and settings storage are complete within their scope. |
+| 8, parallel research | #92/#204: source-picture ownership and processing-engine completion. | A coherent acquire/hold/publish/complete/release contract or a precise evidenced limitation. Standalone scaler/CSC/DNR work follows that contract. |
 | Follow-up queue | #91/#510: HTTP(S)/network controls, broader streams and browser/frontend work; CI component lanes when a concrete change needs them. | Select a bounded user problem and record its result in the existing owner. Do not turn this into a new universal verification project. |
 
 Use current equipment only. Physical Atom/i386, BCM70012, another GPU and an
@@ -131,7 +134,7 @@ shelve the work or silently exclude implemented features.
 1. #530: live PLAYING/PAUSED overlay-window replacement, owned standalone
    host and current-parent geometry, preservation of the field generation/deadline
    and ordinary stop regressions are implemented; see the current-host receipt.
-   The remaining handoff response waits are the next code task above.
+   The explicit handoff response waits now share one deadline; see below.
    The explicit sink also accepts limited601/709 NV12 with declared JPEG/MPEG2
    chroma site and complete progressive/interleaved pictures. Native current-host
    plane/field/pixel/EOS/reopen checks pass; actual GL LeakSanitizer remains FAIL,
@@ -157,8 +160,17 @@ shelve the work or silently exclude implemented features.
    now uses an explicit later reply in the same original budget; six controls
    verify success/no-change/error/stall/disconnect/shared-budget handling,
    atomic cached dimensions and zero hidden sync requests; see the
-   [completion receipt](tests/fixtures/issue530/field-resize-completion-20261103.json). Other X11 calls,
-   congested writes, EGL and system-server restart remain outside these scopes.
+   [completion receipt](tests/fixtures/issue530/field-resize-completion-20261103.json).
+   Explicit handoff geometry/ancestry and checked creation/reparent/configure/
+   old-parent completions now share a1s response budget. Read-only rejection
+   preserves the old view; an uncertain mutation fails through worker cleanup.
+   Binding fields commit together after required completions. The
+   [handoff receipt](tests/fixtures/issue530/field-window-handoff-20261103.json)
+   records15 new embedding controls per variant (43 total), CPU9 per variant,
+   same-process actual no-draw reopen and native window/NV12 regressions.
+   XID replenishment, congested writes, other X11 calls, EGL and whole-window/
+   system-server restart remain outside these scopes. Sanitized drawing still
+   has the separately recorded hardware-GL LSan FAIL.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
    rejection, dormant pools and stop cancellation. See the

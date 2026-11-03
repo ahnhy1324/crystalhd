@@ -1,0 +1,325 @@
+{
+  "date": "2026-11-03",
+  "issue": 530,
+  "status": "PASS_EXPLICIT_HANDOFF_REPLY_BUDGET",
+  "change": "One response deadline for explicit own/target geometry, ancestry and checked handoff completions. Read-only rejection retains the local binding; uncertain mutation fails through worker cleanup; commit the local binding after required completions.",
+  "checks": {
+    "cpu_groups_each_variant": 9,
+    "peer_groups_each_variant": {
+      "setup": 6,
+      "atom": 7,
+      "resize_geometry": 9,
+      "resize_completion": 6,
+      "handoff": 15
+    },
+    "same_process_actual_no_draw_reopen": [
+      "native",
+      "ASan/UBSan/leaks"
+    ],
+    "native_actual": [
+      "window handoff, retained field/pixel, controls and retirement regression",
+      "NV12 worker regression"
+    ],
+    "discovery": "PASS"
+  },
+  "handoff_cases": [
+    "delayed success",
+    "missing own geometry",
+    "missing target geometry",
+    "target BadWindow",
+    "foreign root",
+    "target inside old wrapper",
+    "600+600ms ancestry budget",
+    "explicit reparent rejection",
+    "missing reparent completion",
+    "configure error after reparent",
+    "missing configure completion",
+    "missing old-parent cleanup completion",
+    "disconnect after mutation",
+    "600+600ms geometry/reparent budget",
+    "explicit old-parent BadWindow tolerated"
+  ],
+  "observations": {
+    "native": [
+      {
+        "mode": 0,
+        "elapsed_us": 601240,
+        "requests": 10,
+        "extra_bytes": 0,
+        "accepted": true
+      },
+      {
+        "mode": 1,
+        "elapsed_us": 1001234,
+        "requests": 1,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 2,
+        "elapsed_us": 1001397,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 3,
+        "elapsed_us": 409,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 4,
+        "elapsed_us": 284,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 5,
+        "elapsed_us": 266,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 6,
+        "elapsed_us": 1001058,
+        "requests": 3,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 7,
+        "elapsed_us": 492,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 8,
+        "elapsed_us": 1001559,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 9,
+        "elapsed_us": 599,
+        "requests": 6,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 10,
+        "elapsed_us": 1001653,
+        "requests": 6,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 11,
+        "elapsed_us": 1001843,
+        "requests": 8,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 12,
+        "elapsed_us": 479,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 13,
+        "elapsed_us": 1000828,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 14,
+        "elapsed_us": 765,
+        "requests": 10,
+        "extra_bytes": 0,
+        "accepted": true
+      }
+    ],
+    "sanitized": [
+      {
+        "mode": 0,
+        "elapsed_us": 602192,
+        "requests": 10,
+        "extra_bytes": 0,
+        "accepted": true
+      },
+      {
+        "mode": 1,
+        "elapsed_us": 1001573,
+        "requests": 1,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 2,
+        "elapsed_us": 1001778,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 3,
+        "elapsed_us": 644,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 4,
+        "elapsed_us": 440,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 5,
+        "elapsed_us": 477,
+        "requests": 2,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 6,
+        "elapsed_us": 1001603,
+        "requests": 3,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 7,
+        "elapsed_us": 681,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 8,
+        "elapsed_us": 1001984,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 9,
+        "elapsed_us": 1259,
+        "requests": 6,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 10,
+        "elapsed_us": 1002185,
+        "requests": 6,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 11,
+        "elapsed_us": 1001533,
+        "requests": 8,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 12,
+        "elapsed_us": 948,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 13,
+        "elapsed_us": 1001417,
+        "requests": 4,
+        "extra_bytes": 0,
+        "accepted": false
+      },
+      {
+        "mode": 14,
+        "elapsed_us": 1266,
+        "requests": 10,
+        "extra_bytes": 0,
+        "accepted": true
+      }
+    ]
+  },
+  "runs": [
+    {
+      "name": "cpu-native",
+      "sanitized": false,
+      "maximum_temperature_mC": 55000,
+      "exit": 0,
+      "seconds": 0.257,
+      "status": "PASS"
+    },
+    {
+      "name": "cpu-sanitized",
+      "sanitized": true,
+      "maximum_temperature_mC": 55000,
+      "exit": 0,
+      "seconds": 0.258,
+      "status": "PASS"
+    },
+    {
+      "name": "peer-and-reopen-native",
+      "sanitized": false,
+      "maximum_temperature_mC": 55000,
+      "exit": 0,
+      "seconds": 26.058,
+      "status": "PASS"
+    },
+    {
+      "name": "peer-and-reopen-sanitized",
+      "sanitized": true,
+      "maximum_temperature_mC": 54000,
+      "exit": 0,
+      "seconds": 26.055,
+      "status": "PASS"
+    },
+    {
+      "name": "window-native",
+      "sanitized": false,
+      "maximum_temperature_mC": 54000,
+      "exit": 0,
+      "seconds": 4.81,
+      "status": "PASS"
+    },
+    {
+      "name": "nv12-native",
+      "sanitized": false,
+      "maximum_temperature_mC": 54000,
+      "exit": 0,
+      "seconds": 1.527,
+      "status": "PASS"
+    }
+  ],
+  "host": {
+    "cpu": "Core 2 Duo T8100",
+    "graphics": "Intel 965GM",
+    "kernel": "7.0.0-38-generic",
+    "card_decoder_used": false
+  },
+  "kernel_observation": {
+    "query_exit": 0,
+    "related_new_rows": 0
+  },
+  "limits": [
+    "Bounds the explicit reply/completion waits after the initial flush; write congestion, XID replenishment and EGL/whole-Window or server restart are not bounded.",
+    "Sanitized actual Window reopen is no-draw; the existing hardware-GL draw LeakSanitizer FAIL is unchanged.",
+    "No new decoder, A/V, physical scanout, endurance or other-equipment qualification.",
+    "No external product code changes, module installation, frozen RC2 changes or stable release.",
+    "The 15 private handoff cases use nonzero embedding targets; standalone creation succeeds in the native window regression, but creation-response failures are not separately exercised."
+  ]
+}
