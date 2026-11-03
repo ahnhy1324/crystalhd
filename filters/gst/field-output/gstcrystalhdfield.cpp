@@ -4,6 +4,7 @@
 #include <gst/video/gstvideosink.h>
 #include <gst/video/videooverlay.h>
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h>
 #include <sys/eventfd.h>
 #include <poll.h>
 #include <atomic>
@@ -76,6 +77,34 @@ struct WindowCommand {
     bool done=false,accepted=false;
 };
 
+// Bound our reply wait after submitting the small atom request. This does not
+// impose a deadline on EGL, other X11 requests or a congested XCB write flush.
+static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *name) {
+    const auto cookie=xcb_intern_atom(connection,0,strlen(name),name);
+    auto fail=[&](const char *message)->xcb_atom_t {
+        xcb_discard_reply(connection,cookie.sequence);need(false,message);return XCB_ATOM_NONE;
+    };
+    if(xcb_flush(connection)<=0)return fail("XCB atom request flush failed");
+    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
+    for(;;) {
+        void *reply=nullptr;xcb_generic_error_t *error=nullptr;
+        if(xcb_poll_for_reply(connection,cookie.sequence,&reply,&error)) {
+            if(g_get_monotonic_time()>=end){free(error);free(reply);return fail("XCB atom reply timed out");}
+            if(error||!reply){free(error);free(reply);return fail("XCB atom reply failed");}
+            const auto atom=static_cast<xcb_intern_atom_reply_t *>(reply)->atom;free(reply);return atom;
+        }
+        free(error);free(reply);
+        if(xcb_connection_has_error(connection))return fail("XCB atom connection failed");
+        const auto left=end-g_get_monotonic_time();
+        if(left<=0)return fail("XCB atom reply timed out");
+        pollfd event{xcb_get_file_descriptor(connection),POLLIN,0};
+        const auto ready=poll(&event,1,int((left+999)/1000));
+        if(ready<0&&errno==EINTR)continue;
+        if(ready<0||(event.revents&POLLNVAL))return fail("XCB atom reply poll failed");
+        // Retry XCB first: a reply may already be buffered alongside HUP.
+    }
+}
+
 // This object and all GPU objects are constructed/destroyed on the worker.
 struct Window {
     xcb_connection_t *connection=nullptr;
@@ -89,9 +118,7 @@ struct Window {
     bool embedded=false;
 
     xcb_atom_t atom(const char *name) {
-        auto cookie=xcb_intern_atom(connection,0,strlen(name),name);
-        auto *reply=xcb_intern_atom_reply(connection,cookie,nullptr);
-        need(reply,"XCB atom");xcb_atom_t value=reply->atom;free(reply);return value;
+        return intern_atom_bounded(connection,name);
     }
     Window(guintptr handle) {
       try {

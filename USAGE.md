@@ -355,6 +355,13 @@ Direct raw-video use of the sink also accepts explicitly declared, limited-range
 NV12 within its [current plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).
 The existing CrystalHD hardware Player route continues negotiating YUY2.
 
+The own local connection/setup has its bounded startup path. Each own
+InternAtom response wait now has a fixed one-second limit after its request
+flush, including partial replies and unrelated events; a late discarded
+response cannot satisfy the next request. Other synchronous X11 requests,
+congested writes and EGL calls remain outside this reply-wait limit. This
+does not establish a deadline for the whole Window constructor or shutdown.
+
 The default `--video-output auto` keeps the normal output path. The selector is
 per invocation and is not saved by the configuration manager. With `field-gpu`,
 omit `--weave` and use `--software-output-size native` to clear any saved
