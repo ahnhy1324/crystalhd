@@ -105,6 +105,10 @@ evidence and scheduling remain in each problem's issue.
 
 ## Pull requests
 
+- Preserve branches used by upstream submissions, including
+  [`upstream/01-linux-6.1` for yeradis/crystalhd#9](https://github.com/yeradis/crystalhd/pull/9).
+  Do not delete, rewrite or reuse them without the maintainer's explicit
+  instruction for that branch. Check upstream PRs as well as this fork before cleanup.
 - Keep changes focused and link related issues. Discuss broad ABI, firmware, DMA, or device-lifetime changes before implementation.
 - Preserve the documented ioctl and `libcrystalhd.so.3` contracts, default behavior, and single-session device ownership. Experimental features must be explicit opt-ins.
 - Add regression tests when practical, report what was actually run, and update affected documentation.
