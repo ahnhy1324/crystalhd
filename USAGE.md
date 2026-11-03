@@ -371,11 +371,13 @@ The own local connection/setup has its bounded startup path. Each own
 InternAtom response wait has a fixed one-second limit after its request
 flush, including partial replies and unrelated events. In `resize()`, current
 parent and child geometry requests are sent together and their responses
-share one one-second deadline after that flush. Received replies are freed
-and remaining reply sequences are discarded locally on failure. Cached size
-changes only after both responses and any required child configure succeed.
-Other synchronous X11 calls, including the checked configure itself,
-congested writes and EGL remain outside these reply-wait limits. They do not
+share one one-second deadline after that flush. When child resizing is needed,
+a later reply barrier confirms the checked configure within the same budget;
+the following error retrieval needs no additional network sync. Received
+replies are freed and remaining reply sequences are discarded locally on
+failure. Cached size changes only after both geometry responses and any
+required child configure succeed. Other synchronous X11 calls, congested
+writes and EGL remain outside these reply-wait limits. They do not
 establish a deadline for the whole Window constructor, resize or shutdown.
 
 The default `--video-output auto` keeps the normal output path. The selector is

@@ -1,0 +1,96 @@
+{
+  "api_contract": "Installed xcb.h371-377: a subsequent reply proves the earlier checked request processed, so xcb_request_check does not require another network sync. Official XCB API matches this contract.",
+  "base_master": "b1c42c921d772eb33aa22b2b0f1aec39c15f17f4",
+  "change": "Checked ConfigureWindow followed by explicit GetInputFocus reply barrier; wait with the original geometry deadline, then retrieve already-processed configure error. Cached dimensions commit after all phases and known-connection checks.",
+  "date": "2026-11-03",
+  "device_free": {
+    "cpu_native": 9,
+    "cpu_sanitized": 9,
+    "discovery": true,
+    "peer_controls_each_variant": {
+      "atom": 7,
+      "geometry": 9,
+      "resize_completion": 6,
+      "setup": 6
+    },
+    "resize_cases": [
+      "changed geometry: exact configure target/mask/400x240 values then barrier;4 requests/no extra sync; commit400x240",
+      "unchanged geometry:2 requests/no configure/barrier; commit current parent size",
+      "BadWindow configure error3 followed by valid reply4; cache17x19 preserved",
+      "no completion reply on still-open peer: original1s deadline, local discard3/4, cache preserved",
+      "disconnect after configure+barrier requests: cache preserved/local sequence retirement",
+      "geometry600ms plus completion600ms exceeds original1s: no fresh deadline; cache preserved"
+    ]
+  },
+  "issue": 530,
+  "limits": [
+    "Budget starts after initial geometry flush and covers response/completion waiting; congested writes remain outside it",
+    "Other synchronous X11 operations, EGL and wholeWindow startup/resize/shutdown or server restart are not established",
+    "Sanitized actualWindow reopen is no-draw; existing hardware-GL draw LeakSanitizer FAIL is unchanged",
+    "No new card decoder/A-V/physical display/endurance or other-equipment qualification",
+    "No external source/binary edits or frozenRC2/stable1.3 publication;538heap exclusion untouched"
+  ],
+  "negative_control": {
+    "exit": 1,
+    "expected": "Geometry600ms plus completion600ms incorrectly commits400x240 under the reset deadline. The unchanged production-helper test rejects that commit. Intentional private discriminator, not a product before-fix result.",
+    "mutation": "Only the configure completion end assignment changes from geometry.deadline to now+1s",
+    "seconds": 17.77698241895996,
+    "status": "EXPECTED_FAILURE_DETECTED"
+  },
+  "runs": {
+    "actual-reopen-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "17f39f6d8be62bcf2783dc8f695a8c3d4a04732777a3e51093cb6dc7d5507c0b",
+      "seconds": 17.89006111002527,
+      "status": "PASS_FIELD_SETUP_ACTUAL_X11_REOPEN",
+      "stdout_sha256": "d51d8374e864d91bd8acc0a33f1c82ecca69689a40e90b29823ee05f227f7ef4"
+    },
+    "actual-reopen-san-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 48000,
+      "probe_sha256": "628ff281f5c8d21163bbfe502b83916d12581509797d2ae9e01b74f660380b87",
+      "seconds": 18.080716544995084,
+      "status": "PASS_FIELD_SETUP_ACTUAL_X11_REOPEN",
+      "stdout_sha256": "4c50a0f381ff54e08357dc03d7eb3886e9fcdd5f284f4a1158230352490baba3"
+    },
+    "field-window-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 47000,
+      "probe_sha256": "a61722c7c8b9acfa436d09dbd8e794c25dd4ef1f2cefb32eb1d9bb41c1e17381",
+      "seconds": 4.845250779064372,
+      "status": "PASS_FIELD_WINDOW_REGRESSION",
+      "stdout_sha256": "0af16befe3be29f56af6057194c611c23704fe5f47eb3ba7649130e3afcb6c04"
+    },
+    "nv12-native-01": {
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 48000,
+      "probe_sha256": "d3880d011d0efca1be2cf5561d7a56cd5fd6aa9f07eb13344f9adb43010cf831",
+      "seconds": 1.5493921970482916,
+      "status": "PASS_NV12_WORKER",
+      "stdout_sha256": "cbb8eaa306cc16320c0a48c51fd42c4dd40b059eb7d945548de401b57e9f20c5"
+    }
+  },
+  "runtime": {
+    "installed": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "kernel_rows": 0,
+    "kernel_since_local": "2026-11-03 11:19:24",
+    "no_card_or_module_actions": true
+  },
+  "schema": 1,
+  "source_files": {
+    "filters/gst/field-output/Makefile": "f661d7a6d3f2ab2a5cd60547f9d12b2ee8c6dd71bb3ed1c1e216a72dd44db98d",
+    "filters/gst/field-output/gstcrystalhdfield.cpp": "868852d437cbaaad4e807ecc5c1f6c81eb9605eabdaa813d2bab738ec08900c1",
+    "tests/field-view-gpu.h": "6040f71abd8f7792cbb2dc6625e38c4a534690adc523f4092a923f920e987212",
+    "tests/gst-field-output-cpu.cpp": "e388c0ee676a7af2eb0d9044378190b46efff77b8571e21d825b4ac0e112b48f",
+    "tests/gst-field-setup.cpp": "bd51cc0d131b70cec704bf43a8fb45864e0f7a6a0f149ab181486c3dc9449203"
+  },
+  "status": "PASS_SHARED_RESIZE_COMPLETION_BUDGET"
+}

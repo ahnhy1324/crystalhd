@@ -95,7 +95,11 @@ shelve the work or silently exclude implemented features.
    share a1s deadline after one request flush, with pending reply sequences
    discarded locally on failure and cached size committed after success.
    Nine private-pair controls cover partial/missing/error replies, shared
-   budget and late-response retirement. Other X11 calls, checked configure,
+   budget and late-response retirement. Checked child configure completion
+   now uses an explicit later reply in the same original budget; six controls
+   verify success/no-change/error/stall/disconnect/shared-budget handling,
+   atomic cached dimensions and zero hidden sync requests; see the
+   [completion receipt](tests/fixtures/issue530/field-resize-completion-20261103.json). Other X11 calls,
    congested writes, EGL and system-server restart remain outside these scopes.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible

@@ -80,8 +80,7 @@ struct WindowCommand {
 
 template<class T> using XcbReply=std::unique_ptr<T,decltype(&free)>;
 // Retire pending sequences even when a later request/wait fails. The reply
-// deadline starts after flush; congested writes, checked configure and EGL
-// remain separate from it.
+// deadline starts after flush; congested writes and EGL remain separate.
 struct ReplyRequest {
     xcb_connection_t *connection;
     unsigned sequence;
@@ -121,7 +120,7 @@ static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *n
     need(xcb_flush(connection)>0,"XCB atom request flush failed");
     return request.wait<xcb_intern_atom_reply_t>(g_get_monotonic_time()+G_USEC_PER_SEC,"XCB atom")->atom;
 }
-struct WindowGeometry {unsigned width,height,child_width,child_height;};
+struct WindowGeometry {unsigned width,height,child_width,child_height;gint64 deadline;};
 static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child) {
     ReplyRequest parent_request(connection,xcb_get_geometry(connection,parent).sequence);
     ReplyRequest child_request(connection,xcb_get_geometry(connection,child).sequence);
@@ -129,7 +128,31 @@ static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_
     const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
     auto geometry=parent_request.wait<xcb_get_geometry_reply_t>(end,"XCB parent geometry");
     auto video=child_request.wait<xcb_get_geometry_reply_t>(end,"XCB child geometry");
-    return {geometry->width,geometry->height,video->width,video->height};
+    return {geometry->width,geometry->height,video->width,video->height,end};
+}
+static void resize_current_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child,
+                                   unsigned &width,unsigned &height) {
+    const auto geometry=current_geometry_bounded(connection,parent,child);
+    const auto end=geometry.deadline;
+    if(geometry.child_width!=geometry.width||geometry.child_height!=geometry.height) {
+        need(g_get_monotonic_time()<end,"XCB resize completion timed out");
+        uint32_t size[]={geometry.width,geometry.height};
+        const auto configured=xcb_configure_window_checked(connection,child,
+            XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size);
+        ReplyRequest configure_request(connection,configured.sequence);
+        ReplyRequest barrier(connection,xcb_get_input_focus(connection).sequence);
+        need(xcb_flush(connection)>0,"XCB resize completion flush failed");
+        auto completed=barrier.wait<xcb_get_input_focus_reply_t>(end,"XCB resize completion");
+        need(!xcb_connection_has_error(connection),"current video child connection");
+        // Once a subsequent reply has arrived, xcb_request_check() consumes
+        // any queued error without another network sync (xcb.h contract).
+        XcbReply<xcb_generic_error_t> error(xcb_request_check(connection,configured),&free);
+        configure_request.pending=false;
+        need(!error,"current video child resize");
+        need(g_get_monotonic_time()<end,"XCB resize completion timed out");
+    }
+    need(!xcb_connection_has_error(connection),"current video child connection");
+    width=geometry.width;height=geometry.height;
 }
 
 // This object and all GPU objects are constructed/destroyed on the worker.
@@ -247,16 +270,7 @@ struct Window {
         return id;
     }
     void resize() {
-        const auto geometry=current_geometry_bounded(connection,parent,window);
-        const bool changed=geometry.child_width!=geometry.width||geometry.child_height!=geometry.height;
-        if(changed) {
-            uint32_t size[]={geometry.width,geometry.height};
-            auto *error=xcb_request_check(connection,xcb_configure_window_checked(connection,window,
-                XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size));
-            if(error){free(error);need(false,"current video child resize");}
-        }
-        need(!xcb_connection_has_error(connection),"current video child connection");
-        width=geometry.width;height=geometry.height;
+        resize_current_bounded(connection,parent,window,width,height);
     }
     bool inside(xcb_window_t target,xcb_window_t ancestor,xcb_window_t root) {
         // The caller keeps its target stable through the synchronous request.

@@ -166,6 +166,19 @@ static void atom_exchanges() {
     }
     puts("PASS7 owned atom reply exchanges after successful setup; production helper, no EGL/device access");
 }
+static bool plain_peer_setup(int fd,gint64 end,pid_t &caller) {
+    ucred credentials{};socklen_t size=sizeof(credentials);
+    if(!getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&credentials,&size))caller=credentials.pid;
+    unsigned char header[12]{};
+    if(!setup_read(fd,header,sizeof(header),end)||
+       header[0]!=(G_BYTE_ORDER==G_LITTLE_ENDIAN?'l':'B')||
+       setup_u16(header+6,G_BYTE_ORDER==G_LITTLE_ENDIAN)||
+       setup_u16(header+8,G_BYTE_ORDER==G_LITTLE_ENDIAN))return false;
+    xcb_setup_t setup{};setup.status=1;setup.protocol_major_version=11;
+    setup.length=(sizeof(setup)-8)/4;setup.resource_id_base=0x200000;
+    setup.resource_id_mask=0x1fffff;setup.maximum_request_length=65535;
+    return send(fd,&setup,sizeof(setup),MSG_NOSIGNAL)==sizeof(setup);
+}
 struct GeometryPeer {
     int fd=-1;unsigned mode=0,requests=0;
     bool valid=false,eof=false,expired=false;pid_t caller=0;
@@ -186,17 +199,7 @@ static gpointer geometry_peer(gpointer user) {
         }
         close(fd);return nullptr;
     };
-    ucred credentials{};socklen_t size=sizeof(credentials);
-    if(!getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&credentials,&size))p->caller=credentials.pid;
-    unsigned char header[12]{};
-    if(!setup_read(fd,header,sizeof(header),end)||
-       header[0]!=(G_BYTE_ORDER==G_LITTLE_ENDIAN?'l':'B')||
-       setup_u16(header+6,G_BYTE_ORDER==G_LITTLE_ENDIAN)||
-       setup_u16(header+8,G_BYTE_ORDER==G_LITTLE_ENDIAN))return finish();
-    xcb_setup_t setup{};setup.status=1;setup.protocol_major_version=11;
-    setup.length=(sizeof(setup)-8)/4;setup.resource_id_base=0x200000;
-    setup.resource_id_mask=0x1fffff;setup.maximum_request_length=65535;
-    if(send(fd,&setup,sizeof(setup),MSG_NOSIGNAL)!=sizeof(setup))return finish();
+    if(!plain_peer_setup(fd,end,p->caller))return finish();
     auto request_pair=[&]() {
         for(auto drawable:{geometry_parent,geometry_child}) {
             xcb_get_geometry_request_t request{};
@@ -281,16 +284,111 @@ static void geometry_exchanges() {
     }
     puts("PASS9 owned geometry pairs; shared reply budget and pending-sequence retirement, no EGL/device access");
 }
+struct ResizePeer : GeometryPeer {unsigned extra_bytes=0;};
+static gpointer resize_peer(gpointer user) {
+    auto *p=static_cast<ResizePeer *>(user);const int fd=p->fd;
+    const auto end=g_get_monotonic_time()+3500*1000;
+    auto finish=[&]()->gpointer {
+        if(p->mode!=4) {
+            while(g_get_monotonic_time()<end) {
+                pollfd event{fd,POLLIN,0};const auto ready=poll(&event,1,20);
+                if(ready<0&&errno==EINTR)continue;
+                if(ready>0){unsigned char bytes[64];const auto count=recv(fd,bytes,sizeof(bytes),0);
+                    if(count==0){p->eof=true;break;}
+                    if(count<0)break;
+                    p->extra_bytes+=unsigned(count);}
+            }
+            p->expired=!p->eof;
+        }
+        close(fd);return nullptr;
+    };
+    if(!plain_peer_setup(fd,end,p->caller))return finish();
+    for(auto drawable:{geometry_parent,geometry_child}) {
+        xcb_get_geometry_request_t request{};
+        if(!setup_read(fd,&request,sizeof(request),end)||request.major_opcode!=XCB_GET_GEOMETRY||
+           request.length!=sizeof(request)/4||request.drawable!=drawable)return finish();
+        ++p->requests;
+    }
+    auto geometry=[&](uint16_t sequence,unsigned width,unsigned height) {
+        xcb_get_geometry_reply_t value{};value.response_type=1;value.sequence=sequence;
+        value.depth=24;value.root=0x100;value.width=width;value.height=height;
+        std::array<unsigned char,32> wire{};memcpy(wire.data(),&value,sizeof(value));
+        return send(fd,wire.data(),wire.size(),MSG_NOSIGNAL)==ssize_t(wire.size());
+    };
+    if(p->mode==0)g_usleep(300000);
+    if(p->mode==5)g_usleep(600000);
+    if(!geometry(1,400,240)||!geometry(2,p->mode==1?400:200,p->mode==1?240:120))return finish();
+    if(p->mode==1){p->valid=true;return finish();}
+    xcb_configure_window_request_t configured{};uint32_t dimensions[2]{};
+    if(!setup_read(fd,&configured,sizeof(configured),end)||configured.major_opcode!=XCB_CONFIGURE_WINDOW||
+       configured.window!=geometry_child||configured.value_mask!=(XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT)||
+       configured.length!=(sizeof(configured)+sizeof(dimensions))/4||
+       !setup_read(fd,dimensions,sizeof(dimensions),end)||dimensions[0]!=400||dimensions[1]!=240)return finish();
+    ++p->requests;
+    xcb_get_input_focus_request_t barrier{};
+    if(!setup_read(fd,&barrier,sizeof(barrier),end)||barrier.major_opcode!=XCB_GET_INPUT_FOCUS||
+       barrier.length!=sizeof(barrier)/4)return finish();
+    ++p->requests;p->valid=true;
+    if(p->mode==3||p->mode==4)return finish();
+    if(p->mode==2) {
+        xcb_generic_error_t error{};error.error_code=XCB_WINDOW;error.sequence=3;
+        error.resource_id=geometry_child;error.major_code=XCB_CONFIGURE_WINDOW;
+        if(send(fd,&error,32,MSG_NOSIGNAL)!=32)return finish();
+    }
+    if(p->mode==0)g_usleep(300000);
+    if(p->mode==5)g_usleep(600000);
+    xcb_get_input_focus_reply_t reply{};reply.response_type=1;reply.sequence=4;reply.focus=geometry_parent;
+    std::array<unsigned char,32> wire{};memcpy(wire.data(),&reply,sizeof(reply));
+    // In the over-budget case the client can already have closed its socket.
+    (void)send(fd,wire.data(),wire.size(),MSG_NOSIGNAL);
+    return finish();
+}
+static void resize_exchanges() {
+    for(unsigned mode=0;mode<6;++mode) {
+        const auto before=setup_fd_count();int sockets[2]{};
+        need(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets),"owned resize socket pair");
+        ResizePeer peer{};peer.fd=sockets[1];peer.mode=mode;
+        auto *server=g_thread_new("owned-field-resize",resize_peer,&peer);
+        auto *connection=xcb_connect_to_fd(sockets[0],nullptr);
+        const bool connected=!xcb_connection_has_error(connection);
+        unsigned width=17,height=19;std::string failure;discarded_sequences=0;
+        const auto start=g_get_monotonic_time();
+        try{if(connected)crystalhd_field::resize_current_bounded(connection,geometry_parent,geometry_child,width,height);}
+        catch(const std::exception &e){failure=e.what();}
+        const auto elapsed=g_get_monotonic_time()-start;const auto discarded=discarded_sequences.load();
+        xcb_disconnect(connection);g_thread_join(server);
+        printf("field resize mode=%u elapsed_us=%lld requests=%u extra=%u cache=%ux%u discarded=%llu failure=%s\n",
+            mode,static_cast<long long>(elapsed),peer.requests,peer.extra_bytes,width,height,
+            static_cast<unsigned long long>(discarded),failure.c_str());
+        auto failed_with=[&](const char *message){return failure.rfind(message,0)==0;};
+        need(connected&&peer.valid&&peer.caller==getpid()&&!peer.expired,"owned resize handshake/request/PID/retirement");
+        need((mode==4||peer.eof)&&setup_fd_count()==before,"resize connection/thread/FD retirement");
+        need(peer.requests==(mode==1?2U:4U)&&peer.extra_bytes==0,"exact resize requests; no hidden extra sync");
+        if(mode==0||mode==1)need(failure.empty()&&width==400&&height==240&&discarded==0,"resize size commit after success");
+        else {
+            need(width==17&&height==19,"failed resize preserves both cached dimensions");
+            if(mode==2)need(failed_with("current video child resize")&&discarded==0,"checked configure error after barrier");
+            else if(mode==4)need((failed_with("XCB resize completion connection failed")||
+                failed_with("XCB resize completion reply failed")||failed_with("current video child connection"))&&
+                (discarded&8),"resize disconnect retires configure sequence");
+            else need(failed_with("XCB resize completion reply timed out")&&discarded==24&&elapsed>=800000,
+                "shared resize deadline retires configure and barrier");
+        }
+        need(elapsed<2*G_USEC_PER_SEC,"resize completion reply budget");
+    }
+    puts("PASS6 owned resize completion controls; shared geometry/configure budget and atomic cached dimensions");
+}
 int main(int argc,char **argv) {
  try {
     setvbuf(stdout,nullptr,_IOLBF,0);need(argc==1||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11]");
     exchanges();
     atom_exchanges();
     geometry_exchanges();
+    resize_exchanges();
     if(argc==2) {
         need(temperature()<75000,"thermal admission");
         {crystalhd_field::Window window(0);need(window.context!=EGL_NO_CONTEXT,"valid display after setup timeouts");}
-        puts("PASS valid actual X11/EGL Window after6 setup,7 atom and9 geometry controls in same process");
+        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry and6 resize controls in same process");
     }
  }catch(const std::exception &e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
 }
