@@ -79,8 +79,11 @@ shelve the work or silently exclude implemented features.
    six ordinary/sanitized auth exchanges, same-process actual display reopen
    and native field regressions. See the
    [setup receipt](tests/fixtures/issue530/field-setup-deadline-20261103.json).
-   Local DISPLAY is required; later EGL/replies and system-server restart
-   remain outside this setup deadline.
+   Local DISPLAY is required. Own InternAtom reply waits now have a fixed1s
+   limit after request flush; seven owned reply controls pass native/sanitized,
+   followed by actual Window reopen in the same process and native window/NV12
+   regressions. Other X11 requests, congested writes, EGL and system-server
+   restart remain outside these scoped deadlines.
 2. #513: same-layout UYVY port handoff is implemented and qualified on the
    current Intel965 host, including PAUSED/PLAYING, held ACK, busy/incompatible
    rejection, dormant pools and stop cancellation. See the
