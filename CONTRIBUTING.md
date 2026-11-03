@@ -105,6 +105,14 @@ evidence and scheduling remain in each problem's issue.
 
 ## Pull requests
 
+Use a task branch and PR for changes to master. Master requires the existing
+`CI gate`, an up-to-date base and resolved review conversations; the rule also
+applies to administrators. Force pushes and deletion are disabled. Complete
+affected validation and independent review before merging. A single-maintainer
+repository does not require an additional human approval, but the PR and check
+requirements still apply. If master advances, update the branch and validate
+the resulting integration. Do not bypass protection or auto-delete branches.
+
 - Preserve branches used by upstream submissions, including
   [`upstream/01-linux-6.1` for yeradis/crystalhd#9](https://github.com/yeradis/crystalhd/pull/9).
   Do not delete, rewrite or reuse them without the maintainer's explicit
