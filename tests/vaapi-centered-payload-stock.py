@@ -6,7 +6,7 @@ qualify stock compatibility, GPU return, presentation or release quality.
 No external product code, module, firmware or scheduling policy is changed.
 """
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from fractions import Fraction
 import hashlib
 import importlib.util
@@ -163,6 +163,7 @@ def rpc(method,params=None):
     if 'error' in answer:raise RuntimeError('JSONRPC error '+json.dumps(answer))
     return answer['result']
 def pump():
+    if (R/'controller-abort.json').exists():raise RuntimeError('owned controller aborted; release script gates')
     if monitor.abortRequested() or state.get('overflow'):raise RuntimeError('application abort/observer overflow')
     if any(row['event']=='OnError' for row in state['events']):raise RuntimeError('playback error')
     xbmc.sleep(20)
@@ -226,25 +227,58 @@ def parse_rows(raw, reader):
 
 
 def operation_census(rows, interval, pid):
+    """Pinned MBAFF input: 750 originals, exactly two dequeue records each."""
     selected = [row for offset, row in rows if interval['begin'] <= offset < interval['end']]
     require(all(row['pid'] == pid for row in selected), 'foreign PID in source interval')
-    stages, duplicates = {}, {}
+    fields = BINDING + ('surface', 'owner')
+    stages, errors = {}, []
     for stage in ('submit_bind', 'input_sent', 'output_dequeued', 'materialized'):
         entries = [row for row in selected if row['event'] == stage]
-        require(all(row['outcome'] == 0 and all(type(row[k]) is int and row[k] > 0 for k in BINDING)
-                    for row in entries), 'source stage has failed/incomplete binding identity')
-        values = [tuple(row[key] for key in BINDING) for row in entries]
-        stages[stage] = set(values); duplicates[stage] = len(values) - len(stages[stage])
-    source_stages = ('submit_bind', 'input_sent', 'output_dequeued')
-    passed = all(len(stages[key]) == 750 and not duplicates[key] and stages[key] == stages['submit_bind']
-                 for key in source_stages)
-    return {'status': 'PASS' if passed else 'FAIL', 'event_counts': dict(Counter(row['event'] for row in selected)),
+        require(all(all(type(row[k]) is int and row[k] > 0 for k in fields + ('seq',))
+                    for row in entries), 'source stage has incomplete binding/sequence identity')
+        if any(type(row['outcome']) is not int or row['outcome'] != 0 for row in entries):
+            errors.append(stage + ': nonzero or invalid outcome')
+        grouped = defaultdict(list)
+        for row in entries:grouped[tuple(row[k] for k in fields)].append(row)
+        stages[stage] = dict(grouped)
+    originals = set(stages['submit_bind'])
+    if len(originals) != 750:errors.append('require exactly750 distinct original bindings')
+    if len({key[:len(BINDING)] for key in originals}) != len(originals):
+        errors.append('source binding duplicated through different public surface/owner')
+    for index, field in enumerate(BINDING[3:], 3):
+        identities = Counter((key[:3], key[index]) for key in originals)
+        if any(count != 1 for count in identities.values()):
+            errors.append('original ' + field + ' is reused within its decoder lifetime')
+    for stage, multiplicity in (('submit_bind', 1), ('input_sent', 1), ('output_dequeued', 2)):
+        if set(stages[stage]) != originals:errors.append(stage + ': original binding set differs')
+        if any(len(records) != multiplicity for records in stages[stage].values()):
+            errors.append(stage + ': require exactly' + str(multiplicity) + ' records per original')
+    if not set(stages['materialized']) <= originals:
+        errors.append('materialized: binding was not an original submission')
+    if any(len(records) != 1 for records in stages['materialized'].values()):
+        errors.append('materialized: repeated public materialization')
+    identities = [(row['driver_instance'], row['seq']) for row in selected if row['event'] in stages]
+    if len(identities) != len(set(identities)):errors.append('source stages reuse an instance/sequence record')
+    for key in originals:
+        submit, inputs, outputs = (stages[stage].get(key, []) for stage in ('submit_bind', 'input_sent', 'output_dequeued'))
+        if len(submit) != 1 or len(inputs) != 1 or len(outputs) != 2:continue
+        ordered_outputs = sorted(row['seq'] for row in outputs)
+        if not submit[0]['seq'] < inputs[0]['seq'] < ordered_outputs[0] < ordered_outputs[1]:
+            errors.append('binding stage order differs: submit < input < output < output'); break
+        materialized = stages['materialized'].get(key, [])
+        if materialized and not all(ordered_outputs[1] < row['seq'] for row in materialized):
+            errors.append('materialized precedes both output dequeue records'); break
+    return {'status': 'PASS' if not errors else 'FAIL', 'errors': errors,
+            'event_counts': dict(Counter(row['event'] for row in selected)),
             'distinct_binding_stage_counts': {key: len(value) for key, value in stages.items()},
-            'duplicate_binding_stage_records': duplicates,
-            'all_stage_binding_sets_equal': all(value == stages['submit_bind'] for value in stages.values()),
-            'source_metadata_pictures': 750, 'observed_submit_bindings': len(stages['submit_bind']),
+            'binding_multiplicity_histograms': {stage: dict(sorted(Counter(len(v) for v in groups.values()).items()))
+                                               for stage, groups in stages.items()},
+            'all_stage_binding_sets_equal': all(set(value) == originals for value in stages.values()),
+            'source_metadata_pictures': 750, 'observed_submit_bindings': len(originals),
+            'expected_output_dequeues_per_original': 2,
+            'output_record_scope': 'Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.',
             'actual_media_PTS_to_binding': 'NOT_OBSERVED',
-            'scope': 'Exact 750 OWN input/output bindings; materialized counts separate from renderer loss. Synthetic tokens are not source PTS.'}
+            'scope': 'Exact750 original submit/input bindings and1500 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts.'}
 
 
 def main():
@@ -536,6 +570,12 @@ def main():
     except BaseException as error:
         report['errors'].append({'step': 'prepare' if a.prepare_plan else 'execution', 'error': fault(error)})
         if a.prepare_plan:raise
+        if (case / 'profile').is_dir():
+            try:
+                save(case / 'profile/controller-abort.json', {'schema': 1, 'status': 'CONTROLLER_ABORT',
+                    'monotonic_ns': time.monotonic_ns(), 'error': {'type': type(error).__name__, 'message': str(error)[:4096]}})
+            except BaseException as abort_error:
+                report['errors'].append({'step': 'controller-abort-signal', 'error': fault(abort_error)})
     finally:
         if not a.prepare_plan:
             try:

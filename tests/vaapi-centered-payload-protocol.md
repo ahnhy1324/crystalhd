@@ -122,3 +122,12 @@ retirement before independently reading that context's two-slot manifest.
 It preserves a result for failed cases and a live-resource handoff if bounded
 ordinary Quit/verified TERM cannot retire media. It never kills media, changes
 the loaded module, resets the card or changes scheduling priority.
+
+For this pinned MBAFF fixture, a source picture produces two
+`output_dequeued` records. The census requires 750 distinct originals, one
+submit/input each and exactly two output records each, in that order; it does
+not classify the second field as a duplicate picture. The dequeue event occurs
+before field validation, so its default outcome alone is not proof of a valid
+field pair. Matching later public materializations are recorded separately,
+and the payload reader requires successful materialization for its selected
+bindings. These records do not independently measure physical field parity.
