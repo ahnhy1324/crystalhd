@@ -13,6 +13,7 @@ import resource
 import select
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,9 +44,138 @@ SCOPE = ('Original Kodi22RC1/App FFmpeg, OWN centered observer, method0/actual n
          'source-content checkpoints, forward seek, requested Stop and same-PID natural reopen. '
          'Private diagnostics do not qualify normal-backend compatibility, release, actual AVFrame PTS or GPU return.')
 SAMPLE_MODES = ('first-two', 'case2-90-91')
+RENDER_ROUTES = ('va', 'cpu-copy')
+CPU_COPY_PROVIDER = Path('lib/kodi/system/libsse4-x86_64-linux.so')
+CPU_COPY_MOUNT = '/app/' + str(CPU_COPY_PROVIDER)
+MAX_ROUTE_LOG_BYTES = 32 * 1024 * 1024
+KODI_LOG_LINE = re.compile(rb'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} T:([1-9][0-9]*)\s+'
+                           rb'(trace|debug|info|warning|error|critical) <([^>\r\n]+)>: (.*)')
+CPU_COPY_INIT = b'VAAPI output: Initializing ffmpeg postproc'
+CPU_COPY_READY = b'VAAPI::CFFmpegPostproc::Init  - skip deinterlacing'
+CPU_COPY_SCOPE = ('Original Kodi22RC1/App FFmpeg, explicit OWN centered observer; requested Off CPU-copy route. '
+                  'Actual ffmpeg-postproc selection, selected source payloads and ordinary controls are checked. '
+                  'No normal-backend stock compatibility, release, GPU return or post-filter cadence qualification.')
 FRAME_PTS_SCOPE = ('Instrumented original Kodi22RC1/App FFmpeg with an explicit OWN receive-frame observer; '
                    'actual returned-frame metadata joined to OWN active VA bindings. '
                    'No stock compatibility, release, GPU return or scanout qualification.')
+
+
+def validate_render_route(route):
+    require(type(route) is str and route in RENDER_ROUTES, 'missing or invalid frozen render route')
+    return route
+
+
+def render_route_option(prepare, supplied):
+    if prepare:return validate_render_route('va' if supplied is None else supplied)
+    require(supplied is None, '--render-route belongs only to --prepare-plan')
+    return None
+
+
+def render_route_settings(route):
+    validate_render_route(route)
+    if route == 'va':return {'videoplayer.prefervaapirender': 'true'}
+    return {'videoplayer.prefervaapirender': 'false', 'debug.extralogging': 'true',
+            'debug.setextraloglevel': '32768'}
+
+
+def render_route_files(app, route):
+    return [] if validate_render_route(route) == 'va' else [app / CPU_COPY_PROVIDER]
+
+
+def scenario_scope(route, observe_frame_pts):
+    validate_frame_pts_mode(observe_frame_pts)
+    if validate_render_route(route) == 'cpu-copy':return CPU_COPY_SCOPE
+    return FRAME_PTS_SCOPE if observe_frame_pts else SCOPE
+
+
+def qualify_cpu_copy_settings(settings):
+    require(type(settings) is dict and
+            type(settings.get('videoplayer.prefervaapirender')) is bool and
+            settings['videoplayer.prefervaapirender'] is False and
+            type(settings.get('debug.extralogging')) is bool and settings['debug.extralogging'] is True and
+            type(settings.get('debug.setextraloglevel')) is list and
+            len(settings['debug.setextraloglevel']) == 1 and
+            type(settings['debug.setextraloglevel'][0]) is int and settings['debug.setextraloglevel'][0] == 32768,
+            'actual CPU-copy/logcomponent settings differ from frozen route')
+    return settings
+
+
+def cpu_copy_mapping(pid, app, pins):
+    """Verify the original SIMD copy provider at a held identity checkpoint."""
+    expected = pins[str(app / CPU_COPY_PROVIDER)]; proc = Path('/proc', str(pid)); found = set()
+    for line in (proc / 'maps').read_text().splitlines():
+        parts = line.split(None, 5)
+        if len(parts) == 6 and parts[5] == CPU_COPY_MOUNT:found.add((parts[3], int(parts[4])))
+    require(len(found) == 1, 'original CPU-copy provider mapping missing or ambiguous')
+    device, inode = next(iter(found)); target = proc / 'root' / CPU_COPY_MOUNT.lstrip('/'); st = target.stat()
+    require(st.st_ino == inode and (os.major(st.st_dev), os.minor(st.st_dev)) ==
+            tuple(int(part, 16) for part in device.split(':')) and digest(target) == expected,
+            'mapped original CPU-copy provider differs from frozen artifact')
+    return {'role': 'original-cpu-copy-library', 'path': CPU_COPY_MOUNT,
+            'device': device, 'inode': inode, 'sha256': expected}
+
+
+def read_route_log(path):
+    """Bound a regular fresh-profile log; keep appends outside a frozen prefix."""
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW), 'rb') as stream:
+        identity = os.fstat(stream.fileno())
+        require(stat.S_ISREG(identity.st_mode) and 0 <= identity.st_size <= MAX_ROUTE_LOG_BYTES,
+                'bounded regular original route log required')
+        raw = stream.read(MAX_ROUTE_LOG_BYTES + 1)
+    require(len(raw) <= MAX_ROUTE_LOG_BYTES, 'original route log exceeded bound')
+    return raw, {'device': identity.st_dev, 'inode': identity.st_ino}
+
+
+def route_log_start(path, owned_pid):
+    raw, identity = read_route_log(path)
+    require(type(owned_pid) is int and owned_pid > 0, 'owned route-log PID must be positive integer')
+    first = KODI_LOG_LINE.fullmatch(raw.split(b'\n', 1)[0].removeprefix(b'\xef\xbb\xbf'))
+    require(first is not None and int(first[1]) == owned_pid,
+            'original route log startup thread differs from owned application PID')
+    begin = raw.rfind(b'\n') + 1
+    require(begin > 0, 'original route log has no complete startup record')
+    return dict(identity, begin=begin, owned_pid=owned_pid)
+
+
+def audit_cpu_copy_route_log(raw, begin, end, owned_pid):
+    """Require completed original Off CPU-copy initialization in one play."""
+    require(type(raw) is bytes and len(raw) <= MAX_ROUTE_LOG_BYTES, 'bounded original route-log bytes required')
+    require(type(begin) is int and type(end) is int and 0 < begin < end <= len(raw) and
+            raw[begin - 1:begin] == raw[end - 1:end] == b'\n', 'route-log window is incomplete or misaligned')
+    require(type(owned_pid) is int and owned_pid > 0, 'owned route-log PID must be positive integer')
+    first = KODI_LOG_LINE.fullmatch(raw.split(b'\n', 1)[0].removeprefix(b'\xef\xbb\xbf'))
+    require(first is not None and int(first[1]) == owned_pid,
+            'original route log startup thread differs from owned application PID')
+    pending, pairs = defaultdict(list), []
+    offset = begin
+    for line in raw[begin:end].splitlines(keepends=True):
+        match = KODI_LOG_LINE.fullmatch(line[:-1])
+        if match:
+            tid, level, component, message = int(match[1]), match[2], match[3], match[4]
+            reject = (message.startswith((b'VAAPI output: Initializing skip postproc',
+                        b'VAAPI output: Initializing vaapi postproc', b'VAAPI output: Postproc preinit failed',
+                        b'VAAPI/ffpp error:')) or
+                      (message.startswith(b'VAAPI::CFFmpegPostproc::Init') and message != CPU_COPY_READY))
+            require(not reject, 'original route log reports another postproc path or CPU-copy failure')
+            if message in (CPU_COPY_INIT, CPU_COPY_READY):
+                require(level == b'debug' and component == b'video', 'CPU-copy marker lacks original video debug context')
+                if message == CPU_COPY_INIT:pending[tid].append(offset)
+                else:
+                    require(pending[tid], 'CPU-copy completion lacks its same-thread initialization')
+                    pairs.append({'tid': tid, 'initializing_offset': pending[tid].pop(0), 'completed_offset': offset})
+        offset += len(line)
+    require(pairs and not any(pending.values()), 'one complete actual CPU-copy initialization is required in each play')
+    return {'status': 'PASS', 'render_route': 'cpu-copy', 'method': 0, 'actual_deintmethod': 'none',
+            'owned_pid': owned_pid, 'begin': begin, 'end': end, 'completed_initializations': pairs,
+            'scope': 'Original same-process log records explicit ffmpeg postproc and completed Off CPU-copy Init; worker IDs are thread IDs.'}
+
+
+def audit_cpu_copy_route_file(path, started):
+    raw, identity = read_route_log(path)
+    require(identity == {key: started[key] for key in ('device', 'inode')}, 'original route log identity changed')
+    end = raw.rfind(b'\n') + 1
+    return dict(audit_cpu_copy_route_log(raw, started['begin'], end, started['owned_pid']),
+                path=str(path), file_identity=identity)
 
 
 def frame_pts_option(prepare, supplied):
@@ -219,14 +349,28 @@ def source_metadata(document):
             'source_pts_ticks': ticks, 'actual_media_PTS_to_VA_binding': 'NOT_OBSERVED'}
 
 
-def application_script():
+def application_script(render_route='va'):
+    validate_render_route(render_route)
     marker = '\ntry:\n    for cycle in range(1,CYCLES+1):'
     require(S.SCRIPT.count(marker) == 1, 'qualified application helper boundary changed')
     prefix = S.SCRIPT.split(marker)[0].replace('__CYCLES__', '1')
     callback = "    def onPlayBackError(self):event('OnError')"
     require(prefix.count(callback) == 1, 'qualified Player callback boundary changed')
     prefix = prefix.replace(callback, callback + "\n    def onPlayBackSeek(self,time,seekOffset):event('OnSeek',time_ms=time,seek_offset_ms=seekOffset)")
-    return prefix.replace('centered-progress.json', 'centered-controls-progress.json') + CONTROLS
+    controls = CONTROLS
+    if render_route == 'cpu-copy':
+        anchor = 'initial_pause_for_identity=True)'
+        require(controls.count(anchor) == 2, 'qualified paused route identity boundary changed')
+        controls = CPU_COPY_SETTINGS_SCRIPT + controls.replace(anchor,
+            'initial_pause_for_identity=True,render_route_settings=render_route_settings())')
+    return prefix.replace('centered-progress.json', 'centered-controls-progress.json') + controls
+
+
+CPU_COPY_SETTINGS_SCRIPT = r'''
+def render_route_settings():
+    return {key:rpc('Settings.GetSettingValue',{'setting':key})['value'] for key in
+        ('videoplayer.prefervaapirender','debug.extralogging','debug.setextraloglevel')}
+'''
 
 
 CONTROLS = r'''
@@ -431,17 +575,20 @@ def main():
     p.add_argument('--case-root', type=Path, default=ROOT); p.add_argument('--own-source', type=Path); p.add_argument('--own-revision')
     p.add_argument('--sample-mode', choices=SAMPLE_MODES, help='prepare only; default first-two')
     p.add_argument('--observe-frame-pts', action='store_true', help='prepare only; explicit OWN receive-frame diagnostic preload')
+    p.add_argument('--render-route', choices=RENDER_ROUTES, help='prepare only; default va, explicit cpu-copy requires original postproc evidence')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
     if a.prepare_plan and (a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '')):p.error('prepare needs own source/full revision')
     if a.execute and (a.own_source is not None or a.own_revision is not None or a.sample_mode is not None):p.error('source/revision/sample-mode belong to preparation')
     sample_mode = sample_option(a.prepare_plan, a.sample_mode)
     observe_frame_pts = frame_pts_option(a.prepare_plan, a.observe_frame_pts)
+    render_route = render_route_option(a.prepare_plan, a.render_route)
     case = a.case_root.resolve() / a.case
     if a.prepare_plan:require(not a.plan.exists() and not case.exists(), 'fresh plan and case paths required')
     else:case.mkdir(mode=0o700)
     report = {'schema': 1, 'case': a.case, 'status': 'FAIL', 'scope': SCOPE, 'errors': [], 'identity_checks': [],
               'captures': [], 'payload_audits': [], 'source_census': {}, 'intervals': {}, 'retirements': [],
+              'render_route_audits': [],
               'thermal_observations': [], 'controls_status': 'NOT_RUN', 'application_exit': None, 'live_resource_handoff': None}
     G = P = C = before = before_lean = kodi = kid = pidfd = weston = runtime = endpoint = udp = None
     files = []; audited = set(); due = 0; since = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
@@ -477,6 +624,7 @@ def main():
         require(digest(G.ROUTE_PATH) == G.ROUTE_SHA, 'qualified original App route changed')
         route = json.loads(G.ROUTE_PATH.read_text()); P = load('centered_controls_payload_reader', PAYLOAD_READER)
         C = load('centered_controls_content_reader', READER_PATH)
+        app = Path(route['client']['app_directory'])
         platform = G.OLD / 'flatpak-user/runtime/org.freedesktop.Platform/x86_64/26.08/e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491/files'
         gl = G.OLD / 'flatpak-user/runtime/org.freedesktop.Platform.GL.default/x86_64/26.08/25dbbb0cd3a63b2ef8a24ee948ad43998960f3e2bea713263742cc076840aec2/files'
         metadata = source_metadata(json.loads(PROBE.read_text())); preparation = json.loads(MANIFEST.read_text())
@@ -485,14 +633,14 @@ def main():
         if a.prepare_plan:
             source = a.own_source.resolve(strict=True); clean_source(source, a.own_revision)
             require(Path(__file__).resolve() == source / 'tests/vaapi-centered-controls-stock.py', 'runner outside frozen source')
-            pins = {str(f): digest(f) for f in frozen_files(source, G, platform, observe_frame_pts)}
+            pins = {str(f): digest(f) for f in frozen_files(source, G, platform, observe_frame_pts) + render_route_files(app, render_route)}
             require(pins[str(FIXTURE)] == FIXTURE_SHA, 'canonical input changed')
             for path, expected in route['client']['pins'].items():
                 require(digest(path) == expected, 'original App/FFmpeg changed'); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_CENTERED_CONTROLS', 'revision': a.own_revision, 'source_directory': str(source),
                           'case': a.case, 'case_directory': str(case), 'pins': pins, 'source_metadata': metadata,
-                          'sample_mode': sample_mode, 'observe_frame_pts': observe_frame_pts,
-                          'platform_directory': str(platform), 'gl_directory': str(gl), 'scope': FRAME_PTS_SCOPE if observe_frame_pts else SCOPE,
+                          'sample_mode': sample_mode, 'observe_frame_pts': observe_frame_pts, 'render_route': render_route,
+                          'platform_directory': str(platform), 'gl_directory': str(gl), 'scope': scenario_scope(render_route, observe_frame_pts),
                           'method': 0, 'actual_deintmethod': 'none', 'centered': S.CENTERED, 'observer_lifetimes': 3,
                           'natural_originals': 180, 'dequeues_per_original': 1, 'seek_seconds': 3,
                           'initial_source_window': ['0', '5/2'], 'seek_source_window': ['89/30', '7/2'],
@@ -501,13 +649,14 @@ def main():
         plan = json.loads(a.plan.read_text()); G.SOURCE = Path(plan['source_directory']).resolve(strict=True); G.REVISION = plan['revision']
         sample_mode = validate_sample_mode(plan.get('sample_mode'))
         observe_frame_pts = validate_frame_pts_mode(plan.get('observe_frame_pts'))
+        render_route = validate_render_route(plan.get('render_route'))
         require(plan['status'] == 'FROZEN_CENTERED_CONTROLS' and plan['case'] == a.case and plan['case_directory'] == str(case), 'frozen case differs')
         require(plan['method'] == 0 and plan['actual_deintmethod'] == 'none' and plan['centered'] == S.CENTERED and
                 plan['observer_lifetimes'] == 3 and plan['natural_originals'] == 180 and plan['dequeues_per_original'] == 1 and
                 plan['seek_seconds'] == 3 and plan['paused_content_clock_tolerance'] == '1/2', 'frozen control contract differs')
         clean_source(G.SOURCE, G.REVISION)
         require(Path(__file__).resolve() == G.SOURCE / 'tests/vaapi-centered-controls-stock.py', 'executed runner outside frozen source')
-        require(all(str(f) in plan['pins'] for f in frozen_files(G.SOURCE, G, platform, observe_frame_pts)), 'required frozen artifact missing')
+        require(all(str(f) in plan['pins'] for f in frozen_files(G.SOURCE, G, platform, observe_frame_pts) + render_route_files(app, render_route)), 'required frozen artifact missing')
         require(all(plan['pins'].get(path) == expected for path, expected in route['client']['pins'].items()), 'original App pins differ')
         for path, expected in plan['pins'].items():require(digest(path) == expected, 'frozen artifact changed: ' + path)
         require(plan['source_metadata'] == metadata and plan['pins'][str(FIXTURE)] == FIXTURE_SHA and
@@ -516,7 +665,8 @@ def main():
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         G.VA = G.SOURCE / 'filters/vaapi/centered-observer/crystalhd_drv_video.so'; G.DIL = G.SOURCE / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
         report.update(plan=str(a.plan), revision=G.REVISION, source_metadata=metadata, pins=plan['pins'], scheduling=plan['scheduling'],
-                      sample_mode=sample_mode, observe_frame_pts=observe_frame_pts, scope=FRAME_PTS_SCOPE if observe_frame_pts else SCOPE)
+                      sample_mode=sample_mode, observe_frame_pts=observe_frame_pts, render_route=render_route,
+                      scope=scenario_scope(render_route, observe_frame_pts))
         before = load('centered_controls_initial_boundary', G.BOUNDARY).guard(); report['before'] = before
         require(before['debug_rows'] == 85 and before['debug_sha256'] ==
                 '4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4', 'initial debug policy differs')
@@ -525,14 +675,15 @@ def main():
         before_lean = {k: before[k] for k in S.POLL_KEYS}; health()
         profile, run, payload = case / 'profile', case / 'run', case / 'payload'
         profile.mkdir(); run.mkdir(); payload.mkdir(mode=0o700); (run / 'deps').mkdir()
-        (run / 'controls.py').write_text(application_script())
+        (run / 'controls.py').write_text(application_script(render_route))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reserve:
             reserve.bind(('127.0.0.1', 0)); udp = reserve.getsockname()[1]
         settings = {'services.webserver': 'false', 'services.esenabled': 'true', 'services.esport': str(udp),
                     'services.esportrange': '1', 'services.esallinterfaces': 'false', 'addons.unknownsources': 'true',
                     'addons.updatemode': '2', 'screensaver.mode': '', 'weather.addon': '', 'lookandfeel.soundskin': '',
-                    'videoplayer.usevaapi': 'true', 'videoplayer.usevaapih264': 'true', 'videoplayer.prefervaapirender': 'true',
+                    'videoplayer.usevaapi': 'true', 'videoplayer.usevaapih264': 'true',
                     'videoplayer.useprimedecoder': 'false', 'videoplayer.useprimedecoderforhw': 'false'}
+        settings.update(render_route_settings(render_route))
         userdata = profile / 'userdata'; userdata.mkdir()
         xml = '<settings version="2">' + ''.join('<setting id="' + escape(k) + '">' + escape(v) + '</setting>' for k, v in settings.items())
         xml += '<defaultvideosettings><interlacemethod>0</interlacemethod><scalingmethod>0</scalingmethod><viewmode>0</viewmode><zoomamount>1</zoomamount><pixelratio>1</pixelratio><verticalshift>0</verticalshift></defaultvideosettings></settings>'
@@ -574,6 +725,9 @@ def main():
                         '/usr/lib/x86_64-linux-gnu/libavutil.so.60.26.103': str(platform / 'lib/x86_64-linux-gnu/libavutil.so.60.26.103')}
         require(S.lean_snapshot() == before_lean and not G.owned_fds(kid['pid']), 'decoder not idle before controls')
         report['intervals']['interrupted'] = {'begin': (case / 'kodi.stdout').stat().st_size, 'begin_ns': time.monotonic_ns()}
+        if render_route == 'cpu-copy':
+            route_log = profile / 'temp/kodi.log'
+            report['route_log_intervals'] = {'interrupted': route_log_start(route_log, kid['pid'])}
         subprocess.run(['/usr/bin/kodi-send', '--host=127.0.0.1', '--port=' + str(udp), '--action=RunScript(/probe/controls.py)'],
                        check=True, stdout=subprocess.DEVNULL, timeout=5)
         def gate(name):save(profile / (name + '.ok'), {'verified': True})
@@ -590,6 +744,9 @@ def main():
                     labels['Player.Process(deintmethod)'] == 'none' and value['source'] == '/fixture.mp4', 'actual stock VA Off route differs')
             fds = G.owned_fds(kid['pid']); require(any(f['target'] == '/dev/crystalhd' for f in fds), 'hardware decoder FD absent')
             report['identity_checks'].append({'info': labels, 'owned_fds': fds, 'same_app': same()})
+            if render_route == 'cpu-copy':
+                report['identity_checks'][-1].update(render_route_settings=qualify_cpu_copy_settings(value.get('render_route_settings')),
+                    cpu_copy_provider=cpu_copy_mapping(kid['pid'], app, plan['pins']))
         def retire(name):
             samples = []
             def idle():
@@ -622,6 +779,10 @@ def main():
                 require(result['status'] == 'PASS', 'source-bound payload audit failed: ' + json.dumps(result)); audited.add(key)
             census = source_census(rows, interval, kid['pid'], name == 'reopen'); report['source_census'][name] = census
             require(census['status'] == 'PASS', 'source binding census failed: ' + json.dumps(census))
+            if render_route == 'cpu-copy':
+                route_audit = audit_cpu_copy_route_file(route_log, report['route_log_intervals'][name])
+                report['render_route_audits'].append({'phase': name, 'audit': route_audit})
+                save(case / (name + '-cpu-copy-route.json'), route_audit)
             if name == 'reopen' and sample_mode == 'case2-90-91':qualify_target_reopen(census)
             if name == 'interrupted':
                 seeks = [r for r in progress['steps'] if r['action'] == 'seek-forward']; require(len(seeks) == 1, 'seek record missing')
@@ -675,7 +836,9 @@ def main():
                 require(value['active_players'] == [], 'requested Stop left active player'); retire('interrupted'); audit_retired('interrupted', value); gate('stop-retired')
             elif phase == 'await-reopen':
                 require(S.lean_snapshot() == before_lean and not G.owned_fds(kid['pid']), 'decoder not idle before same-PID reopen')
-                report['intervals']['reopen'] = {'begin': (case / 'kodi.stdout').stat().st_size, 'begin_ns': time.monotonic_ns()}; gate('reopen')
+                report['intervals']['reopen'] = {'begin': (case / 'kodi.stdout').stat().st_size, 'begin_ns': time.monotonic_ns()}
+                if render_route == 'cpu-copy':report['route_log_intervals']['reopen'] = route_log_start(route_log, kid['pid'])
+                gate('reopen')
             elif phase == 'await-reopen-identity':identity(value); gate('reopen-identity')
             elif phase == 'await-reopen-retirement':
                 require(value['active_players'] == [], 'natural EOF left active player'); retire('reopen'); audit_retired('reopen', value); gate('reopen-retired')
@@ -769,6 +932,13 @@ def main():
                     all(r['status'] == 'PASS' for r in report['source_census'].values()) and report['application_exit'] == 0 and
                     report.get('boundary_equal') and report.get('kernel_exit') == 0 and not report['errors'] and report['live_resource_handoff'] is None)
                 if observe_frame_pts:passed = passed and report.get('frame_pts_audit', {}).get('status') == 'PASS'
+                if render_route == 'cpu-copy':
+                    route_passed = (len(report['render_route_audits']) == 2 and
+                        {record['phase'] for record in report['render_route_audits']} == {'interrupted', 'reopen'} and
+                        all(record['audit']['status'] == 'PASS' for record in report['render_route_audits']))
+                    passed = passed and route_passed
+                    report.update(actual_cpu_copy_route='OBSERVED_FROM_ORIGINAL_LOGS' if route_passed else 'NOT_QUALIFIED',
+                        cpu_copy_pixel_scope='Full NV12 snapshots are before client CPU copy; downstream proof is selected BGRA source-content checkpoints only.')
                 pts_status = 'OBSERVED_BY_OWN_INSTRUMENTATION' if report.get('frame_pts_audit', {}).get('status') == 'PASS' else 'NOT_OBSERVED'
                 report.update(status='PASS' if passed else 'FAIL', actual_media_PTS_to_VA_binding=pts_status,
                     actual_media_PTS_clock_comparison=report.get('frame_pts_audit', {}).get('selected_clock_status', 'NOT_OBSERVED'), gpu_reader_return='NOT_OBSERVED',
