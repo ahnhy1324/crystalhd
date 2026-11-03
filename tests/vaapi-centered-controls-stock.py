@@ -39,6 +39,59 @@ ORIGIN = ROOT / 'preparation-origin.json'
 SCOPE = ('Original Kodi22RC1/App FFmpeg, OWN centered observer, method0/actual none; '
          'source-content checkpoints, forward seek, requested Stop and same-PID natural reopen. '
          'Private diagnostics do not qualify normal-backend compatibility, release, actual AVFrame PTS or GPU return.')
+SAMPLE_MODES = ('first-two', 'case2-90-91')
+
+
+def validate_sample_mode(mode):
+    require(mode in SAMPLE_MODES, 'unknown or missing frozen sample mode')
+    return mode
+
+
+def sample_option(prepare, supplied):
+    if prepare:return validate_sample_mode('first-two' if supplied is None else supplied)
+    require(supplied is None, '--sample-mode belongs only to --prepare-plan')
+    return None
+
+
+def sample_environment(mode):
+    validate_sample_mode(mode)
+    return [] if mode == 'first-two' else ['--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT', mode]
+
+
+def validate_selection(document, mode):
+    validate_sample_mode(mode)
+    if mode == 'case2-90-91':require(document.get('selection') == mode, 'target selection differs from frozen mode')
+    else:require('selection' not in document, 'baseline unexpectedly carries a target selection')
+
+
+def audit_payload_for_mode(reader, manifest, trace, mode):
+    validate_sample_mode(mode)
+    if mode == 'case2-90-91':return reader.audit_payload(manifest, trace, required_targets=(90, 91))
+    return reader.audit_payload(manifest, trace)
+
+
+def audit_target_phase(reader, records, seek_request_ns, stop_request_ns):
+    require(type(seek_request_ns) is int and type(stop_request_ns) is int and
+            0 < seek_request_ns < stop_request_ns, 'target seek/Stop request interval differs')
+    content = [item for record in records for item in record['audit']['selected_source_bindings']]
+    require(len(content) == 2 and Counter(item['source_ordinal'] for item in content) == Counter((90, 91)),
+            'interrupted play needs exactly two source-proven target bindings90/91')
+    windows = []
+    for record in records:
+        require(record['audit']['status'] == 'PASS', 'target payload is not independently qualified')
+        result = reader.audit_target_window(record['audit'], record['trace_prefix'], seek_request_ns, stop_request_ns)
+        windows.append({'manifest': record['manifest'], 'audit': result})
+        require(result.get('status') == 'PASS', 'target binding timing audit failed: ' + json.dumps(result))
+    return {'status': 'PASS', 'selected_target_bindings': 2, 'source_ordinals': [90, 91],
+            'seek_request_ns': seek_request_ns, 'stop_request_ns': stop_request_ns, 'window_audits': windows,
+            'actual_media_PTS_to_VA_binding': 'NOT_OBSERVED'}
+
+
+def qualify_target_reopen(census):
+    require(census['status'] == 'PASS' and census['complete_natural_population_required'] is True and
+            all(census['binding_stage_counts'].get(stage) == 180 for stage in
+                ('submit_bind', 'input_sent', 'output_dequeued')),
+            'target natural reopen requires180 original submit/input/output bindings')
 
 
 def clock_seconds(value):
@@ -231,13 +284,15 @@ def source_census(rows, interval, pid, complete):
             'actual_media_PTS_to_VA_binding': 'NOT_OBSERVED'}
 
 
-def qualify_statuses(receipts, audited, pid):
+def qualify_statuses(receipts, audited, pid, sample_mode='first-two'):
     """Never hide a failed selected snapshot behind another generation's PASS."""
+    validate_sample_mode(sample_mode)
     seen, eligible, result = set(), set(), []
     # Rejected-candidate counters and an unfilled group are distinct from
     # failed snapshots. Values are the private observer's Reject enum.
     allowed_mask = 2 | 4 | 128 | 512
     for row in receipts:
+        validate_selection(row, sample_mode)
         key = (row['driver_instance'], row['context'], row['generation'])
         require(row['pid'] == pid and key not in seen, 'status receipt PID/lifetime duplicated')
         seen.add(key)
@@ -296,10 +351,12 @@ def main():
     modes.add_argument('--prepare-plan', action='store_true'); modes.add_argument('--execute', action='store_true')
     p.add_argument('--plan', type=Path, required=True); p.add_argument('--case', default='stock-centered-controls-01')
     p.add_argument('--case-root', type=Path, default=ROOT); p.add_argument('--own-source', type=Path); p.add_argument('--own-revision')
+    p.add_argument('--sample-mode', choices=SAMPLE_MODES, help='prepare only; default first-two')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
     if a.prepare_plan and (a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '')):p.error('prepare needs own source/full revision')
-    if a.execute and (a.own_source is not None or a.own_revision is not None):p.error('source/revision belong to preparation')
+    if a.execute and (a.own_source is not None or a.own_revision is not None or a.sample_mode is not None):p.error('source/revision/sample-mode belong to preparation')
+    sample_mode = sample_option(a.prepare_plan, a.sample_mode)
     case = a.case_root.resolve() / a.case
     if a.prepare_plan:require(not a.plan.exists() and not case.exists(), 'fresh plan and case paths required')
     else:case.mkdir(mode=0o700)
@@ -354,6 +411,7 @@ def main():
                 require(digest(path) == expected, 'original App/FFmpeg changed'); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_CENTERED_CONTROLS', 'revision': a.own_revision, 'source_directory': str(source),
                           'case': a.case, 'case_directory': str(case), 'pins': pins, 'source_metadata': metadata,
+                          'sample_mode': sample_mode,
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'scope': SCOPE,
                           'method': 0, 'actual_deintmethod': 'none', 'centered': S.CENTERED, 'observer_lifetimes': 3,
                           'natural_originals': 180, 'dequeues_per_original': 1, 'seek_seconds': 3,
@@ -361,6 +419,7 @@ def main():
                           'paused_content_clock_tolerance': '1/2', 'scheduling': 'ordinary inherited scheduling'})
             print('FROZEN_CENTERED_CONTROLS ' + str(a.plan)); return 0
         plan = json.loads(a.plan.read_text()); G.SOURCE = Path(plan['source_directory']).resolve(strict=True); G.REVISION = plan['revision']
+        sample_mode = validate_sample_mode(plan.get('sample_mode'))
         require(plan['status'] == 'FROZEN_CENTERED_CONTROLS' and plan['case'] == a.case and plan['case_directory'] == str(case), 'frozen case differs')
         require(plan['method'] == 0 and plan['actual_deintmethod'] == 'none' and plan['centered'] == S.CENTERED and
                 plan['observer_lifetimes'] == 3 and plan['natural_originals'] == 180 and plan['dequeues_per_original'] == 1 and
@@ -375,7 +434,7 @@ def main():
         require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'owned shutdown requires pidfds')
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         G.VA = G.SOURCE / 'filters/vaapi/centered-observer/crystalhd_drv_video.so'; G.DIL = G.SOURCE / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
-        report.update(plan=str(a.plan), revision=G.REVISION, source_metadata=metadata, pins=plan['pins'], scheduling=plan['scheduling'])
+        report.update(plan=str(a.plan), revision=G.REVISION, source_metadata=metadata, pins=plan['pins'], scheduling=plan['scheduling'], sample_mode=sample_mode)
         before = load('centered_controls_initial_boundary', G.BOUNDARY).guard(); report['before'] = before
         require(before['debug_rows'] == 85 and before['debug_sha256'] ==
                 '4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4', 'initial debug policy differs')
@@ -410,7 +469,7 @@ def main():
         wait(lambda: (runtime / sock).exists() if weston.poll() is None else False, 8, 'owned Weston readiness')
         command = G.namespace(Path(route['client']['app_directory']), platform, gl, case, runtime, sock, FIXTURE)
         at = command.index('--'); command[at:at] = ['--bind', str(payload), '/payload',
-            '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload', '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', S.CENTERED]
+            '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload', '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', S.CENTERED] + sample_environment(sample_mode)
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff'); save(case / 'command.json', command)
         log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -463,6 +522,7 @@ def main():
             new = []
             for path in sorted(payload.glob('centered-payload-*.json')):
                 doc = json.loads(P.read_regular(path, P.MAX_MANIFEST_BYTES), object_pairs_hook=P.strict_object)
+                validate_selection(doc, sample_mode)
                 require(doc['pid'] == kid['pid'] and len(doc['slots']) == 2, 'manifest PID/slot count differs')
                 b = doc['slots'][0]['binding']; key = (doc['driver_instance'], b['context'], b['generation'])
                 if key not in audited:new.append((path, doc, key))
@@ -474,14 +534,23 @@ def main():
                     submits = [offset for offset, r in rows if r['pid'] == kid['pid'] and r['driver_instance'] == key[0]
                                and r['event'] == 'submit_bind' and all(r[k] == b[k] for k in P.BINDING_KEYS)]
                     require(len(submits) == 1 and interval['begin'] <= submits[0] < interval['end'], 'payload belongs to another play interval')
-                result = C.audit_payload(path, trace)
+                result = audit_payload_for_mode(C, path, trace, sample_mode)
                 report['payload_audits'].append({'phase': name, 'manifest': str(path), 'trace_prefix': str(trace), 'audit': result})
                 save(case / ('payload-audit-' + str(len(report['payload_audits'])) + '.json'), result)
                 require(result['status'] == 'PASS', 'source-bound payload audit failed: ' + json.dumps(result)); audited.add(key)
             census = source_census(rows, interval, kid['pid'], name == 'reopen'); report['source_census'][name] = census
             require(census['status'] == 'PASS', 'source binding census failed: ' + json.dumps(census))
+            if name == 'reopen' and sample_mode == 'case2-90-91':qualify_target_reopen(census)
             if name == 'interrupted':
                 seeks = [r for r in progress['steps'] if r['action'] == 'seek-forward']; require(len(seeks) == 1, 'seek record missing')
+                if sample_mode == 'case2-90-91':
+                    stops = [r for r in progress['steps'] if r['action'] == 'stop']; require(len(stops) == 1, 'requested Stop record missing')
+                    selected = [r for r in report['payload_audits'] if r['phase'] == name]
+                    target = audit_target_phase(C, selected, seeks[0]['begin_ns'], stops[0]['begin_ns'])
+                    report['seek_target_window_audit'] = target; save(case / 'seek-target-window-audit.json', target)
+                    report['seek_target_full_NV12_samples'] = 2
+                    report['seek_target_full_NV12_scope'] = 'SOURCE_PROVEN90/91; submit/materialized/successfulSync after seek and before requested Stop'
+                    return
                 count = 0
                 for record in report['payload_audits']:
                     if record['phase'] != name:continue
@@ -587,8 +656,9 @@ def main():
                         if line.startswith(b'{"schema":"crystalhd-centered-payload-status-v1"')]
                     require(len(report['payload_status_receipts']) <= 16 and all(r['pid'] == kid['pid'] and r['after_driver_unlock'] is True
                             for r in report['payload_status_receipts']), 'bounded status receipt identity differs')
+                    for receipt in report['payload_status_receipts']:validate_selection(receipt, sample_mode)
                     if report['controls_status'] == 'PASS':
-                        report['payload_status_classifications'] = qualify_statuses(report['payload_status_receipts'], audited, kid['pid'])
+                        report['payload_status_classifications'] = qualify_statuses(report['payload_status_receipts'], audited, kid['pid'], sample_mode)
                         rows = S.parse_rows(raw, P); intervals = list(report['intervals'].values())
                         require(all(r['pid'] == kid['pid'] for _, r in rows), 'foreign trace PID')
                         for instance in {r['driver_instance'] for _, r in rows}:P.trace_index([r for _, r in rows], kid['pid'], instance)

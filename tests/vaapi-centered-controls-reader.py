@@ -24,6 +24,8 @@ B = load('centered_public_content_barcode', DIRECTORY / 'native-picture-fixture.
 P = load('centered_payload_content_reader', DIRECTORY / 'vaapi-centered-payload-reader.py')
 SOURCE_CASE, SOURCE_FRAMES = 2, 180
 WIDTH, HEIGHT = 1920, 1080
+TARGET_SELECTION = 'case2-90-91'
+TARGETS = (90, 91)
 SCOPE = ('Observed barcode content -> prepared fixture ordinal/PTS only; '
          'actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED.')
 
@@ -73,7 +75,7 @@ def audit_capture(path):
         return {'status': 'FAIL', 'error': str(error), 'scope': SCOPE}
 
 
-def audit_payload(manifest_path, trace_path):
+def audit_payload(manifest_path, trace_path, required_targets=None):
     """Join selected OWN bindings to content, preserving the full payload gate."""
     base = P.audit(manifest_path, trace_path)
     if base.get('status') != 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD':
@@ -81,6 +83,13 @@ def audit_payload(manifest_path, trace_path):
     try:
         manifest_path = Path(manifest_path)
         doc = json.loads(P.read_regular(manifest_path, P.MAX_MANIFEST_BYTES), object_pairs_hook=P.strict_object)
+        if required_targets is not None:
+            require(type(required_targets) in (tuple, list) and
+                    tuple(required_targets) == TARGETS and
+                    all(type(value) is int for value in required_targets),
+                    'only the frozen case2 targets (90,91) are supported')
+            require(doc.get('selection') == TARGET_SELECTION,
+                    'manifest must explicitly name case2-90-91 selection')
         selected, seen = [], set()
         for slot in doc['slots']:
             ordinals = {}
@@ -96,9 +105,97 @@ def audit_payload(manifest_path, trace_path):
             require(ordinal not in seen, 'distinct selected OWN bindings repeat source content')
             seen.add(ordinal)
             selected.append(dict(binding=slot['binding'], stage_ordinals=ordinals, **content(ordinal)))
-        return {'status': 'PASS', 'payload_audit': base, 'selected_source_bindings': selected, 'scope': SCOPE}
+        result = {'status': 'PASS', 'payload_audit': base,
+                  'selected_source_bindings': selected, 'scope': SCOPE}
+        if required_targets is not None:
+            require(tuple(row['source_ordinal'] for row in selected) == TARGETS,
+                    'selected decoded source contents must be exactly (90,91)')
+            result.update(selection=TARGET_SELECTION, required_targets=list(TARGETS))
+        return result
     except (ValueError, OSError, KeyError, TypeError) as error:
         return {'status': 'FAIL', 'error': str(error), 'payload_audit': base, 'scope': SCOPE}
+
+
+def audit_target_window(result, trace_path, seek_request_ns, stop_request_ns):
+    """Join fixed source content to exact OWN events within a control window.
+
+    Bounds are monotonic request times, not media PTS. The full source binding
+    must submit, materialize and successfully sync after the seek request and
+    before requested Stop. Nearby timestamps or VA submission ordinals never
+    stand in for decoded barcode identity.
+    """
+    try:
+        require(type(result) is dict and result.get('status') == 'PASS' and
+                result.get('selection') == TARGET_SELECTION and
+                result.get('required_targets') == list(TARGETS),
+                'target window requires a passing explicit case2-90-91 content audit')
+        base = P.object_value(result.get('payload_audit'), 'payload_audit')
+        require(base.get('status') == 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD' and
+                base.get('schema') in P.SCHEMAS,
+                'target window requires the passing full payload gate')
+        begin = P.integer(seek_request_ns, 'seek_request_ns', 1)
+        end = P.integer(stop_request_ns, 'stop_request_ns', 1)
+        require(begin < end, 'seek request must precede requested Stop')
+        pid = P.integer(base.get('pid'), 'pid', 1)
+        instance = P.integer(base.get('driver_instance'), 'driver_instance', 1)
+        publication = P.object_value(base.get('publication'), 'publication')
+        require(publication.get('after_driver_unlock') is True and
+                publication.get('all_slots_frozen') is True,
+                'target payload publication is not unlocked/frozen')
+        rows = P.trace_index(P.parse_trace(P.read_regular(trace_path, P.MAX_TRACE_BYTES)), pid, instance)
+        boundary = P.publication_boundary(base['schema'], publication, rows)
+        selected = result.get('selected_source_bindings')
+        observations = base.get('observations')
+        require(type(selected) is list and len(selected) == 2 and
+                type(observations) is list and len(observations) == 2 and
+                all(type(row) is dict for row in selected) and
+                tuple(row.get('source_ordinal') for row in selected) == TARGETS,
+                'target window needs exactly the two decoded source targets')
+        joined = []
+        for number, (source, ordinal) in enumerate(zip(selected, TARGETS)):
+            source = P.object_value(source, 'selected source')
+            require(source.get('stage_ordinals') ==
+                    {'small': ordinal, 'composed': ordinal, 'public': ordinal} and
+                    source.get('source_case') == SOURCE_CASE and
+                    source.get('source_pts_ticks') == ordinal * 512 and
+                    source.get('source_time_base') == '1/15360',
+                    'target window source-content evidence differs')
+            binding = P.object_value(source.get('binding'), 'binding')
+            for name in P.BINDING_KEYS:
+                P.integer(binding.get(name), 'binding.' + name, 1)
+            require((binding['context'], binding['generation']) ==
+                    (publication['context'], publication['generation']),
+                    'target binding differs from the published decoder lifetime')
+            key = P.binding_key(binding)
+            prior = P.object_value(observations[number], 'payload observation')
+            require(P.binding_key(P.object_value(prior.get('binding'), 'payload binding')) == key,
+                    'target source binding was swapped after its payload audit')
+            current = P.join_binding(rows, binding, boundary)
+            require(all(current[name] == prior.get(name)
+                        for name in ('submit_seq', 'materialized_seq')),
+                    'target trace differs from its full payload binding receipt')
+            submit = P.matching(rows, 'submit_bind', key)[0]
+            materialized = P.matching(rows, 'materialized', key)[0]
+            for label, row in (('submit_bind', submit), ('materialized', materialized)):
+                require(begin <= row['ts_monotonic_ns'] < end,
+                        'target ' + label + ' is outside [seek request, requested Stop)')
+            syncs = [row for row in P.matching(rows, 'sync_exit', key)
+                     if row['outcome'] == 0 and begin <= row['ts_monotonic_ns'] < end]
+            require(syncs, 'target has no successful matching sync inside the control window')
+            joined.append({'source_ordinal': ordinal, 'binding': dict(binding),
+                           'submit_seq': submit['seq'], 'submit_ns': submit['ts_monotonic_ns'],
+                           'materialized_seq': materialized['seq'],
+                           'materialized_ns': materialized['ts_monotonic_ns'],
+                           'successful_syncs_in_window': [
+                               {'seq': row['seq'], 'operation': row['operation'],
+                                'ts_monotonic_ns': row['ts_monotonic_ns']} for row in syncs]})
+        return {'status': 'PASS', 'selection': TARGET_SELECTION, 'required_targets': list(TARGETS),
+                'pid': pid, 'driver_instance': instance, 'seek_request_ns': begin,
+                'stop_request_ns': end, 'selected_source_bindings': joined,
+                'actual_media_PTS_to_VA_binding': 'NOT_OBSERVED',
+                'gpu_reader_return': 'NOT_OBSERVED', 'scanout': 'NOT_OBSERVED', 'scope': SCOPE}
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        return {'status': 'FAIL', 'error': str(error), 'scope': SCOPE}
 
 
 def main():

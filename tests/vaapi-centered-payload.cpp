@@ -690,6 +690,249 @@ void CheckFailedResets() {
   Require(!state->streams[0].publication_started && state->RetireReset(3, 4, 5, 0, 0, true) == -1,
           "incomplete reset stays sealed and cannot be retried into qualification");
 }
+enum class TargetMutation { None, SourceCase, Magic, Complement, Crc, Replica, Threshold, Spread };
+void FillTargetSource(CenteredFixture *fixture, unsigned ordinal,
+                      TargetMutation mutation = TargetMutation::None,
+                      unsigned low = 16, unsigned high = 235, bool coded_vertical = false) {
+  // Construct full scaled source rectangles independently of the observer's
+  // 3x3 patch lookup. Code bytes follow native-picture-fixture.py, including
+  // a freshly computed CRC; wrong case/magic controls keep a valid CRC.
+  uint8_t code[] = {0xc5, 0x3d, 2, static_cast<uint8_t>(ordinal),
+                    static_cast<uint8_t>(ordinal ^ 255), 0};
+  if (mutation == TargetMutation::SourceCase) code[2] = 3;
+  if (mutation == TargetMutation::Magic) code[0] ^= 1;
+  unsigned crc = 0;
+  for (unsigned byte = 0; byte != 4; ++byte) {
+    crc ^= code[byte];
+    for (unsigned bit = 0; bit != 8; ++bit)
+      crc = ((crc << 1) ^ ((crc & 128) ? 7 : 0)) & 255;
+  }
+  code[5] = static_cast<uint8_t>(crc);
+  if (mutation == TargetMutation::Complement) code[4] ^= 1;
+  if (mutation == TargetMutation::Crc) code[5] ^= 1;
+  Surface &small = *fixture->small;
+  for (unsigned row = 0; row != 360; ++row)
+    memset(small.planes[1] + size_t{row} * small.pitch[1], 128, 1280);
+  for (unsigned replica = 0; replica != 2; ++replica) {
+    const unsigned source_y = replica == 0 ? 16 : 64;
+    const unsigned top = coded_vertical ? source_y * 45 / 68 : source_y * 2 / 3;
+    const unsigned bottom = coded_vertical ? (source_y + 32) * 45 / 68 : (source_y + 32) * 2 / 3;
+    for (unsigned bit = 0; bit != 48; ++bit) {
+      bool value = (code[bit / 8] >> (7 - bit % 8)) & 1;
+      if (mutation == TargetMutation::Replica && replica == 1 && bit == 0) value = !value;
+      const unsigned source_x = 240 + bit * 30;
+      const unsigned left = source_x * 2 / 3, right = (source_x + 30) * 2 / 3;
+      for (unsigned row = top; row != bottom; ++row)
+        memset(small.planes[0] + size_t{row} * small.pitch[0] + left, value ? high : low, right - left);
+    }
+  }
+  if (mutation == TargetMutation::Threshold)
+    for (unsigned row = 20; row != 23; ++row)
+      memset(small.planes[0] + size_t{row} * small.pitch[0] + 169, 128, 3);
+  if (mutation == TargetMutation::Spread)
+    small.planes[0][size_t{20} * small.pitch[0] + 169] = static_cast<uint8_t>(high - 16);
+}
+std::unique_ptr<centered_payload::State> TargetState(uint64_t session) {
+  Require(setenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT", "case2-90-91", 1) == 0,
+          "set explicit fixed fixture target selector");
+  std::unique_ptr<centered_payload::State> state(new centered_payload::State(session));
+  Require(unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT") == 0,
+          "restore environment before any target worker observation");
+  Require(state->selection == centered_payload::Selection::Case2_90_91,
+          "fixed target selection is read once at State initialization");
+  return state;
+}
+void CheckPackedSurface(const uint8_t *bytes, size_t length, const Surface &surface) {
+  size_t offset = 0;
+  bool equal = length == size_t{surface.width} * surface.height * 3 / 2;
+  for (unsigned plane = 0; plane != 2; ++plane)
+    for (unsigned row = 0; row != (plane == 0 ? surface.height : surface.height / 2); ++row) {
+      equal = (memcmp(bytes + offset, surface.planes[plane] + size_t{row} * surface.pitch[plane],
+                      surface.width) == 0) && equal;
+      offset += surface.width;
+    }
+  Require(equal && offset == length, "target observation retains every active source/canvas byte without pitch tails");
+}
+void CheckTargetRoute(bool direct, unsigned physical_height, unsigned public_height,
+                      unsigned session, bool coded_vertical = false) {
+  using namespace centered_payload;
+  auto state = TargetState(session);
+  for (unsigned content : {0U, 1U, 89U, 92U, 179U}) {
+    CenteredFixture ignored(10 + content, physical_height, public_height);
+    FillTargetSource(&ignored, content);
+    Require(ComposeObserved(state.get(), &ignored, direct), "non-target production composition remains functional");
+    if (!direct) Require(CopyObserved(state.get(), &ignored), "non-target public copy remains functional");
+    state->Materialized(ignored.Fields());
+    Require(!state->streams[0].used, "unrelated fixture ordinals cannot reserve target slots or lifetimes");
+  }
+  for (unsigned content : {90U, 91U}) {
+    CenteredFixture fixture(content, physical_height, public_height);
+    FillTargetSource(&fixture, content, TargetMutation::None, 16, 235, coded_vertical);
+    Surface &canvas = direct ? fixture.public_canvas : fixture.picture;
+    Require(state->Select(fixture.picture, canvas, *fixture.small, false, direct) == nullptr,
+            "target mode cannot select or inspect content before existing BEGINs");
+    Require(ComposeObserved(state.get(), &fixture, direct), "target production composition succeeds under original leases");
+    auto &slot = state->streams[0].slots[content - 90];
+    Require(slot.selected && slot.compose_committed && slot.binding.token == fixture.picture.expected_timestamp,
+            "source90/91 reserves only its corresponding fixed slot");
+    if (!direct) Require(CopyObserved(state.get(), &fixture), "target exact decoded-public copy succeeds");
+    state->Materialized(fixture.Fields());
+    Require(State::Complete(slot), "target still requires successful ENDs and exact public materialization");
+    CheckPackedSurface(slot.small_pixels.data(), slot.small_bytes, *fixture.small);
+    CheckPackedSurface(slot.composed_pixels.data(), slot.composed_bytes, canvas);
+    CheckPackedSurface(slot.public_pixels.data(), slot.public_bytes, fixture.public_canvas);
+    Require(slot.composed.height == physical_height && slot.public_canvas.height == public_height &&
+            SameGeometry(slot.composed, slot.copy_source), "target mode preserves actual private/public geometry and epoch");
+    CheckTails(*fixture.small); CheckTails(canvas); CheckTails(fixture.public_canvas);
+  }
+  const int index = state->Retire(3, 4, 0);
+  Require(index == 0 && state->Complete(state->streams[0]), "two complete fixed targets qualify consuming retirement");
+  state->PrintStatus(index); state->Flush(index);
+  Require(state->streams[0].manifest_written, "fixed target payload publishes its independent arrays");
+  const std::string document = ReadManifest(state.get(), 3, 4);
+  Require(document.find("\"selection\":\"case2-90-91\"") != std::string::npos &&
+          document.find("\"schema\":\"crystalhd-centered-payload-v1\"") != std::string::npos,
+          "only explicit target output carries its selection label");
+  RemoveArtifacts(state.get(), 3, 4);
+}
+void CheckTargetRejectionsAndPosition() {
+  using namespace centered_payload;
+  auto state = TargetState(310);
+  unsigned ordinal = 1;
+  for (TargetMutation mutation : {TargetMutation::SourceCase, TargetMutation::Magic,
+      TargetMutation::Complement, TargetMutation::Crc, TargetMutation::Replica,
+      TargetMutation::Threshold, TargetMutation::Spread}) {
+    CenteredFixture fixture(ordinal++, 1088, 1088);
+    FillTargetSource(&fixture, 90, mutation);
+    Require(ComposeObserved(state.get(), &fixture, true), "bad codeword never changes ordinary composition success");
+    Require(!state->streams[0].used, "wrong case, magic, complement, CRC, replica, threshold or spread cannot select a target");
+  }
+  CenteredFixture ninety_one(20, 1088, 1088);
+  FillTargetSource(&ninety_one, 91, TargetMutation::None, 64, 192);
+  ninety_one.small->planes[0][size_t{20} * ninety_one.small->pitch[0] + 169] = 200;
+  Require(ComposeObserved(state.get(), &ninety_one, true), "threshold and spread boundary target composes normally");
+  state->Materialized(ninety_one.Fields());
+  auto &stream = state->streams[0];
+  Require(!stream.slots[0].selected && State::Complete(stream.slots[1]) &&
+          stream.slots[1].binding.token == ninety_one.picture.expected_timestamp,
+          "source91 arriving alone uses slot1 and cannot stand in for missing source90");
+  CenteredFixture repeat(21, 1088, 1088);
+  FillTargetSource(&repeat, 91);
+  Require(ComposeObserved(state.get(), &repeat, true), "duplicate target remains an ordinary successful composition");
+  state->Materialized(repeat.Fields());
+  Require(stream.slots[1].binding.token == ninety_one.picture.expected_timestamp && !stream.slots[0].selected,
+          "another binding with source91 cannot replace its fixed slot or fill source90");
+  const int index = state->Retire(3, 4, 0);
+  state->Flush(index);
+  Require(index == 0 && !state->Complete(stream) && !stream.publication_started,
+          "one fixed target is incomplete regardless of successful repeated source91");
+}
+void CheckTargetFailedEnd(bool direct, EndFailure failure, unsigned session) {
+  using namespace centered_payload;
+  auto state = TargetState(session);
+  CenteredFixture first(1, 1088, 1088);
+  FillTargetSource(&first, 90);
+  const bool compose_failure = failure == EndFailure::ComposeWrite || failure == EndFailure::ComposeRead;
+  Require(ComposeObserved(state.get(), &first, direct, failure) == !compose_failure,
+          "target observation preserves the original composition END failure");
+  auto &failed = state->streams[0].slots[0];
+  if (!compose_failure)
+    Require(!direct && !CopyObserved(state.get(), &first, failure),
+            "target observation preserves the original decoded-public END failure");
+  state->Materialized(first.Fields());
+  Require(failed.selected && failed.failed && !State::Complete(failed) && !failed.materialized,
+          "first selected target remains tentative after either existing END fails");
+  CenteredFixture retry(2, 1088, 1088), unrelated(3, 1088, 1088), other(4, 1088, 1088);
+  FillTargetSource(&retry, 90); FillTargetSource(&unrelated, 92); FillTargetSource(&other, 91);
+  for (CenteredFixture *fixture : {&retry, &unrelated, &other}) {
+    Require(ComposeObserved(state.get(), fixture, direct), "later target/unrelated production composition succeeds");
+    if (!direct) Require(CopyObserved(state.get(), fixture), "later target/unrelated production copy succeeds");
+    state->Materialized(fixture->Fields());
+  }
+  Require(failed.failed && failed.binding.token == first.picture.expected_timestamp &&
+          !State::Complete(failed) && State::Complete(state->streams[0].slots[1]),
+          "later correct target or other frames cannot replace the failed fixed ordinal");
+  const int index = state->Retire(3, 4, 0); state->Flush(index);
+  Require(index == 0 && !state->streams[0].publication_started,
+          "one failed fixed target prevents a qualifying manifest");
+}
+void CheckTargetPublicMismatch(bool epoch) {
+  using namespace centered_payload;
+  auto state = TargetState(epoch ? 330 : 331);
+  CenteredFixture first(1);
+  FillTargetSource(&first, 90);
+  Require(ComposeObserved(state.get(), &first, false), "public mismatch target composes in private storage");
+  const uint64_t original_epoch = first.picture.payload_observer_stamp.epoch;
+  if (epoch) first.picture.payload_observer_stamp.Installed();
+  else ++first.public_canvas.trace_decode_identity;
+  Require(CopyObserved(state.get(), &first), "mismatched target public copy preserves ordinary production behavior");
+  auto &slot = state->streams[0].slots[0];
+  Require(slot.failed && slot.public_started && !slot.public_committed,
+          "target public copy still requires exact source epoch and public binding");
+  first.picture.payload_observer_stamp.epoch = original_epoch;
+  first.public_canvas.trace_decode_identity = first.public_canvas.decode_identity;
+  Require(CopyObserved(state.get(), &first), "restored target public copy succeeds normally");
+  state->Materialized(first.Fields());
+  CenteredFixture replacement(2);
+  FillTargetSource(&replacement, 90);
+  Require(ComposeObserved(state.get(), &replacement, false) && CopyObserved(state.get(), &replacement),
+          "later target composition and public copy remain functional");
+  state->Materialized(replacement.Fields());
+  Require(slot.failed && !slot.public_copied && !slot.materialized &&
+          slot.binding.token == first.picture.expected_timestamp,
+          "restored or later bindings cannot replace the first rejected target public attempt");
+}
+void CheckTargetBeginLimit(bool fail_read) {
+  using namespace centered_payload;
+  auto state = TargetState(fail_read ? 340 : 341);
+  CenteredFixture fixture(1, 1088, 1088);
+  FillTargetSource(&fixture, 90);
+  fixture.small->object_fds.push_back(777); fixture.public_canvas.object_fds.push_back(888);
+  failing_fd = fail_read ? 777 : 888;
+  failing_flags = DMA_BUF_SYNC_START | (fail_read ? DMA_BUF_SYNC_READ : DMA_BUF_SYNC_WRITE);
+  const unsigned calls = centered_ioctl_calls;
+  bool result, allocation_unused;
+  {
+    Scope scope(state.get()); allocation_fault::fail_next = true;
+    result = ComposeCenteredCanvas(fixture.picture, &fixture.public_canvas, false, true);
+    allocation_unused = allocation_fault::fail_next; allocation_fault::fail_next = false;
+  }
+  failing_fd = -1; fixture.small->object_fds.clear(); fixture.public_canvas.object_fds.clear();
+  Require(!result && allocation_unused && centered_ioctl_calls == calls + (fail_read ? 1U : 3U) &&
+          !state->streams[0].used,
+          "failed original BEGIN prevents recognition; target mode adds no acquisition or premature selection");
+  Require(ComposeObserved(state.get(), &fixture, true) && state->streams[0].slots[0].selected,
+          "later leased observation is first recognizable target, not evidence about failed-BEGIN pixels");
+}
+void CheckSelectionInitialization() {
+  using namespace centered_payload;
+  std::unique_ptr<State> ordinary(new State(350));
+  Require(ordinary->selection == Selection::FirstTwo, "unset selector retains ordinary first-two mode");
+  Require(setenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT", "case2-90-91", 1) == 0,
+          "change selector environment after default State initialization");
+  Populate(ordinary.get(), 3, 4);
+  Require(unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT") == 0,
+          "restore selector environment after immutable default-mode control");
+  const int index = ordinary->Retire(3, 4, 0); ordinary->Flush(index);
+  const std::string document = ReadManifest(ordinary.get(), 3, 4);
+  Require(ordinary->streams[0].manifest_written && document.find("\"selection\"") == std::string::npos &&
+          ordinary->streams[0].slots[0].binding.token == 1001 &&
+          ordinary->streams[0].slots[1].binding.token == 1002,
+          "default mode does not reread environment or add target metadata to v1 output");
+  RemoveArtifacts(ordinary.get(), 3, 4);
+  ordinary.reset();
+  for (const char *invalid : {"", "first-two", "case2-90-92", "CASE2-90-91"}) {
+    Require(setenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT", invalid, 1) == 0,
+            "set invalid private selection control");
+    std::unique_ptr<State> state(new State(351));
+    Require(unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT") == 0,
+            "restore environment before invalid-mode worker control");
+    CenteredFixture fixture(1, 1088, 1088); FillTargetSource(&fixture, 90);
+    Require(ComposeObserved(state.get(), &fixture, true) && state->selection == Selection::Invalid &&
+            !state->streams[0].used && state->Retire(3, 4, 0) == -1,
+            "invalid explicit selector fails closed without changing ordinary composition behavior");
+  }
+}
 void CheckIncompleteAndUnavailable() {
   using namespace centered_payload;
   {
@@ -747,7 +990,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
 
 int main() {
   char directory[] = "/tmp/crystalhd-centered-payload-cpu-XXXXXX";
-  if (!mkdtemp(directory) || setenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR", directory, 1) != 0) return 1;
+  if (!mkdtemp(directory) || setenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR", directory, 1) != 0 ||
+      unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT") != 0) return 1;
   int result = 0;
   try {
     CheckSuccessfulRoute(true, 1080, 1080);
@@ -768,6 +1012,21 @@ int main() {
     CheckResetStopReopenPublication();
     CheckResetBatchPublication();
     CheckFailedResets();
+    CheckTargetRoute(true, 1080, 1080, 300);
+    CheckTargetRoute(true, 1088, 1088, 301);
+    CheckTargetRoute(false, 1088, 1080, 302);
+    CheckTargetRoute(false, 1088, 1088, 303);
+    CheckTargetRoute(false, 1088, 1080, 304, true);
+    CheckTargetRejectionsAndPosition();
+    unsigned failure_session = 320;
+    for (bool direct : {false, true})
+      for (EndFailure failure : {EndFailure::ComposeWrite, EndFailure::ComposeRead})
+        CheckTargetFailedEnd(direct, failure, failure_session++);
+    for (EndFailure failure : {EndFailure::PublicWrite, EndFailure::PublicRead})
+      CheckTargetFailedEnd(false, failure, failure_session++);
+    CheckTargetPublicMismatch(false); CheckTargetPublicMismatch(true);
+    CheckTargetBeginLimit(false); CheckTargetBeginLimit(true);
+    CheckSelectionInitialization();
     Require(centered_payload::active == nullptr, "no active observer survives CPU controls");
     std::printf("VA centered payload CPU controls: %u checks PASS\n", checks);
   } catch (const std::exception &error) {
@@ -775,6 +1034,7 @@ int main() {
     std::fprintf(stderr, "VA centered payload CPU FAIL: %s\n", error.what());
     result = 1;
   }
+  unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT");
   unsetenv("CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR");
   if (rmdir(directory) != 0) result = 1;
   return result;

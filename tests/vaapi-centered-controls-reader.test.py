@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Device-free content controls with independently placed scaled cell areas."""
 from fractions import Fraction
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -103,10 +104,14 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(result['source_time_base'], '1/15360')
         self.assertEqual(result['actual_media_PTS_to_VA_binding'], 'NOT_OBSERVED')
 
-    def payload(self, directory, *, repeat=False, nonneutral=False, corrupt_border=False):
-        doc, blobs, trace = V.fixture()
+    def payload(self, directory, *, repeat=False, nonneutral=False, corrupt_border=False,
+                ordinals=None, selection=None, reset=False):
+        doc, blobs, trace = V.reset_fixture() if reset else V.fixture()
+        if selection is not None:
+            doc['selection'] = selection
         for number, slot in enumerate(doc['slots']):
-            source = observed(0 if repeat else number, kind='nv12', height=720, centered=False)
+            ordinal = ordinals[number] if ordinals is not None else 0 if repeat else number
+            source = observed(ordinal, kind='nv12', height=720, centered=False)
             if nonneutral:
                 source[1280 * 720] = 129
             blobs[slot['small_file']] = source
@@ -147,6 +152,170 @@ class ContentTests(unittest.TestCase):
             result = H.audit_payload(*self.payload(directory, corrupt_border=True))
         self.assertEqual(result['status'], 'FAIL')
         self.assertEqual(result['payload_audit']['status'], 'FAIL')
+
+    def target_payload(self, directory, **options):
+        return self.payload(directory, ordinals=(90, 91), selection=H.TARGET_SELECTION, **options)
+
+    def target_case(self, directory, **options):
+        manifest, trace_path = self.target_payload(directory, **options)
+        result = H.audit_payload(manifest, trace_path, required_targets=(90, 91))
+        self.assertEqual(result['status'], 'PASS', result)
+        return result, trace_path
+
+    def change_trace(self, path, mutation, resequence=False):
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        mutation(rows)
+        if resequence:
+            V.resequence(rows)
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+
+    def test_fixed_targets_are_decoded_content_independent_of_va_ordinals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+        self.assertEqual(result['required_targets'], [90, 91])
+        self.assertEqual(result['selection'], 'case2-90-91')
+        self.assertEqual([row['source_ordinal'] for row in result['selected_source_bindings']], [90, 91])
+        self.assertEqual([row['binding']['submission_ordinal'] for row in result['selected_source_bindings']], [1, 2])
+        self.assertTrue(all(row['actual_media_PTS_to_VA_binding'] == 'NOT_OBSERVED'
+                            for row in result['selected_source_bindings']))
+
+    def test_fixed_target_mode_requires_explicit_manifest_selection(self):
+        for mode in (None, 'first-two', 'case2-0-1'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                paths = self.payload(directory, ordinals=(90, 91), selection=mode)
+                result = H.audit_payload(*paths, required_targets=(90, 91))
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertIn('selection', result['error'])
+                self.assertEqual(result['payload_audit']['status'], 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD')
+
+    def test_wrong_or_reversed_decoded_targets_cannot_be_selected_by_mode_label(self):
+        for ordinals in ((0, 1), (90, 92), (91, 90)):
+            with self.subTest(ordinals=ordinals), tempfile.TemporaryDirectory() as directory:
+                paths = self.payload(directory, ordinals=ordinals, selection=H.TARGET_SELECTION)
+                result = H.audit_payload(*paths, required_targets=(90, 91))
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertIn('decoded source contents', result['error'])
+
+    def test_va_submission_ordinals90_91_cannot_fake_source_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, trace_path = self.payload(directory, selection=H.TARGET_SELECTION)
+            doc = json.loads(manifest.read_text())
+            for slot in doc['slots']:
+                slot['binding']['submission_ordinal'] += 89
+            manifest.write_text(json.dumps(doc))
+            self.change_trace(trace_path, lambda rows: [row.__setitem__('submission_ordinal',
+                row['submission_ordinal'] + 89) for row in rows if row['submission_ordinal']])
+            result = H.audit_payload(manifest, trace_path, required_targets=(90, 91))
+        self.assertEqual(result['status'], 'FAIL', result)
+        self.assertEqual(result['payload_audit']['status'], 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD')
+        self.assertIn('decoded source contents', result['error'])
+
+    def test_legacy_default_is_unchanged_and_cannot_claim_target_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.payload(directory)
+            result = H.audit_payload(*paths)
+            self.assertEqual(result['status'], 'PASS', result)
+            self.assertNotIn('required_targets', result)
+            self.assertNotIn('selection', result)
+            self.assertEqual(H.audit_target_window(result, paths[1], 50, 1200)['status'], 'FAIL')
+
+    def test_target_selector_argument_is_fixed_and_full_canvas_gate_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.target_payload(directory)
+            for targets in ((0, 1), (90, 92), '90,91'):
+                self.assertEqual(H.audit_payload(*paths, required_targets=targets)['status'], 'FAIL')
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.target_payload(directory, corrupt_border=True)
+            result = H.audit_payload(*paths, required_targets=(90, 91))
+            self.assertEqual(result['status'], 'FAIL', result)
+            self.assertEqual(result['payload_audit']['status'], 'FAIL')
+
+    def test_exact_target_binding_window_positive_and_seek_boundary_inclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            window = H.audit_target_window(result, trace_path, 100, 1200)
+        self.assertEqual(window['status'], 'PASS', window)
+        self.assertEqual([row['source_ordinal'] for row in window['selected_source_bindings']], [90, 91])
+        self.assertEqual([row['submit_seq'] for row in window['selected_source_bindings']], [1, 8])
+        self.assertEqual([row['materialized_seq'] for row in window['selected_source_bindings']], [2, 9])
+        self.assertTrue(all(row['successful_syncs_in_window'] for row in window['selected_source_bindings']))
+        self.assertEqual(window['actual_media_PTS_to_VA_binding'], 'NOT_OBSERVED')
+
+    def test_target_window_also_joins_explicit_reset_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory, reset=True)
+            window = H.audit_target_window(result, trace_path, 50, 1200)
+        self.assertEqual(window['status'], 'PASS', window)
+        self.assertEqual(result['payload_audit']['schema'], H.P.RESET_SCHEMA)
+
+    def test_preseek_submit_cannot_be_borrowed_by_later_materialization_or_sync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            window = H.audit_target_window(result, trace_path, 150, 1200)
+        self.assertEqual(window['status'], 'FAIL', window)
+        self.assertIn('submit_bind', window['error'])
+
+    def test_materialization_at_requested_stop_is_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            window = H.audit_target_window(result, trace_path, 50, 900)
+        self.assertEqual(window['status'], 'FAIL', window)
+        self.assertIn('materialized', window['error'])
+
+    def test_successful_sync_at_or_after_requested_stop_is_excluded(self):
+        for stop in (1000, 1100):
+            with self.subTest(stop=stop), tempfile.TemporaryDirectory() as directory:
+                result, trace_path = self.target_case(directory)
+                window = H.audit_target_window(result, trace_path, 50, stop)
+                self.assertEqual(window['status'], 'FAIL', window)
+                self.assertIn('sync inside', window['error'])
+
+    def test_swapped_binding_in_content_report_cannot_join_other_actual_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            for field in H.P.BINDING_KEYS:
+                with self.subTest(field=field):
+                    swapped = copy.deepcopy(result)
+                    swapped['selected_source_bindings'][0]['binding'][field] += 1
+                    window = H.audit_target_window(swapped, trace_path, 50, 1200)
+                    self.assertEqual(window['status'], 'FAIL', window)
+
+    def test_nearby_materialization_or_sync_with_other_owner_cannot_join(self):
+        for index in (1, 2, 3):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                result, trace_path = self.target_case(directory)
+                self.change_trace(trace_path, lambda rows: rows[index].__setitem__('owner', 999))
+                window = H.audit_target_window(result, trace_path, 50, 1200)
+                self.assertEqual(window['status'], 'FAIL', window)
+
+    def test_no_matching_successful_sync_cannot_be_filled_by_other_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            def remove_first_sync(rows):
+                rows[:] = [row for row in rows if not
+                           (row['event'] in ('sync_enter', 'sync_exit') and row['token'] == 100000)]
+            self.change_trace(trace_path, remove_first_sync, resequence=True)
+            window = H.audit_target_window(result, trace_path, 50, 1200)
+        self.assertEqual(window['status'], 'FAIL', window)
+        self.assertIn('sync_exit', window['error'])
+
+    def test_target_window_rejects_incomplete_trace_or_different_payload_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            changed = copy.deepcopy(result)
+            changed['payload_audit']['observations'][0]['submit_seq'] += 1
+            self.assertEqual(H.audit_target_window(changed, trace_path, 50, 1200)['status'], 'FAIL')
+            self.change_trace(trace_path, lambda rows: rows[1].__setitem__('seq', 999))
+            window = H.audit_target_window(result, trace_path, 50, 1200)
+        self.assertEqual(window['status'], 'FAIL', window)
+        self.assertIn('sequence', window['error'])
+
+    def test_target_window_rejects_invalid_or_reversed_monotonic_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, trace_path = self.target_case(directory)
+            for start, stop in ((0, 1200), (1200, 1200), (1300, 1200), (True, 1200), (50, 1200.0)):
+                with self.subTest(start=start, stop=stop):
+                    self.assertEqual(H.audit_target_window(result, trace_path, start, stop)['status'], 'FAIL')
 
 
 if __name__ == '__main__':

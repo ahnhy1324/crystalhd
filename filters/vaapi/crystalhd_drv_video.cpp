@@ -1473,8 +1473,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     }
   }
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
-  if (centered_observer)
+  if (centered_observer) {
+    centered_slot = centered_observer->SelectComposedTarget(
+        centered_slot, picture, *canvas, *small, compact, decoded_public);
     centered_observer->CaptureCompose(centered_slot, *small, *canvas);
+  }
 #endif
   const bool committed = decoded_public
       ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();

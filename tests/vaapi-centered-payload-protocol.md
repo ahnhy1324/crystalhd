@@ -10,8 +10,8 @@ build, install and runtime have no new state, copies or environment reader.
 
 ## Observation and publication
 
-One driver reserves three decoder `(context,generation)` lifetimes, with the
-first two distinct eligible source bindings per lifetime. Selection is fixed:
+One driver reserves three decoder `(context,generation)` lifetimes. The default
+mode takes the first two distinct eligible source bindings per lifetime. Selection is fixed:
 failed selected snapshots are not replaced by later samples. Scope is limited
 NV12, 1280x720 small picture at `(320,180)` in a 1920-wide canvas, explicit
 1920x1080 visible geometry, and physical canvas heights 1080 or 1088. Compact
@@ -37,6 +37,34 @@ the same process. A live Driver destructor is not required. No Surface,
 allocation, device or client ownership is retained by the independent arrays.
 Rejected/incomplete retirement produces a bounded status record, not a
 qualifying manifest. Exclusive file creation preserves old/partial outputs.
+
+### Fixed seek-target observation
+
+The explicit private value
+`CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT=case2-90-91` selects the prepared fixture's
+content90 and91 instead. State reads this value once at initialization; unset
+keeps the default selection and ordinary v1 record shapes. Target-only manifest
+and status records identify `selection: "case2-90-91"`.
+
+The target selector runs after production composition while the original
+small-read/canvas-write leases are still held. It checks only the two fixed
+case2 codewords, including CRC, complement and both replicas, at the declared
+3x3 luma patches. Slot0 belongs to content90 and slot1 to91; unrelated content
+cannot fill a missing target. Once selected, a failed END or mismatched public
+copy permanently fails that slot. No worker allocation/I/O, new DMA lease,
+dynamic target range or application priority change is introduced.
+
+Target recognition cannot identify a failed acquisition that returned before
+the content could be read. This mode observes its eligible target snapshots,
+not every decode/access attempt. It does not expand normal-backend or release
+qualification. Default pre-BEGIN selection retains its original failed-slot
+semantics.
+
+The independent content reader must decode exactly90/91 from each actual
+small/composed/public payload and retain all existing full-NV12 gates. For the
+interrupted play, each target's matching submission, materialization and
+successful sync must fall after the recorded seek request and before requested
+Stop. VA submission ordinals are synthetic identities, not content90/91.
 
 The reset hook records the old generation before `DecodeContext::Reset()`
 advances it. Its private receipt carries that decoder's actual close return,

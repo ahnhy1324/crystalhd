@@ -206,4 +206,90 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(M.qualify_statuses([row], {(2, 3, 1)}, PID)[0]['status'], 'AUDITED')
 
 
+class SampleModeTests(unittest.TestCase):
+    def test_prepare_default_and_explicit_target_mode(self):
+        self.assertEqual(M.sample_option(True, None), 'first-two')
+        self.assertEqual(M.sample_option(True, 'case2-90-91'), 'case2-90-91')
+        self.assertIsNone(M.sample_option(False, None))
+        for mode in M.SAMPLE_MODES:
+            with self.subTest(mode=mode), self.assertRaises(ValueError):M.sample_option(False, mode)
+
+    def test_unknown_or_missing_frozen_mode_rejected(self):
+        for mode in (None, '', 'unknown'):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):M.validate_sample_mode(mode)
+
+    def test_baseline_environment_stays_unset_and_target_is_explicit(self):
+        self.assertEqual(M.sample_environment('first-two'), [])
+        self.assertEqual(M.sample_environment('case2-90-91'),
+                         ['--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_SELECT', 'case2-90-91'])
+
+    def test_manifest_selection_must_match_frozen_mode(self):
+        M.validate_selection({}, 'first-two')
+        M.validate_selection({'selection': 'case2-90-91'}, 'case2-90-91')
+        for document, mode in (({}, 'case2-90-91'), ({'selection': 'first-two'}, 'case2-90-91'),
+                               ({'selection': 'case2-90-91'}, 'first-two')):
+            with self.subTest(document=document, mode=mode), self.assertRaises(ValueError):M.validate_selection(document, mode)
+
+    def test_all_status_selections_are_checked(self):
+        row = StatusTests().row(selection='case2-90-91')
+        self.assertEqual(M.qualify_statuses([row], {(2, 3, 1)}, PID, 'case2-90-91')[0]['status'], 'AUDITED')
+        with self.assertRaises(ValueError):M.qualify_statuses([row], {(2, 3, 1)}, PID)
+        with self.assertRaises(ValueError):M.qualify_statuses([StatusTests().row()], {(2, 3, 1)}, PID, 'case2-90-91')
+        incomplete = StatusTests().row(context=4, selected_slots=1, compose_committed_slots=1,
+            public_committed_slots=1, materialized_slots=1, eligible=False, reject_mask=128)
+        with self.assertRaises(ValueError):M.qualify_statuses([row, incomplete], {(2, 3, 1)}, PID, 'case2-90-91')
+
+    def test_payload_target_requirement_is_only_added_in_target_mode(self):
+        calls = []
+        def audit(*args, **kwargs):calls.append((args, kwargs)); return {'status': 'PASS'}
+        reader = SimpleNamespace(audit_payload=audit)
+        M.audit_payload_for_mode(reader, 'manifest', 'trace', 'first-two')
+        M.audit_payload_for_mode(reader, 'manifest', 'trace', 'case2-90-91')
+        self.assertEqual(calls, [(('manifest', 'trace'), {}),
+                                 (('manifest', 'trace'), {'required_targets': (90, 91)})])
+
+    def test_target_reopen_preserves_source_population_and_separate_public_counts(self):
+        complete = M.source_census(trace(), {'begin': 0, 'end': 100000}, PID, True)
+        M.qualify_target_reopen(complete)
+        for stage in ('submit_bind', 'input_sent', 'output_dequeued'):
+            with self.subTest(stage=stage):
+                changed = copy.deepcopy(complete); changed['binding_stage_counts'][stage] = 179
+                with self.assertRaises(ValueError):M.qualify_target_reopen(changed)
+        partial = M.source_census([p for p in trace() if p[1]['event'] != 'materialized'], {'begin': 0, 'end': 100000}, PID, True)
+        self.assertEqual(partial['status'], 'PASS')  # Existing baseline contract.
+        M.qualify_target_reopen(partial)  # Target samples retain their separate full-payload gate.
+
+
+class TargetTimingTests(unittest.TestCase):
+    def records(self, ordinals=(90, 91)):
+        return [{'manifest': 'manifest', 'trace_prefix': 'trace', 'audit': {'status': 'PASS',
+                 'selected_source_bindings': [{'source_ordinal': n} for n in ordinals]}}]
+
+    def test_exact_target_content_and_request_window_forwarded_to_reader(self):
+        calls = []
+        def audit(*args):calls.append(args); return {'status': 'PASS'}
+        records = self.records()
+        result = M.audit_target_phase(SimpleNamespace(audit_target_window=audit), records, 100, 200)
+        self.assertEqual(result['selected_target_bindings'], 2)
+        self.assertEqual(result['actual_media_PTS_to_VA_binding'], 'NOT_OBSERVED')
+        self.assertEqual(calls, [(records[0]['audit'], 'trace', 100, 200)])
+
+    def test_missing_repeated_extra_or_candidate_ordinals_rejected(self):
+        def unexpected(*args):self.fail('unproven target population must precede the timing API')
+        reader = SimpleNamespace(audit_target_window=unexpected)
+        for ordinals in ((90,), (90, 90), (90, 91, 92), (0, 1), (29, 30)):
+            with self.subTest(ordinals=ordinals), self.assertRaises(ValueError):M.audit_target_phase(reader, self.records(ordinals), 100, 200)
+
+    def test_reversed_or_invalid_seek_stop_window_rejected(self):
+        reader = SimpleNamespace(audit_target_window=lambda *args: self.fail('invalid request window reached reader'))
+        for seek, stop in ((0, 200), (200, 100), (100, 100), (True, 200), (None, 200)):
+            with self.subTest(seek=seek, stop=stop), self.assertRaises(ValueError):M.audit_target_phase(reader, self.records(), seek, stop)
+
+    def test_reader_rejection_for_submit_materialization_or_sync_is_fatal(self):
+        for stage in ('submit', 'materialized', 'sync'):
+            with self.subTest(stage=stage):
+                reader = SimpleNamespace(audit_target_window=lambda *args: {'status': 'FAIL', 'error': stage + ' outside seek/Stop window'})
+                with self.assertRaisesRegex(ValueError, 'timing audit failed'):M.audit_target_phase(reader, self.records(), 100, 200)
+
+
 if __name__ == '__main__':unittest.main()
