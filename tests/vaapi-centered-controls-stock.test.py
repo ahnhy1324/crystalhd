@@ -399,4 +399,168 @@ class FramePtsModeTests(unittest.TestCase):
                                       'foreign-report', 'trace', self.records(), PID)
 
 
+class RenderRouteTests(unittest.TestCase):
+    def test_va_default_and_cpu_copy_are_frozen_prepare_only(self):
+        self.assertEqual(M.render_route_option(True, None), 'va')
+        self.assertEqual(M.render_route_option(True, 'cpu-copy'), 'cpu-copy')
+        self.assertIsNone(M.render_route_option(False, None))
+        for route in M.RENDER_ROUTES:
+            with self.subTest(route=route), self.assertRaises(ValueError):M.render_route_option(False, route)
+        for value in (None, '', 'fallback', True, 1):
+            with self.subTest(route=value), self.assertRaises(ValueError):M.validate_render_route(value)
+
+    def test_default_profile_has_no_extra_logging_or_copy_provider_requirement(self):
+        self.assertEqual(M.render_route_settings('va'), {'videoplayer.prefervaapirender': 'true'})
+        self.assertEqual(M.render_route_files(Path('/original-app'), 'va'), [])
+        cpu = M.render_route_settings('cpu-copy')
+        self.assertEqual(cpu['videoplayer.prefervaapirender'], 'false')
+        self.assertEqual(cpu['debug.extralogging'], 'true')
+        self.assertEqual(cpu['debug.setextraloglevel'], '32768')
+        self.assertEqual(M.render_route_files(Path('/original-app'), 'cpu-copy'),
+                         [Path('/original-app/lib/kodi/system/libsse4-x86_64-linux.so')])
+        self.assertEqual(M.scenario_scope('va', False), M.SCOPE)
+        self.assertEqual(M.scenario_scope('va', True), M.FRAME_PTS_SCOPE)
+        self.assertEqual(M.scenario_scope('cpu-copy', True), M.CPU_COPY_SCOPE)
+
+    def test_only_cpu_copy_script_queries_settings_at_both_paused_identities(self):
+        self.assertNotIn('Settings.GetSettingValue', M.application_script())
+        script = M.application_script('cpu-copy'); tree = ast.parse(script)
+        helper = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'render_route_settings']
+        self.assertEqual(len(helper), 1)
+        module = ast.fix_missing_locations(ast.Module(body=helper, type_ignores=[])); calls = []
+        wanted = {'videoplayer.prefervaapirender': False, 'debug.extralogging': True, 'debug.setextraloglevel': [32768]}
+        def rpc(method, params):
+            calls.append((method, params)); return {'value': wanted[params['setting']]}
+        namespace = {'rpc': rpc}; exec(compile(module, '<OWN route settings>', 'exec'), namespace)
+        self.assertEqual(namespace['render_route_settings'](), wanted)
+        self.assertTrue(all(method == 'Settings.GetSettingValue' for method, _ in calls))
+        identity_gates = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and
+            isinstance(n.func, ast.Name) and n.func.id == 'gate' and n.args and
+            isinstance(n.args[0], ast.Constant) and n.args[0].value in ('initial-ready', 'reopen-identity')]
+        self.assertEqual(len(identity_gates), 2)
+        self.assertTrue(all(any(k.arg == 'render_route_settings' for k in n.keywords) for n in identity_gates))
+
+    def test_runtime_setting_types_and_values_must_match_original_route(self):
+        expected = {'videoplayer.prefervaapirender': False, 'debug.extralogging': True, 'debug.setextraloglevel': [32768]}
+        self.assertEqual(M.qualify_cpu_copy_settings(expected), expected)
+        for key, value in (('videoplayer.prefervaapirender', True), ('videoplayer.prefervaapirender', 0),
+                           ('debug.extralogging', False), ('debug.extralogging', 1),
+                           ('debug.setextraloglevel', '32768'), ('debug.setextraloglevel', [32768.0]),
+                           ('debug.setextraloglevel', [32768, 64]), ('debug.setextraloglevel', [])):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                M.qualify_cpu_copy_settings(dict(expected, **{key: value}))
+
+
+class CpuCopyRouteLogTests(unittest.TestCase):
+    def line(self, message, tid=777, component='video', level='debug'):
+        return ('2026-11-03 13:00:00.000 T:' + str(tid) + '   ' + level +
+                ' <' + component + '>: ' + message + '\n').encode()
+
+    def header(self, bom=True, pid=PID):
+        return (b'\xef\xbb\xbf' if bom else b'') + self.line('Starting Kodi', pid, 'general', 'info')
+
+    def pair(self, tid=777):
+        return self.line(M.CPU_COPY_INIT.decode(), tid) + self.line(M.CPU_COPY_READY.decode(), tid)
+
+    def audit(self, records, prefix=None):
+        prefix = self.header() if prefix is None else prefix
+        raw = prefix + records
+        return M.audit_cpu_copy_route_log(raw, len(prefix), len(raw), PID)
+
+    def test_completed_cpu_copy_accepts_worker_tid_and_retains_byte_window(self):
+        prefix = self.header(); raw = prefix + self.pair()
+        result = self.audit(self.pair())
+        self.assertEqual(result['status'], 'PASS'); self.assertEqual(result['owned_pid'], PID)
+        self.assertEqual(result['completed_initializations'], [{'tid': 777,
+            'initializing_offset': len(prefix), 'completed_offset': len(prefix) + len(self.line(M.CPU_COPY_INIT.decode()))}])
+        self.assertEqual(result['end'], len(raw))
+
+    def test_multiple_completed_reinitializations_are_allowed(self):
+        result = self.audit(self.pair() + self.pair(888))
+        self.assertEqual(len(result['completed_initializations']), 2)
+
+    def test_original_flush_reinitializes_proven_same_worker_without_factory_message(self):
+        result = self.audit(self.pair() + self.line(M.CPU_COPY_READY.decode()) * 3)
+        self.assertEqual(len(result['completed_initializations']), 1)
+        self.assertEqual(len(result['completed_reinitializations']), 3)
+        selected = result['completed_initializations'][0]
+        for repeated in result['completed_reinitializations']:
+            self.assertEqual(repeated['tid'], selected['tid'])
+            self.assertEqual(repeated['selection_initializing_offset'], selected['initializing_offset'])
+            self.assertEqual(repeated['selection_completed_offset'], selected['completed_offset'])
+
+    def test_ready_cannot_reuse_other_worker_or_unfinished_factory_selection(self):
+        for records in (self.pair() + self.line(M.CPU_COPY_READY.decode(), 888),
+                        self.pair() + self.line(M.CPU_COPY_INIT.decode()),
+                        self.line(M.CPU_COPY_READY.decode()) * 3):
+            with self.subTest(records=records), self.assertRaises(ValueError):self.audit(records)
+
+    def test_class_removal_invalidates_flush_only_completion_until_fresh_factory_pair(self):
+        removed = self.line(M.CPU_COPY_REMOVED.decode())
+        for records in (self.pair() + removed + self.line(M.CPU_COPY_READY.decode()),
+                        self.pair() + removed,
+                        self.line(M.CPU_COPY_INIT.decode()) + removed + self.line(M.CPU_COPY_READY.decode())):
+            with self.subTest(records=records), self.assertRaises(ValueError):self.audit(records)
+        result = self.audit(self.pair() + removed + self.pair() + self.line(M.CPU_COPY_READY.decode()))
+        self.assertEqual(len(result['completed_initializations']), 2)
+        self.assertEqual(len(result['class_removals']), 1)
+        self.assertEqual(len(result['completed_reinitializations']), 1)
+        self.assertEqual(result['completed_reinitializations'][0]['selection_initializing_offset'],
+                         result['completed_initializations'][1]['initializing_offset'])
+
+    def test_initialization_intent_or_completion_alone_cannot_qualify(self):
+        cases = (self.line(M.CPU_COPY_INIT.decode()), self.line(M.CPU_COPY_READY.decode()),
+                 self.line(M.CPU_COPY_READY.decode()) + self.line(M.CPU_COPY_INIT.decode()),
+                 self.line(M.CPU_COPY_INIT.decode(), 777) + self.line(M.CPU_COPY_READY.decode(), 778))
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):self.audit(raw)
+
+    def test_previous_play_markers_cannot_qualify_fresh_reopen(self):
+        old = self.header() + self.pair()
+        with self.assertRaises(ValueError):self.audit(self.line('unrelated record'), old)
+        self.assertEqual(self.audit(self.pair(888), old)['completed_initializations'][0]['tid'], 888)
+
+    def test_wrong_context_or_quoted_marker_cannot_qualify(self):
+        for records in (self.line(M.CPU_COPY_INIT.decode(), component='general') + self.pair(),
+                        self.line(M.CPU_COPY_INIT.decode(), level='info') + self.pair(),
+                        self.line('quoted ' + M.CPU_COPY_INIT.decode()) + self.line('quoted ' + M.CPU_COPY_READY.decode())):
+            with self.subTest(records=records), self.assertRaises(ValueError):self.audit(records)
+
+    def test_other_route_fallback_preinit_and_general_errors_reject(self):
+        for message, component, level in (
+            ('VAAPI output: Initializing skip postproc', 'video', 'debug'),
+            ('VAAPI output: Initializing skip postproc as fallback', 'video', 'debug'),
+            ('VAAPI output: Initializing vaapi postproc', 'video', 'debug'),
+            ('VAAPI output: Postproc preinit failed', 'general', 'error'),
+            ('VAAPI/ffpp error: mapping failed', 'general', 'error'),
+            ('VAAPI::CFFmpegPostproc::Init  - deinterlacing', 'video', 'debug')):
+            with self.subTest(message=message), self.assertRaises(ValueError):
+                self.audit(self.pair() + self.line(message, component=component, level=level))
+
+    def test_foreign_startup_or_misaligned_bounds_reject(self):
+        with self.assertRaises(ValueError):self.audit(self.pair(), self.header(pid=PID + 1))
+        prefix = self.header(); raw = prefix + self.pair()
+        for begin, end in ((True, len(raw)), (len(prefix) + 1, len(raw)),
+                           (len(prefix), len(raw) - 1), (len(prefix), len(prefix)), (0, len(raw))):
+            with self.subTest(begin=begin, end=end), self.assertRaises(ValueError):
+                M.audit_cpu_copy_route_log(raw, begin, end, PID)
+
+    def test_file_boundary_rejects_replacement_and_truncation(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / 'kodi.log'; path.write_bytes(self.header())
+            started = M.route_log_start(path, PID)
+            with path.open('ab') as stream:stream.write(self.pair())
+            self.assertEqual(M.audit_cpu_copy_route_file(path, started)['status'], 'PASS')
+            original = Path(name) / 'original.log'; path.rename(original); path.write_bytes(original.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'identity changed'):M.audit_cpu_copy_route_file(path, started)
+            path.unlink(); original.rename(path); path.write_bytes(b'')
+            with self.assertRaises(ValueError):M.audit_cpu_copy_route_file(path, started)
+
+    def test_symlink_log_cannot_supply_owned_route_evidence(self):
+        with tempfile.TemporaryDirectory() as name:
+            original = Path(name) / 'original.log'; original.write_bytes(self.header() + self.pair())
+            link = Path(name) / 'kodi.log'; link.symlink_to(original)
+            with self.assertRaises(OSError):M.route_log_start(link, PID)
+
+
 if __name__ == '__main__':unittest.main()

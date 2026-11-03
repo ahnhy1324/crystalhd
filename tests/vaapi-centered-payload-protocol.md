@@ -292,3 +292,39 @@ ordinary Kodi seek/Stop/reopen runs are expected from the source paths and
 are not a reason to repeat the same seek or force a device reset. Reset-v2
 close/device coverage remains CPU-controlled; no actual defensive reset is
 claimed. Other clients and failure/recovery routes remain separate.
+
+## Progressive Off CPU-copy route
+
+The controls runner's prepare-only `--render-route cpu-copy` selects the
+original Kodi `videoplayer.prefervaapirender=false` setting. Its ordinary
+default remains `va`. This is the original VA hardware decoder followed by
+Kodi's `CFFmpegPostproc` CPU-copy/readback path with deinterlace Off; it does
+not exercise BWDIF or the OWN VPP sidecar-mismatch promotion branch.
+
+The CPU-copy plan enables the published video logging category and requires
+the original `Initializing ffmpeg postproc` selection in each play. A method
+label of `none`, a previous play's message, or an attempted initialization
+followed by preinit failure/skip fallback cannot qualify this route. The
+same worker must also log the completed Off/NONE initialization
+(`VAAPI::CFFmpegPostproc::Init  - skip deinterlacing`). Fresh owned Kodi-log
+identity and separate byte windows bind these observations to each play;
+the `T:` field on postproc messages identifies the worker, not the process.
+Original `CFFmpegPostproc::Flush()` calls `Close()` then `Init(m_diMethod)`
+on the retained object. Repeated Off completion on a worker already selected
+in this play is recorded as reinitialization; it cannot establish a new route.
+The
+original App's `lib/kodi/system/libsse4-x86_64-linux.so` is frozen and its mapped
+provider is checked while the owned application is paused.
+
+The existing180-picture progressive fixture, fixed source90/91 targets,
+full NV12/source/seek-window audits and same-PID natural reopen are reused.
+Full NV12 bytes are observed at the OWN public-surface boundary. Downstream
+BGRA barcodes check selected CPU-copy output content; they do not compare all
+post-copy CPU-frame YUV bytes or every rendered pixel.
+The optional receive-frame observer continues to report raw PTS separately
+from undeclared runtime clocks. CPU-copy source-content observations remain
+isolated OWN diagnostics, with GPU return/scanout and normal-backend/release
+qualification outside their scope. Actual route selection and successful
+readback must be observed before recording a completed CPU-copy case.
+Pinned source: [route choice](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp#L2199),
+[preinit, Off initialization and sync/derive/map/copy](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp#L2975).
