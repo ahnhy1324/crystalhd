@@ -1,12 +1,15 @@
 # Native companion support and distribution policy
 
 This policy covers the optional native V4L2 Kodi companion. Use the
-[delivery guide](NATIVE-RUNTIME-DELIVERY.md) to evaluate its frozen RC2 package;
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md) for the matching RC2 package or RC3 candidate;
 for ordinary playback, start with [everyday usage](USAGE.md).
 
-Distribution scope is the published optional 1.3.0-rc.2 companion for the
+RC3 retains the same bounded optional distribution scope as published RC2.
+Its separate receipts identify the new own-core/module18 and outer-package
+qualification; a reused runtime build receipt does not supply those results. The
 measured x86_64 Core2 T8100 / BCM70015 / Intel965 cohort and the exact
-Kodi22RC1, Platform26.08 and GL commits in the delivery guide. Native FFmpeg was configured `--cpu=core2`
+Kodi22RC1, Platform26.08 and GL commits in the delivery guide remain the target.
+Native FFmpeg was configured `--cpu=core2`
 with runtime CPU detection. No wider minimum CPU or cross-distribution ABI
 support is inferred. The runtime's observed `atan2f@GLIBC_2.43` requirement is
 distinct from the pinned provider package glibc2.44. Provider libdrm2.4.134,
@@ -14,8 +17,8 @@ libva2.24.1 and zlib-ng2.3.3 come from that exact Platform; the delivery does
 not bundle or replace their binaries.
 
 The neutral runtime, reproduced twice from unchanged pinned source, and its
-complete FFmpeg/dependency/SDK source and notice companions form the published
-scoped experimental RC2 delivery. A deterministic packager status is
+complete FFmpeg/dependency/SDK source and notice companions form the frozen
+published RC2 delivery and are reused unchanged in RC3. A deterministic packager status is
 only an assembly result. Public release/tag and stable promotion follow the
 main repository's release authorization; no arbitrary machine, clean-OS,
 physical presentation, full FFmpeg or security-certification claim follows.
@@ -38,10 +41,13 @@ updated and requalified, withdraw or mark the optional companion unsupported
 and direct users to the maintained stable route. No response-time guarantee
 or continuous vulnerability-monitoring claim is made.
 
-Current native acceptance includes source-qualified PTS/layout, EOS/reopen,
+The retained RC2 native acceptance includes source-qualified PTS/layout, EOS/reopen,
 scoped pause controls and bounded lifecycle evidence, with the recorded
 renderer/QoS loss disposition. Other seek/Stop evidence retains its actual
-frontend/module attribution; broader native controls are not inferred.
+frontend/module attribution; broader native controls are not inferred. RC3
+adds own token-bound source-range transitions and bounded progressive POC0/2
+multi-slice association, but its final combined candidate needs its own native
+acceptance and restoration result.
 Same-DPB nonempty STOP→START remains unsupported. Independent
 booted OS, Atom/i386, BCM70012, broad codec coverage, physical presentation and
 general FHD50/60 remain unqualified. The #538 heap-abort follow-up is excluded

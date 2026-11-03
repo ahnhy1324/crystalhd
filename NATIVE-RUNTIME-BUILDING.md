@@ -1,9 +1,15 @@
 # Rebuild the unchanged native FFmpeg runtime
 
-Use this recipe to reproduce the FFmpeg libraries in the frozen 1.3 RC2
-companion from its pinned inputs and measured toolchain. To use the prebuilt
+Use this recipe to reproduce the unchanged FFmpeg libraries from their pinned
+inputs and measured toolchain. They are supplied by frozen RC2 and retained
+in the RC3 companion without external source modifications. To use the prebuilt
 libraries, follow the [delivery guide](NATIVE-RUNTIME-DELIVERY.md). For ordinary
 local-file playback, start with [everyday usage](USAGE.md).
+
+Reusing these reproduced external ELF bytes does not qualify the changed RC3
+own core/module18; its binding and actual native result belong in the separate
+RC3 candidate receipts. The
+original two-build result below retains its 2026-11-02 attribution.
 
 Start from the extracted native companion, which supplies the `materials/`
 and `tools/` directories used below. Preserve its pinned sources; current

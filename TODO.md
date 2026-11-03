@@ -2,7 +2,9 @@
 
 # Current work
 
-Updated **2026-11-04**. This is the live work queue and completion summary.
+Updated **2026-11-04**. This is the work queue at the RC3 source checkpoint.
+A packaged copy is a snapshot; subsequent completion belongs in the current
+repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
 are retained in the [planning archive](docs/history/TODO-2026-11-03.md).
 Use the [documentation index](DOCUMENTATION.md) to find usage, contracts and
@@ -17,13 +19,15 @@ maintained components; isolated diagnostic probes retain their own scope.
 | Scope | Current state |
 | --- | --- |
 | Stable release | [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module/DKMS `3.10.13`, is published. Earlier releases and RCs remain immutable; see [release history](HISTORY.md). |
-| Complete integration candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. **Stable 1.3 remains deferred.** |
+| RC3 candidate | `1.3.0-rc.3` / module-DKMS `3.10.18`: complete core + settings ZIP + native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Actual archive/install/native results and public status belong in its separate qualification receipt and release entry. See [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). |
+| Frozen published candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. **Stable 1.3 remains deferred.** |
 | Development master | Later research and diagnostics are integrated, including [#647 raw-frame observation](https://github.com/ahnhy1324/crystalhd/pull/647) and [#648 progressive Off CPU-copy](https://github.com/ahnhy1324/crystalhd/pull/648). Master is not a replacement RC2 payload or a new release. |
 
 The [complete 1.3 claim map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
 binds the integrated feature groups to their qualification and evidence reuse.
-When release work resumes, identify a new candidate/module revision for changed
-payloads, package the complete intended scope and qualify the affected paths.
+RC3 preparation now packages that complete scope plus later integrated changes
+under a new identity. Qualify the actual candidate and affected installed/native
+paths; older source or module13 observations retain only their original scope.
 Do not replace frozen RC2 assets or registered module 17 source with master.
 
 <a id="current-priorities--2026-11-03"></a>
@@ -38,6 +42,7 @@ plans. Nonblocking research continues alongside release work.
 
 | Order | Owner | Remaining work and existing boundary |
 | --- | --- | --- |
+| Release priority | [Complete RC3 preparation](RELEASING.md#rc3-complete-scope-and-candidate-preparation) | Freeze new source/module identity, build the complete core and companion, run required candidate/package/installed/native checks, record unchanged-evidence reuse, review and publish only after actual qualification. Keep all integrated features and opt-ins; preserve frozen RC2 and stable rollback. |
 | 1, parallel diagnosis | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | Capture a useful failing native/Python stack and establish the original CSS assertion/SIGSEGV cause. The capture helper is implemented; the original crash is still unreproduced and unfixed. Continue other work instead of looping clean tests. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | Exercise representative congestion/pending residence and attribute latency, then broader formats, controls, interruption and endurance. Timing/latest-frame support is implemented; current-card runs showed no pending replacement or demonstrated gain. FIFO remains the default. |
 | 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Add the separate 29.97 fps/method 7 original-Kodi case and post-filter observation/reference. Off VA observations and progressive CPU-copy controls are complete within their private diagnostic scopes. Broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain separate. |
@@ -79,7 +84,7 @@ cannot substitute. See [#477's preparation record](https://github.com/ahnhy1324/
 | Native source range/association | [POC0](tests/fixtures/issue538/poc0-multislice-range-20261102.json), [POC2](tests/fixtures/issue538/progressive-multislice-range-20261102.json) and [same-size range staging](tests/fixtures/issue538/same-size-range-staging-20261102.json) retain their exact source/pixel/PTS/ownership scopes and earlier failures. |
 | Closed bounded investigations | #607/#539 current-cohort delivery, #429 unavailable-target disposition, #471/#472 bounded measurement/stop decisions and #614 own admission repair are complete. Closure does not turn their historical FAIL/NOT_RUN or broader acceptance into PASS. Details remain in the [archive](docs/history/TODO-2026-11-03.md#tracked-work) and owning issues. |
 
-The last integrated source checkpoint [#648 CI](https://github.com/ahnhy1324/crystalhd/actions/runs/41649574478)
+The retained integrated source checkpoint [#648 CI](https://github.com/ahnhy1324/crystalhd/actions/runs/41649574478)
 passes 15 jobs with two intended component skips. Source/ABI CI is separate
 from actual-device or release qualification. A later successful run does not
 establish the cause of an earlier crash or repair an old failed case.

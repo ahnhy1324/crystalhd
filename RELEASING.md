@@ -1,110 +1,124 @@
 # Releasing the maintained CrystalHD stack
 
-This guide separates current release policy and future-candidate commands
+This guide separates current RC3 preparation and release policy
 from completed release campaigns. Installation belongs in [USAGE](USAGE.md)
 and the [DKMS guide](README.dkms); the current native companion has its own
 [delivery guide](NATIVE-RUNTIME-DELIVERY.md). See [TODO](TODO.md) for the live
 work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 
-- [Complete RC2 and future candidate preparation](#complete-rc2-and-future-candidate-preparation)
+- [RC3 complete scope and candidate preparation](#rc3-complete-scope-and-candidate-preparation)
+- [Frozen RC2 baseline](#frozen-rc2-baseline)
 - [Version identities and compatibility policy](#versions-and-compatibility)
 - [Completed v1.2 scope and campaign reference](#historical-v12-release-scope-and-publication)
 - [Branch and issue maintenance](#branch-and-issue-maintenance)
 - [Useful bug reports](#useful-bug-reports)
 
 <a id="private-v13-candidate-preparation"></a>
+<a id="complete-rc2-and-future-candidate-preparation"></a>
 
-## Complete RC2 and future candidate preparation
+## RC3 complete scope and candidate preparation
 
-**Current status — 2026-11-04:** the complete
-[1.3.0-rc.2 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
-is published with 13 assets. Its current-equipment qualification and companion
-delivery are complete; source, assets and module-DKMS `3.10.17` remain frozen.
-Master contains later research. Stable 1.3 publication is deferred. The
-packaging examples below apply to a future candidate; RC2 integration and
-upload are complete.
+**RC3 candidate identity:** bundle `1.3.0-rc.3` / module-DKMS `3.10.18`
+contains the complete integrated source. Actual artifact, installation and
+native results belong in the separate candidate `release-qualification.json`
+and native receipts; source documentation and a version string do not assert
+PASS or publication. Use the release entry for public status. The published
+[RC2 baseline](#frozen-rc2-baseline) remains immutable. Stable 1.3 promotion
+is a separate decision.
 
-RC2 used a separate module identity to preserve package16 and its receipts.
-RC1 is an incomplete historical cut whose retained release entry is now a draft,
-not the final scope of 1.3. Implemented PTS-epoch diagnostics, native V4L2
-decoding and its colour/format/EXPBUF repairs, explicit experimental field-GPU
-output, runtime producer/lifecycle and host/metadata/materials tools remain in
-the complete integration. A separate branch or unfinished qualification does
-not authorize excluding an implemented feature.
+RC3 retains every integrated feature and its existing opt-in/default boundary:
 
-Combined-source archive/build, final17 native and installed DKMS/direct
-lifecycle checks are complete. Selected30minute Player and3hour VA-Bob
-evidence is reused only for unchanged runtime implementation from package16.
-The [native companion delivery](NATIVE-RUNTIME-DELIVERY.md) adds two exact
-unchanged-source reproductions, complete source/notice companions, measured
-fresh acquisition/build costs and fresh-acquired target native EOS/reopen.
-Its [support policy](NATIVE-RUNTIME-SUPPORT.md) explicitly disposes unavailable
-independent booted-OS acceptance without claiming PASS. The private source/UI
-checkpoint below retains only its original qualified scope. The complete
-master integration and public RC2 delivery are finished. Default-backend
-promotion and a later stable release remain separate decisions. Existing RC1
-artifacts and registered module payloads remain immutable.
+| Feature group | RC3 scope |
+| --- | --- |
+| Ordinary playback stack | Maintained driver/firmware interface, legacy DIL, GStreamer decoder/Player, VA subset, codec/framing/admission, source-picture/PTS and lifecycle repairs; ordinary local playback remains the recommended route. |
+| Shared settings | Managed defaults, profiles/presets, headless CLI, optional translated GTK window/tray and stock-Kodi settings ZIP. These were already supplied in RC2. |
+| Centered card output | Include the existing default-off BCM70015 H.264/NV12 experiment and its stock-client usage. Smaller card output is centered in a full readable canvas; Kodi zoom is a separate display choice. It is already present in RC2, not merely a new observer. No default promotion, native-FHD-detail or general BWDIF claim. |
+| Native V4L2 + DRM_PRIME | Include the optional own native producer/EXPBUF path and the prebuilt **unmodified** FFmpeg companion, complete source/notices/build materials and pinned target instructions. RC3 adds token-bound source range, picture-preserving same-size range transitions and bounded progressive POC0/POC2 multi-slice association. |
+| Optional Xv output | Retain explicit FIFO output and packed enlargement; include same-layout port handoff, caps/aspect border repaint and bounded local X11 setup. Latest/drop mode and local ACK/residence timing remain separate, default-off selections without a general speedup claim. |
+| Optional field-GPU output | Retain explicit YUY2 output and add qualified direct NV12 input, live window replacement and bounded setup/atom/geometry/resize/handoff response waits. These limits do not bound every EGL/X11 call or establish physical scanout. |
+| Other integrated experiments | Retain optional MPEG-1, RX-allocation controls, Moonlight/VA integrations and existing diagnostics under their documented opt-ins and limits. No feature is dropped because broader research remains open. |
+| Diagnostic coverage | Preserve centered payload/raw-frame/CPU-copy observers, source-unit controls, emulation and GTK crash capture. Private observer or modified-client results do not qualify the normal backend, repair the unreproduced GTK crash or establish release acceptance. |
 
+See [usage](USAGE.md), [Centered](filters/vaapi/README.md#development-experiment-centered-card-output)
+and [native delivery](NATIVE-RUNTIME-DELIVERY.md) for user instructions.
 Accepted renderer/QoS losses remain nonblocking within
-[#91's recorded display-performance scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
+[#91's recorded scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
 Source-qualified logs without detected A/V drift suffice for the tested route.
-These policies do not waive source-picture, lifetime or ABI correctness.
+These policies retain source-picture, lifetime and ABI correctness. Current
+equipment is the target; unavailable Atom/i386/BCM70012 or independently booted
+OS coverage is not invented as a new prerequisite.
 
-The maintained master already integrates maintenance/Xv, MPEG-1 and the
-native/runtime work. Use it as the basis of a future candidate while retaining
-the implemented scope and component evidence. Do not substitute one child's
-CI for affected combined-source checks. Registered module package identities
-must never be overwritten with changed bytes; private staging does not install
-or register a host DKMS module.
+### Candidate evidence and packaging
 
-When preparing a future candidate, commit its intended source and run the
-affected package checks:
+Qualify the complete intended candidate under the existing release rules.
+Current source checks, module13 observations and older component receipts keep
+their actual attribution; they do not by themselves pass the new candidate.
+Reuse evidence only for unchanged implementation and state that scope in the
+candidate receipt. Changed native range/lifecycle code needs the candidate's
+actual native module result. Keep broader BWDIF/GPU/performance research open
+without turning all open research into release gates.
+
+Commit the intended source, then run affected checks and package a new output:
 
 ```sh
-make configuration-check kodi-settings-check candidate-package-check
+make configuration-check kodi-settings-check candidate-package-check native-delivery-check
 make package-candidate PACKAGE_DIR=/absolute/new-private-candidate-directory
 ```
 
-The packaging helpers require Python3.8+ and Git. Output is an exact-commit
-Git-free source tar.gz, the optional Kodi settings ZIP, `candidate-manifest.json`
-and `SHA256SUMS`. gzip/ZIP times and file order are fixed. The source's existing
-`SOURCE_REVISION export-subst` retains its full Git identity without `.git`.
-Untracked/ignored files are excluded; existing output directories/packages are
-never replaced. The manifest is deterministic and initially says
-`NOT_RUN_FOR_THESE_ARTIFACTS`. Record subsequent validation in a separate receipt
-bound to its hashes; do not mutate an already qualified package or manifest.
+The core packager requires Python3.8+ and Git and emits an exact-commit Git-free
+source tar.gz, Kodi settings ZIP, `candidate-manifest.json` and `SHA256SUMS`.
+Fixed archive ordering/times and `SOURCE_REVISION export-subst` preserve source
+identity without `.git`. Untracked/ignored files are excluded and existing
+outputs are never replaced. Its initial `NOT_RUN_FOR_THESE_ARTIFACTS` is not a
+runtime result. Record qualification separately against the actual artifacts;
+do not rewrite an already qualified manifest or package.
 
-Extract the final source into a fresh private directory. Verify checksums and
-source identity, then build/test there, stage runtime and optional settings,
-check the installed provenance receipt, exercise removal and reinstallation,
-and rebuild the ZIP to compare its bytes. `install-runtime` stays headless;
-`install-settings` additionally needs GTK/PyGObject and gettext `msgfmt`.
-The Kodi ZIP needs stock Kodi's Python3 API and matching installed
-`crystalhd-config editor-state` v1. Its selected real target is Kodi21.3.
-Native dialog tests do not replace actual D-pad, ZIP installation or a new Kodi
-process consuming the saved defaults. Source-qualified no-drift logs suffice
-for the tested playback route's A/V sync; pixels/cadence/ownership stay separate.
+Extract that source into a fresh directory for its archive build and affected
+checks. Validate installed component provenance, direct/DKMS update and
+rollback/removal as applicable, ordinary playback, optional settings/stock-Kodi
+UI and the changed native route with the matching candidate identity. Headless
+`install-runtime` has no GTK dependency; `install-settings` needs GTK/PyGObject
+and gettext. The Kodi ZIP needs the matching `editor-state` v1 and its existing
+stock-Kodi qualification scope. Report actual reused and new evidence separately.
 
-The complete RC2 supplies the maintained stack, optional experimental features
-under their existing opt-ins, and optional Kodi configuration UI #611.
-Later master research does not change those frozen artifacts.
-Do not advertise general MPEG-1 conformance, selector5, hardware deinterlacing,
-full-rate FHD, Atom/i386/BCM70012 acceptance or every open research issue as done.
-Keep historical FAILs and unavailable-target boundaries. #538 remains open;
-only its explicitly excluded heap-abort follow-up stays ignored.
+The native outer delivery reuses only unchanged pinned FFmpeg/provider/build
+materials. It binds `materials/crystalhd-core-1.3.0-rc.3-source.tar.gz` to the
+new own source/module in `evidence/rc3-core-binding.json`, records fresh native
+qualification in `evidence/rc3-native-qualification.json`, and declares reuse
+in `evidence/reuse-scope.json`. Historical inner `PUBLIC_NOT_READY` metadata
+and RC2 costs/results stay unchanged. Assembly alone is not qualification.
 
-#607 is closed after the bounded current-cohort delivery. The published outer
-companion keeps the historical inner PUBLIC_NOT_READY metadata immutable and supplies the
-complete source/build/dependency materials, tools, evidence and scoped project
-maintenance policy. The frozen complete core source940/module17 and the
-separately identified delivery-tool source retain their own attribution;
-registered package17 source must never be overwritten with supplemental files.
-Use the frozen core source for DKMS, not the supplemental delivery-tool branch.
-All developed features remain supplied across these artifacts. This packaging
-work preserves the native default and the independent booted-OS NOT_RUN
-disposition. A future candidate requires a new package identity for changed
-payloads; do not replace registered17 source, RC2 assets or historical RC1 files.
-Stable publication remains deferred.
+Do not replace registered17 source, RC2 assets or historical RC1 files. A new
+module/package identity accompanies changed payloads. Publication uses the
+reviewed task branch/PR and current-base CI gate; stable promotion remains
+separate. External Kodi/FFmpeg/GStreamer/Mesa/GTK/kernel-core product patches
+are prohibited. Confirmed external limits remain known issues. #538 stays
+open; only its explicitly excluded heap-abort follow-up remains ignored.
+
+### Frozen RC2 baseline
+
+[1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
+was published with 13 assets, core source `940cf357` and module-DKMS `3.10.17`.
+Its current-equipment qualification and companion delivery are complete and
+frozen. RC1 remains an incomplete historical cut whose release entry is a
+draft. RC2 used a distinct identity to preserve package16 and its receipts.
+
+RC2's combined-source archive/build, final17 native and installed DKMS/direct
+lifecycle checks are complete. Selected30minute Player and3hour VA-Bob evidence
+was reused only for unchanged runtime implementation from package16. Its
+native companion includes two unchanged-source reproductions, complete
+source/notice materials, measured fresh acquisition/build costs and acquired
+target native EOS/reopen. Its independent booted-OS disposition remains
+NOT_RUN/unavailable. #607 closed for that bounded cohort, not broader support.
+
+The frozen core source940/module17 and separately identified delivery-tool
+source retain their own attribution; use core source for DKMS, never the
+supplemental tool source. PTS-epoch diagnostics, native colour/format/EXPBUF
+repairs, optional field-GPU output, producer/lifecycle and host/materials tools,
+MPEG-1, maintenance/Xv and optional Kodi UI remain supplied. The historical
+private source/UI checkpoint below retains only its original qualified scope.
+Do not infer hardware deinterlacing, selector5, general MPEG-1 conformance,
+full-rate FHD or acceptance on unavailable equipment.
 
 ### Historical private development checkpoint — 2026-11-01
 
@@ -144,6 +158,7 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
+| RC3 candidate / new module package | `1.3.0-rc.3` / `3.10.18` | Complete candidate; actual qualification and publication status in its separate receipt/release entry |
 | Published complete RC2 / module package | `1.3.0-rc.2` / `3.10.17` | Current-cohort runtime/install/delivery complete; immutable registered payloads |
 | Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Retained draft release entry and unchanged artifacts; incomplete 1.3 scope |
 | Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |

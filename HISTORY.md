@@ -6,15 +6,37 @@ statements under an older version describe that checkpoint; use
 [documentation index](DOCUMENTATION.md) for the evidence map. Published
 identities and historical failures retain their original qualification scope.
 
-## Development after the frozen RC2
+<a id="development-after-the-frozen-rc2"></a>
 
-Later master work includes the isolated centered-output diagnostic sequence:
-Off EOF/reopen, selected seek-target NV12, actual returned raw-PTS bindings and
-progressive Off CPU-copy/readback. The [completion summary](TODO.md#completed-baselines)
-links the distinct receipts, initial failures and remaining limits. These
-private observations do not qualify normal-backend stock compatibility or a
-release; BWDIF/29.97, post-copy full-frame pixels and GPU return remain separate.
-The published RC2 tag and assets have not been rebuilt from current master.
+## 1.3.0-rc.3 — complete integration candidate
+
+Bundle `1.3.0-rc.3` uses module/DKMS `3.10.18`. Separate candidate
+qualification receipts identify the actual source, package and runtime results;
+this source history does not grant PASS or publication. Stable 1.3 promotion
+is separate. All RC2 features and integrated optional functionality remain
+included, with their existing defaults and support limits.
+
+Since frozen RC2, own native V4L2 adds token-bound H.264 source-range reporting,
+picture-preserving same-size range transitions and bounded progressive POC0/2
+multi-slice association. Optional Xv adds port selection/live same-layout
+handoff, latest/drop selection and local timing; caps/aspect border repaint
+and local X11 setup are repaired. Optional field-GPU adds direct NV12, live
+window handoff and bounded setup/atom/geometry/resize/handoff response waits.
+Default output, FIFO and experimental opt-ins remain unchanged.
+
+Centered itself was already included in RC2 and remains default-off in RC3.
+Later isolated centered-output diagnostics add Off EOF/reopen, selected
+seek/Stop, full NV12 source targets, raw returned-frame PTS and progressive
+Off CPU-copy observations. The [completion summary](TODO.md#completed-baselines)
+links exact receipts and preserved failures. These probes do not establish
+all post-copy pixels, BWDIF29.97, GPU return, the unreproduced GTK crash's cause
+or ordinary-backend/release qualification. The native companion retains
+unmodified FFmpeg and its complete source/notices; changed own-core acceptance
+is separate from reuse of unchanged runtime materials.
+
+The published RC2 tag and 13 assets remain frozen. See
+[release preparation](RELEASING.md#rc3-complete-scope-and-candidate-preparation)
+for complete scope and the candidate-evidence contract.
 
 <a id="130-rc2--integration-candidate"></a>
 

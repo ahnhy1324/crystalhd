@@ -1,10 +1,13 @@
 # CrystalHD settings for Kodi
 
 Optional Linux Program add-on for stock Kodi with Python API 3.0.0 (Kodi 19+;
-the qualified integration target is Kodi 21.3). The frozen
-`script.crystalhd.settings-0.1.0.zip` is published with
-[1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2).
-It edits CrystalHD defaults; it is not a decoder add-on.
+the qualified integration target is Kodi 21.3). The complete
+[1.3.0-rc.3 candidate](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
+supplies `script.crystalhd.settings-0.1.0.zip`; use that release entry and its
+separate qualification receipt for actual package results. It edits CrystalHD
+defaults; it is not a decoder add-on. The previously published
+[RC2 ZIP](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2) remains
+frozen with its own qualification.
 
 Use it when you already run Kodi and want to edit shared CrystalHD defaults
 with a remote or keyboard. To enable actual video decoding first, follow the
@@ -12,11 +15,11 @@ with a remote or keyboard. To enable actual video decoding first, follow the
 
 ## Install
 
-1. Install matching 1.3 CrystalHD tools and updated VA/DIL readers using the
-   [RC2 settings installation](../../README.md#install-rc2-for-managed-settings). Stable 1.2 readers do
+1. Install matching RC3 CrystalHD tools and updated VA/DIL readers using the
+   [RC3 settings installation](../../README.md#install-rc3-for-managed-settings). Stable 1.2 readers do
    not consume these managed defaults. `crystalhd-config` must be in Kodi's PATH
    and provide `editor-state` v1.
-2. Download `script.crystalhd.settings-0.1.0.zip` from the RC2 release linked above.
+2. Download `script.crystalhd.settings-0.1.0.zip` from the RC3 release entry linked above.
 3. In Kodi, choose **Add-ons → Install from zip file**, select that ZIP, then
    open **Program add-ons → CrystalHD settings**.
 
