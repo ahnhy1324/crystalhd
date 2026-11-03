@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include "../../../tests/field-view-gpu.h"
@@ -77,32 +78,58 @@ struct WindowCommand {
     bool done=false,accepted=false;
 };
 
-// Bound our reply wait after submitting the small atom request. This does not
-// impose a deadline on EGL, other X11 requests or a congested XCB write flush.
-static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *name) {
-    const auto cookie=xcb_intern_atom(connection,0,strlen(name),name);
-    auto fail=[&](const char *message)->xcb_atom_t {
-        xcb_discard_reply(connection,cookie.sequence);need(false,message);return XCB_ATOM_NONE;
-    };
-    if(xcb_flush(connection)<=0)return fail("XCB atom request flush failed");
-    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
-    for(;;) {
-        void *reply=nullptr;xcb_generic_error_t *error=nullptr;
-        if(xcb_poll_for_reply(connection,cookie.sequence,&reply,&error)) {
-            if(g_get_monotonic_time()>=end){free(error);free(reply);return fail("XCB atom reply timed out");}
-            if(error||!reply){free(error);free(reply);return fail("XCB atom reply failed");}
-            const auto atom=static_cast<xcb_intern_atom_reply_t *>(reply)->atom;free(reply);return atom;
+template<class T> using XcbReply=std::unique_ptr<T,decltype(&free)>;
+// Retire pending sequences even when a later request/wait fails. The reply
+// deadline starts after flush; congested writes, checked configure and EGL
+// remain separate from it.
+struct ReplyRequest {
+    xcb_connection_t *connection;
+    unsigned sequence;
+    bool pending=true;
+    ReplyRequest(xcb_connection_t *c,unsigned s):connection(c),sequence(s){}
+    ReplyRequest(const ReplyRequest &)=delete;
+    ReplyRequest &operator=(const ReplyRequest &)=delete;
+    ~ReplyRequest(){if(pending)xcb_discard_reply(connection,sequence);}
+    template<class T> XcbReply<T> wait(gint64 end,const char *operation) {
+        auto require=[&](bool valid,const char *reason) {
+            if(!valid){const auto message=std::string(operation)+reason;need(false,message.c_str());}
+        };
+        for(;;) {
+            void *raw=nullptr;xcb_generic_error_t *raw_error=nullptr;
+            const bool ready=xcb_poll_for_reply(connection,sequence,&raw,&raw_error);
+            XcbReply<T> reply(static_cast<T *>(raw),&free);
+            XcbReply<xcb_generic_error_t> error(raw_error,&free);
+            if(ready) {
+                pending=false;
+                require(g_get_monotonic_time()<end," reply timed out");
+                require(!error&&reply," reply failed");
+                return reply;
+            }
+            require(!xcb_connection_has_error(connection)," connection failed");
+            const auto left=end-g_get_monotonic_time();
+            require(left>0," reply timed out");
+            pollfd event{xcb_get_file_descriptor(connection),POLLIN,0};
+            const auto available=poll(&event,1,int((left+999)/1000));
+            if(available<0&&errno==EINTR)continue;
+            require(available>=0&&!(event.revents&POLLNVAL)," reply poll failed");
+            // Retry XCB first: a reply may already be buffered alongside HUP.
         }
-        free(error);free(reply);
-        if(xcb_connection_has_error(connection))return fail("XCB atom connection failed");
-        const auto left=end-g_get_monotonic_time();
-        if(left<=0)return fail("XCB atom reply timed out");
-        pollfd event{xcb_get_file_descriptor(connection),POLLIN,0};
-        const auto ready=poll(&event,1,int((left+999)/1000));
-        if(ready<0&&errno==EINTR)continue;
-        if(ready<0||(event.revents&POLLNVAL))return fail("XCB atom reply poll failed");
-        // Retry XCB first: a reply may already be buffered alongside HUP.
     }
+};
+static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *name) {
+    ReplyRequest request(connection,xcb_intern_atom(connection,0,strlen(name),name).sequence);
+    need(xcb_flush(connection)>0,"XCB atom request flush failed");
+    return request.wait<xcb_intern_atom_reply_t>(g_get_monotonic_time()+G_USEC_PER_SEC,"XCB atom")->atom;
+}
+struct WindowGeometry {unsigned width,height,child_width,child_height;};
+static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child) {
+    ReplyRequest parent_request(connection,xcb_get_geometry(connection,parent).sequence);
+    ReplyRequest child_request(connection,xcb_get_geometry(connection,child).sequence);
+    need(xcb_flush(connection)>0,"XCB geometry request flush failed");
+    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
+    auto geometry=parent_request.wait<xcb_get_geometry_reply_t>(end,"XCB parent geometry");
+    auto video=child_request.wait<xcb_get_geometry_reply_t>(end,"XCB child geometry");
+    return {geometry->width,geometry->height,video->width,video->height};
 }
 
 // This object and all GPU objects are constructed/destroyed on the worker.
@@ -220,19 +247,16 @@ struct Window {
         return id;
     }
     void resize() {
-        auto *geometry=xcb_get_geometry_reply(connection,
-            xcb_get_geometry(connection,parent),nullptr);
-        need(geometry,"current output window geometry");
-        width=geometry->width;height=geometry->height;free(geometry);
-        auto *child=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,window),nullptr);
-        need(child,"current video child geometry");
-        const bool changed=child->width!=width||child->height!=height;free(child);
+        const auto geometry=current_geometry_bounded(connection,parent,window);
+        const bool changed=geometry.child_width!=geometry.width||geometry.child_height!=geometry.height;
         if(changed) {
-            uint32_t size[]={width,height};
+            uint32_t size[]={geometry.width,geometry.height};
             auto *error=xcb_request_check(connection,xcb_configure_window_checked(connection,window,
                 XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size));
             if(error){free(error);need(false,"current video child resize");}
         }
+        need(!xcb_connection_has_error(connection),"current video child connection");
+        width=geometry.width;height=geometry.height;
     }
     bool inside(xcb_window_t target,xcb_window_t ancestor,xcb_window_t root) {
         // The caller keeps its target stable through the synchronous request.

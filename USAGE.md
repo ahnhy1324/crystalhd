@@ -356,11 +356,15 @@ NV12 within its [current plane/field qualification](tests/fixtures/issue530/READ
 The existing CrystalHD hardware Player route continues negotiating YUY2.
 
 The own local connection/setup has its bounded startup path. Each own
-InternAtom response wait now has a fixed one-second limit after its request
-flush, including partial replies and unrelated events; a late discarded
-response cannot satisfy the next request. Other synchronous X11 requests,
-congested writes and EGL calls remain outside this reply-wait limit. This
-does not establish a deadline for the whole Window constructor or shutdown.
+InternAtom response wait has a fixed one-second limit after its request
+flush, including partial replies and unrelated events. In `resize()`, current
+parent and child geometry requests are sent together and their responses
+share one one-second deadline after that flush. Received replies are freed
+and remaining reply sequences are discarded locally on failure. Cached size
+changes only after both responses and any required child configure succeed.
+Other synchronous X11 calls, including the checked configure itself,
+congested writes and EGL remain outside these reply-wait limits. They do not
+establish a deadline for the whole Window constructor, resize or shutdown.
 
 The default `--video-output auto` keeps the normal output path. The selector is
 per invocation and is not saved by the configuration manager. With `field-gpu`,
