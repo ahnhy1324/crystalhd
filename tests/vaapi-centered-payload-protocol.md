@@ -249,6 +249,10 @@ with CLOCK_MONOTONIC nanoseconds. PTS values retain the signed AV_NOPTS_VALUE
 sentinel. Unknown time bases remain unknown; a valid codec packet time base
 is explicitly identified when a frame time base is unset. Pointer identities
 may be reused and are descriptive only; display identity is unobserved.
+The output environment value is an absolute prefix: the probe appends
+`-<pid>.jsonl`. The runner reads only the identified Kodi PID and requires that
+PID in the report. Inherited observers in child processes cannot occupy the
+parent's report path; their reports do not qualify the parent's frames.
 
 `vaapi-frame-pts-reader.py` joins the actual surface over the whole snapshot
 interval to exactly one unchanged OWN binding, across every driver instance

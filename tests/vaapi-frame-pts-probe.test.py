@@ -61,6 +61,8 @@ APP = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "common.h"
 void fake_configure(int,int);
 unsigned own_util60_present(void);
@@ -91,7 +93,19 @@ int main(int argc,char **argv) {
     mode=argc>1?argv[1]:"normal";
     if (!avutil_version() || !own_util60_present()) return 20;
     desired=!strcmp(mode,"error")?-11:0; fake_configure(desired,88);
-    int failures=0;
+    int failures=0; pid_t child=0;
+    if (!strcmp(mode,"spawn")) {
+        child=fork(); if (child<0) return 23;
+        if (!child) { execl("/bin/true","true",(char *)NULL); _exit(24); }
+        int status; if(waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 25;
+    }
+    if (!strcmp(mode,"existing")) {
+        char path[4096];
+        int n=snprintf(path,sizeof(path),"%s-%ld.jsonl",getenv("CRYSTALHD_TEST_FRAME_PTS_PREFIX"),(long)getpid());
+        if(n<0 || (size_t)n>=sizeof(path)) return 26;
+        FILE *out=fopen(path,"w"); if(!out) return 27;
+        fputs("original\n",out); fclose(out);
+    }
     if (!strcmp(mode,"threads")) {
         pthread_t threads[4];
         for(int i=0;i<4;i++) if(pthread_create(&threads[i],NULL,worker,(void *)(uintptr_t)(i*6))) return 21;
@@ -100,7 +114,13 @@ int main(int argc,char **argv) {
         int n=!strcmp(mode,"overflow")?40:1;
         for(int i=0;i<n;i++)failures+=call_one(i);
     }
-    printf("{\"failures\":%d}\n",failures); return failures?22:0;
+    if (!strcmp(mode,"fork-copy")) {
+        child=fork(); if(child<0)return 28;
+        if(!child) exit(call_one(10));
+        int status; if(waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status))return 29;
+    }
+    printf("{\"failures\":%d,\"pid\":%ld,\"child_pid\":%ld}\n",failures,(long)getpid(),(long)child);
+    return failures?22:0;
 }
 '''
 
@@ -148,18 +168,20 @@ class ProbeControls(unittest.TestCase):
 
     def run_probe(self, mode='normal', variant='good', marker='v1', override=None, output_name=None, app=None):
         directory=self.root/variant
-        output=self.root/(output_name or ('out-'+self.id().rsplit('.',1)[-1]+'.jsonl'))
+        output=self.root/(output_name or ('out-'+self.id().rsplit('.',1)[-1]))
         env=os.environ.copy()
         for key in list(env):
             if key.startswith('CRYSTALHD_TEST_FRAME_PTS'): del env[key]
         env.update(LD_PRELOAD=str(self.root/'probe.so'),
-                   CRYSTALHD_TEST_FRAME_PTS_OUTPUT=str(output),
+                   CRYSTALHD_TEST_FRAME_PTS_PREFIX=str(output),
                    CRYSTALHD_TEST_FRAME_PTS_CODEC_PROVIDER=str(directory/'libcodec.so'),
                    CRYSTALHD_TEST_FRAME_PTS_UTIL_PROVIDER=str(directory/'libutil.so'))
         if marker is not None: env['CRYSTALHD_TEST_FRAME_PTS']=marker
         if override: env.update(override)
         result=self.command([str(app or directory/'app'),mode],env=env)
-        self.assertEqual(json.loads(result.stdout), {'failures':0})
+        identity=json.loads(result.stdout); self.assertEqual(identity['failures'],0)
+        self.last_identity=identity
+        output=Path(str(output)+'-'+str(identity['pid'])+'.jsonl')
         documents=[json.loads(line) for line in output.read_text().splitlines()] if output.exists() else []
         return documents,output
 
@@ -227,14 +249,43 @@ class ProbeControls(unittest.TestCase):
         self.assertEqual(len(docs[1:-1]),32); self.assertEqual(docs[-1]['dropped'],8)
         self.assertFalse(docs[-1]['complete']); self.assertIn('buffer_overflow',docs[-1]['errors'])
 
-    def test_existing_output_is_not_overwritten(self):
-        output=self.root/'existing'; output.write_text('original\n')
-        env=os.environ.copy(); env.update(LD_PRELOAD=str(self.root/'probe.so'),CRYSTALHD_TEST_FRAME_PTS='v1',CRYSTALHD_TEST_FRAME_PTS_OUTPUT=str(output))
-        self.command([str(self.root/'good/app')],env=env)
+    def test_exec_child_cannot_consume_parent_report_path(self):
+        docs,path=self.run_probe('spawn')
+        self.assertEqual(docs[0]['pid'],self.last_identity['pid'])
+        self.assertTrue(docs[-1]['complete']); self.assertEqual(docs[-1]['records'],1)
+        child_path=Path(str(path).replace('-'+str(self.last_identity['pid'])+'.jsonl',
+                                      '-'+str(self.last_identity['child_pid'])+'.jsonl'))
+        child=[json.loads(line) for line in child_path.read_text().splitlines()]
+        self.assertEqual(child[0]['pid'],self.last_identity['child_pid'])
+        self.assertFalse(child[-1]['complete']); self.assertFalse(child[0]['provider_ok'])
+        self.assertEqual(child[-1]['records'],0)
+
+    def test_pre_exec_fork_cannot_relabel_inherited_parent_buffer(self):
+        docs,path=self.run_probe('fork-copy')
+        self.assertEqual(docs[0]['pid'],self.last_identity['pid'])
+        self.assertTrue(docs[-1]['complete']); self.assertEqual(docs[-1]['records'],1)
+        child_path=Path(str(path).replace('-'+str(self.last_identity['pid'])+'.jsonl',
+                                      '-'+str(self.last_identity['child_pid'])+'.jsonl'))
+        self.assertFalse(child_path.exists())
+
+    def test_existing_pid_report_is_not_overwritten(self):
+        prefix=self.root/'existing'
+        env=os.environ.copy(); env.update(LD_PRELOAD=str(self.root/'probe.so'),CRYSTALHD_TEST_FRAME_PTS='v1',CRYSTALHD_TEST_FRAME_PTS_PREFIX=str(prefix))
+        result=self.command([str(self.root/'good/app'),'existing'],env=env)
+        identity=json.loads(result.stdout)
+        self.assertEqual(identity['failures'],0)
+        output=Path(str(prefix)+'-'+str(identity['pid'])+'.jsonl')
         self.assertEqual(output.read_text(),'original\n')
 
+    def test_old_fixed_output_variable_is_ignored(self):
+        docs,_=self.run_probe('invalid',override={
+            'CRYSTALHD_TEST_FRAME_PTS_PREFIX':'',
+            'CRYSTALHD_TEST_FRAME_PTS_OUTPUT':str(self.root/'old-output.jsonl')})
+        self.assertEqual(docs,[])
+        self.assertFalse((self.root/'old-output.jsonl').exists())
+
     def test_relative_output_disables_observation_and_foreign_reads(self):
-        docs,_=self.run_probe('invalid',override={'CRYSTALHD_TEST_FRAME_PTS_OUTPUT':'relative-output.jsonl'})
+        docs,_=self.run_probe('invalid',override={'CRYSTALHD_TEST_FRAME_PTS_PREFIX':'relative-output.jsonl'})
         self.assertEqual(docs,[])
 
 

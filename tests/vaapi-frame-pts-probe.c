@@ -52,6 +52,7 @@ static pthread_once_t once = PTHREAD_ONCE_INIT;
 static receive_fn original_receive;
 static bool active, provider_ok;
 static unsigned codec_version, util_version;
+static pid_t buffer_pid;
 static char output_path[PATH_MAX], codec_path[PATH_MAX], util_path[PATH_MAX];
 static bool copy_path(char *out, const char *value)
 {
@@ -74,13 +75,14 @@ static bool expected_path(const char *actual, const char *variable, const char *
 static void initialize(void)
 {
     int saved = errno;
+    buffer_pid = getpid();
     void *receive_symbol = dlvsym(RTLD_NEXT, "avcodec_receive_frame", "LIBAVCODEC_63");
     bool versioned = receive_symbol != NULL;
     if (!receive_symbol) receive_symbol = dlsym(RTLD_NEXT, "avcodec_receive_frame");
     original_receive = (receive_fn)receive_symbol;
     const char *marker = getenv("CRYSTALHD_TEST_FRAME_PTS");
     active = marker && strcmp(marker, "v1") == 0 &&
-             copy_path(output_path, getenv("CRYSTALHD_TEST_FRAME_PTS_OUTPUT"));
+             copy_path(output_path, getenv("CRYSTALHD_TEST_FRAME_PTS_PREFIX"));
     if (active) {
         void *cv_symbol = dlvsym(RTLD_NEXT, "avcodec_version", "LIBAVCODEC_63");
         void *uv_symbol = dlvsym(RTLD_NEXT, "avutil_version", "LIBAVUTIL_61");
@@ -113,9 +115,13 @@ int avcodec_receive_frame(AVCodecContext *codec, AVFrame *frame)
     /* No next implementation means no original result exists to forward;
      * such a resolver failure cannot produce a qualified observation. */
     if (!original_receive) return -ENOSYS;
-    if (active) atomic_fetch_add_explicit(&inflight, 1, memory_order_relaxed);
+    /* A pre-exec fork inherits records belonging to its parent. Forward calls
+     * without observing that inherited state; exec starts a fresh observer. */
+    bool observing = active && buffer_pid == getpid();
+    if (observing) atomic_fetch_add_explicit(&inflight, 1, memory_order_relaxed);
+    errno = entry_errno;
     int result = original_receive(codec, frame); int saved = errno;
-    if (active && provider_ok && result == 0 && frame && codec) {
+    if (observing && provider_ok && result == 0 && frame && codec) {
         uint64_t begin = now_ns(); int format = frame->format;
         if (format == AV_PIX_FMT_VAAPI) {
             unsigned index = atomic_fetch_add_explicit(&count, 1, memory_order_relaxed);
@@ -132,7 +138,7 @@ int avcodec_receive_frame(AVCodecContext *codec, AVFrame *frame)
             } else atomic_fetch_add_explicit(&dropped, 1, memory_order_relaxed);
         }
     }
-    if (active) atomic_fetch_sub_explicit(&inflight, 1, memory_order_release);
+    if (observing) atomic_fetch_sub_explicit(&inflight, 1, memory_order_release);
     errno = saved; return result;
 }
 static bool write_all(int fd, const char *text, size_t size)
@@ -161,8 +167,13 @@ __attribute__((destructor)) static void flush_observations(void)
 {
     int saved = errno;
     pthread_once(&once, initialize);
-    if (!active) { errno = saved; return; }
-    int fd = open(output_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (!active || buffer_pid != getpid()) { errno = saved; return; }
+    /* PREFIX is absolute. Inherited preload configuration must not
+     * let an exec child consume the media process's O_EXCL output file. */
+    char report_path[PATH_MAX];
+    int path_size = snprintf(report_path, sizeof(report_path), "%s-%ld.jsonl", output_path, (long)getpid());
+    if (path_size <= 0 || (size_t)path_size >= sizeof(report_path)) { errno = saved; return; }
+    int fd = open(report_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) { errno = saved; return; }
     char line[1400]; unsigned total = atomic_load_explicit(&count, memory_order_acquire);
     unsigned n = total < FRAME_PTS_CAPACITY ? total : FRAME_PTS_CAPACITY;

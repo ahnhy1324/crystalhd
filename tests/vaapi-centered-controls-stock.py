@@ -65,7 +65,12 @@ def frame_pts_environment(source, enabled):
     return ['--ro-bind', str(source / FRAME_PTS_IMAGE), FRAME_PTS_MOUNT,
             '--setenv', 'LD_PRELOAD', FRAME_PTS_MOUNT,
             '--setenv', 'CRYSTALHD_TEST_FRAME_PTS', 'v1',
-            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS_OUTPUT', '/payload/frame-pts.jsonl']
+            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS_PREFIX', '/payload/frame-pts']
+
+
+def frame_pts_report_path(payload_directory, owned_pid):
+    require(type(owned_pid) is int and owned_pid > 0, 'owned frame PTS PID must be positive integer')
+    return payload_directory / ('frame-pts-' + str(owned_pid) + '.jsonl')
 
 
 def frame_pts_mapping(pid, source, pins):
@@ -83,15 +88,18 @@ def frame_pts_mapping(pid, source, pins):
     return {'path': FRAME_PTS_MOUNT, 'device': device, 'inode': inode, 'sha256': expected}
 
 
-def audit_frame_pts(reader, report_path, trace_path, payload_records):
+def audit_frame_pts(reader, report_path, trace_path, payload_records, owned_pid):
+    require(type(owned_pid) is int and owned_pid > 0, 'owned frame PTS PID must be positive integer')
     selected = []
     for record in payload_records:
         require(record['audit']['status'] == 'PASS', 'frame PTS needs independently qualified source payloads')
         instance = record['audit']['payload_audit']['driver_instance']
-        selected.extend(dict(item, driver_instance=instance, phase=record['phase'])
+        selected.extend(dict(item, driver_instance=instance, phase=record['phase'], pid=owned_pid)
                         for item in record['audit']['selected_source_bindings'])
     result = reader.audit_frames(report_path, trace_path, selected_bindings=selected)
     require(result.get('status') == 'PASS', 'actual AVFrame PTS binding audit failed: ' + json.dumps(result))
+    require(type(result.get('pid')) is int and result['pid'] == owned_pid,
+            'frame PTS report PID differs from the verified owned application')
     require(type(result['selected_joins']) is list and len(result['selected_joins']) == len(selected),
             'selected frame PTS population differs')
     natural = {(row['driver_instance'], row['binding']['context'], row['binding']['generation'])
@@ -745,7 +753,9 @@ def main():
                         if observe_frame_pts:
                             require(not live and report.get('boundary_equal'), 'frame PTS report requires completed owned shutdown and restored boundary')
                             frame_reader = load('centered_controls_frame_pts_reader', FRAME_PTS_READER)
-                            result = audit_frame_pts(frame_reader, case / 'payload/frame-pts.jsonl', case / 'kodi.stdout', report['payload_audits'])
+                            frame_report = frame_pts_report_path(case / 'payload', kid['pid'])
+                            report['frame_pts_report'] = str(frame_report)
+                            result = audit_frame_pts(frame_reader, frame_report, case / 'kodi.stdout', report['payload_audits'], kid['pid'])
                             report['frame_pts_audit'] = result; save(case / 'frame-pts-audit.json', result)
             except BaseException as error:
                 report['errors'].append({'step': 'cleanup/final-observation', 'error': fault(error)})
