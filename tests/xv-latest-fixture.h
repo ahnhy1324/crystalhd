@@ -314,27 +314,205 @@ static void test_latest_window(void) { latest_coalescing(1, 1); }
 static void test_latest_port(void) { latest_coalescing(1, 2); }
 static void test_latest_caps(void) { latest_coalescing(1, 3); }
 
-static void test_caps_borders_default(void)
+typedef struct {
+  LatestOutput output;
+  GstElement *pipeline, *source, *sink;
+  GstBus *bus;
+  XvContext *c;
+  GstVideoInfo info;
+  guint offered;
+  gint returned, seeks;
+  guint64 seek_offset;
+} LatestPipeline;
+static void latest_memory_returned(gpointer data, GstMiniObject *memory)
+{
+  (void)memory; g_atomic_int_inc((gint *)data);
+}
+static gboolean latest_seek_data(GstAppSrc *source, guint64 offset, gpointer data)
+{
+  (void)source; LatestPipeline *p = data; p->seek_offset = offset;
+  g_atomic_int_inc(&p->seeks); return TRUE;
+}
+static void latest_offer(LatestPipeline *p, guint id, GstClockTime pts)
+{
+  GstBuffer *buffer = latest_source(NULL, &p->info, id); GST_BUFFER_PTS(buffer) = pts;
+  gst_mini_object_weak_ref(GST_MINI_OBJECT(gst_buffer_peek_memory(buffer, 0)), latest_memory_returned, &p->returned);
+  p->offered++; g_assert_cmpint(gst_app_src_push_buffer(GST_APP_SRC(p->source), buffer), ==, GST_FLOW_OK);
+}
+static void latest_pipeline_begin(LatestPipeline *p, gboolean seekable)
+{
+  memset(p, 0, sizeof(*p)); latest_output_open(&p->output);
+  GError *error = NULL;
+  p->pipeline = gst_parse_launch("appsrc name=input format=time is-live=true ! "
+      "crystalhdxvsink name=output latest-frame=true sync=false qos=false "
+      "show-preroll-frame=false enable-last-sample=false", &error);
+  g_assert_no_error(error); p->source = gst_bin_get_by_name(GST_BIN(p->pipeline), "input");
+  p->sink = gst_bin_get_by_name(GST_BIN(p->pipeline), "output"); p->bus = gst_element_get_bus(p->pipeline);
+  if (seekable) {
+    g_object_set(p->source, "stream-type", GST_APP_STREAM_TYPE_SEEKABLE, NULL);
+    g_signal_connect(p->source, "seek-data", G_CALLBACK(latest_seek_data), p);
+  }
+  p->info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&p->info);
+  gst_app_src_set_caps(GST_APP_SRC(p->source), caps); gst_caps_unref(caps);
+  gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(p->sink), p->output.window);
+  g_assert_cmpint(gst_element_set_state(p->pipeline, GST_STATE_PLAYING), !=, GST_STATE_CHANGE_FAILURE);
+  p->c = sink_context(XV_SINK(p->sink)); g_assert_nonnull(p->c); latest_hold(p->c);
+  for (guint id = 0; id < 8; id++) latest_offer(p, id, id * 20 * GST_MSECOND);
+  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US; gboolean queued = FALSE;
+  while (!queued && g_get_monotonic_time() < end) {
+    g_mutex_lock(&p->c->lock);
+    queued = !p->c->failed && p->c->latest_queued == 5 && p->c->video_submitted == 3 && latest_held() == 3;
+    g_mutex_unlock(&p->c->lock); if (!queued) g_usleep(1000);
+  }
+  g_assert_true(queued); g_mutex_lock(&p->c->lock);
+  g_assert_nonnull(p->c->latest_buffer); g_assert_cmpuint(GST_BUFFER_OFFSET(p->c->latest_buffer), ==, 7);
+  g_assert_cmpuint(GST_BUFFER_PTS(p->c->latest_buffer), ==, 140 * GST_MSECOND); latest_ledger(p->c);
+  g_mutex_unlock(&p->c->lock);
+}
+static void latest_pipeline_end(LatestPipeline *p)
+{
+  g_assert_cmpint(gst_element_set_state(p->pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
+  latest_unhold(p->c); context_unref(p->c);
+  gst_object_unref(p->source); gst_object_unref(p->sink); gst_object_unref(p->bus); gst_object_unref(p->pipeline);
+  clean_contexts(); gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  while ((guint)g_atomic_int_get(&p->returned) != p->offered && g_get_monotonic_time() < end) g_usleep(1000);
+  g_assert_cmpuint(g_atomic_int_get(&p->returned), ==, p->offered); latest_output_close(&p->output);
+  g_test_message("Latest public pipeline: all%u original source memory objects returned", p->offered);
+}
+static void latest_wait_eos_drain(XvContext *c)
+{
+  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US; gboolean waiting = FALSE;
+  while (!waiting && g_get_monotonic_time() < end) {
+    g_mutex_lock(&c->lock); waiting = !c->failed && c->redraw_suspended >= 2;
+    g_mutex_unlock(&c->lock); if (!waiting) g_usleep(1000);
+  }
+  g_assert_true(waiting);
+}
+static void test_latest_eos(void)
+{
+  if (!x11_enabled()) return;
+  LatestPipeline p; latest_pipeline_begin(&p, FALSE);
+  g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(p.source)), ==, GST_FLOW_OK); latest_wait_eos_drain(p.c);
+  GstMessage *message = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+  g_assert_null(message);
+  /* Each completion is healthy under1s, but old+queued stages exceed1s together. */
+  g_usleep(600000); latest_release(p.c, 3); latest_wait_final_ack(p.c);
+  message = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+  g_assert_null(message); g_mutex_lock(&p.c->lock);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(p.c->last_buffer), ==, 7);
+  g_assert_cmpuint(GST_BUFFER_PTS(p.c->last_buffer), ==, 140 * GST_MSECOND);
+  XvFlight *last = NULL;
+  for (guint i = 0; i < XV_DEPTH; i++) if (p.c->flights[i].memory) last = &p.c->flights[i];
+  g_assert_nonnull(last); latest_memory(last->memory, &p.info, 7); g_mutex_unlock(&p.c->lock);
+  g_usleep(600000); latest_release(p.c, 1); await_message(p.pipeline, GST_MESSAGE_EOS);
+  g_mutex_lock(&p.c->lock); g_assert_cmpuint(p.c->pending, ==, 0); g_assert_null(p.c->latest_buffer);
+  g_assert_cmpuint(p.c->video_submitted, ==, 4); g_assert_cmpuint(p.c->latest_replaced, ==, 4);
+  g_assert_cmpuint(p.c->acknowledged, ==, p.c->submitted); latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
+  latest_pipeline_end(&p); g_test_message("Actual EOS waits for pending latest and its real matching final ACK");
+}
+typedef struct { GstElement *pipeline; gint finished; gboolean result; } LatestSeek;
+static gpointer latest_do_seek(gpointer data)
+{
+  LatestSeek *job = data; job->result = gst_element_seek_simple(job->pipeline, GST_FORMAT_TIME,
+      GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT, 400 * GST_MSECOND);
+  g_atomic_int_set(&job->finished, TRUE); return NULL;
+}
+static void test_latest_flush_seek(void)
+{
+  if (!x11_enabled()) return;
+  LatestPipeline p; latest_pipeline_begin(&p, TRUE);
+  g_assert_cmpint(gst_element_set_state(p.pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+  GstState state; g_assert_cmpint(gst_element_get_state(p.pipeline, &state, NULL, 50 * GST_MSECOND), !=, GST_STATE_CHANGE_FAILURE);
+  g_assert_cmpint(state, ==, GST_STATE_PAUSED);
+  g_mutex_lock(&p.c->lock); g_assert_nonnull(p.c->latest_buffer);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(p.c->latest_buffer), ==, 7); g_assert_cmpuint(p.c->latest_cancelled, ==, 0);
+  g_mutex_unlock(&p.c->lock);
+  LatestSeek job = {.pipeline = p.pipeline}; GThread *thread = g_thread_new("latest-flush-seek", latest_do_seek, &job);
+  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US; gboolean cancelled = FALSE;
+  while (!cancelled && g_get_monotonic_time() < end) {
+    g_mutex_lock(&p.c->lock); cancelled = !p.c->failed && p.c->latest_cancelled == 1 && !p.c->latest_buffer;
+    g_mutex_unlock(&p.c->lock); if (!cancelled) g_usleep(1000);
+  }
+  g_assert_true(cancelled); g_mutex_lock(&p.c->lock);
+  g_assert_cmpuint(p.c->pending, ==, 3); g_assert_cmpuint(p.c->video_submitted, ==, 3);
+  for (guint i = 0; i < 3; i++) { g_assert_true(p.c->flights[i].memory->server_owned); latest_memory(p.c->flights[i].memory, &p.info, i); }
+  latest_ledger(p.c); g_mutex_unlock(&p.c->lock); latest_release(p.c, 3);
+  g_thread_join(thread); g_assert_true(job.result); g_assert_cmpint(g_atomic_int_get(&p.seeks), >, 0);
+  g_assert_cmpuint(p.seek_offset, ==, 400 * GST_MSECOND); g_mutex_lock(&p.c->lock);
+  end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  while (p.c->pending && !p.c->failed && g_get_monotonic_time() < end) g_cond_wait_until(&p.c->changed, &p.c->lock, end);
+  g_assert_cmpuint(p.c->pending, ==, 0); g_assert_null(p.c->last_buffer); g_mutex_unlock(&p.c->lock); latest_unhold(p.c);
+  g_assert_cmpint(gst_element_set_state(p.pipeline, GST_STATE_PLAYING), !=, GST_STATE_CHANGE_FAILURE);
+  latest_offer(&p, 8, 400 * GST_MSECOND);
+  g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(p.source)), ==, GST_FLOW_OK); await_message(p.pipeline, GST_MESSAGE_EOS);
+  g_mutex_lock(&p.c->lock); g_assert_cmpuint(p.c->video_submitted, ==, 4);
+  g_assert_cmpuint(p.c->latest_submitted, ==, 0); g_assert_cmpuint(p.c->latest_cancelled, ==, 1);
+  g_assert_cmpuint(GST_BUFFER_OFFSET(p.c->last_buffer), ==, 8);
+  g_assert_cmpuint(GST_BUFFER_PTS(p.c->last_buffer), ==, 400 * GST_MSECOND); latest_ledger(p.c);
+  g_mutex_unlock(&p.c->lock); latest_pipeline_end(&p);
+  g_test_message("Actual pause preserves latest; flushing seek cancels it without reusing3 server-owned slots; original fresh ID8/PTS400ms reaches EOS");
+}
+static void test_latest_submit_error(void)
+{
+  if (!x11_enabled()) return;
+  LatestPipeline p; latest_pipeline_begin(&p, FALSE);
+  g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(p.source)), ==, GST_FLOW_OK); latest_wait_eos_drain(p.c);
+  g_atomic_pointer_set(&fail_flush_connection, p.c->connection); latest_release(p.c, 3);
+  await_message(p.pipeline, GST_MESSAGE_ERROR);
+  gint64 end = g_get_monotonic_time() + 2 * XV_TIMEOUT_US;
+  g_mutex_lock(&p.c->lock);
+  while (!p.c->closed && g_get_monotonic_time() < end) g_cond_wait_until(&p.c->changed, &p.c->lock, end);
+  g_assert_true(p.c->failed); g_assert_true(p.c->closed); g_assert_false(p.c->quarantined);
+  g_assert_cmpstr(p.c->failure, ==, "Xv image submission flush failed");
+  g_assert_cmpuint(p.c->pending, ==, 0); g_assert_cmpuint(p.c->terminal, ==, 1);
+  g_assert_cmpuint(p.c->acknowledged, ==, 3); g_assert_cmpuint(p.c->latest_submitted, ==, 1);
+  g_assert_null(p.c->latest_buffer); latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
+  g_assert_null(g_atomic_pointer_get(&fail_flush_connection));
+  GstMessage *eos = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS); g_assert_null(eos);
+  latest_pipeline_end(&p); g_test_message("Controlled queued submission flush failure: ERROR, no successful EOS, positive detach before terminal retirement");
+}
+static void test_latest_stop_pool(void)
 {
   if (!x11_enabled()) return;
   LatestOutput output; latest_output_open(&output);
-  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", TRUE, NULL);
   gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), output.window);
   g_assert_true(sink_start(GST_BASE_SINK(sink))); XvContext *c = sink_context(XV_SINK(sink));
-  g_mutex_lock(&c->lock); c->redraw_suspended++; g_assert_false(c->latest_frame); g_mutex_unlock(&c->lock);
-  guint8 previous[3], current[3];
-  for (guint step = 0; step < 2; step++) {
-    GstVideoInfo info = info_for(step ? 640 : 320, step ? 360 : 240);
-    GstCaps *caps = gst_video_info_to_caps(&info);
-    g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
-    GstBuffer *buffer = latest_source(NULL, &info, 7 + step);
-    g_assert_cmpint(submit_buffer(c, &info, buffer, NULL), ==, GST_FLOW_OK);
-    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
-    latest_rgb(c, step ? current : previous);
-    if (step) window_pixel_locked(c, c->width / 2, 1, FALSE);
-    g_mutex_unlock(&c->lock); gst_buffer_unref(buffer);
+  GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info); GstBuffer *buffers[4]; latest_hold(c);
+  for (guint i = 0; i < 4; i++) {
+    buffers[i] = latest_source(pool, &info, i);
+    g_assert_cmpint(submit_buffer(c, &info, buffers[i], buffer_memory(buffers[i])), ==, GST_FLOW_OK);
   }
-  g_assert_cmpint(memcmp(previous, current, 3), !=, 0);
-  sink_stop(GST_BASE_SINK(sink)); context_unref(c); gst_object_unref(sink); clean_contexts(); latest_output_close(&output);
-  g_test_message("Default FIFO caps4:3->16:9: new source pixels and black bars replace all old covered regions");
+  latest_wait_held(3); g_assert_true(sink_unlock(GST_BASE_SINK(sink)));
+  g_mutex_lock(&c->lock); g_assert_true(c->latest_buffer == buffers[3]); g_assert_cmpuint(c->latest_cancelled, ==, 0); g_mutex_unlock(&c->lock);
+  g_assert_true(sink_stop(GST_BASE_SINK(sink))); latest_unhold(c); g_mutex_lock(&c->lock);
+  g_assert_true(c->closed); g_assert_false(c->failed); g_assert_false(c->quarantined);
+  g_assert_cmpuint(c->pending, ==, 0); g_assert_cmpuint(c->terminal, ==, 3);
+  g_assert_cmpuint(c->latest_cancelled, ==, 1); g_assert_cmpuint(c->latest_submitted, ==, 0);
+  g_assert_null(c->last_buffer); g_assert_null(c->latest_buffer); latest_ledger(c); g_mutex_unlock(&c->lock);
+  for (guint i = 0; i < 4; i++) gst_buffer_unref(buffers[i]);
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  context_unref(c); gst_object_unref(sink); clean_contexts(); latest_output_close(&output);
+  g_test_message("Stop after temporary unlock retires3 pooled flights +retained picture +pending latest refs outside lock; all6 pool images released");
+}
+static void test_latest_missing_ack(void)
+{
+  if (!x11_enabled()) return;
+  LatestPipeline p; latest_pipeline_begin(&p, FALSE);
+  g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(p.source)), ==, GST_FLOW_OK); latest_wait_eos_drain(p.c);
+  /* Keep the old ACKs held: the original per-flight deadline must still fail,
+   * rather than accepting EOS under the new two-stage aggregate budget. */
+  await_message(p.pipeline, GST_MESSAGE_ERROR);
+  gint64 end = g_get_monotonic_time() + 2 * XV_TIMEOUT_US; g_mutex_lock(&p.c->lock);
+  while (!p.c->closed && g_get_monotonic_time() < end) g_cond_wait_until(&p.c->changed, &p.c->lock, end);
+  g_assert_true(p.c->failed); g_assert_true(p.c->closed); g_assert_false(p.c->quarantined);
+  g_assert_cmpstr(p.c->failure, ==, "Missing shared image completion");
+  g_assert_cmpuint(p.c->pending, ==, 0); g_assert_cmpuint(p.c->terminal, ==, 3);
+  g_assert_cmpuint(p.c->acknowledged, ==, 0); g_assert_cmpuint(p.c->latest_submitted, ==, 0);
+  g_assert_cmpuint(p.c->latest_cancelled, ==, 1); g_assert_null(p.c->latest_buffer);
+  latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
+  GstMessage *eos = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS); g_assert_null(eos);
+  latest_pipeline_end(&p); g_test_message("Missing old ACKs still fail the original per-flight deadline; unsent latest cancelled, positive detach, no successful EOS");
 }

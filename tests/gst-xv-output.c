@@ -555,8 +555,12 @@ static void paused_resize(gboolean pooled)
   window_pixel_locked(c, 320, 180, TRUE); window_pixel_locked(c, 0, 0, FALSE);
   g_assert_true(c->last_buffer == identity); g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, pts);
   g_assert_cmpuint(c->video_submitted, ==, video);
-  before = c->redraw_submitted; g_mutex_unlock(&c->lock);
+  g_mutex_unlock(&c->lock);
   gst_element_send_event(pipeline, gst_event_new_flush_start());
+  /* An already requested redraw may retire before FLUSH_START reaches the
+   * sink. Measure suppression after that synchronous cancellation boundary. */
+  g_mutex_lock(&c->lock); g_assert_null(c->last_buffer);
+  before = c->redraw_submitted; g_mutex_unlock(&c->lock);
   gst_element_send_event(pipeline, gst_event_new_flush_stop(TRUE));
   gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   g_usleep(50000);
@@ -1477,7 +1481,7 @@ static void test_caps_aspect_borders(void)
     GstBuffer *buffer = pattern_buffer(&info, step);
     solid_pool_buffer(buffer, &info, step == 0, step);
     g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
-    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
     window_pixel_locked(c, 160, 120, step == 0); /* New source is actually painted. */
     window_pixel_locked(c, 160, 1, step == 0); /* Newly exposed bar must become black. */
     g_mutex_unlock(&c->lock); gst_buffer_unref(buffer);
@@ -1741,14 +1745,19 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/live-port-handoff", test_live_port_handoff);
   g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
-  g_test_add_func("/xv/x11/latest/copy", test_latest_copy);
-  g_test_add_func("/xv/x11/latest/pool", test_latest_pool);
-  g_test_add_func("/xv/x11/latest/mixed", test_latest_mixed);
-  g_test_add_func("/xv/x11/latest/fifo-control", test_latest_fifo);
-  g_test_add_func("/xv/x11/latest/window", test_latest_window);
-  g_test_add_func("/xv/x11/latest/port", test_latest_port);
-  g_test_add_func("/xv/x11/latest/caps", test_latest_caps);
-  g_test_add_func("/xv/x11/latest/default-caps-borders", test_caps_borders_default);
+  g_test_add_func("/xv/x11/latest-copy", test_latest_copy);
+  g_test_add_func("/xv/x11/latest-pool", test_latest_pool);
+  g_test_add_func("/xv/x11/latest-mixed", test_latest_mixed);
+  g_test_add_func("/xv/x11/latest-fifo-control", test_latest_fifo);
+  g_test_add_func("/xv/x11/latest-window", test_latest_window);
+  g_test_add_func("/xv/x11/latest-port", test_latest_port);
+  g_test_add_func("/xv/x11/latest-caps", test_latest_caps);
+  g_test_add_func("/xv/x11/latest-eos", test_latest_eos);
+  g_test_add_func("/xv/x11/latest-flush-seek", test_latest_flush_seek);
+  g_test_add_func("/xv/x11/latest-submit-error", test_latest_submit_error);
+  g_test_add_func("/xv/x11/latest-stop-pool", test_latest_stop_pool);
+  g_test_add_func("/xv/x11/latest-missing-ack", test_latest_missing_ack);
+
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
   g_test_add_func("/xv/card/error-reopen-default", test_native_error_reopen_default);

@@ -614,7 +614,10 @@ static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus
 }
 static gboolean drain_locked(XvContext *c, gboolean include_latest)
 {
-  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  /* An unsent latest may first wait for an old flight, then its own ACK.
+   * Each flight still has its original1s deadline; FIFO/handoff stays1 stage. */
+  gint64 budget = XV_TIMEOUT_US + (include_latest && c->latest_buffer ? XV_TIMEOUT_US : 0);
+  gint64 end = g_get_monotonic_time() + budget;
   gboolean ok = TRUE;
   c->redraw_suspended++;
   if (include_latest && c->latest_buffer) wake_context(c);
