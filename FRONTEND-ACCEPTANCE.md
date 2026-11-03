@@ -7,8 +7,10 @@ This maps remaining [#445](https://github.com/ahnhy1324/crystalhd/issues/445),
 [#538](https://github.com/ahnhy1324/crystalhd/issues/538) and
 [#400](https://github.com/ahnhy1324/crystalhd/issues/400) to existing software
 harnesses and the actual target each claim needs. It is preparation, not a new
-execution receipt. Use [the capability index](STATUS-2026-10-31.md) for the
-current merged/ready and PASS/FAIL/NOT RUN boundary.
+execution receipt. Use [TODO.md](TODO.md) for current work and the
+[documentation index](DOCUMENTATION.md) to find current guides and retained
+receipts. The [October31 capability snapshot](STATUS-2026-10-31.md) describes
+that date's merged/ready and PASS/FAIL/NOT RUN boundary.
 
 The connected physical target is Core 2 Duo T8100 / BCM70015 / Intel 965GM.
 Historical reporter Atom/i386, native ELF32 on an x86_64 kernel, QEMU no-SSE
@@ -75,12 +77,22 @@ runtime source was a completed full frame; compact first-field processing is
 covered by CPU controls only. This narrows the remaining pixel gap without
 claiming all-field, source/outputPTS, GPU retirement or displayed cadence.
 
+The later progressive centered Off observations add full source90/91 NV12
+ROI/border checks, seek/Stop and same-process natural reopen on original
+Kodi22RC1. The [raw AVFrame-PTS observation](tests/fixtures/issue477/centered-frame-pts-20261103.json)
+joins returned raw timestamps to OWN bindings; both runtime time bases are
+unset (`0/1`), so no seconds-based correspondence is inferred. The
+[CPU-copy receipt](tests/fixtures/issue477/centered-cpu-copy-20261103.json)
+also observes the original postprocessor/readback route in each play.
+These use isolated OWN instrumentation; all post-copy YUV bytes, interlaced
+BWDIF, GPU return and normal-backend/release acceptance remain separate.
+
 | Remaining claim | Existing fixture/harness to reuse | Evidence still required |
 | --- | --- | --- |
-| #445 interrupted seek/pause/Stop source identity and per-object return | Original-stock progressive control in `tests/fixtures/issue510/player-window-trace-20261030.json`; the private patched `publish-order-*` records are withdrawn historical observations only | Current original Kodi/FFmpeg executable and mapped own VA/DIL identities; selected decoded source/frame/field PTS; actual full NV12 crop/chroma; object acquisition/borrow/return across cancellation/flush/reset/reopen. Empty global counters and media-clock settlement alone are insufficient. |
-| #436 selected TFF/BFF Bob and BWDIF semantics | Existing #319 TFF/BFF and #414 750-picture FHD fixtures; `tests/fixtures/issue436/native-single-field.json`, `card-scaled-bob.json`; preserved FFmpeg field references | Off/Auto/CPU fallback distinguished, exact input count versus two progressive outputs per complete picture, parity/cadence/chroma and independently captured field-rate reference. Keep default stream-loop 296/300 and original Kodi duplicate-pair PTS FAILs. |
+| #445 interrupted seek/pause/Stop source identity and per-object return | Original-stock progressive control in `tests/fixtures/issue510/player-window-trace-20261030.json` and the scoped centered Off receipts above; private modified-client `publish-order-*` records remain historical observations only | Extend selected progressive source/content and raw-PTS joins to remaining field/clock and per-object return claims across cancellation/flush/reset/reopen. Actual defensive generation reset remains CPU-controlled. Empty global counters and media-clock settlement alone are insufficient; full GPU return is not observed. |
+| #436 selected TFF/BFF Bob and BWDIF semantics | Existing #319 TFF/BFF and #414 750-picture FHD fixtures; `tests/fixtures/issue436/native-single-field.json`, `card-scaled-bob.json`; preserved FFmpeg field references; progressive Off CPU-copy receipt above | Interlaced BWDIF needs its own actual route, exact input/two-output census, parity/cadence/chroma and independent post-filter reference. Progressive Off readback does not qualify BWDIF. Keep default stream-loop 296/300 and original Kodi duplicate-pair PTS FAILs. |
 | Historical #429 reporter/native-i386 disposition | Reporter RC3/RC4/RC5 identities and original results in closed #429 | Current physical Atom/i386 is unavailable/NOT_RUN and outside this execution queue. Current-host follow-up belongs to #91/#436/#445/#510; do not reopen #429 or require a new target to proceed. |
-| #477 centered crop and cadence | `tests/fixtures/issue477/l0s-kodi-20261024.json`, original 902/9,001-picture progressive, TFF/BFF and true60p no-B/B-reference cases | Extend full NV12 ROI/borders/field identity to Off/CPU fallback and 1080i29.97, natural EOS/seek/reopen and current sources. For any performance claim, matched source/policy/link state, useful ROI and declared detail reduction; software render selection and elapsed time remain separate from scanout. |
+| #477 centered crop and cadence | `tests/fixtures/issue477/l0s-kodi-20261024.json`, original 902/9,001-picture progressive, TFF/BFF and true60p cases; `centered-seek-target-20261103.json`, raw-PTS and CPU-copy receipts above | Progressive Off selected full NV12 seek targets, Stop and natural reopen are complete in the diagnostic scope. Next is 1080i29.97/method7 BWDIF with dedicated short-input metadata and independent post-filter pixels/cadence; the retained native Weave reference is not a BWDIF oracle. All post-copy bytes and GPU return remain unqualified. Performance claims still require matched source/policy/link state and declared detail reduction. |
 | Optional physical cadence/scanout research | Existing source barcodes/field-order references and display observations | Physical display capture is needed only for a physical cadence/scanout claim. It is not an added A/V gate: source-qualified logs with no detected drift suffice for the exact route. A RenderCapture barcode establishes content rather than display time. |
 
 The public synchronous/pipelined VA readback/export probe already supplies a
@@ -207,7 +219,10 @@ first instance and uses GTK's ordinary creation/initialization/ownership/disposa
 with no manual accessible cache or destroy hook. The retained regression and
 new source-English/installed-Korean observers are in the linked receipt;
 the exact native finalizer stack was not observed, so no upstream defect is
-attributed. Final hosted compatibility belongs to the source pinned in PR612.
+attributed. The later #623 interpreter/finalizer crash remains unresolved;
+the [native crash collector](tests/fixtures/issue400/gtk-native-capture-20261103.json)
+adds bounded diagnostic capture, not a reproduced cause or repair. Historical
+green checks and PR612 do not establish that this separate crash is fixed.
 
 The optional #611 [Kodi frontend](addons/script.crystalhd.settings/README.md)
 uses native dialogs and shared CLI metadata/writes. Device-free dialog tests

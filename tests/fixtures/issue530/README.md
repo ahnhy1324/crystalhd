@@ -6,6 +6,15 @@ The first stage is a synthetic experiment on Intel 965GM. The subsequent
 native integration below uses real CrystalHD output. Neither stage qualifies
 a supported frontend, VA Bob replacement or physical presentation.
 
+This page separates the current experimental consumer from retained,
+source-pinned experiments. Start with the [window consumer](#experimental-window-consumer),
+[current response deadlines](#x11-response-deadlines-current-implementation)
+and [NV12 contract](#nv12-input--2026-11-03). The dated window/retirement/wait
+observations preserve earlier limits and failures; their old test counts and
+NOT RUN statements describe those revisions. The
+[offscreen probe](#offscreen-egl-field-view-probe) and
+[finite-file integration](#native-finite-file-integration) are separate routes.
+
 ## Experimental window consumer
 
 `filters/gst/field-output` is an explicit-build, rank-NONE GStreamer sink;
@@ -80,6 +89,33 @@ these PTS. Timestamped-container playback above is a separate observation.
 In those historical runs, live input, NV12, native i386, long endurance and
 physical scanout timing remain unqualified. The installed module, PM, links, pins and AER boundaries
 are unchanged; finite playback does not advance #533's nonempty-drain gate.
+
+### X11 response deadlines (current implementation)
+
+Local connection/protocol setup has the bounded watchdog described below.
+Each own InternAtom response wait has a fixed one-second limit after its
+request flush, including partial replies and unrelated events. In `resize()`,
+parent and child geometry responses share one one-second deadline after the
+initial flush. A later reply barrier confirms a checked configure within that
+same budget; error retrieval adds no network sync. Received replies are freed,
+unresolved sequences are discarded locally on failure, and cached size changes
+only after both geometry responses and any configure complete successfully.
+The [resize completion receipt](field-resize-completion-20261103.json) retains
+the shared-budget and rejection controls.
+
+During replacement, own/target geometry, ancestry queries and checked
+standalone creation/reparent/configure/old-parent unsubscribe completions share
+one one-second response deadline after the first geometry flush. Read-only
+rejection on a live connection keeps the attachment; an uncertain mutation
+reports an error and retires the worker. Cached parent, standalone mode and
+dimensions commit together after the required completions. The
+[handoff observations](#window-handoff-response-deadline--2026-11-03) retain
+their exact tested scope.
+
+XID replenishment inside the standalone allocator, congested writes, EGL and
+other synchronous calls remain outside these explicit response-wait limits.
+They do not bound the whole Window constructor, replacement, resize, shutdown
+or system X-server restart.
 
 ### NV12 input — 2026-11-03
 
@@ -178,8 +214,9 @@ without a real display or GPU. Actual reopen is explicit:
 Field output now requires local `:N` or `unix/:N` DISPLAY; host/TCP displays
 are explicitly rejected and have no qualified remote fallback. This deadline
 does not interrupt Xauthority filesystem I/O or bound later EGL/atom/geometry
-calls, universal start/stop time, or system X-server restart. Those remaining
-interruption scopes are not completed by this setup fix.
+calls, universal start/stop time, or system X-server restart. Later explicit
+atom/geometry/handoff response guards have the separate current contract above;
+they do not turn this setup result into universal interruption coverage.
 
 The [GStreamer version fixture repair](caps-fixture-portability-20261103.json)
 retains the original Ubuntu24 rejection-test failure. Our old negative input

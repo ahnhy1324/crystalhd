@@ -8,6 +8,14 @@ The existing noncentered Bob observer and its scope remain unchanged.
 Its private output variable is `CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR`. Ordinary
 build, install and runtime have no new state, copies or environment reader.
 
+Read [payload publication](#observation-and-publication) and
+[manifest formats](#manifest-v1) for the byte/binding contract. The separate
+[returned-frame PTS observer](#actual-returned-avframe-pts-isolated-observation)
+and [progressive Off CPU-copy route](#progressive-off-cpu-copy-route) add
+diagnostic observations; they do not expand the base payload protocol into
+post-copy pixel, BWDIF or GPU/scanout qualification. Current receipts are
+indexed by the [frontend acceptance targets](../FRONTEND-ACCEPTANCE.md).
+
 ## Observation and publication
 
 One driver reserves three decoder `(context,generation)` lifetimes. The default

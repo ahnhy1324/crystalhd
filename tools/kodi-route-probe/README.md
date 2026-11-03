@@ -1,9 +1,19 @@
 # Kodi FFmpeg metadata and native PTS inspection
 
+Use the [native runtime delivery guide](../../NATIVE-RUNTIME-DELIVERY.md) to
+install the published companion, or the [ordinary Kodi guide](../../USAGE.md#kodi)
+for VA-API playback. This page is for maintainers inspecting package metadata,
+source/caller PTS and retained diagnostic evidence.
+
 These own diagnostic tools inspect a trusted Kodi package's FFmpeg decoder
 metadata and compare source/caller/returned PTS for #607. They do not install a
 decoder, change backend selection, or qualify the private native FFmpeg runtime
 for distribution.
+
+For the separately published 1.3.0-rc.2 native companion and its qualification,
+use [delivery](../../NATIVE-RUNTIME-DELIVERY.md) and
+[acceptance](../../NATIVE-RUNTIME-ACCEPTANCE.md). Fixture verdicts here describe
+the individual probes, not the current companion's publication status.
 
 ## Device-free checks
 
@@ -83,7 +93,14 @@ The preserved namespace/CLI observers retain bounded subprocess timeout cleanup;
 the CLI also retains forceful cleanup of an unfinished software child. An actual
 operator run must keep its own execution and restoration evidence separate.
 
-## Guarded native activation and current observations
+<a id="guarded-native-activation-and-current-observations"></a>
+
+## Historical native activation observations
+
+The following retained October29–31 runs used a temporary research module.
+They explain the original missing-node result and are not instructions to
+change the module during current stable-module-only research. Current delivery
+selection and accepted scope belong to the companion guides linked above.
 
 The stable `3.10.13` baseline provides `/dev/crystalhd`; it lacks the native
 decoding video node required by the unchanged FFmpeg implementation. The pinned
@@ -176,10 +193,11 @@ configure or compile FFmpeg. The aggregate `check` target includes them.
 reproducible packaging and relocation. It also passes producer output through
 the current pinned-target preflight and actual private slot install, rejected
 update, valid update, rollback and repeated removal. The fixture executables
-are never run. These checks retain `PUBLIC_NOT_READY` and do not establish
-native playback, source/binary correspondence or complete dependency notices.
+are never run. These synthetic fixtures retain `PUBLIC_NOT_READY` and do not
+establish native playback, source/binary correspondence or complete dependency notices.
 
-Public native-runtime distribution remains `PUBLIC_NOT_READY`. The VA fallback,
-system Kodi/FFmpeg and installed module/firmware files remain unchanged; temporary
-activation requires verified stable restoration. #538's excluded shutdown
-heap-abort subtask remains outside these checks.
+`PUBLIC_NOT_READY` is the fixture/inner-producer status, not a blanket verdict
+on the separately qualified published companion. These checks alone cannot
+promote another runtime or target. Actual temporary activation requires its
+own verified stable restoration. #538's excluded shutdown heap-abort subtask
+remains outside these checks.

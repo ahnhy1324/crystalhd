@@ -1,5 +1,9 @@
 # Compilerless native runtime: current cohort and retained preparation
 
+Current overview reviewed **2026-11-04**. Use the [documentation map](DOCUMENTATION.md)
+for the distinction between current operator guides, tool contracts and dated
+preparation evidence.
+
 The compatible-host private installation scope of
 [#539](https://github.com/ahnhy1324/crystalhd/issues/539) is complete: it can
 activate the measured native Kodi route without compiling FFmpeg at activation.
@@ -17,10 +21,40 @@ Independent booted OS remains NOT_RUN/unavailable and outside the declared
 cohort. The dated historical records below retain their original decisions;
 inner PUBLIC_NOT_READY metadata is preserved, not silently rewritten.
 
+<a id="completed-dispositions-and-future-package-constraints"></a>
+
+## Current dispositions and future-package constraints
+
+| Deliverable | Evidence or future-package requirement | Current disposition |
+| --- | --- | --- |
+| D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
+| D3 complete first-user burden | Preserve exact successful commands, acquisition/body counters, elapsed/resource/disk observations and update/rollback/removal costs. | Completed for fresh Ubuntu26 userspace acquisition/own build/staging and a separate empty pinned Flatpak store; [cost receipt](tests/fixtures/issue607/first-user-cost-20261102.json). The actual first140.51s prerequisite install is used; cached recheck excluded. Missing full wire/Git bytes and instantaneous disk peak remain explicitly unknown rather than fabricated. |
+| D4 independent clean-target acceptance | Independently booted OS if available; narrower userspace proof must keep its actual scope. | NOT_RUN/unavailable under current equipment/non-disruptive constraint, explicitly outside this RC cohort. Fresh minbase shares the host kernel and is not reported as clean-OS PASS. No Atom/i386/BCM70012 claim. |
+| D4 each proposed new package | Bind exact target, native module, selected slot, source PTS, EOS/reopen, controls, A/V logs and retirement to the declared cohort. | Existing neutral720/1080 and scoped long pause records retained under accepted-loss scope; other frontend control evidence retains its own attribution. Fresh acquired App/Platform/GL + final17 native module + delivered active slot now play180 source pictures twice, independently match PTS, reach EOS/reopen, retire and restore stable13/all36 runtime leaves. Old native-lib/probe/deps mounts removed. Private equivalent-wrapper update/rollback/remove/repeated-remove pass; no additional runtime payload is proposed. Headless GL/null sink is not physical scanout/audio or general desktop acceptance. |
+| D5 redistribution/maintenance | Complete source/notice companion, reproducible unchanged build, CPU/ABI target, update ownership and bounded distribution decision. | Two independent fresh builds exactly match each other and retained9 ELFs; complete FFmpeg/dependency/SDK archives and offline Git reconstruction pass. [Scoped project maintenance/distribution policy](NATIVE-RUNTIME-SUPPORT.md) and [build guide](NATIVE-RUNTIME-BUILDING.md) define the experimental RC companion. Historical inner PUBLIC_NOT_READY is preserved; assembly status does not itself publish or authorize a tag. |
+| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The [minimum compatibility plan](#minimum-compatibility-plan) documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg product patches are outside scope; retain the official-package gap as a known limitation rather than a proposed external fix. |
+
+The private runtime is a minimal configured subset, not a drop-in FFmpeg
+distribution. Replacing only `libavcodec` does not establish the matched ABI,
+codecs, demuxers or graphics environment. Nonempty same-DPB STOP→START remains
+unsupported (`-EOPNOTSUPP`); destructive seek recovery does not repair that
+contract. Public release/tag authorization follows RELEASING; this evidence
+does not promote the native route to a default or qualify broader targets.
+#538's shutdown heap-abort subtask remains ignored/wontfix and is not included
+in these preparation or acceptance commands.
+
+## Retained preparation and tool-contract reference
+
+The sections below preserve earlier package/trial identities and implemented
+tool contracts. Their commands inspect the named retained artifacts; they are
+not the installation recipe for the published RC2 companion. Use the
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md) for that package. Historical inner
+`PUBLIC_NOT_READY` metadata is separate from the completed outer delivery.
+
 The historical private `1.3.0-dev.1` source/UI checkpoint completed deterministic
 packaging, fresh Git-free build and compatible-host private-staging install/remove/reinstall at
 source `c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`; see the
-[qualified checkpoint](RELEASING.md#private-v13-candidate-preparation) and
+[qualified checkpoint](RELEASING.md#historical-private-development-checkpoint--2026-11-01) and
 [exact receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json).
 Its optional stock-Kodi settings ZIP uses the existing VA route. This milestone
 does not bundle or qualify the seven-DSO native FFmpeg research runtime below,
@@ -93,6 +127,11 @@ recompute symbol resolution, infer a minimum CPU or approve redistribution.
 
 ## Private slot selection and cost records
 
+The tool contract remains implemented. The measurements and original package
+records in this section are the **2026-11-01 checkpoint**; the completed
+first-user acquisition/build costs are in the current dispositions above and
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md#measured-costs-and-boundaries).
+
 `scripts/native-runtime-slots.py` stages an explicitly pinned uncompressed TAR,
 checks its files/providers, retains the previous slot and replaces one selection
 JSON under an operator-owned private store. `status` returns the selected prefix;
@@ -127,9 +166,9 @@ Reports include total wall time, phase timing, logical/allocated store snapshots
 and own-Python-process RSS high-water. The enclosing serialized-operation timing
 overlaps child phases and must not be summed with them. Disk is an observed
 store-local maximum, and RSS is not unique physical RAM or whole process-tree
-peak. First-user network acquisition, full Kodi/Platform/GL setup and historical
-build RAM remain unmeasured. Cached local trial timings are not cold-install
-or generic-machine performance claims.
+peak. At this checkpoint, first-user network acquisition, full Kodi/Platform/GL
+setup and historical build RAM were unmeasured. Cached local trial timings are
+not cold-install or generic-machine performance claims.
 
 The [current-host receipt](tests/fixtures/issue607/package-acceptance-20261101.json)
 records the old private-prefix package and a separately inventoried neutral
@@ -138,10 +177,17 @@ payload hashes differ. It covers rejected incomplete update, valid update,
 selected-prefix metadata, previous-slot rollback, repeated removal and user
 preferences preservation. The neutral package also passes independent software
 H.264/NV12/PTS checks for50 frames. That receipt covers files/software only;
-the later native activation results below are separate. Independently booted
-clean-OS acceptance and public distribution remain unqualified.
+the later native activation results below are separate. At this checkpoint,
+independently booted clean-OS acceptance and public distribution remained
+unqualified; the later scoped delivery disposition is
+recorded above.
 
 ## Native host prerequisites
+
+The interface is current, but the module14 commands and transitions below
+belong to the **2026-11-01 activation receipt**. They are not current module17
+installation instructions; use the pinned package in the
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md#install-update-and-recover-the-private-files).
 
 `scripts/native-runtime-host-preflight.py` reads bounded sysfs identity fields
 and device filesystem metadata. It never opens a device, issues an ioctl or
@@ -163,8 +209,9 @@ make runtime-host-preflight-check
 Exit2 means blocked prerequisites; exit0 means only
 `PREREQUISITES_PRESENT_UNVERIFIED`. Neither exit code supplies native Kodi/ABI/
 A-V/hardware acceptance; actual trials are recorded separately below.
-`PUBLIC_NOT_READY` remains in force. Alternate roots are declared offline/test
-inputs, not authentication of a live target.
+These tool reports retain `PUBLIC_NOT_READY`; they do not reverse the later
+outer companion delivery. Alternate roots are declared offline/test inputs,
+not authentication of a live target.
 
 The stable baseline module `3.10.13/F76E163690F147B91495DDD` exposes
 `/dev/crystalhd` but no native video node. The stable V4L2 frontend registers
@@ -187,11 +234,17 @@ busy or fails; forced unload and killing a stuck owner for recovery remain
 prohibited. Missing-node baseline observations do not prohibit this guarded
 activation and restoration.
 
-## Current-host neutral-package native observations
+<a id="current-host-neutral-package-native-observations"></a>
+
+## Retained neutral-package native observations — 2026-11-01
+
+Original strict renderer-count failures below stay FAIL. The later accepted
+renderer/QoS-loss disposition supports only the bounded scope stated in the
+current table; it does not rewrite those earlier outcomes.
 
 The retained neutral archive
 `dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020`
-has now been used in native Kodi trials on T8100/BCM70015/Intel965 with the
+was used in these native Kodi trials on T8100/BCM70015/Intel965 with the
 temporary native module and subsequent stable restoration. The observed
 renderer-return census is:
 
@@ -222,8 +275,10 @@ from that log-scoped A/V result and do not resolve the frame deficit. Saved live
 actually mapped FFmpeg library families as exact neutral-package files, and all seven selected runtime
 providers match the pinned Platform files. The seven-DSO package file/metadata
 closure remains a separate check from the libraries mapped by a Kodi session.
-These observations do not complete #607, D3/D5, independent clean-OS or public
-distribution acceptance. The [portable receipt](tests/fixtures/issue607/neutral-native-activation-20261101.json)
+At this checkpoint, these observations did not complete #607, D3/D5,
+independent clean-OS or public distribution acceptance. The current table
+records the subsequent delivery completion and unavailable-OS disposition. The
+[portable receipt](tests/fixtures/issue607/neutral-native-activation-20261101.json)
 binds package/module inputs, individual axes, diagnostic controls and exact
 stable/dependency restoration for all three sessions (maximum60°C, kernel checks0).
 
@@ -305,7 +360,8 @@ from those inputs, dependency-source completeness, redistribution review,
 maintenance ownership or runtime acceptance. Frozen package provenance is
 copied unchanged, including its original source-archive declaration. A separate
 companion does not silently rewrite that historical declaration.
-`PUBLIC_NOT_READY` remains in force.
+The export alone retains `PUBLIC_NOT_READY`; the later outer delivery and
+source-reproduction results are recorded in the current dispositions above.
 
 The [source/material execution receipt](tests/fixtures/issue607/source-materials-20261101.json)
 records14 host-observer controls and25 source/material controls. Its earlier
@@ -407,7 +463,7 @@ recompute symbols or load a library. Exact matching bytes reuse the pinned
 #576 static inventory; the rootfs identity string is a declaration, not an
 authentication claim. The package/rootfs must stay immutable during inspection.
 
-The pinned final local stage has these metadata hashes. Dependency/provenance
+The historical #576 private local stage has these metadata hashes. Dependency/provenance
 bytes match the committed #576 fixtures; these pins are not a package signature.
 Never derive replacement pins silently from a target which failed validation.
 
@@ -505,23 +561,3 @@ with the original worker input. Use the exact retained input hashes/shape
 listed in the actual CLI receipt. Missing retained raw inputs are a **NOT RUN**
 prerequisite, not permission to regenerate a convenient golden from the tested
 FFmpeg binary.
-
-## Completed dispositions and future-package constraints
-
-| Deliverable | Next concrete evidence | Current disposition |
-| --- | --- | --- |
-| D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
-| D3 complete first-user burden | Preserve exact successful commands, acquisition/body counters, elapsed/resource/disk observations and update/rollback/removal costs. | Completed for fresh Ubuntu26 userspace acquisition/own build/staging and a separate empty pinned Flatpak store; [cost receipt](tests/fixtures/issue607/first-user-cost-20261102.json). The actual first140.51s prerequisite install is used; cached recheck excluded. Missing full wire/Git bytes and instantaneous disk peak remain explicitly unknown rather than fabricated. |
-| D4 independent clean-target acceptance | Independently booted OS if available; narrower userspace proof must keep its actual scope. | NOT_RUN/unavailable under current equipment/non-disruptive constraint, explicitly outside this RC cohort. Fresh minbase shares the host kernel and is not reported as clean-OS PASS. No Atom/i386/BCM70012 claim. |
-| D4 each proposed new package | Bind exact target, native module, selected slot, source PTS, EOS/reopen, controls, A/V logs and retirement to the declared cohort. | Existing neutral720/1080 and scoped long pause records retained under accepted-loss scope; other frontend control evidence retains its own attribution. Fresh acquired App/Platform/GL + final17 native module + delivered active slot now play180 source pictures twice, independently match PTS, reach EOS/reopen, retire and restore stable13/all36 runtime leaves. Old native-lib/probe/deps mounts removed. Private equivalent-wrapper update/rollback/remove/repeated-remove pass; no additional runtime payload is proposed. Headless GL/null sink is not physical scanout/audio or general desktop acceptance. |
-| D5 redistribution/maintenance | Complete source/notice companion, reproducible unchanged build, CPU/ABI target, update ownership and bounded distribution decision. | Two independent fresh builds exactly match each other and retained9 ELFs; complete FFmpeg/dependency/SDK archives and offline Git reconstruction pass. [Scoped project maintenance/distribution policy](NATIVE-RUNTIME-SUPPORT.md) and [build guide](NATIVE-RUNTIME-BUILDING.md) define the experimental RC companion. Historical inner PUBLIC_NOT_READY is preserved; assembly status does not itself publish or authorize a tag. |
-| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg product patches are outside scope; retain the official-package gap as a known limitation rather than a proposed external fix. |
-
-The private runtime is a minimal configured subset, not a drop-in FFmpeg
-distribution. Replacing only `libavcodec` does not establish the matched ABI,
-codecs, demuxers or graphics environment. Nonempty same-DPB STOP→START remains
-unsupported (`-EOPNOTSUPP`); destructive seek recovery does not repair that
-contract. Public release/tag authorization follows RELEASING; this evidence
-does not promote the native route to a default or qualify broader targets.
-#538's shutdown heap-abort subtask remains ignored/wontfix and is not included
-in these preparation or acceptance commands.

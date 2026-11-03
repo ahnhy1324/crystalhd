@@ -1,17 +1,47 @@
 # Experimental native runtime delivery for 1.3
 
-This companion supplies the unchanged, minimal FFmpeg runtime used by the
-optional native V4L2 Kodi route. The ordinary CrystalHD source bundle includes
-all developed driver, GStreamer, VA, Player, settings and experimental output
-features. This companion supplies the separately licensed FFmpeg binaries and
-their source/build materials; it does not replace that source bundle.
+Use this optional companion to evaluate the **native V4L2 route in Kodi** with
+frozen 1.3 RC2 and the exact target below. For ordinary local-file playback,
+start with [installation](README.md#quick-start) and [everyday usage](USAGE.md).
+The companion provides prebuilt minimal FFmpeg libraries; using them does not
+require compiling FFmpeg. To reproduce those libraries, use the
+[build recipe](NATIVE-RUNTIME-BUILDING.md).
 
-The supported qualification cohort and maintenance policy are in
-[SUPPORT](NATIVE-RUNTIME-SUPPORT.md). The tested target is x86_64 Core2 T8100,
-BCM70015, Intel965, Kodi22RC1 and the exact Platform/GL commits below. Activation
-does not require a compiler. The delivered FFmpeg is a configured subset;
-consult `materials/source-materials.tar` for its complete configuration before
-using another codec/container. Normal stable VA/GStreamer selection is unchanged.
+The published [v1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
+has 13 public assets, frozen core source `940cf357` and module-DKMS `3.10.17`.
+Stable 1.3 promotion remains deferred. This guide applies to those immutable
+artifacts; later master research does not replace them or registered module17
+source. The ordinary source bundle supplies the driver, GStreamer, VA, Player,
+settings and experimental output features. This companion adds the separately
+licensed FFmpeg binaries and their source/build materials.
+
+## Before you start
+
+The tested target is **x86_64 Core2 T8100 / BCM70015 / Intel965**, with
+**Kodi22RC1 and the exact Platform/GL commits** listed under
+[Acquire the exact target](#acquire-the-exact-target). You need a working
+Flatpak session with its normal system/session DBus and private storage for
+the pinned deployments and runtime. See the [support limits](NATIVE-RUNTIME-SUPPORT.md)
+before using another host, codec or container; the delivered FFmpeg is a
+configured subset whose full configuration is in `materials/source-materials.tar`.
+
+Native-module preparation is separate. Extract the supplied
+`materials/crystalhd-core-940-source.tar.gz` into a new private build directory
+and build that frozen core source `940cf357` with `CRYSTALHD_V4L2=1`. Keep the
+build separate from registered DKMS source trees; do not substitute master or
+overwrite an existing package17 registration. The selected module must be
+`3.10.17` with a genuine CrystalHD video node and matching PCI/sysfs identity.
+Use the [current idle module-transition rules](BRINGUP.md#reload-an-idle-device)
+for activation and restoration. The [route-probe observations](tools/kodi-route-probe/README.md#historical-native-activation-observations)
+are historical evidence from older temporary modules, not the current recipe.
+The ordinary stable module exposes no native video node; creating one by hand
+or changing a setting cannot add V4L2 behavior.
+
+Preserve the installed stable module and settings. Use normal idle module
+operations with AC, temperature below75C, no owners and ref/pin zero. An owner
+that does not retire requires preserving the live state for handoff; follow
+[BRINGUP](BRINGUP.md#reload-an-idle-device). The runtime slot commands below
+manage private files and do not activate or replace a kernel module.
 
 ## Contents and verification
 
@@ -112,13 +142,6 @@ python3 -B tools/native-runtime-host-preflight.py \
   --expected-module-srcversion DF1416C32049D4DADE81EB2
 ```
 
-Native activation remains an explicit advanced experiment: build the complete
-own driver with `CRYSTALHD_V4L2=1`, and follow the existing guarded activation
-instructions in the main bundle's `tools/kodi-route-probe/README.md`. Preserve
-the installed stable module and settings. Use normal idle module operations
-with AC, temperature below75C, no owners and ref/pin zero. A node created by
-hand or a setting cannot add V4L2 behavior. Never force an unload to recover.
-
 The recorded Kodi route mounts only the active slot's `lib` at
 `/native-ffmpeg`, alongside the exact App/Platform/GL and required graphics,
 firmware, Wayland and PipeWire inputs. Its library search is
@@ -141,7 +164,10 @@ Rollback requires a previous slot. Removal affects only owned runtime files
 and selection, preserves the store/lock, and can be repeated. It does not
 change a running process or driver. Retire playback, restore the stable module
 normally, and use the existing stable VA/GStreamer route for fallback. An
-unretired owner requires preserving state for diagnosis.
+unretired owner requires preserving state for diagnosis. Use normal Quit, then
+identity-verified TERM if needed; retain a surviving process and its runtime
+for handoff. Follow [BRINGUP](BRINGUP.md#reload-an-idle-device) rather than a
+kill escalation or forced module unload.
 
 ## Measured costs and boundaries
 

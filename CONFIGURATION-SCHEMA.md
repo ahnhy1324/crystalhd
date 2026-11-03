@@ -30,8 +30,9 @@ resolver behavior. Test code is never installed as a parser.
 The native backend integration makes a plain `kodi` invocation consume saved
 defaults when it loads **our updated** VA driver/library. It does not replace
 Kodi, select its decoder, change an existing process, or require a widget.
-The widget will edit the same file through the existing storage/validation core;
-it will not introduce a second preset system or a `config run` requirement.
+The optional settings editors edit the same file through the existing
+storage/validation core; they introduce no second preset system or
+`config run` requirement.
 
 The native reader has this contract:
 

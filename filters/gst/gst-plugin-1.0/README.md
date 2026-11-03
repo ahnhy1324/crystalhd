@@ -1,5 +1,10 @@
 # CrystalHD GStreamer 1.x decoder
 
+For ordinary file playback, use the [`crystalhd-play` guide](../../../USAGE.md#play-a-local-file).
+This page is for building GStreamer pipelines, selecting decoder properties
+and running component diagnostics. [Install the runtime](../../../README.md#quick-start)
+before using the installed-plugin examples.
+
 `crystalhddec` exposes BCM70012/BCM70015 decoding to current GStreamer
 pipelines. It accepts parsed H.264, MPEG-2 and MPEG-4 Part 2, plus the
 VC-1/WMV3 framing described below, and outputs YUY2 video frames.
@@ -9,6 +14,11 @@ and known limits are recorded in the [hardware report](../../../HARDWARE-2026-09
 Device-free CI checks discovery, framing/lifecycle helpers, synthetic YUY2
 playback and software audio/video controls; it does not decode through
 CrystalHD or establish BCM70012 behavior.
+
+Start with [build/basic use](#build-and-basic-use), then choose
+[output scaling](#optional-bcm70015-output-scaling), [MPEG-4](#mpeg-4-part-2-input)
+or [VC-1/WMV3](#vc-1-and-wmv3-input) only when needed. [Counted playback](#counted-h264-playback-and-replay)
+and the later trace/PTS/finish-frame sections are separate validation tools.
 
 ## Build and basic use
 
@@ -178,7 +188,7 @@ For WMV3 in an ASF/WMV container, no additional parser is required:
 ```sh
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-timeout --kill-after=5 35 gst-launch-1.0 -q \
+timeout --signal=TERM 35s gst-launch-1.0 -q \
   filesrc location=wmv3.wmv ! asfdemux ! crystalhddec ! fakesink sync=false
 ```
 
@@ -191,7 +201,7 @@ frame rate:
 ```sh
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-timeout --kill-after=5 35 gst-launch-1.0 -q \
+timeout --signal=TERM 35s gst-launch-1.0 -q \
   filesrc location=input.vc1 ! \
   'video/x-wmv,wmvversion=3,format=WVC1,stream-format=bdu,header-format=none,width=176,height=144,framerate=25/1' ! \
   crystalhddec ! fakesink sync=false
@@ -208,7 +218,7 @@ prints a hash of the visible pixels:
 make -C filters/gst/gst-plugin-1.0 codec-playback-test
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-timeout --kill-after=5 35 \
+timeout --signal=TERM 35s \
   filters/gst/gst-plugin-1.0/gstreamer-codec-playback-test \
   /path/to/input.wmv EXPECTED_FRAMES
 ```
@@ -218,7 +228,9 @@ and GStreamer app development packages; they are not dependencies of the
 plugin build. When pkg-config finds them, `make check` runs its hardware-free
 `--self-test`. Feeding and EOS share a 25-second deadline and a bounded queue;
 retain the outer timeout because userspace cannot bound a blocked driver
-close. The printed hash is not a software-decoder comparison.
+close. If TERM does not retire the device owner, preserve its PID, logs and
+resources, stop new media and follow normal recovery; do not use SIGKILL or
+unload underneath it. The printed hash is not a software-decoder comparison.
 
 ## Counted H.264 playback and replay
 
@@ -287,6 +299,126 @@ Each iteration drains the file, seeks to zero with `GST_SEEK_FLAG_FLUSH`, and
 requires the same frame count and visible-YUY2 SHA-256 on replay. This covers
 replay after EOS, not arbitrary mid-playback seeks or resolution changes. The
 hash compares two hardware runs, not hardware against a software decoder.
+
+## Retained Player scaling observations
+
+These source/host-specific measurements support the
+[user scaling recipe](../../../USAGE.md#optional-bcm70015-output-scaling);
+they are not settings required for first playback.
+
+With the reference host's qualified L0s workaround active, the H.264 High
+stream rose from about 46 to 65 unpaced frames/s with 1280-wide card output.
+Software enlargement back to Full HD retained
+about 64 frames/s and used about 84% of one CPU core. This is useful headroom
+for the measured input, not native 1080p60 detail or a displayed-frame-rate
+guarantee. Other codecs and hosts have different limits; exact throughput and
+quality results are in the
+[hardware report](../../../HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
+
+That display-fitting path is the lower-cost choice when an exact Full-HD raw
+buffer is not required. A five-minute H.264 1080i25 development baseline used
+the source-pinned development player with `--scale-width 1280` alone: the card
+returned
+1280x720, Xv accepted 1280x720 UYVY at 50 fields/s, and all 15,000 fields were
+rendered without a QoS drop. The player used 37.02% of one CPU core. Matched
+explicit 1920x1080 enlargement runs used about 84.17% and lost 13 and 10
+fields. Xv's display interpolation is adaptor-dependent and is not claimed to
+be pixel-equivalent to the player's explicit method-4 software enlargement.
+The separate installed-RC2 [30-minute application run](../../../HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
+completed 45,000 originals and 90,000 rendered fields with zero drop/QoS,
+natural EOS and mean CPU 37.16% of one core. Neither run measures physical
+scanout cadence.
+
+With GStreamer **1.28.2**, the hardware-scaled Player path, with or without an
+explicit host output size, works around a
+confirmed default LINEAR deinterlacer error for YUY2 25-picture/s input and
+50-field/s output. It bypasses that element's entire local QoS cache while
+forwarding unchanged feedback upstream; decoder, resize/conversion and sink
+QoS remain active. Other versions, rates and methods retain stock behavior.
+This is not a guarantee of lossless FHD50 presentation; see the
+[measured limits](../../../HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21).
+
+## Player video-stage trace
+
+This optional 1.3 Player diagnostic is separate from ordinary playback. To investigate a missing frame or field, request a new JSON output file:
+
+```sh
+crystalhd-play --trace-frames /tmp/playback-trace.json "/path/to/video.mp4"
+crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/video.mp4"
+```
+
+This needs the matching native GStreamer helper even in software mode. The
+file must not exist; it is created with mode `0600`. The normal Player does
+not enable these probes. While tracing, native callbacks record the decoder
+source, deinterlacer source when present, and leaf video-sink input. With
+`--software-output-size`, it also records the Player's `output-scale` source
+and, when prepared, its `output-pack` source. These identify the Player's
+own scaler and early packing converter; other intervening transforms are
+not individually observed. There is no additional per-buffer Python callback,
+pixel readback or file writing in
+the streaming thread. The JSON is written after playback teardown.
+
+The default capacity is 4,096 records across all observed stages, events and
+controls. `--trace-limit 16384` raises it to the maximum. Retention keeps the
+first records; `dropped` declares truncation while attachment counters continue.
+Every observed pad also records propagated QoS events. A 30-second 25i/50p
+five-stage trace can use about 14,250 records; use the maximum and check that
+`truncated` is false before comparing complete PTS sets. This is an example,
+not a guarantee that every 30-second input fits.
+This top-level `dropped` counts omitted trace records; it is separate from
+the nested video-sink statistics' dropped-buffer count.
+Attachment history is also limited to 64 entries. Rejected attachments and
+unobserved stages mean incomplete coverage. Truncation, missing PTS, drops and
+an absent deinterlacer do not become new playback failure gates. An unavailable
+helper or output-file error fails the explicitly requested trace operation.
+
+Add `--trace-window` to keep recent records in the same fixed capacity, then
+freeze after the first timed video QoS bus message with positive jitter and a
+known positive buffer-drop counter, then a quarter-capacity of following records
+(at least one).
+Propagated QoS events, untimed decoder headers and audio/time/unknown counters
+do not trigger capture. Timestamp and running-time zero remain valid.
+Window records include the emitting Linux `thread_id` in the caller's PID
+namespace (`null` when unavailable), not internal scaler-worker identity.
+First-N mode performs no additional thread-ID lookup.
+Without a trigger, final recent records are exported. Playback and cumulative
+counters continue after the window freezes. An older helper without window
+support fails this explicit request before creating a report.
+
+`retention: "window"` declares this mode. `window.complete` means the following
+record budget was collected, not a complete picture census. EOS/stop before
+that budget leaves it false. `window_context` preserves known CAPS/segment/flush
+state before the earliest retained record; unknown context stays explicit.
+Original order, ordinals and generations are preserved. Global `dropped` and
+`truncated` include intentionally overwritten/omitted history, not lost video.
+Do not count records outside the retained window as missing frames or subtract
+window counts from cumulative attachment/sink counters. `player.loss_trigger`
+retains the original bus counter snapshot and sequence number, not a unique
+lost-picture identity. Rejected triggers declare incomplete capture.
+
+Each attachment has independent buffer ordinals, raw video-buffer flags,
+PTS/DTS/duration and stream/segment/flush generations. Timestamp zero is valid;
+unknown times are JSON `null`. Running time is recorded only for a valid TIME
+segment. Pause/resume and seek requests are annotations; observed native
+events determine media generations. Compare the separate stage records without
+assuming PTS uniquely identifies a source picture or a deinterlacer's fields.
+
+`buffers` counts individual BUFFER callbacks. Buffer lists have separate
+`buffer_lists`, `list_items` and `list_missing_pts` counters, with member records
+named `buffer-list-item`. GStreamer's list fallback can expose both a list and
+individual buffers at the same pad. `buffer_list_ambiguity` marks possible
+overlap whenever any list is observed, not proof that a
+particular list was duplicated. Do not add the two counters into a frame
+census. List positions use `list_ordinal` and `list_index`; ordinary `ordinal`
+continues to count individual BUFFER callbacks. The trace observes stream
+start, CAPS, segment, flush, EOS and QoS events as well as attach/detach/stop
+administration. All retained record types share the capacity limit.
+
+Sink input records mean delivery to that pad. Sink statistics remain snapshots
+since their last reset. Neither establishes actual screen presentation,
+cadence, unique displayed pictures or physical A/V synchronization. Attached
+candidates without buffers are not confirmed active renderers. The report
+does not contain the media path or URL and does not select a different decoder.
 
 ## Optional whole-run pad PTS summary
 
@@ -425,7 +557,7 @@ for optional probes without changing external libraries.
 playback; see the [user guide](../../../USAGE.md#play-a-local-file). Hardware
 mode never silently falls back to software.
 
-Development builds can additionally select the separate
+The 1.3.0-rc.2 source and current development builds can select the separate
 [completion-controlled Xv output](../xv-output/README.md) with
 `--video-output xv-async`. Its plugin is built separately; ordinary output
 selection and published 1.2 remain unchanged.
@@ -451,7 +583,7 @@ sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av720.mp4" --av-720p
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
 GST_REGISTRY="$crystalhd_sample_dir/registry.bin" \
-timeout --kill-after=10 120 \
+timeout --signal=TERM 120s \
   filters/gst/gst-plugin-1.0/gstreamer-controls-test \
   "$crystalhd_sample_dir/av720.mp4" --audio --timeout 90
 ```
