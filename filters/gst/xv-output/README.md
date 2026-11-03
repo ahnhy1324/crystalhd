@@ -79,7 +79,11 @@ its original one-second completion limit. Temporary PAUSED unlock preserves
 the pending source; a real flush, output failure or stop cancels it. A live
 window/port handoff drains old requests before dispatching that source to the
 new target. This arm deliberately replaces unsent video and remains separate
-from FIFO. It has no Player flag or managed configuration key.
+from FIFO. The Player selects it with `--video-output xv-async
+--xv-latest-frame`; it has no managed configuration key. An older plugin
+without this property reports an error when the flag is selected. Ordinary
+FIFO playback remains compatible with that plugin. The Player's before-close
+summary reports intentional replacements separately from BaseSink QoS drops.
 
 The renderer holds one last source buffer independently of BaseSink's
 `enable-last-sample` setting. For negotiated pool memory, both SHM completion

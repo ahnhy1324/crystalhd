@@ -240,6 +240,8 @@ def arguments(argv=None, environment=None):
                         help="preserve interlaced frames without deinterlacing; works with either decoder mode")
     parser.add_argument("--video-output", choices=("auto", "xv-async", "field-gpu"), default="auto",
                         help="video output (default: auto); xv-async and field-gpu select optional experimental sinks")
+    parser.add_argument("--xv-latest-frame", action="store_true",
+                        help="experimental latest/drop arm; replace unsent pictures; requires --video-output xv-async")
     parser.add_argument("--packed-upscale", action="store_true",
                         help="experimental packed 1280x720 to1920x1080 resize; requires --video-output xv-async")
     parser.add_argument("--scale-width", type=hardware_scale_width, default=argparse.SUPPRESS, metavar="PIXELS",
@@ -267,6 +269,8 @@ def arguments(argv=None, environment=None):
         parser.error("--scale-width and --software-output-size require --hardware")
     if args.software_output_size and not args.scale_width:
         parser.error("--software-output-size requires a nonzero --scale-width")
+    if args.xv_latest_frame and args.video_output != "xv-async":
+        parser.error("--xv-latest-frame requires --video-output xv-async")
     if args.video_output == "xv-async" and args.weave:
         parser.error("--video-output xv-async needs progressive/deinterlaced output; use auto with --weave")
     if args.video_output == "field-gpu" and args.weave:
@@ -392,8 +396,10 @@ def configure_decoders(Gst, mode):
         raise RuntimeError("crystalhddec is unavailable; build/install the GStreamer plugin")
 
 
-def select_video_output(Gst, choice, sinks=None):
+def select_video_output(Gst, choice, sinks=None, *, latest_frame=False):
     result = dict(sinks or {})
+    if latest_frame and choice != "xv-async":
+        raise RuntimeError("--xv-latest-frame requires --video-output xv-async")
     if choice == "auto":
         return result
     if choice not in ("xv-async", "field-gpu") or "video-sink" in result:
@@ -406,6 +412,11 @@ def select_video_output(Gst, choice, sinks=None):
     if sink is None:
         raise RuntimeError("experimental Xv output is unavailable; build filters/gst/xv-output "
                            "and select its GST_PLUGIN_PATH, or use --video-output auto")
+    if latest_frame:
+        if sink.find_property("latest-frame") is None:
+            raise RuntimeError("experimental Xv plugin lacks latest-frame; rebuild filters/gst/xv-output "
+                               "and select its GST_PLUGIN_PATH, or omit --xv-latest-frame")
+        sink.set_property("latest-frame", True)
     result["video-sink"] = sink
     return result
 
@@ -869,7 +880,8 @@ class Player:
         self.sources = []
         configure_decoders(Gst, args.mode)
         selected_output = getattr(args, "video_output", "auto")
-        selected_sinks = select_video_output(Gst, selected_output, sinks)
+        selected_sinks = select_video_output(
+            Gst, selected_output, sinks, latest_frame=getattr(args, "xv_latest_frame", False))
         self.pipeline = Gst.ElementFactory.make("playbin", "crystalhd-player")
         if self.pipeline is None:
             raise RuntimeError("playbin is unavailable; install gstreamer1.0-plugins-base")
@@ -1405,8 +1417,20 @@ class Player:
                 if not all(type(value) is int and value >= 0 for value in (rendered, dropped)):
                     continue
                 factory = element.get_factory()
-                snapshots.append({"sink": factory.get_name() if factory else "video sink",
-                                  "rendered": rendered, "dropped": dropped})
+                snapshot = {"sink": factory.get_name() if factory else "video sink",
+                            "rendered": rendered, "dropped": dropped}
+                if getattr(self.args, "xv_latest_frame", False):
+                    try:
+                        latest = element.get_property("xv-stats")
+                        counts = {key: latest.get_value("latest-" + key) for key in
+                                  ("queued", "replaced", "submitted", "cancelled")}
+                        pending = latest.get_value("latest-pending")
+                        if (all(type(value) is int and value >= 0 for value in counts.values())
+                                and type(pending) is bool):
+                            snapshot["latest"] = dict(counts, pending=pending)
+                    except (AttributeError, TypeError, ValueError, RuntimeError):
+                        pass
+                snapshots.append(snapshot)
             except (AttributeError, TypeError, ValueError, RuntimeError):
                 continue
         return snapshots
@@ -1503,6 +1527,13 @@ class Player:
                 print(f"Video sink ({stats['sink']}), before close: "
                       f"rendered {stats['rendered']} buffers, dropped {stats['dropped']} "
                       "(since last reset; not physical display counts)", flush=True)
+                if "latest" in stats:
+                    latest = stats["latest"]
+                    print("Experimental Xv latest/drop, before close: "
+                          f"queued {latest['queued']}, intentionally replaced {latest['replaced']}, "
+                          f"requests {latest['submitted']}, cancelled {latest['cancelled']}, "
+                          f"pending {int(latest['pending'])} "
+                          "(since output start; separate from QoS drops; not unique display counts)", flush=True)
         else:
             print("Video sink statistics: unavailable", flush=True)
         return self.exit_code

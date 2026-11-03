@@ -104,6 +104,10 @@ shelve the work or silently exclude implemented features.
    [receipt](tests/fixtures/issue513/latest-frame-20261103.json) preserves failed
    attempts and the corrected initial19-vs31 test selection. Performance,
    card/A/V, physical presentation and endurance remain separate open scopes.
+   Player `--video-output xv-async --xv-latest-frame` now selects this arm
+   before output starts, rejects older plugins explicitly when selected and
+   reports intentional replacements separately from QoS drops before close.
+   This invocation-only flag adds no saved setting or default promotion.
 3. #538: SPS prefix #624 is merged. The admission-binding follow-up now
    observes PPS/SPS/single-first-slice prefixes, snapshots range/SPS generation
    per token and returns the matching observation to private CAPTURE storage.
