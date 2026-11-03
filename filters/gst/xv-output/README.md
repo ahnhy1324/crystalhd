@@ -132,6 +132,35 @@ Request creation includes a subsequent transport-flush failure, so these
 counters do not prove visible or unique frames. Replacements are separate
 from completion errors and BaseSink QoS drops.
 
+The optional `observe-timing` Boolean defaults to `false`. Set it in NULL/READY
+before output starts; active changes warn and are ignored. With observation
+enabled, `xv-stats` additionally carries these local monotonic observations:
+
+| Fields | Sample boundary |
+| --- | --- |
+| `ack-receipt-count`, `ack-receipt-us-sum`, `ack-receipt-us-max` | Flight request creation after pixel preparation and before flush, through the reader processing its matching ACK. Includes preroll and redraw requests; late/error ACKs and terminal retirement are excluded. |
+| `latest-residence-count`, `latest-residence-us-sum`, `latest-residence-us-max` | Publication of the final pending original through creation of its actual request, counted only after a successful flush. Replacing a pending source starts a fresh timestamp; replaced/cancelled sources and failed flushes produce no residence sample. |
+| `latest-pending-age-us` | Age of the currently pending original at the statistics query; zero when no source is pending or timing is disabled. |
+
+The `observe-timing` statistics field records the context's selected mode.
+Timing disabled skips additional clock reads and aggregate updates; its timing
+counters remain zero. Aggregates accumulate for one context and survive in the
+stop snapshot; a new context resets them. Count and sum saturate rather than
+wrap, and sticky `timing-overflow` declares that the aggregate is incomplete.
+Do not compute a reliable mean after overflow. Count/sum/max support only a
+mean and maximum, not p95/p99 or a latency distribution.
+
+ACK receipt includes local scheduling and reader delay. It does not identify
+the server's read interval, GPU completion or physical scanout. Earlier decoder
+work, producer ring-space wait and preparation before flight creation are
+outside that interval. Pending residence includes any PAUSED or handoff wait
+preserved with that source; it
+is not PTS lateness. Because `latest-submitted` includes request creation even
+when its flush fails, the successful residence count can be smaller. Interpret
+these observations with failures, pending requests, terminal retirement and
+intentional replacement counters. There is no ordinary Player CLI option or
+saved setting for this diagnostic.
+
 ```sh
 # Device-free checks. The second command opens temporary X11 windows.
 make -C filters/gst/xv-output check
@@ -176,9 +205,48 @@ Use `--mode latest` and a different new result file for the other arm.
 It records CPU, before/after-NULL Xv ownership, intentional replacements,
 QoS and sampled Pulse-clock identity with45s/75C guards. Pre-NULL pending is
 diagnostic; safe terminal retirement counts alongside ACKs after NULL.
-The harness does not measure queue age, submit-to-ACK latency, source pixels,
-unique displayed pictures, physical scanout or endurance. The retained raw
-logs include an unrelated dbind accessibility-bus warning at GUI startup.
+It leaves timing observation off by default. To record the local aggregates
+above, use `--observe-timing` with a rebuilt plugin and a new results file:
+
+```sh
+python3 -B tests/gst-xv-output-bench.py /absolute/dialogue-30s.mkv \
+  --mode latest --observe-timing --expected-pictures 750 \
+  --expected-plugin "$PWD/filters/gst/xv-output/libgstcrystalhdxv.so" \
+  --results /absolute/new-latest-timing.json
+```
+
+The benchmark checks the Boolean property's default and applies the requested
+mode before startup, then preserves the timing fields in its before/after-NULL
+snapshots. Requested observations must have coherent sample counts and sums,
+ACK samples matching acknowledged requests, and no aggregate overflow; an
+invalid measurement fails the benchmark without changing playback policy.
+An older plugin without the property is compatible when observation
+is omitted and fails explicitly when it is requested. No source pixels, unique
+displayed pictures, physical scanout or endurance are measured. Timing-enabled
+runs must keep their exact implementation and observation mode separate from
+the retained six-session comparison, which contains no timing observations.
+Those older records remain unchanged. The retained raw logs include an
+unrelated dbind accessibility-bus warning at GUI startup.
+
+The [November3 timing record](../../../tests/fixtures/issue513/xv-timing-20261103.json)
+qualifies5 device-free and32 actual-X11 groups in each native and
+ASan/UBSan/leak variant. It preserves existing pixel/PTS/ownership checks,
+holds real ACK delivery to distinguish0/3/4 samples, verifies the final
+source's exact residence, and excludes cancellation, failed flush, missing
+and timestamp-expired matching ACK controls. The timestamp-expiry control is
+diagnostic, not an observed server stall. Saturation and stop snapshots pass.
+An initial stale native test selection (31 instead of32) is retained; final
+completed-source builds execute all32 without skips.
+
+On the unchanged current BCM70015/module13 route, FIFO/latest timing-on and
+FIFO timing-off each complete750-picture/1500-rendered30s playback with actual
+Pulse audio/clock and clean resource/module/PM return. The two timing-on runs
+record1501 ACKs each: mean3.570/3.558ms and maximum11.041/7.853ms. The off run
+records zero samples. No pending source or intentional replacement occurs,
+so no current-card residence under congestion or latency benefit is qualified.
+These single-run means/maxima are descriptive local receipt observations,
+not percentiles or a physical-display measurement. Observed maximum57C and
+related kernel errors0 add no broader target/endurance/release acceptance.
 
 `/xv/x11/live-window-replacement` owns two mapped windows and delays a real
 SHM completion while replacement waits. It checks the old request identity,

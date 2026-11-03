@@ -502,6 +502,7 @@ These current surfaces deliberately do not become ordinary merged keys:
 | `crystalhdxvsink display` <!-- schema-boundary:gst-property:display=external-gst-output --> | Optional renderer's own GStreamer property; the manager does not set it or replace the X11 session's `DISPLAY` |
 | `crystalhdxvsink port` <!-- schema-boundary:gst-property:port=external-gst-output --> | Optional renderer's per-element startup/live port selection; zero auto-selects at startup or keeps the active live port. No saved key, preset or manager translation |
 | `crystalhdxvsink latest-frame` <!-- schema-boundary:gst-property:latest-frame=external-gst-output --> | Optional renderer's default-off latest/drop arm, selected before startup. No saved key, preset or manager translation |
+| `crystalhdxvsink observe-timing` <!-- schema-boundary:gst-property:observe-timing=external-gst-output --> | Optional renderer's default-off local timing diagnostic, selected before startup; cumulative `xv-stats` observations do not add a saved key, preset, ordinary Player option or manager translation |
 
 External loader selectors such as `LIBVA_DRIVER_NAME`, `VAAPI_FORCE_INDIRECT`,
 `GST_PLUGIN_PATH` and `LD_LIBRARY_PATH` remain owned by their respective

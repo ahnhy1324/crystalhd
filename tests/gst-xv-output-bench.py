@@ -28,18 +28,23 @@ def main():
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--expected-plugin", type=Path, required=True)
     parser.add_argument("--expected-pictures", type=int, required=True)
+    parser.add_argument("--observe-timing", action="store_true",
+                        help="record opt-in local request/ACK and pending residence aggregates")
     args = parser.parse_args()
     if args.results.exists() or not args.results.parent.is_dir():
         parser.error("use a new results file in an existing directory")
     if args.expected_pictures <= 0 or not args.file.is_file():
         parser.error("a local fixture and positive expected picture count are required")
     report = dict(mode=args.mode, file=str(args.file.resolve()), eos=False, code=None,
+                  observe_timing_requested=args.observe_timing,
                   audio_buffers=0, sink_buffers=0, clock_samples=0, audio_clock_mismatches=0,
                   same_audio_clock=False, audio_stream_muted=True, warnings=[], errors=[],
                   message_counts={"warnings": 0, "errors": 0},
                   qos_sources={}, sizes=[], pass_scope="card/audio-clock/counts/retirement only",
                   limits=["No source pixel or unique displayed-picture census, physical scanout or endurance claim.",
-                          "No queue-age or submit-to-ACK latency measurement; CPU is process-only.",
+                          ("Timing is local pending residence/request-to-ACK receipt, not media lateness, server/GPU/display latency or percentiles; CPU is process-only."
+                           if args.observe_timing else
+                           "No request/ACK timing observations requested; CPU is process-only."),
                           "Zero replacements means replacement behavior was not exercised; no gain is demonstrated."])
     player = window = sink = None
     cpu0 = resource.getrusage(resource.RUSAGE_SELF)
@@ -50,7 +55,7 @@ def main():
         gi.require_version("GstVideo", "1.0")
         gi.require_version("Gtk", "3.0")
         gi.require_version("GdkX11", "3.0")
-        from gi.repository import GLib, Gst, GstVideo, Gtk, GdkX11
+        from gi.repository import GLib, GObject, Gst, GstVideo, Gtk, GdkX11
         Gst.init(None)
         factory = Gst.ElementFactory.find("crystalhdxvsink")
         if factory is None or Path(factory.get_plugin().get_filename()).resolve() != args.expected_plugin.resolve():
@@ -86,6 +91,21 @@ def main():
         sink = player.pipeline.get_property("video-sink")
         if sink.get_factory().get_name() != "crystalhdxvsink":
             raise RuntimeError("Player did not select the expected Xv sink")
+        timing_property = sink.find_property("observe-timing")
+        report["observe_timing_supported"] = timing_property is not None
+        report["observe_timing_applied"] = False
+        if timing_property is None:
+            if args.observe_timing:
+                raise RuntimeError("Xv plugin lacks observe-timing; rebuild it or omit --observe-timing")
+        else:
+            if (timing_property.value_type != GObject.TYPE_BOOLEAN or
+                    timing_property.default_value is not False or
+                    sink.get_property("observe-timing") is not False):
+                raise RuntimeError("observe-timing must be Boolean and default to false")
+            sink.set_property("observe-timing", args.observe_timing)
+            report["observe_timing_applied"] = sink.get_property("observe-timing")
+            if report["observe_timing_applied"] is not args.observe_timing:
+                raise RuntimeError("Xv plugin did not apply observe-timing before startup")
         window = Gtk.Window(title="CrystalHD Xv " + args.mode + " benchmark")
         area = Gtk.DrawingArea()
         window.add(area)
@@ -188,6 +208,25 @@ def main():
             except Exception as error:
                 report["cleanup_error"] = repr(error)
         after = report.get("xv_after_null", {})
+        if args.observe_timing:
+            timing_fields = ("ack-receipt-count", "ack-receipt-us-sum", "ack-receipt-us-max",
+                             "latest-residence-count", "latest-residence-us-sum",
+                             "latest-residence-us-max", "latest-pending-age-us")
+            valid = (after.get("observe-timing") is True and
+                     after.get("timing-overflow") is False and
+                     all(type(after.get(key)) is int and after[key] >= 0 for key in timing_fields))
+            if valid:
+                valid = (after["ack-receipt-count"] == after.get("acknowledged") and
+                         after["latest-residence-count"] <= after.get("latest-submitted", 0) and
+                         after["latest-pending-age-us"] == 0)
+                for prefix in ("ack-receipt", "latest-residence"):
+                    count, total, maximum = (after[prefix+suffix] for suffix in
+                                             ("-count", "-us-sum", "-us-max"))
+                    valid = valid and (maximum <= total <= count*maximum if count
+                                       else total == maximum == 0)
+            report["timing_valid"] = valid
+            if not valid:
+                report["timing_error"] = "requested local timing statistics are missing or invalid"
         clean = (all(after.get(key) == 0 for key in ("pending", "images", "bytes")) and
                  after.get("allocated") == after.get("freed") and after.get("closed") is True and
                  after.get("failed") is False and after.get("quarantined") is False and
@@ -203,7 +242,8 @@ def main():
             report["same_audio_clock"] and report["audio_clock_mismatches"] == 0 and
             report.get("native_progressive") is True and report["sizes"] == [[640, 360]] and
             report.get("peak_mC", 75000) < 75000 and not report["errors"] and
-            not any(key in report for key in ("exception", "cleanup_error", "snapshot_error", "observation_error")))
+            not any(key in report for key in
+                    ("exception", "cleanup_error", "snapshot_error", "observation_error", "timing_error")))
         with args.results.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2)
             stream.write("\n")

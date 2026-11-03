@@ -292,7 +292,33 @@ static void test_identity(void)
   GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
   gboolean latest = TRUE; g_object_get(sink, "latest-frame", &latest, NULL); g_assert_false(latest);
   g_object_set(sink, "latest-frame", TRUE, NULL); g_object_get(sink, "latest-frame", &latest, NULL);
-  g_assert_true(latest); gst_object_unref(sink);
+  g_assert_true(latest);
+  gboolean timing = TRUE; g_object_get(sink, "observe-timing", &timing, NULL); g_assert_false(timing);
+  g_object_set(sink, "observe-timing", TRUE, NULL); g_object_get(sink, "observe-timing", &timing, NULL);
+  g_assert_true(timing); gst_object_unref(sink);
+  /* Independent integer expectations: exact limits are not overflow, while
+   * later count/sum additions saturate without losing the maximum sample. */
+  XvContext observed = {.observe_timing = TRUE}; XvTiming samples = {0};
+  record_timing_locked(&observed, &samples, 0);
+  record_timing_locked(&observed, &samples, 7);
+  record_timing_locked(&observed, &samples, 3);
+  g_assert_cmpuint(samples.count, ==, 3); g_assert_cmpuint(samples.sum, ==, 10);
+  g_assert_cmpuint(samples.max, ==, 7); g_assert_false(observed.timing_overflow);
+  samples = (XvTiming){.count = G_MAXUINT64 - 1, .sum = G_MAXUINT64 - 3};
+  record_timing_locked(&observed, &samples, 3);
+  g_assert_cmpuint(samples.count, ==, G_MAXUINT64); g_assert_cmpuint(samples.sum, ==, G_MAXUINT64);
+  g_assert_cmpuint(samples.max, ==, 3); g_assert_false(observed.timing_overflow);
+  record_timing_locked(&observed, &samples, 4);
+  g_assert_cmpuint(samples.count, ==, G_MAXUINT64); g_assert_cmpuint(samples.sum, ==, G_MAXUINT64);
+  g_assert_cmpuint(samples.max, ==, 4); g_assert_true(observed.timing_overflow);
+  observed.timing_overflow = FALSE; samples = (XvTiming){.count = G_MAXUINT64};
+  record_timing_locked(&observed, &samples, 5);
+  g_assert_cmpuint(samples.count, ==, G_MAXUINT64); g_assert_cmpuint(samples.sum, ==, 5);
+  g_assert_cmpuint(samples.max, ==, 5); g_assert_true(observed.timing_overflow);
+  observed.timing_overflow = FALSE; samples = (XvTiming){.sum = G_MAXUINT64 - 2};
+  record_timing_locked(&observed, &samples, 3);
+  g_assert_cmpuint(samples.count, ==, 1); g_assert_cmpuint(samples.sum, ==, G_MAXUINT64);
+  g_assert_cmpuint(samples.max, ==, 3); g_assert_true(observed.timing_overflow);
   XvContext c = {.window = 11, .opcode = 42, .completion_type = 65};
   XvMemory m = {.server_owned = TRUE, .segment = 17, .generation = 7};
   XvFlight f = {.memory = &m, .sequence = 65536, .generation = 7};
@@ -1757,6 +1783,7 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/latest-submit-error", test_latest_submit_error);
   g_test_add_func("/xv/x11/latest-stop-pool", test_latest_stop_pool);
   g_test_add_func("/xv/x11/latest-missing-ack", test_latest_missing_ack);
+  g_test_add_func("/xv/x11/timing-late-ack", test_timing_late_ack);
 
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
