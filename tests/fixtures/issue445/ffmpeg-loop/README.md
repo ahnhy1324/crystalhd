@@ -1,3 +1,8 @@
+> Current policy: third-party code is not modified, including temporary test
+> copies. The five historical source-mutation controls are withdrawn. The
+> maintained runner compiles only the retained unmodified excerpts. See
+> [EXTERNAL-CODE-POLICY.md](../../../../EXTERNAL-CODE-POLICY.md).
+
 # Retained FFmpeg field-rate loop boundary
 
 `make ffmpeg-compat-check` runs offline with Python and a C11 compiler. The
@@ -22,10 +27,8 @@ with two teardowns before EOF produce 296, omitting fields 98/99 and 198/199.
 Explicit EOF before every teardown is a separate counterfactual 300-field
 control, not a proposed application patch. Frame-rate output, irregular PTS,
 temporary upstream absence, upstream error and repeated EOF are controls.
-Five semantic negatives must fail their exact expected oracle: missing EOF
-drain, missing timestamp lookahead, incorrect next-PTS interpolation, missing
-queued-reference release, and comparing AVBufferRef wrappers instead of their
-backing identity.
+The former five source-mutation negative controls have been removed. No
+modified FFmpeg excerpt or candidate is created by this runner.
 
 `observation-20261029.json` independently reconciles the retained 2026-10-19
 native artifacts. The original loop result stays **FAIL, 296/300, exit 0**;

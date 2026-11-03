@@ -41,6 +41,18 @@ CrystalHD hardware decode session can be open at a time.
   ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
   [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). LIVE/LOW_LATENCY
   remains a separate experimental path.
+- **Known issue: Kodi VAAPI finite-EOF accounting.** In the observed Kodi 21.3
+  output path, a picture can be published before its processed counter is
+  retired. Diagnostic receiver-priority scheduling exposed an approximately
+  two-second drain timeout at natural EOF; the normal-scheduling control
+  reached EOF. Other builds and ordinary-workload frequency remain unverified.
+  This is a scoped Kodi publication/accounting issue; a general VA-API or
+  CrystalHD-driver defect is not established. See
+  [#445](https://github.com/ahnhy1324/crystalhd/issues/445) and the
+  [stock observation](tests/fixtures/issue445/publish-order-observation-20261029.json).
+  The external patch has been removed under
+  [project policy](EXTERNAL-CODE-POLICY.md); historical modified-Kodi results
+  cannot qualify stock compatibility or a release.
 - **Oversized H.264 rejection is containment, not general stream recovery.**
   Stable 1.1.0 includes the qualified transport-specific headroom from RC5.
   The prepared v1.2 package additionally rejects selected over-budget extended input

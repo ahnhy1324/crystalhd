@@ -19,18 +19,20 @@ additional physical target is assumed available.
 
 ## Device-free preparation already available
 
+Follow [the external code policy](EXTERNAL-CODE-POLICY.md): external sources
+remain unmodified, including temporary test copies. The former Kodi patch
+and `kodi-compat-check` harness are withdrawn. Patched-client records cannot
+qualify unmodified compatibility or release acceptance.
+
 Run these on the selected exact source before any new frontend run:
 
 ```sh
-make kodi-compat-check
 make ffmpeg-compat-check
 make native-picture-check
 make -C filters/vaapi check
 ```
 
-`kodi-compat-check` compiles hash-pinned licensed Kodi excerpts and real lifecycle
-models, with broken publication/release/reset controls. It does not launch Kodi
-or establish that a patched client is installed. `ffmpeg-compat-check` models
+`ffmpeg-compat-check` compiles unmodified retained FFmpeg excerpts and models
 the retained stream-loop boundary; it does not turn the real 296/300 FAIL into
 PASS. `native-picture-check` uses inert references/models; complete old capture
 replay still requires the external hashed image/reference files. The VA suite
@@ -64,7 +66,7 @@ claiming all-field, source/outputPTS, GPU retirement or displayed cadence.
 
 | Remaining claim | Existing fixture/harness to reuse | Evidence still required |
 | --- | --- | --- |
-| #445 interrupted seek/pause/Stop source identity and per-object return | `tests/fixtures/issue445/publish-order-controls-20261029.json`, publication/lifecycle excerpts under that directory, and the original-stock progressive control in `tests/fixtures/issue510/player-window-trace-20261030.json` | Current original Kodi/FFmpeg executable and mapped own VA/DIL identities; selected decoded source/frame/field PTS; actual full NV12 crop/chroma; object acquisition/borrow/return across cancellation/flush/reset/reopen. Empty global counters and media-clock settlement alone are insufficient. |
+| #445 interrupted seek/pause/Stop source identity and per-object return | Original-stock progressive control in `tests/fixtures/issue510/player-window-trace-20261030.json`; the private patched `publish-order-*` records are withdrawn historical observations only | Current original Kodi/FFmpeg executable and mapped own VA/DIL identities; selected decoded source/frame/field PTS; actual full NV12 crop/chroma; object acquisition/borrow/return across cancellation/flush/reset/reopen. Empty global counters and media-clock settlement alone are insufficient. |
 | #436 selected TFF/BFF Bob and BWDIF semantics | Existing #319 TFF/BFF and #414 750-picture FHD fixtures; `tests/fixtures/issue436/native-single-field.json`, `card-scaled-bob.json`; preserved FFmpeg field references | Off/Auto/CPU fallback distinguished, exact input count versus two progressive outputs per complete picture, parity/cadence/chroma and independently captured field-rate reference. Keep default stream-loop 296/300 and original Kodi duplicate-pair PTS FAILs. |
 | #429 reporter/native-i386 current stack | Reporter RC3/RC4/RC5 fixture identities and original results in #429 | Physical native32 Atom run with exact current source, original stock Kodi selection, post-seek pixels/PTS, interlaced Bob A/V and hour-long measured A/V drift. Primary-host/headless software cannot complete this row. |
 | #477 centered crop and cadence | `tests/fixtures/issue477/l0s-kodi-20261024.json`, original 902/9,001-picture progressive, TFF/BFF and true60p no-B/B-reference cases | Extend full NV12 ROI/borders/field identity to Off/CPU fallback and 1080i29.97, natural EOS/seek/reopen and current sources. For any performance claim, matched source/policy/link state, useful ROI and declared detail reduction; software render selection and elapsed time remain separate from scanout. |
@@ -96,7 +98,7 @@ dependencies rather than public generic Kodi test commands:
 
 | Path | Safe preparation / exact limitation |
 | --- | --- |
-| `/home/mache/.cache/crystalhd-kodi-controls-20261029/run_v2.py` | `python3 -B .../run_v2.py --name new-plan --plan` prints the inert controls/reopen plan without imports/launch/device writes. Actual execution defaults to a private Kodi21.3 candidate, old own source, fixed fixture and other private controllers; inspect and repin all of them before treating it as a current-stack test. |
+| `/home/mache/.cache/crystalhd-kodi-controls-20261029/run_v2.py` | Withdrawn from active execution: its private Kodi21.3 default contains the prohibited external patch. Retain existing records only; do not replay this candidate. Future controls require an unmodified external client. |
 | `/home/mache/.cache/crystalhd-kodi-controls-20261029/offline_check_v2.py` | Synthetic asynchronous-control and natural-drain reader controls, never hardware evidence. It writes temporary fixture files under its own cache directory. |
 | `/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/test-replay.py` | Synthetic native EXPBUF allocation/stream/lease/return reader controls, including incorrect index/tracking and copy-window overlap. Never a new capture. |
 | `/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/analyze.py` | Existing offline reader accepts `--raw`, `--stderr`, `--abi`, `--pid`, optional `--seed`, `--require-closed`, `--output`; exact ABI and original owned PID come from the retained receipt, not guesses. It cannot supply missing GPU/source-PTS/physical-display evidence. |

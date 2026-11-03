@@ -1,3 +1,12 @@
+# Mandatory development boundary
+
+**We do not modify third-party code, including private builds, temporary
+copies and test excerpts.** Read [EXTERNAL-CODE-POLICY.md](EXTERNAL-CODE-POLICY.md)
+and [AGENTS.md](AGENTS.md) before work. The Kodi patch/application harness and
+FFmpeg excerpt mutation controls and modified-firmware interpreter controls
+are withdrawn. Patched external results are
+historical only and cannot satisfy stock compatibility or release acceptance.
+
 # Open work
 
 Release status **2026-10-23**: [stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
