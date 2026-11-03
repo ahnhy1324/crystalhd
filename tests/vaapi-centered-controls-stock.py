@@ -29,6 +29,9 @@ S = load('centered_controls_stock_primitives', STOCK_PATH)
 require, save, digest, fault = S.require, S.save, S.digest, S.fault
 READER_PATH = DIRECTORY / 'vaapi-centered-controls-reader.py'
 PAYLOAD_READER = DIRECTORY / 'vaapi-centered-payload-reader.py'
+FRAME_PTS_READER = DIRECTORY / 'vaapi-frame-pts-reader.py'
+FRAME_PTS_IMAGE = Path('filters/vaapi/frame-pts-observer/frame-pts-probe.so')
+FRAME_PTS_MOUNT = '/own-observer/frame-pts-probe.so'
 ROOT = Path('/home/mache/.cache/crystalhd-centered-seek-20261103')
 FIXTURE = ROOT / 'frozen-1080p180/neutral-spatial-1080p30-180.mp4'
 FIXTURE_SHA = '226c91b7f6fd361af37fcac88dfa23302072f58f7cce0b8aa0c57c3f94f06555'
@@ -40,6 +43,77 @@ SCOPE = ('Original Kodi22RC1/App FFmpeg, OWN centered observer, method0/actual n
          'source-content checkpoints, forward seek, requested Stop and same-PID natural reopen. '
          'Private diagnostics do not qualify normal-backend compatibility, release, actual AVFrame PTS or GPU return.')
 SAMPLE_MODES = ('first-two', 'case2-90-91')
+FRAME_PTS_SCOPE = ('Instrumented original Kodi22RC1/App FFmpeg with an explicit OWN receive-frame observer; '
+                   'actual returned-frame metadata joined to OWN active VA bindings. '
+                   'No stock compatibility, release, GPU return or scanout qualification.')
+
+
+def frame_pts_option(prepare, supplied):
+    require(type(supplied) is bool, 'frame PTS option must be boolean')
+    require(prepare or not supplied, '--observe-frame-pts belongs only to --prepare-plan')
+    return supplied if prepare else None
+
+
+def validate_frame_pts_mode(mode):
+    require(type(mode) is bool, 'missing or invalid frozen frame PTS mode')
+    return mode
+
+
+def frame_pts_environment(source, enabled):
+    validate_frame_pts_mode(enabled)
+    if not enabled:return []
+    return ['--ro-bind', str(source / FRAME_PTS_IMAGE), FRAME_PTS_MOUNT,
+            '--setenv', 'LD_PRELOAD', FRAME_PTS_MOUNT,
+            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS', 'v1',
+            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS_PREFIX', '/payload/frame-pts']
+
+
+def frame_pts_report_path(payload_directory, owned_pid):
+    require(type(owned_pid) is int and owned_pid > 0, 'owned frame PTS PID must be positive integer')
+    return payload_directory / ('frame-pts-' + str(owned_pid) + '.jsonl')
+
+
+def frame_pts_mapping(pid, source, pins):
+    """Verify the sole injected observer image once at the held content checkpoint."""
+    found = set(); proc = Path('/proc', str(pid)); expected = pins[str(source / FRAME_PTS_IMAGE)]
+    for line in (proc / 'maps').read_text().splitlines():
+        parts = line.split(None, 5)
+        if len(parts) != 6 or parts[5] != FRAME_PTS_MOUNT:continue
+        found.add((parts[3], int(parts[4])))
+    require(len(found) == 1, 'explicit frame PTS observer image missing or ambiguous')
+    device, inode = next(iter(found)); target = proc / 'root' / FRAME_PTS_MOUNT.lstrip('/'); st = target.stat()
+    require(st.st_ino == inode and (os.major(st.st_dev), os.minor(st.st_dev)) ==
+            tuple(int(part, 16) for part in device.split(':')) and digest(target) == expected,
+            'mapped frame PTS observer differs from frozen own artifact')
+    return {'path': FRAME_PTS_MOUNT, 'device': device, 'inode': inode, 'sha256': expected}
+
+
+def audit_frame_pts(reader, report_path, trace_path, payload_records, owned_pid):
+    require(type(owned_pid) is int and owned_pid > 0, 'owned frame PTS PID must be positive integer')
+    selected = []
+    for record in payload_records:
+        require(record['audit']['status'] == 'PASS', 'frame PTS needs independently qualified source payloads')
+        instance = record['audit']['payload_audit']['driver_instance']
+        selected.extend(dict(item, driver_instance=instance, phase=record['phase'], pid=owned_pid)
+                        for item in record['audit']['selected_source_bindings'])
+    result = reader.audit_frames(report_path, trace_path, selected_bindings=selected)
+    require(result.get('status') == 'PASS', 'actual AVFrame PTS binding audit failed: ' + json.dumps(result))
+    require(type(result.get('pid')) is int and result['pid'] == owned_pid,
+            'frame PTS report PID differs from the verified owned application')
+    require(type(result['selected_joins']) is list and len(result['selected_joins']) == len(selected),
+            'selected frame PTS population differs')
+    natural = {(row['driver_instance'], row['binding']['context'], row['binding']['generation'])
+               for row in selected if row['phase'] == 'reopen'}
+    require(len(natural) == 1, 'one source-proven natural reopen lifetime required')
+    require(type(result['lifetime_counts']) is list, 'frame PTS lifetime census must be an array')
+    counts = [row for row in result['lifetime_counts'] if
+              (row['driver_instance'], row['context'], row['generation']) in natural]
+    require(len(counts) == 1 and all(type(counts[0][key]) is int and counts[0][key] == 180
+            for key in ('frame_returns', 'unique_bindings', 'raw_pts_observed')),
+            'natural reopen needs180 distinct returned frames with actual raw PTS observations')
+    require(type(counts[0]['clock_observed']) is int and 0 <= counts[0]['clock_observed'] <= 180,
+            'natural declared-clock census must remain explicit and bounded')
+    return result
 
 
 def validate_sample_mode(mode):
@@ -324,8 +398,8 @@ def qualify_statuses(receipts, audited, pid, sample_mode='first-two'):
     return result
 
 
-def frozen_files(source, G, platform):
-    return [Path(__file__), STOCK_PATH, READER_PATH, PAYLOAD_READER, S.BASE, G.ROUTE_PATH, G.BOUNDARY,
+def frozen_files(source, G, platform, observe_frame_pts=False):
+    files = [Path(__file__), STOCK_PATH, READER_PATH, PAYLOAD_READER, S.BASE, G.ROUTE_PATH, G.BOUNDARY,
             source / 'tests/native-picture-fixture.py', source / 'tests/vaapi-centered-payload-protocol.md',
             source / 'tests/vaapi-centered-payload-observer.h', source / 'tests/vaapi-centered-payload-backend.cpp',
             source / 'filters/vaapi/centered-observer/crystalhd_drv_video.so',
@@ -336,6 +410,10 @@ def frozen_files(source, G, platform):
             G.WESTON / 'lib/x86_64-linux-gnu/libweston-14/headless-backend.so',
             G.WESTON / 'lib/x86_64-linux-gnu/weston/kiosk-shell.so', Path('/usr/bin/kodi-send'),
             platform / 'lib/x86_64-linux-gnu/libswscale.so.9.5.103', platform / 'lib/x86_64-linux-gnu/libavutil.so.60.26.103']
+    if validate_frame_pts_mode(observe_frame_pts):
+        files.extend((FRAME_PTS_READER, source / 'tests/vaapi-frame-pts-probe.c',
+                      source / 'tests/vaapi-frame-pts-probe.map', source / FRAME_PTS_IMAGE))
+    return files
 
 
 def clean_source(source, revision):
@@ -352,11 +430,13 @@ def main():
     p.add_argument('--plan', type=Path, required=True); p.add_argument('--case', default='stock-centered-controls-01')
     p.add_argument('--case-root', type=Path, default=ROOT); p.add_argument('--own-source', type=Path); p.add_argument('--own-revision')
     p.add_argument('--sample-mode', choices=SAMPLE_MODES, help='prepare only; default first-two')
+    p.add_argument('--observe-frame-pts', action='store_true', help='prepare only; explicit OWN receive-frame diagnostic preload')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
     if a.prepare_plan and (a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '')):p.error('prepare needs own source/full revision')
     if a.execute and (a.own_source is not None or a.own_revision is not None or a.sample_mode is not None):p.error('source/revision/sample-mode belong to preparation')
     sample_mode = sample_option(a.prepare_plan, a.sample_mode)
+    observe_frame_pts = frame_pts_option(a.prepare_plan, a.observe_frame_pts)
     case = a.case_root.resolve() / a.case
     if a.prepare_plan:require(not a.plan.exists() and not case.exists(), 'fresh plan and case paths required')
     else:case.mkdir(mode=0o700)
@@ -405,14 +485,14 @@ def main():
         if a.prepare_plan:
             source = a.own_source.resolve(strict=True); clean_source(source, a.own_revision)
             require(Path(__file__).resolve() == source / 'tests/vaapi-centered-controls-stock.py', 'runner outside frozen source')
-            pins = {str(f): digest(f) for f in frozen_files(source, G, platform)}
+            pins = {str(f): digest(f) for f in frozen_files(source, G, platform, observe_frame_pts)}
             require(pins[str(FIXTURE)] == FIXTURE_SHA, 'canonical input changed')
             for path, expected in route['client']['pins'].items():
                 require(digest(path) == expected, 'original App/FFmpeg changed'); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_CENTERED_CONTROLS', 'revision': a.own_revision, 'source_directory': str(source),
                           'case': a.case, 'case_directory': str(case), 'pins': pins, 'source_metadata': metadata,
-                          'sample_mode': sample_mode,
-                          'platform_directory': str(platform), 'gl_directory': str(gl), 'scope': SCOPE,
+                          'sample_mode': sample_mode, 'observe_frame_pts': observe_frame_pts,
+                          'platform_directory': str(platform), 'gl_directory': str(gl), 'scope': FRAME_PTS_SCOPE if observe_frame_pts else SCOPE,
                           'method': 0, 'actual_deintmethod': 'none', 'centered': S.CENTERED, 'observer_lifetimes': 3,
                           'natural_originals': 180, 'dequeues_per_original': 1, 'seek_seconds': 3,
                           'initial_source_window': ['0', '5/2'], 'seek_source_window': ['89/30', '7/2'],
@@ -420,13 +500,14 @@ def main():
             print('FROZEN_CENTERED_CONTROLS ' + str(a.plan)); return 0
         plan = json.loads(a.plan.read_text()); G.SOURCE = Path(plan['source_directory']).resolve(strict=True); G.REVISION = plan['revision']
         sample_mode = validate_sample_mode(plan.get('sample_mode'))
+        observe_frame_pts = validate_frame_pts_mode(plan.get('observe_frame_pts'))
         require(plan['status'] == 'FROZEN_CENTERED_CONTROLS' and plan['case'] == a.case and plan['case_directory'] == str(case), 'frozen case differs')
         require(plan['method'] == 0 and plan['actual_deintmethod'] == 'none' and plan['centered'] == S.CENTERED and
                 plan['observer_lifetimes'] == 3 and plan['natural_originals'] == 180 and plan['dequeues_per_original'] == 1 and
                 plan['seek_seconds'] == 3 and plan['paused_content_clock_tolerance'] == '1/2', 'frozen control contract differs')
         clean_source(G.SOURCE, G.REVISION)
         require(Path(__file__).resolve() == G.SOURCE / 'tests/vaapi-centered-controls-stock.py', 'executed runner outside frozen source')
-        require(all(str(f) in plan['pins'] for f in frozen_files(G.SOURCE, G, platform)), 'required frozen artifact missing')
+        require(all(str(f) in plan['pins'] for f in frozen_files(G.SOURCE, G, platform, observe_frame_pts)), 'required frozen artifact missing')
         require(all(plan['pins'].get(path) == expected for path, expected in route['client']['pins'].items()), 'original App pins differ')
         for path, expected in plan['pins'].items():require(digest(path) == expected, 'frozen artifact changed: ' + path)
         require(plan['source_metadata'] == metadata and plan['pins'][str(FIXTURE)] == FIXTURE_SHA and
@@ -434,7 +515,8 @@ def main():
         require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'owned shutdown requires pidfds')
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         G.VA = G.SOURCE / 'filters/vaapi/centered-observer/crystalhd_drv_video.so'; G.DIL = G.SOURCE / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
-        report.update(plan=str(a.plan), revision=G.REVISION, source_metadata=metadata, pins=plan['pins'], scheduling=plan['scheduling'], sample_mode=sample_mode)
+        report.update(plan=str(a.plan), revision=G.REVISION, source_metadata=metadata, pins=plan['pins'], scheduling=plan['scheduling'],
+                      sample_mode=sample_mode, observe_frame_pts=observe_frame_pts, scope=FRAME_PTS_SCOPE if observe_frame_pts else SCOPE)
         before = load('centered_controls_initial_boundary', G.BOUNDARY).guard(); report['before'] = before
         require(before['debug_rows'] == 85 and before['debug_sha256'] ==
                 '4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4', 'initial debug policy differs')
@@ -469,7 +551,7 @@ def main():
         wait(lambda: (runtime / sock).exists() if weston.poll() is None else False, 8, 'owned Weston readiness')
         command = G.namespace(Path(route['client']['app_directory']), platform, gl, case, runtime, sock, FIXTURE)
         at = command.index('--'); command[at:at] = ['--bind', str(payload), '/payload',
-            '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload', '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', S.CENTERED] + sample_environment(sample_mode)
+            '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload', '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', S.CENTERED] + sample_environment(sample_mode) + frame_pts_environment(G.SOURCE, observe_frame_pts)
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff'); save(case / 'command.json', command)
         log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -585,7 +667,9 @@ def main():
                 label = value['capture_label']; meta = value['capture']
                 require(label in ('initial-pause', 'seek-forward') and meta['file'] == label + '.bgra', 'capture path/label differs')
                 audit = verify_capture(C.audit_capture(profile / meta['file']), meta, label)
-                if label == 'initial-pause':report['identity_checks'][0]['mapped_images'] = G.mappings(kid['pid'], plan['pins'], dependencies)
+                if label == 'initial-pause':
+                    report['identity_checks'][0]['mapped_images'] = G.mappings(kid['pid'], plan['pins'], dependencies)
+                    if observe_frame_pts:report['identity_checks'][0]['frame_pts_observer'] = frame_pts_mapping(kid['pid'], G.SOURCE, plan['pins'])
                 report['captures'].append({'capture': meta, 'audit': audit}); gate('capture-' + label)
             elif phase == 'await-stop-retirement':
                 require(value['active_players'] == [], 'requested Stop left active player'); retire('interrupted'); audit_retired('interrupted', value); gate('stop-retired')
@@ -666,6 +750,13 @@ def main():
                         for offset, r in rows:
                             if r['event'] in ('submit_bind', 'input_sent', 'output_dequeued', 'materialized', 'prefeed_sent'):
                                 require(sum(v['begin'] <= offset < v['end'] for v in intervals) == 1, 'source work outside frozen play intervals')
+                        if observe_frame_pts:
+                            require(not live and report.get('boundary_equal'), 'frame PTS report requires completed owned shutdown and restored boundary')
+                            frame_reader = load('centered_controls_frame_pts_reader', FRAME_PTS_READER)
+                            frame_report = frame_pts_report_path(case / 'payload', kid['pid'])
+                            report['frame_pts_report'] = str(frame_report)
+                            result = audit_frame_pts(frame_reader, frame_report, case / 'kodi.stdout', report['payload_audits'], kid['pid'])
+                            report['frame_pts_audit'] = result; save(case / 'frame-pts-audit.json', result)
             except BaseException as error:
                 report['errors'].append({'step': 'cleanup/final-observation', 'error': fault(error)})
                 if live or (weston is not None and weston.poll() is None):
@@ -677,7 +768,10 @@ def main():
                     all(r['audit'].get('status') == 'PASS' for r in report['payload_audits']) and set(report['source_census']) == {'interrupted', 'reopen'} and
                     all(r['status'] == 'PASS' for r in report['source_census'].values()) and report['application_exit'] == 0 and
                     report.get('boundary_equal') and report.get('kernel_exit') == 0 and not report['errors'] and report['live_resource_handoff'] is None)
-                report.update(status='PASS' if passed else 'FAIL', actual_media_PTS_to_VA_binding='NOT_OBSERVED', gpu_reader_return='NOT_OBSERVED',
+                if observe_frame_pts:passed = passed and report.get('frame_pts_audit', {}).get('status') == 'PASS'
+                pts_status = 'OBSERVED_BY_OWN_INSTRUMENTATION' if report.get('frame_pts_audit', {}).get('status') == 'PASS' else 'NOT_OBSERVED'
+                report.update(status='PASS' if passed else 'FAIL', actual_media_PTS_to_VA_binding=pts_status,
+                    actual_media_PTS_clock_comparison=report.get('frame_pts_audit', {}).get('selected_clock_status', 'NOT_OBSERVED'), gpu_reader_return='NOT_OBSERVED',
                     stock_compatibility='NOT_QUALIFIED_BY_PRIVATE_OBSERVER', excluded_heap='No observer/investigation/reproduction; ordinary exit status only retained.')
                 save(case / 'result.json', report)
     print(a.case + ': ' + report['status'] + '; scoped centered source controls'); return 0 if report['status'] == 'PASS' else 1

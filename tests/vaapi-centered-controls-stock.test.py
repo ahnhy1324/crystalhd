@@ -292,4 +292,111 @@ class TargetTimingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'timing audit failed'):M.audit_target_phase(reader, self.records(), 100, 200)
 
 
+class FramePtsModeTests(unittest.TestCase):
+    def test_observer_is_optional_and_prepare_only(self):
+        self.assertFalse(M.frame_pts_option(True, False))
+        self.assertTrue(M.frame_pts_option(True, True))
+        self.assertIsNone(M.frame_pts_option(False, False))
+        with self.assertRaisesRegex(ValueError, 'prepare-plan'):M.frame_pts_option(False, True)
+        for value in (None, 0, 1, 'true'):
+            with self.subTest(value=value), self.assertRaises(ValueError):M.validate_frame_pts_mode(value)
+
+    def test_only_explicit_mode_injects_one_own_preload(self):
+        source = Path('/own-source')
+        self.assertEqual(M.frame_pts_environment(source, False), [])
+        command = M.frame_pts_environment(source, True)
+        self.assertEqual(command, ['--ro-bind', '/own-source/' + str(M.FRAME_PTS_IMAGE), M.FRAME_PTS_MOUNT,
+            '--setenv', 'LD_PRELOAD', M.FRAME_PTS_MOUNT,
+            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS', 'v1',
+            '--setenv', 'CRYSTALHD_TEST_FRAME_PTS_PREFIX', '/payload/frame-pts'])
+        self.assertNotIn('CRYSTALHD_TEST_FRAME_PTS_CODEC_PROVIDER', command)
+        self.assertNotIn('CRYSTALHD_TEST_FRAME_PTS_UTIL_PROVIDER', command)
+
+    def test_optional_artifacts_are_frozen_without_affecting_baseline(self):
+        G = SimpleNamespace(ROUTE_PATH=Path('/route'), BOUNDARY=Path('/boundary'), WESTON=Path('/weston'))
+        source = Path('/own-source'); platform = Path('/platform')
+        ordinary = M.frozen_files(source, G, platform)
+        observed = M.frozen_files(source, G, platform, True)
+        self.assertEqual(observed[:len(ordinary)], ordinary)
+        self.assertEqual(observed[len(ordinary):], [M.FRAME_PTS_READER,
+            source / 'tests/vaapi-frame-pts-probe.c', source / 'tests/vaapi-frame-pts-probe.map', source / M.FRAME_PTS_IMAGE])
+        self.assertNotIn(source / M.FRAME_PTS_IMAGE, ordinary)
+
+    def records(self):
+        return [{'phase': phase, 'audit': {'status': 'PASS', 'payload_audit': {'driver_instance': 7},
+                 'selected_source_bindings': [{'binding': {'context': context, 'generation': 1},
+                   'source_ordinal': ordinal, 'source_pts_ticks': ordinal * 512, 'source_time_base': '1/15360'}
+                    for ordinal in (90, 91)]}} for phase, context in (('interrupted', 3), ('reopen', 4))]
+
+    def result(self):
+        return {'status': 'PASS', 'pid': PID, 'selected_joins': [{}, {}, {}, {}], 'lifetime_counts': [
+            {'driver_instance': 7, 'context': 3, 'generation': 1, 'frame_returns': 34, 'unique_bindings': 34, 'raw_pts_observed': 34, 'clock_observed': 34},
+            {'driver_instance': 7, 'context': 4, 'generation': 1, 'frame_returns': 180, 'unique_bindings': 180, 'raw_pts_observed': 180, 'clock_observed': 180}]}
+
+    def test_reader_gets_full_trace_and_independently_qualified_source_bindings(self):
+        records = self.records(); result = self.result(); calls = []
+        def audit(*args, **kwargs):calls.append((args, kwargs)); return result
+        self.assertIs(M.audit_frame_pts(SimpleNamespace(audit_frames=audit), 'report', 'full.trace', records, PID), result)
+        args, kwargs = calls[0]; self.assertEqual(args, ('report', 'full.trace'))
+        selected = kwargs['selected_bindings']; self.assertEqual(len(selected), 4)
+        self.assertEqual([row['phase'] for row in selected], ['interrupted', 'interrupted', 'reopen', 'reopen'])
+        self.assertTrue(all(row['driver_instance'] == 7 for row in selected))
+        self.assertTrue(all(row['pid'] == PID for row in selected))
+        self.assertEqual([row['source_ordinal'] for row in selected], [90, 91, 90, 91])
+
+    def test_missing_join_clock_or_incomplete_natural_return_population_rejected(self):
+        for change in ('status', 'selected', 'returns', 'unique', 'raw_pts', 'lifetime'):
+            with self.subTest(change=change):
+                result = self.result()
+                if change == 'status':result['status'] = 'FAIL'
+                elif change == 'selected':result['selected_joins'].pop()
+                elif change == 'lifetime':result['lifetime_counts'][1]['generation'] = 2
+                else:result['lifetime_counts'][1][{'returns': 'frame_returns', 'unique': 'unique_bindings', 'raw_pts': 'raw_pts_observed'}[change]] = 179
+                with self.assertRaises(ValueError):
+                    M.audit_frame_pts(SimpleNamespace(audit_frames=lambda *args, **kwargs: result), 'report', 'trace', self.records(), PID)
+
+    def test_failed_source_payload_never_reaches_frame_reader(self):
+        records = self.records(); records[0]['audit']['status'] = 'FAIL'
+        reader = SimpleNamespace(audit_frames=lambda *args, **kwargs: self.fail('unqualified source reached PTS join'))
+        with self.assertRaisesRegex(ValueError, 'independently qualified'):M.audit_frame_pts(reader, 'report', 'trace', records, PID)
+
+    def test_natural_actual_clock_census_requires_integer_counts(self):
+        for key in ('frame_returns', 'unique_bindings', 'raw_pts_observed', 'clock_observed'):
+            for value in (True, 180.0, '180', -180, None):
+                with self.subTest(key=key, value=value):
+                    result = self.result(); result['lifetime_counts'][1][key] = value
+                    with self.assertRaises(ValueError):
+                        M.audit_frame_pts(SimpleNamespace(audit_frames=lambda *args, **kwargs: result), 'report', 'trace', self.records(), PID)
+
+    def test_undeclared_timebase_preserves_actual_raw_pts_binding_observation(self):
+        result = self.result(); result['lifetime_counts'][1]['clock_observed'] = 0
+        result['selected_clock_status'] = 'NOT_OBSERVED_UNDECLARED_TIME_BASE'
+        self.assertIs(M.audit_frame_pts(SimpleNamespace(audit_frames=lambda *args, **kwargs: result),
+                                       'report', 'trace', self.records(), PID), result)
+        for value in (-1, 181):
+            with self.subTest(value=value):
+                result['lifetime_counts'][1]['clock_observed'] = value
+                with self.assertRaises(ValueError):
+                    M.audit_frame_pts(SimpleNamespace(audit_frames=lambda *args, **kwargs: result), 'report', 'trace', self.records(), PID)
+
+    def test_report_path_uses_verified_owned_pid_without_child_or_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as name:
+            payload = Path(name)
+            (payload / 'frame-pts.jsonl').write_text('legacy child report')
+            (payload / 'frame-pts-999.jsonl').write_text('another process report')
+            expected = payload / ('frame-pts-' + str(PID) + '.jsonl')
+            self.assertEqual(M.frame_pts_report_path(payload, PID), expected)
+            self.assertFalse(expected.exists())
+        for value in (True, 0, -1, '321', None):
+            with self.subTest(value=value), self.assertRaises(ValueError):M.frame_pts_report_path(Path('/payload'), value)
+
+    def test_successful_foreign_report_pid_cannot_qualify_owned_application(self):
+        for foreign in (PID + 1, True, float(PID), str(PID), None):
+            with self.subTest(pid=foreign):
+                result = self.result(); result['pid'] = foreign
+                with self.assertRaisesRegex(ValueError, 'verified owned application'):
+                    M.audit_frame_pts(SimpleNamespace(audit_frames=lambda *args, **kwargs: result),
+                                      'foreign-report', 'trace', self.records(), PID)
+
+
 if __name__ == '__main__':unittest.main()

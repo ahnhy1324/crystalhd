@@ -213,3 +213,82 @@ before field validation, so its default outcome alone is not proof of a valid
 field pair. Matching later public materializations are recorded separately,
 and the payload reader requires successful materialization for its selected
 bindings. These records do not independently measure physical field parity.
+
+## Actual returned AVFrame PTS (isolated observation)
+
+`make -C filters/vaapi frame-pts-observer FFMPEG63_INCLUDE=/path/to/headers`
+builds a separate OWN `frame-pts-observer/frame-pts-probe.so`. It requires the
+unchanged codec63.1.102/util61.1.102 public headers used by the original App;
+host codec62/util60 headers are unsuitable. No FFmpeg library is linked into
+the probe. The artifact is excluded from ordinary build/install/package paths.
+`check-frame-pts-observer` uses synthetic public-structure/provider controls;
+those controls do not establish the original runtime ABI.
+
+The optional prepare-only `--observe-frame-pts` mode of
+`vaapi-centered-controls-stock.py` freezes this explicit LD_PRELOAD observer
+and its reader alongside the existing original-App and fixture inputs. This
+is an instrumented diagnostic run. It does not replace the previous
+source-content-only receipts or qualify normal stock compatibility, release,
+GPU-reader completion or scanout. No external product source or binary is
+modified, and the rejected private FFmpeg candidate libraries are never used.
+
+The probe forwards `avcodec_receive_frame@LIBAVCODEC_63` unchanged. Only after
+a successful VAAPI return and verified original codec/util providers does it
+copy scalar PTS, best-effort timestamp, declared frame/packet time bases,
+`data[3]` surface identity and descriptive codec/frame/pool pointer identities.
+It does not retain frames, alter references or access picture bytes. A fixed
+bounded memory buffer replaces per-frame file output/allocation. The report
+is written at ordinary process shutdown; overflow, ABI/provider failure and
+incomplete output cannot qualify an observation. Return values and errno are
+preserved. Metadata capture still adds work, so timing/performance is not
+qualified by this probe.
+
+The JSONL report uses `crystalhd-frame-pts-v1`: one header, sequenced frame
+records and one complete footer. Each record brackets its metadata snapshot
+with CLOCK_MONOTONIC nanoseconds. PTS values retain the signed AV_NOPTS_VALUE
+sentinel. Unknown time bases remain unknown; a valid codec packet time base
+is explicitly identified when a frame time base is unset. Pointer identities
+may be reused and are descriptive only; display identity is unobserved.
+The output environment value is an absolute prefix: the probe appends
+`-<pid>.jsonl`. The runner reads only the identified Kodi PID and requires that
+PID in the report. Inherited observers in child processes cannot occupy the
+parent's report path; their reports do not qualify the parent's frames.
+
+`vaapi-frame-pts-reader.py` joins the actual surface over the whole snapshot
+interval to exactly one unchanged OWN binding, across every driver instance
+in the same PID. Complete trace sequences and retirement boundaries are
+required. A gap, collision or binding change during capture fails; nearest
+timestamps and synthetic VA tokens are not media clocks. Submitted decoder
+lifetimes require explicit epoch retirement and a successful terminal
+`context_destroy`; `binding_end` alone is insufficient. Display-wide
+`session_destroy` is reported separately. Its absence after all submitted
+decoder contexts retire cannot invalidate an earlier fully bounded snapshot.
+Existing independent
+full-NV12 content audits supply selected source90/91 identities. Their actual
+returned timestamps are compared to the fixture clock with the explicitly
+declared runtime tick precision, without inferring source content from PTS.
+When both declared time bases are unset, a successful raw-PTS/binding join
+remains an observation while the source-clock comparison is explicitly
+`NOT_OBSERVED_UNDECLARED_TIME_BASE`. The natural reopen requires180 distinct
+returned bindings with actual raw PTS; declared-clock coverage is reported
+separately. The fixture clock is never substituted for missing runtime units.
+
+## Ordinary Kodi flush and the defensive generation reset
+
+For the pinned Kodi22RC1 source, `DVDVideoCodecFFmpeg::Reset()` flushes FFmpeg
+and calls the hardware Reset; `VAAPI::CDecoder::Reset()` flushes the output
+queue. Neither operation destroys the live decoder surface pool. Dispose
+frees the codec context before releasing the hardware object. FFmpeg's VAAPI
+uninit destroys its VA context at that point. Sources:
+[codec Reset/Dispose](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp#L955),
+[hardware Reset](https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp#L1106).
+
+The OWN `context_reset` event instead comes from `DestroySurfacesWithTimeout`
+when a nonclosing decoder still owns a nonobsolete destroyed target. The
+libva `vaDestroySurfaces` contract requires destroying contexts using those
+surfaces first (`va/va.h`, installed libva1.23.0, lines1906–1910). This makes
+live-context pool teardown a separate defensive case. Zero resets on these
+ordinary Kodi seek/Stop/reopen runs are expected from the source paths and
+are not a reason to repeat the same seek or force a device reset. Reset-v2
+close/device coverage remains CPU-controlled; no actual defensive reset is
+claimed. Other clients and failure/recovery routes remain separate.

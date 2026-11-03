@@ -230,7 +230,7 @@ jobs:
           make library-check-sanitized
 
       - name: Check private payload observers without hardware
-        run: make -C filters/vaapi check-payload-observer check-centered-observer
+        run: make -C filters/vaapi check-payload-observer check-centered-observer check-frame-pts-observer
       - name: Check MPEG-1 reference model synthetic controls without hardware
         run: make mpeg1-reference-model-check
 

@@ -1,0 +1,697 @@
+{
+  "schema": "crystalhd-centered-frame-pts-observation-v1",
+  "date": "2026-11-03",
+  "owner_issue": 477,
+  "status": "PASS_SCOPED_OFFLINE_RAW_PTS_BINDING_REANALYSIS",
+  "runtime_source_revision": "b67219f8b3859209509c945b45bbc80ad68d8dce",
+  "analysis_source_revision": "8e48e521c189304c0a08d8c1c29465392a2e5f98",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "client": "Unchanged original Kodi22RC1/App FFmpeg",
+    "upstream_kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "instrumentation": "OWN centered observer and explicit OWN receive-frame LD_PRELOAD only",
+    "method": 0,
+    "actual_deintmethod": "none",
+    "same_pid": 1837758,
+    "scheduling": "ordinary inherited scheduling",
+    "providers": {
+      "codec_provider": "/app/lib/libavcodec.so.63.1.102",
+      "codec_version": 4129126,
+      "util_provider": "/app/lib/libavutil.so.61.1.102",
+      "util_version": 3998054
+    },
+    "normal_backend_stock_compatibility": "NOT_QUALIFIED",
+    "release_qualification": "NOT_QUALIFIED"
+  },
+  "fixture": {
+    "path": "/home/mache/.cache/crystalhd-centered-seek-20261103/frozen-1080p180/neutral-spatial-1080p30-180.mp4",
+    "sha256": "226c91b7f6fd361af37fcac88dfa23302072f58f7cce0b8aa0c57c3f94f06555",
+    "source_case": 2,
+    "pictures": 180,
+    "fps": "30/1",
+    "source_time_base": "1/15360",
+    "source_pts": "ordinal*512",
+    "coded": [
+      1920,
+      1088
+    ],
+    "visible": [
+      1920,
+      1080
+    ]
+  },
+  "checks": {
+    "probe_controls": 18,
+    "frame_pts_reader_controls": 26,
+    "controller_controls": 48,
+    "unchanged_original_header_build": "PASS -Wall -Wextra -Werror",
+    "unchanged_transitive_public_headers": 40,
+    "header_source_commit": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "generated_avconfig_preserved_in": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/header-provenance.json",
+    "private_candidate_libraries": "NEVER_LINKED_OR_EXECUTED",
+    "independent_review": "Probe/runner/reader reviewed by separate authors; actual captured evidence and retirement correction reviewed independently"
+  },
+  "raw_frame_observation": {
+    "frames_observed": 212,
+    "lifetime_counts": [
+      {
+        "clock_observed": 0,
+        "context": 2,
+        "driver_instance": 2,
+        "first_frame_seq": 1,
+        "frame_returns": 32,
+        "generation": 1,
+        "last_frame_seq": 32,
+        "raw_pts_observed": 32,
+        "unique_bindings": 32
+      },
+      {
+        "clock_observed": 0,
+        "context": 4,
+        "driver_instance": 2,
+        "first_frame_seq": 33,
+        "frame_returns": 180,
+        "generation": 1,
+        "last_frame_seq": 212,
+        "raw_pts_observed": 180,
+        "unique_bindings": 180
+      }
+    ],
+    "selected_joins": [
+      {
+        "binding": {
+          "context": 2,
+          "decode_identity": 56,
+          "generation": 1,
+          "owner": 6,
+          "submission_ordinal": 28,
+          "surface": 6,
+          "token": 2800000
+        },
+        "boundary_event": "context_destroy",
+        "boundary_ns": 696891172540120,
+        "boundary_seq": 698,
+        "clocks": {
+          "best_effort_timestamp": {
+            "observed": true,
+            "raw": 3000000,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          },
+          "pts": {
+            "observed": true,
+            "raw": 3000000,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x7433f42eb8c0",
+          "display": null,
+          "frame": "0x7433f43a9740",
+          "pool": "0x0"
+        },
+        "driver_instance": 2,
+        "frame_seq": 27,
+        "phase": "interrupted",
+        "pid": 1837758,
+        "snapshot_begin_ns": 696890302952661,
+        "snapshot_end_ns": 696890302958668,
+        "source_comparisons": {
+          "best_effort_timestamp": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3000000,
+            "source_seconds": "3",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          },
+          "pts": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3000000,
+            "source_seconds": "3",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          }
+        },
+        "source_ordinal": 90,
+        "source_pts_ticks": 46080,
+        "source_time_base": "1/15360",
+        "submit_ns": 696890295890125,
+        "submit_seq": 596,
+        "tid": 1837875
+      },
+      {
+        "binding": {
+          "context": 2,
+          "decode_identity": 58,
+          "generation": 1,
+          "owner": 7,
+          "submission_ordinal": 29,
+          "surface": 7,
+          "token": 2900000
+        },
+        "boundary_event": "context_destroy",
+        "boundary_ns": 696891172540120,
+        "boundary_seq": 698,
+        "clocks": {
+          "best_effort_timestamp": {
+            "observed": true,
+            "raw": 3033333,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          },
+          "pts": {
+            "observed": true,
+            "raw": 3033333,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x7433f42eb8c0",
+          "display": null,
+          "frame": "0x7433f43a9740",
+          "pool": "0x0"
+        },
+        "driver_instance": 2,
+        "frame_seq": 28,
+        "phase": "interrupted",
+        "pid": 1837758,
+        "snapshot_begin_ns": 696890309942072,
+        "snapshot_end_ns": 696890309947729,
+        "source_comparisons": {
+          "best_effort_timestamp": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          },
+          "pts": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          }
+        },
+        "source_ordinal": 91,
+        "source_pts_ticks": 46592,
+        "source_time_base": "1/15360",
+        "submit_ns": 696890307326657,
+        "submit_seq": 602,
+        "tid": 1837875
+      },
+      {
+        "binding": {
+          "context": 4,
+          "decode_identity": 250,
+          "generation": 1,
+          "owner": 21,
+          "submission_ordinal": 91,
+          "surface": 21,
+          "token": 9100000
+        },
+        "boundary_event": "binding_end",
+        "boundary_ns": 696896735805418,
+        "boundary_seq": 2149,
+        "clocks": {
+          "best_effort_timestamp": {
+            "observed": true,
+            "raw": 3000000,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          },
+          "pts": {
+            "observed": true,
+            "raw": 3000000,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x7434140f7200",
+          "display": null,
+          "frame": "0x7434140fcf80",
+          "pool": "0x0"
+        },
+        "driver_instance": 2,
+        "frame_seq": 123,
+        "phase": "reopen",
+        "pid": 1837758,
+        "snapshot_begin_ns": 696896372183439,
+        "snapshot_end_ns": 696896372190004,
+        "source_comparisons": {
+          "best_effort_timestamp": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3000000,
+            "source_seconds": "3",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          },
+          "pts": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3000000,
+            "source_seconds": "3",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          }
+        },
+        "source_ordinal": 90,
+        "source_pts_ticks": 46080,
+        "source_time_base": "1/15360",
+        "submit_ns": 696896345641798,
+        "submit_seq": 1989,
+        "tid": 1837907
+      },
+      {
+        "binding": {
+          "context": 4,
+          "decode_identity": 252,
+          "generation": 1,
+          "owner": 22,
+          "submission_ordinal": 92,
+          "surface": 22,
+          "token": 9200000
+        },
+        "boundary_event": "binding_end",
+        "boundary_ns": 696896737677842,
+        "boundary_seq": 2154,
+        "clocks": {
+          "best_effort_timestamp": {
+            "observed": true,
+            "raw": 3033333,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          },
+          "pts": {
+            "observed": true,
+            "raw": 3033333,
+            "seconds": null,
+            "time_base": null,
+            "time_base_source": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x7434140f7200",
+          "display": null,
+          "frame": "0x7434140fcf80",
+          "pool": "0x0"
+        },
+        "driver_instance": 2,
+        "frame_seq": 124,
+        "phase": "reopen",
+        "pid": 1837758,
+        "snapshot_begin_ns": 696896400103783,
+        "snapshot_end_ns": 696896400109999,
+        "source_comparisons": {
+          "best_effort_timestamp": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          },
+          "pts": {
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "tolerance_seconds": null
+          }
+        },
+        "source_ordinal": 91,
+        "source_pts_ticks": 46592,
+        "source_time_base": "1/15360",
+        "submit_ns": 696896381460491,
+        "submit_seq": 2004,
+        "tid": 1837907
+      }
+    ],
+    "instance_coverage": [
+      {
+        "driver_instance": 1,
+        "last_event": "session_destroy",
+        "last_seq": 7,
+        "retired_decoder_lifetimes": 0,
+        "session_destroy_observed": true,
+        "submitted_decoder_lifetimes": 0,
+        "trace_rows": 7
+      },
+      {
+        "driver_instance": 2,
+        "last_event": "surface_destroy",
+        "last_seq": 3349,
+        "retired_decoder_lifetimes": 2,
+        "session_destroy_observed": false,
+        "submitted_decoder_lifetimes": 2,
+        "trace_rows": 3349
+      }
+    ],
+    "decoder_retirement_coverage": {
+      "lifetimes": [
+        {
+          "context": 2,
+          "driver_instance": 2,
+          "generation": 1,
+          "generation_reset_close": "NOT_APPLICABLE",
+          "retirement_event": "context_destroy",
+          "retirement_ns": 696891172540120,
+          "retirement_seq": 698,
+          "submitted_bindings": 34,
+          "terminal_context_destroy_generation": 1,
+          "terminal_context_destroy_outcome": 0,
+          "terminal_context_destroy_seq": 698
+        },
+        {
+          "context": 4,
+          "driver_instance": 2,
+          "generation": 1,
+          "generation_reset_close": "NOT_APPLICABLE",
+          "retirement_event": "context_destroy",
+          "retirement_ns": 696899932540523,
+          "retirement_seq": 3319,
+          "submitted_bindings": 180,
+          "terminal_context_destroy_generation": 1,
+          "terminal_context_destroy_outcome": 0,
+          "terminal_context_destroy_seq": 3319
+        }
+      ],
+      "retired_decoder_lifetimes": 2,
+      "status": "PASS",
+      "submitted_decoder_lifetimes": 2
+    },
+    "footer": {
+      "type": "footer",
+      "records": 212,
+      "dropped": 0,
+      "complete": true,
+      "provider_ok": true,
+      "errors": []
+    },
+    "frame_time_bases": [
+      [
+        0,
+        1
+      ]
+    ],
+    "packet_time_bases": [
+      [
+        0,
+        1
+      ]
+    ],
+    "selected_clock_status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+    "selected_clock_qualified_bindings": 0,
+    "observation_scope": "Actual returned AVFrame raw pts and best_effort_timestamp, not a synthetic VA token or content-derived PTS. Unknown units stay unknown."
+  },
+  "controls": {
+    "source_census": {
+      "interrupted": {
+        "status": "PASS",
+        "errors": [],
+        "complete_natural_population_required": false,
+        "event_counts": {
+          "sync_enter": 133,
+          "sync_exit": 133,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 34,
+          "input_sent": 34,
+          "prefeed_sent": 34,
+          "output_dequeued": 34,
+          "materialized": 34,
+          "export_enter": 106,
+          "export_exit": 106,
+          "read_export_reuse_implicit_fence_probe": 18,
+          "binding_end": 34
+        },
+        "binding_stage_counts": {
+          "submit_bind": 34,
+          "input_sent": 34,
+          "output_dequeued": 34,
+          "materialized": 34
+        },
+        "public_materialization_count": 34,
+        "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+        "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+        "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+      },
+      "reopen": {
+        "status": "PASS",
+        "errors": [],
+        "complete_natural_population_required": true,
+        "event_counts": {
+          "sync_enter": 428,
+          "sync_exit": 428,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 180,
+          "input_sent": 180,
+          "prefeed_sent": 180,
+          "output_dequeued": 180,
+          "materialized": 180,
+          "export_enter": 252,
+          "export_exit": 252,
+          "read_export_reuse_implicit_fence_probe": 169,
+          "binding_end": 180
+        },
+        "binding_stage_counts": {
+          "submit_bind": 180,
+          "input_sent": 180,
+          "output_dequeued": 180,
+          "materialized": 180
+        },
+        "public_materialization_count": 180,
+        "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+        "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+        "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+      }
+    },
+    "captures": [
+      {
+        "source_ordinal": 12,
+        "paused_clock_seconds": [
+          "347/1000",
+          "347/1000"
+        ]
+      },
+      {
+        "source_ordinal": 91,
+        "paused_clock_seconds": [
+          "3033/1000",
+          "3033/1000"
+        ]
+      }
+    ],
+    "full_NV12_payload_audits": [
+      {
+        "phase": "interrupted",
+        "status": "PASS",
+        "source_ordinals": [
+          90,
+          91
+        ]
+      },
+      {
+        "phase": "reopen",
+        "status": "PASS",
+        "source_ordinals": [
+          90,
+          91
+        ]
+      }
+    ],
+    "seek_target_window_audit": {
+      "status": "PASS",
+      "selected_target_bindings": 2,
+      "source_ordinals": [
+        90,
+        91
+      ],
+      "seek_request_ns": 696889282053369,
+      "stop_request_ns": 696890783260496,
+      "window_audits": [
+        {
+          "manifest": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/payload/centered-payload-1837758-2-2-1.json",
+          "audit": {
+            "status": "PASS",
+            "selection": "case2-90-91",
+            "required_targets": [
+              90,
+              91
+            ],
+            "pid": 1837758,
+            "driver_instance": 2,
+            "seek_request_ns": 696889282053369,
+            "stop_request_ns": 696890783260496,
+            "selected_source_bindings": [
+              {
+                "source_ordinal": 90,
+                "binding": {
+                  "context": 2,
+                  "generation": 1,
+                  "token": 2800000,
+                  "decode_identity": 56,
+                  "submission_ordinal": 28,
+                  "surface": 6,
+                  "owner": 6
+                },
+                "submit_seq": 596,
+                "submit_ns": 696890295890125,
+                "materialized_seq": 618,
+                "materialized_ns": 696890382329853,
+                "successful_syncs_in_window": [
+                  {
+                    "seq": 619,
+                    "operation": 210,
+                    "ts_monotonic_ns": 696890382768817
+                  },
+                  {
+                    "seq": 635,
+                    "operation": 220,
+                    "ts_monotonic_ns": 696890413868910
+                  }
+                ]
+              },
+              {
+                "source_ordinal": 91,
+                "binding": {
+                  "context": 2,
+                  "generation": 1,
+                  "token": 2900000,
+                  "decode_identity": 58,
+                  "submission_ordinal": 29,
+                  "surface": 7,
+                  "owner": 7
+                },
+                "submit_seq": 602,
+                "submit_ns": 696890307326657,
+                "materialized_seq": 625,
+                "materialized_ns": 696890406425449,
+                "successful_syncs_in_window": [
+                  {
+                    "seq": 627,
+                    "operation": 217,
+                    "ts_monotonic_ns": 696890406854635
+                  },
+                  {
+                    "seq": 656,
+                    "operation": 223,
+                    "ts_monotonic_ns": 696890437423850
+                  },
+                  {
+                    "seq": 664,
+                    "operation": 226,
+                    "ts_monotonic_ns": 696890467180371
+                  },
+                  {
+                    "seq": 675,
+                    "operation": 229,
+                    "ts_monotonic_ns": 696890497145163
+                  },
+                  {
+                    "seq": 681,
+                    "operation": 231,
+                    "ts_monotonic_ns": 696890526969362
+                  },
+                  {
+                    "seq": 685,
+                    "operation": 233,
+                    "ts_monotonic_ns": 696890556764296
+                  },
+                  {
+                    "seq": 689,
+                    "operation": 235,
+                    "ts_monotonic_ns": 696890632774421
+                  },
+                  {
+                    "seq": 693,
+                    "operation": 237,
+                    "ts_monotonic_ns": 696890716367832
+                  },
+                  {
+                    "seq": 697,
+                    "operation": 239,
+                    "ts_monotonic_ns": 696890761916859
+                  }
+                ]
+              }
+            ],
+            "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+            "gpu_reader_return": "NOT_OBSERVED",
+            "scanout": "NOT_OBSERVED",
+            "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+          }
+        }
+      ],
+      "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+    },
+    "stage_scope": "214 driver submissions/materializations versus212 actual receive returns: interrupted Stop is partial, natural reopen has180 at both APIs. These are not renderer counts."
+  },
+  "shutdown": {
+    "application_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "live_resource_handoff": null,
+    "max_temperature_mC": 52000,
+    "AC_present_all_samples": true,
+    "module_operations": "NONE",
+    "forced_card_reset": "NONE",
+    "actual_context_reset_events": 0
+  },
+  "preserved_failures": [
+    {
+      "case": "instrumented-centered-frame-pts-01",
+      "controller_status": "FAIL",
+      "source_revision": "b31574fca76b561548827ddaac2394a775c2cc2a",
+      "reason": "Inherited child PID1835094 occupied fixed output before owned Kodi PID1834980. Fixed by per-PID paths, fork-buffer ownership and owned report PID validation.",
+      "original_result": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-01/result.json",
+      "retained_original_probe": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-01/retained-frame-pts-probe.so"
+    },
+    {
+      "case": "instrumented-centered-frame-pts-02",
+      "controller_status": "FAIL",
+      "source_revision": "b67219f8b3859209509c945b45bbc80ad68d8dce",
+      "reason": "Reader required display-wide session_destroy after successful decoder-context retirement. Corrected reader uses explicit epoch/terminal context retirement and records display termination separately.",
+      "original_result": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/result.json",
+      "reanalysis": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/reanalysis-final.json",
+      "reexecution": "NONE; unchanged post-exit inputs analysed offline; original FAIL not relabeled"
+    }
+  ],
+  "artifacts": {
+    "plan": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/plan-02.json",
+    "original_result": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/result.json",
+    "raw_report": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/payload/frame-pts-1837758.jsonl",
+    "trace": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/kodi.stdout",
+    "offline_reanalysis": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/instrumented-centered-frame-pts-02/reanalysis-final.json",
+    "header_provenance": "/home/mache/.cache/crystalhd-frame-pts-runtime-20261103/header-provenance.json"
+  },
+  "limits": [
+    "Both declared runtime time bases are0/1; source-clock comparison is NOT_OBSERVED. No seconds are inferred from the raw numbers.",
+    "Instrumented diagnostic; no normal-backend stock/release, GPU-reader completion or scanout qualification.",
+    "Ordinary pinned Kodi flush/Stop does not trigger the defensive live-context-pool generation reset; actual defensive reset-v2 remains CPU-only.",
+    "Whole small-picture Y/software equality and full scaler mapping remain outside the prior source-patch/full-canvas scope.",
+    "Broader fallback/29.97, benefit and endurance remain open."
+  ]
+}
