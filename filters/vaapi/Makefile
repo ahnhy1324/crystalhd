@@ -47,7 +47,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 	libswscale) \
 	-lcrystalhd -pthread
 
-.PHONY: all clean check check-ownership-sanitized payload-observer payload-observer-library check-payload-observer install uninstall seek-test
+.PHONY: all clean check check-ownership-sanitized payload-observer payload-observer-library check-payload-observer centered-observer check-centered-observer install uninstall seek-test
 
 all: $(DRIVER)
 
@@ -77,6 +77,17 @@ payload-observer: $(ROOTDIR)/tests/vaapi-vpp-payload-backend.cpp \
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o payload-observer/$(DRIVER) \
 		$(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
+# Centered observation has a separate explicit wrapper/output; the ordinary
+# backend and the existing noncentered VPP observer remain independent.
+centered-observer: $(ROOTDIR)/tests/vaapi-centered-payload-backend.cpp \
+		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-vpp-payload-observer.h crystalhd_drv_video.cpp \
+		$(BACKEND_HEADERS) $(ROOTDIR)/cpu.mk $(ROOTDIR)/include/crystalhd_legacy.h \
+		payload-observer-library
+	mkdir -p centered-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o centered-observer/$(DRIVER) \
+		$(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.
@@ -95,6 +106,20 @@ check-payload-observer: $(ROOTDIR)/tests/vaapi-vpp-payload.cpp \
 		-pthread $(CRYSTALHD_CPU_FLAGS)
 	CRYSTALHD_CONFIG_DISABLE=1 payload-observer/payload-cpu-test
 	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-vpp-payload-reader.test.py
+
+# Explicit centered Off payload controls; never a normal check prerequisite.
+check-centered-observer: $(ROOTDIR)/tests/vaapi-centered-payload.cpp \
+		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-vpp-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-bob-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
+	mkdir -p centered-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
+		-ffunction-sections -fdata-sections $< -o centered-observer/centered-cpu-test \
+		-Wl,--gc-sections,--wrap=ioctl,--wrap=sws_scale \
+		$(shell $(PKG_CONFIG) --libs gbm libdrm libswscale libavutil) \
+		-pthread $(CRYSTALHD_CPU_FLAGS)
+	CRYSTALHD_CONFIG_DISABLE=1 centered-observer/centered-cpu-test
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-centered-payload-reader.test.py
 
 $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 	$(CXX) -std=c++17 -Wall -Wextra -Werror \
@@ -323,3 +348,9 @@ payload-observer-clean:
 	rm -f payload-observer/crystalhd_drv_video.so payload-observer/payload-cpu-test
 	@rmdir payload-observer 2>/dev/null || true
 clean: payload-observer-clean
+
+.PHONY: centered-observer-clean
+centered-observer-clean:
+	rm -f centered-observer/crystalhd_drv_video.so centered-observer/centered-cpu-test
+	@rmdir centered-observer 2>/dev/null || true
+clean: centered-observer-clean
