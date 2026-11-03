@@ -138,6 +138,32 @@ class PolicyAndControlTests(unittest.TestCase):
         player.configure_decoders(Gst, "software")
         self.assertEqual(factories[0].rank, 0)
 
+    def test_latest_arm_is_explicit_and_requires_a_capable_xv_sink(self):
+        Gst = SimpleNamespace(ElementFactory=mock.Mock())
+        sink = mock.Mock()
+        Gst.ElementFactory.make.return_value = sink
+        audio = object()
+        original = {"audio-sink": audio}
+        self.assertEqual(player.select_video_output(Gst, "xv-async", original),
+                         {"audio-sink": audio, "video-sink": sink})
+        sink.find_property.assert_not_called()
+        sink.set_property.assert_not_called()
+        selected = player.select_video_output(Gst, "xv-async", original, latest_frame=True)
+        self.assertEqual(selected, {"audio-sink": audio, "video-sink": sink})
+        self.assertEqual(original, {"audio-sink": audio})
+        sink.find_property.assert_called_once_with("latest-frame")
+        sink.set_property.assert_called_once_with("latest-frame", True)
+        sink.reset_mock()
+        sink.find_property.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "lacks latest-frame"):
+            player.select_video_output(Gst, "xv-async", latest_frame=True)
+        sink.set_property.assert_not_called()
+        Gst.ElementFactory.make.reset_mock()
+        for choice in ("auto", "field-gpu", "other"):
+            with self.subTest(choice=choice), self.assertRaisesRegex(RuntimeError, "requires"):
+                player.select_video_output(Gst, choice, latest_frame=True)
+        Gst.ElementFactory.make.assert_not_called()
+
     def test_field_output_preserves_audio_and_rejects_injected_video(self):
         Gst = SimpleNamespace(ElementFactory=mock.Mock())
         audio = object()
@@ -147,6 +173,32 @@ class PolicyAndControlTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "conflicting"):
             player.select_video_output(Gst, "field-gpu", {"video-sink": object()})
         self.assertEqual(sinks, {"audio-sink": audio})
+
+    def test_latest_summary_keeps_intentional_replacements_separate_from_qos(self):
+        sink = mock.Mock()
+        sink.iterate_recurse = None
+        sink.get_factory.return_value.get_name.return_value = "crystalhdxvsink"
+        ordinary = SimpleNamespace(get_value={"rendered": 8, "dropped": 0}.get)
+        latest = SimpleNamespace(get_value={"latest-queued": 5, "latest-replaced": 4,
+            "latest-submitted": 1, "latest-cancelled": 0, "latest-pending": False}.get)
+        sink.get_property.side_effect = {"stats": ordinary, "xv-stats": latest}.__getitem__
+        result = player.Player.__new__(player.Player)
+        result.args = SimpleNamespace(xv_latest_frame=True)
+        result.pipeline = SimpleNamespace(get_property=lambda _key: sink)
+        baseline = {"sink": "crystalhdxvsink", "rendered": 8, "dropped": 0}
+        self.assertEqual(result.snapshot_video_output(), [dict(baseline, latest={
+            "queued": 5, "replaced": 4, "submitted": 1, "cancelled": 0, "pending": False})])
+        # Optional counters cannot hide ordinary statistics or prevent close.
+        def unavailable(key):
+            if key == "stats":
+                return ordinary
+            raise RuntimeError("counter unavailable")
+        sink.get_property.side_effect = unavailable
+        self.assertEqual(result.snapshot_video_output(), [baseline])
+        result.args.xv_latest_frame = False
+        sink.get_property.reset_mock()
+        self.assertEqual(result.snapshot_video_output(), [baseline])
+        sink.get_property.assert_called_once_with("stats")
 
     def test_missing_hardware_plugin_fails(self):
         Gst = SimpleNamespace(Registry=SimpleNamespace(get=lambda: SimpleNamespace(
@@ -849,6 +901,21 @@ class ArgumentTests(unittest.TestCase):
             for flags in (["--weave"], ["--scale-width", "1280", "--software-output-size", "1920x1080"]):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     player.arguments(["--video-output", "field-gpu"] + flags + [str(path)])
+
+    def test_latest_arm_requires_explicit_xv_output_in_both_decoder_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.ts"
+            path.touch()
+            self.assertFalse(player.arguments([str(path)], environment={}).xv_latest_frame)
+            for mode in ("hardware", "software"):
+                args = player.arguments(["--" + mode, "--video-output", "xv-async",
+                                         "--xv-latest-frame", str(path)], environment={})
+                self.assertTrue(args.xv_latest_frame)
+            for choice in ("auto", "field-gpu"):
+                with self.subTest(choice=choice), contextlib.redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    player.arguments(["--video-output", choice, "--xv-latest-frame", str(path)],
+                                     environment={})
 
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1879,6 +1946,23 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertEqual(int(result.pipeline.get_property("flags")), expected)
         self.assertIs(result.pipeline.get_property("video-sink"), result.field_sink)
         self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_player_passes_latest_selection_and_preserves_audio(self):
+        video = self.Gst.ElementFactory.make("fakesink")
+        audio = self.Gst.ElementFactory.make("fakesink")
+        args = SimpleNamespace(mode="software", weave=False, video_output="xv-async",
+                               xv_latest_frame=True, scale_width=0, software_output_size=None,
+                               file=Path(self.temp.name) / "unused.ogg", subtitles=None)
+        original = {"audio-sink": audio}
+        with mock.patch.object(player, "select_video_output", return_value={
+                "video-sink": video, "audio-sink": audio}) as select:
+            result = player.Player(args, self.Gst, self.GLib, original)
+        self.addCleanup(result.close)
+        select.assert_called_once_with(self.Gst, "xv-async", original, latest_frame=True)
+        self.assertIs(result.pipeline.get_property("video-sink"), video)
+        self.assertIs(result.pipeline.get_property("audio-sink"), audio)
+        self.assertEqual(original, {"audio-sink": audio})
+        self.assertEqual(result.pipeline.get_state(0).state, self.Gst.State.NULL)
 
     def test_field_output_preserves_drop_diagnostic_before_null_resets_it(self):
         result = self.make_player()

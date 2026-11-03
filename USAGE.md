@@ -124,6 +124,14 @@ Unreleased development builds also offer the optional
 default. This is an experimental output choice, not a general speedup or
 physical A/V qualification.
 
+`--video-output xv-async --xv-latest-frame` selects its separate experimental
+latest/drop arm in either decoder mode. When the three-request ring is busy,
+it keeps only the latest unsent picture with its original pixels and PTS;
+submitted images still wait for matching completion. The before-close summary
+reports intentional replacements separately from QoS drops. Omit the flag
+for FIFO. This invocation-only option requires a rebuilt Xv plugin and has no
+saved setting or established latency/CPU gain.
+
 An additional experimental `--packed-upscale` option fuses packing with the
 method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
 It requires `--hardware --video-output xv-async --scale-width 1280
