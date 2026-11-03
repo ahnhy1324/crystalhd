@@ -55,7 +55,7 @@ not new hardware or release qualification.
 | Completed subset | #530: explicit `replace()` geometry/ancestry and checked handoff completion waits now share a response deadline; resize was already complete. | Read-only rejection preserves attachment; an indeterminate mutation fails through worker cleanup. [Current-host receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): 15 new embedding controls per native/sanitized variant, actual no-draw reopen and native window/NV12 regressions pass. XID refill, writes, EGL and broader #530 research remain outside this completed subset. |
 | 1, parallel diagnosis | #623: investigate the intermittent GTK CSS assertion/SIGSEGV. The existing Ubuntu24 GTK invocation now captures native/Python stacks in one execution; the validation-teardown/next-window theory remains a hypothesis. | Capture the original failing operation, then fix an established own defect or document a demonstrated external limitation. [Diagnostic controls](tests/fixtures/issue400/gtk-native-capture-20261103.json) pass, but the original crash remains unreproduced. Continue other work while awaiting useful failure evidence; do not loop clean suites or call a green CI run a root-cause fix. |
 | 2 | #513: default-off local timing and initial current-card observations are complete; continue representative congestion and attribution, then broader/endurance work. | [Timing receipt](tests/fixtures/issue513/xv-timing-20261103.json): device-free5 and actual-X11 32 per native/sanitized variant pass; FIFO/latest collect1501 ACK samples each (mean3.570/3.558ms), default-off records zero samples. These are local request-to-reader observations; current-card pending/residence is unexercised, no gain is demonstrated. Preserve the earlier six-run CPU/audio baseline and FIFO default. |
-| 3 | #445/#477: extend selected stock-client seek/Stop/reopen and centered Off/CPU-fallback/29.97 cases. | Source-bound pixels/PTS, ROI/borders and object return conclusions for the selected cases, using the accepted renderer/QoS policy. |
+| 3 | #445/#477: centered Off diagnostic EOF/reopen is complete; continue source-bound seek/requested Stop, actual media PTS and CPU-fallback/29.97 cases. | [Off receipt](tests/fixtures/issue477/centered-off-20261103.json): same stock Kodi process/VA instance, two natural EOFs;750 inputs/1500 field dequeue records/750 public materializations each. Four selected full coded1088 NV12 ROI/border comparisons pass. Actual PTS/GPU return/scanout and normal-backend compatibility remain outside this private observer result. |
 | 4 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
 | 5 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
 | 6 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
@@ -280,6 +280,17 @@ shelve the work or silently exclude implemented features.
 4. #470/#477: retain current-equipment allocation/ROI qualification work in
    their owning issues. VA-Bob endurance does not substitute for their matched
    allocation or centered-ROI cases. Extra physical targets remain unavailable.
+   The isolated centered Off observer now captures small/composed/actual-public
+   NV12 under the original CPU leases. Native/sanitized527 assertions,
+   reader46 and source-census/abort19 controls pass. Original stock Kodi22RC1
+   reaches two natural EOFs with one reopen in one process/VA instance, with750
+   original bindings and1500 field dequeue records each; four selected
+   full coded1088 canvases pass ROI/limited-black comparisons. The initial
+   one-output-per-picture oracle failure remains FAIL in the
+   [receipt](tests/fixtures/issue477/centered-off-20261103.json).
+   Seek/requested Stop, actual media PTS joins, fallback/29.97, GPU return and
+   benefit/endurance remain open; this diagnostic backend does not qualify
+   normal installed compatibility or a release.
 
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted
@@ -704,6 +715,9 @@ its exact-source and acceptance scope in the owning issue.
   accepted renderer/QoS policy. Original strict count FAILs stay recorded;
   zero-loss presentation is not a universal gate. See the
   [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
+  Completed diagnostic subset: [stock Off natural EOF/reopen and four full
+  NV12 ROI/border samples](tests/fixtures/issue477/centered-off-20261103.json).
+  Actual media PTS, seek/requested Stop and the broader cases remain open.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
