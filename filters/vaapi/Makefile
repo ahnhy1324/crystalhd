@@ -121,6 +121,8 @@ check-centered-observer: $(ROOTDIR)/tests/vaapi-centered-payload.cpp \
 	CRYSTALHD_CONFIG_DISABLE=1 centered-observer/centered-cpu-test
 	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-centered-payload-reader.test.py
 	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-centered-payload-stock.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-centered-controls-reader.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-centered-controls-stock.test.py
 
 $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 	$(CXX) -std=c++17 -Wall -Wextra -Werror \

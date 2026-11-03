@@ -126,6 +126,15 @@ def fixture():
     return doc, blobs, trace
 
 
+def reset_fixture():
+    doc, blobs, trace = fixture()
+    doc["schema"] = reader.RESET_SCHEMA
+    doc["publication"].update(kind="selected-decoder-generation-reset",
+                              next_generation=4, close_status=0, device_closed=True)
+    trace[-2] = trace_row(trace[-2]["seq"], "context_reset", {"context": 7, "generation": 4})
+    return doc, blobs, trace
+
+
 class CenteredPayloadControls(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -606,6 +615,171 @@ class CenteredPayloadControls(unittest.TestCase):
                 self.assertEqual(reader.main([str(manifest), "--trace", str(trace),
                                               "--results", str(result_path)]), 1)
             self.assertEqual(result_path.read_bytes(), original)
+
+
+class ResetPublicationControls(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.base_doc, cls.base_blobs, cls.base_trace = reset_fixture()
+
+    def fresh(self):
+        return copy.deepcopy(self.base_doc), dict(self.base_blobs), copy.deepcopy(self.base_trace)
+
+    def reject(self, mutation, message=None):
+        doc, blobs, trace = self.fresh()
+        mutation(doc, blobs, trace)
+        with self.assertRaisesRegex(ValueError, message or "."):
+            reader.check_document(doc, blobs, trace)
+
+    def test_reset_joins_old_payload_to_new_generation_without_context_destroy(self):
+        doc, blobs, trace = self.fresh()
+        self.assertFalse(any(row["event"] == "context_destroy" for row in trace))
+        result = reader.check_document(doc, blobs, trace)
+        self.assertEqual(result["status"], "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD")
+        self.assertEqual(result["schema"], reader.RESET_SCHEMA)
+        self.assertEqual(result["publication"]["generation"], 3)
+        self.assertEqual(result["publication"]["next_generation"], 4)
+        self.assertIn("private decoder close receipt", result["scope"])
+        for observation in result["observations"]:
+            self.assertEqual(observation["binding"]["generation"], 3)
+        for field in ("actual_media_pts", "gpu_reader_return", "displayed_pixels"):
+            self.assertEqual(result[field], "NOT_OBSERVED")
+
+    def test_later_generation_can_submit_materialize_retire_and_reset_in_same_prefix(self):
+        doc, blobs, trace = self.fresh()
+        newer = dict(doc["slots"][0]["binding"], generation=4, decode_identity=201)
+        # Reusing a synthetic token/public surface in a NEW lifetime does not
+        # make it the old source, nor make its observations qualify old bytes.
+        for event, operation in (("submit_bind", 0), ("materialized", 0),
+                                  ("sync_enter", 100), ("sync_exit", 100),
+                                  ("binding_end", 0)):
+            trace.append(trace_row(len(trace) + 1, event, newer, operation))
+        trace.append(trace_row(len(trace) + 1, "context_reset", {"context": 7, "generation": 5}))
+        trace.append(trace_row(len(trace) + 1, "context_destroy", {"context": 7, "generation": 5}))
+        result = reader.check_document(doc, blobs, trace)
+        self.assertTrue(result["status"].startswith("PASS_"))
+        self.assertEqual(result["observations"][0]["successful_syncs"], 1)
+
+    def test_reset_cannot_be_qualified_by_default_trace_outcome_without_private_close(self):
+        for field in ("close_status", "device_closed"):
+            with self.subTest(field=field):
+                self.reject(lambda d, b, t, f=field: d["publication"].pop(f), "private decoder close")
+        for field, value in (("close_status", 1), ("close_status", False),
+                             ("device_closed", False), ("device_closed", 1),
+                             ("status", 1), ("status", False)):
+            with self.subTest(field=field, value=value):
+                self.reject(lambda d, b, t, f=field, v=value: d["publication"].__setitem__(f, v))
+
+    def test_reset_generation_receipt_requires_exact_old_plus_one(self):
+        for value in (3, 5, 0, True, 2 ** 64):
+            with self.subTest(value=value):
+                self.reject(lambda d, b, t, v=value: d["publication"].__setitem__("next_generation", v),
+                            "next_generation")
+        self.reject(lambda d, b, t: d["publication"].pop("next_generation"), "next_generation")
+        self.reject(lambda d, b, t: d["publication"].__setitem__("generation", 4), "next_generation")
+
+    def test_reset_schemas_and_publication_kinds_cannot_be_interchanged(self):
+        self.reject(lambda d, b, t: d.__setitem__("schema", reader.SCHEMA), "retirement")
+        self.reject(lambda d, b, t: d["publication"].__setitem__("kind", "selected-decoder-context-retirement"),
+                    "generation reset")
+        self.reject(lambda d, b, t: d.__setitem__("schema", "crystalhd-centered-payload-v3"), "schema")
+
+    def test_raw_reset_must_name_exact_context_and_new_generation(self):
+        for field, value in (("context", 8), ("generation", 3), ("generation", 5), ("outcome", 1)):
+            with self.subTest(field=field, value=value):
+                self.reject(lambda d, b, t, f=field, v=value: t[-2].__setitem__(f, v), "raw context_reset")
+        for field in reader.BINDING_KEYS[2:] + ("operation",):
+            self.reject(lambda d, b, t, f=field: t[-2].__setitem__(f, 1), "non-context")
+
+    def test_missing_or_duplicated_raw_reset_cannot_qualify(self):
+        def missing(doc, blobs, trace):
+            trace.pop(-2)
+            resequence(trace)
+        self.reject(missing, "raw context_reset")
+        def duplicate(doc, blobs, trace):
+            trace.insert(-1, copy.deepcopy(trace[-2]))
+            resequence(trace)
+        self.reject(duplicate, "raw context_reset")
+
+    def test_reset_cannot_precede_selected_sync_or_submission(self):
+        for position in (0, 2):
+            def early(doc, blobs, trace, at=position):
+                trace.insert(at, trace.pop(-2))
+                resequence(trace)
+            with self.subTest(position=position):
+                self.reject(early, "boundary|crosses binding_end")
+
+    def test_earlier_reset_cannot_end_or_restart_selected_old_lifetime(self):
+        for generation in (3, 5):
+            def reset_again(doc, blobs, trace, gen=generation):
+                trace.insert(2, trace_row(0, "context_reset", {"context": 7, "generation": gen}))
+                resequence(trace)
+            with self.subTest(generation=generation):
+                self.reject(reset_again, "reset before retirement/reset publication")
+
+    def test_previous_reset_starting_old_generation_is_allowed_before_its_submits(self):
+        doc, blobs, trace = self.fresh()
+        trace.insert(0, trace_row(0, "context_reset", {"context": 7, "generation": 3}))
+        resequence(trace)
+        self.assertTrue(reader.check_document(doc, blobs, trace)["status"].startswith("PASS_"))
+
+    def test_retirement_v1_after_previous_generation_reset_still_qualifies(self):
+        doc, blobs, trace = fixture()
+        trace.insert(0, trace_row(0, "context_reset", {"context": 7, "generation": 3}))
+        resequence(trace)
+        result = reader.check_document(doc, blobs, trace)
+        self.assertEqual(result["schema"], reader.SCHEMA)
+        self.assertEqual(result["publication"]["kind"], "selected-decoder-context-retirement")
+
+    def test_retirement_v1_cannot_cross_a_reset_naming_new_generation(self):
+        doc, blobs, trace = fixture()
+        trace.insert(-2, trace_row(0, "context_reset", {"context": 7, "generation": 4}))
+        resequence(trace)
+        with self.assertRaisesRegex(ValueError, "reset before retirement"):
+            reader.check_document(doc, blobs, trace)
+
+    def test_destroyed_old_context_cannot_be_published_as_reset(self):
+        def destroy_old(doc, blobs, trace):
+            trace.insert(-2, trace_row(0, "context_destroy", {"context": 7, "generation": 3}))
+            resequence(trace)
+        self.reject(destroy_old, "already destroyed")
+
+    def test_reset_still_requires_unlocked_frozen_complete_selected_slots(self):
+        for field in ("after_driver_unlock", "all_slots_frozen"):
+            self.reject(lambda d, b, t, f=field: d["publication"].__setitem__(f, False), "unlocked")
+        for field in reader.STAGE_FLAGS:
+            self.reject(lambda d, b, t, f=field: d["slots"][0].__setitem__(f, False), field)
+        self.reject(lambda d, b, t: d["slots"].pop(), "two selected")
+
+    def test_old_bindings_cannot_borrow_materialization_from_new_generation(self):
+        for field in reader.BINDING_KEYS:
+            self.reject(lambda d, b, t, f=field: t[1].__setitem__(f, t[1][f] + 1), "materialized")
+        self.reject(lambda d, b, t: d["slots"][0]["binding"].__setitem__("generation", 4), "lifetime")
+
+    def test_binding_end_before_selected_sync_remains_a_limit_for_reset_publication(self):
+        def ended(doc, blobs, trace):
+            trace.insert(3, trace.pop(6))
+            resequence(trace)
+        self.reject(ended, "crosses binding_end")
+
+    def test_old_binding_sync_after_reset_is_rejected_despite_new_generation_progress(self):
+        def late(doc, blobs, trace):
+            for event in ("sync_enter", "sync_exit"):
+                trace.append(trace_row(len(trace) + 1, event, doc["slots"][0]["binding"], 100))
+        self.reject(late, "crosses binding_end")
+
+    def test_frozen_v2_artifacts_are_accepted_by_public_audit_api(self):
+        doc, blobs, trace = self.fresh()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            manifest, trace_path = directory / "reset.json", directory / "trace.log"
+            manifest.write_text(json.dumps(doc), encoding="utf-8")
+            trace_path.write_text("".join(json.dumps(row) + "\n" for row in trace), encoding="utf-8")
+            for name, payload in blobs.items():
+                (directory / name).write_bytes(payload)
+            result = reader.audit(manifest, trace_path)
+            self.assertEqual(result["schema"], reader.RESET_SCHEMA)
+            self.assertTrue(result["status"].startswith("PASS_"))
 
 
 if __name__ == "__main__":

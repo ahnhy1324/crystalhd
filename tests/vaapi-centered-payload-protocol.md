@@ -10,7 +10,7 @@ build, install and runtime have no new state, copies or environment reader.
 
 ## Observation and publication
 
-One driver reserves two decoder `(context,generation)` lifetimes, with the
+One driver reserves three decoder `(context,generation)` lifetimes, with the
 first two distinct eligible source bindings per lifetime. Selection is fixed:
 failed selected snapshots are not replaced by later samples. Scope is limited
 NV12, 1280x720 small picture at `(320,180)` in a 1920-wide canvas, explicit
@@ -28,14 +28,25 @@ No additional DMA access acquisition, wait, release, pixel write, worker I/O
 or scheduling policy is introduced by observation.
 
 The original successful public `materialized` binding must match before a
-slot is eligible. Only successful consuming decoder-context retirement seals
-a complete two-slot stream. A guard declared before the original Driver lock
+slot is eligible. Successful consuming decoder-context retirement or a
+successful decoder-generation reset can qualify a complete two-slot stream.
+A guard declared before the original Driver lock
 publishes independent arrays after normal lock release. Each sealed stream
 publishes once, so one natural EOF can be inspected before another play in
 the same process. A live Driver destructor is not required. No Surface,
 allocation, device or client ownership is retained by the independent arrays.
 Rejected/incomplete retirement produces a bounded status record, not a
 qualifying manifest. Exclusive file creation preserves old/partial outputs.
+
+The reset hook records the old generation before `DecodeContext::Reset()`
+advances it. Its private receipt carries that decoder's actual close return,
+whether its device is closed, and the derived per-decoder VA result. It does
+not use the aggregate multi-decoder call result or infer success from the
+ordinary `context_reset` event's default outcome. The ordinary event continues
+to name the new generation. Failed or malformed first reset attempts seal a
+rejected stream; later cleanup cannot relabel the original attempt as PASS.
+Fixed guards publish any selected old streams after the existing lock releases,
+without worker I/O, extra CPU leases or retained Surface/device ownership.
 
 ## Manifest v1
 
@@ -60,6 +71,28 @@ six independently packed NV12 blobs, three for each selected binding.
   "slots": []
 }
 ```
+
+Ordinary retirement retains this v1 format. A reset uses
+`crystalhd-centered-payload-v2` with the same payload fields and this publication:
+
+```json
+{
+  "kind": "selected-decoder-generation-reset",
+  "context": 3,
+  "generation": 1,
+  "next_generation": 2,
+  "status": 0,
+  "close_status": 0,
+  "device_closed": true,
+  "after_driver_unlock": true,
+  "all_slots_frozen": true
+}
+```
+
+The reader requires exactly one ordinary `context_reset` for this context and
+new generation, the explicit successful private close receipt, and old binding
+completion/sync before its termination. New-generation work can follow in the
+same frozen trace prefix. No `context_destroy` is invented for a reset.
 
 Each slot carries:
 
@@ -111,7 +144,28 @@ reviewed, committed clean OWN checkout with `--prepare-plan`, `--own-source`,
 that plan explicitly with `--execute`. Both modes require `--plan` and matching
 fresh `--case`/`--case-root`; `--cycles 2` at preparation selects same-process
 natural EOF/reopen. The original 30-second H264 fixture has 750 source pictures.
-This protocol does not yet exercise a seek or requested Stop.
+That EOF runner does not request a seek or Stop.
+
+The separate `vaapi-centered-controls-stock.py` scenario uses the prepared
+six-second progressive FHD barcode input for one forward seek, requested Stop
+and same-process natural reopen. It reuses the pinned original stock namespace
+and owned shutdown helpers. `vaapi-centered-controls-reader.py` maps actual
+observed 3x3 patches to the unchanged public barcode/CRC decoder. The sparse
+proxy is not a reconstructed image or a full-frame BGRA pixel comparison.
+Its decoded ordinal selects the prepared fixture PTS table; it does not observe
+packet/AVFrame PTS at the VA handoff. Small/composed/public payload samples
+retain the full NV12 gate and are then joined to that content ordinal.
+
+If a seek keeps the same decoder generation, it need not produce new payload
+slots. Its post-seek BGRA barcode checkpoint proves selected content separately
+from the retained full-NV12 sample scope. Interrupted first playback does not
+have a whole-population completion requirement. The natural progressive reopen
+has180 source originals and one dequeue record per original, in contrast to the
+MBAFF fixture's two field records below. Successful public materialization and
+renderer delivery remain distinct. Runtime observations can establish support
+at the selected card-output patch positions; because both proposed height
+models share those centers, that result does not disambiguate the full scaler
+mapping. Prior software scaler controls alone establish no card behavior.
 
 The private profile explicitly selects method0 and prefers VA rendering. The
 runner requires the observed `ff-h264-vaapi`/`none` labels, mapped original

@@ -464,6 +464,232 @@ void CheckExclusivePublicationFailure() {
       Require(unlinkat(state->directory, blob, 0) == 0, "remove preserved CPU partial-output fixture");
     }
 }
+std::string ReadManifest(centered_payload::State *state, uint64_t context, uint64_t generation) {
+  char name[192];
+  ArtifactName(name, sizeof(name), state->session, context, generation, ".json");
+  const int fd = openat(state->directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  Require(fd >= 0, "open independently published CPU manifest");
+  std::array<char, 16384> bytes{};
+  size_t size = 0;
+  bool good = true;
+  for (;;) {
+    const ssize_t got = read(fd, bytes.data() + size, bytes.size() - size);
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) { good = false; break; }
+    if (got == 0) break;
+    size += static_cast<size_t>(got);
+    if (size == bytes.size()) { good = false; break; }
+  }
+  const bool closed = close(fd) == 0;
+  Require(good && closed && size != 0, "published manifest is bounded, readable and complete");
+  return std::string(bytes.data(), size);
+}
+void CheckPublicationSchema(centered_payload::State *state, uint64_t context,
+                            uint64_t generation, bool reset, uint64_t next_generation = 0) {
+  const std::string document = ReadManifest(state, context, generation);
+  Require(document.find(reset ? "\"schema\":\"crystalhd-centered-payload-v2\"" :
+                                "\"schema\":\"crystalhd-centered-payload-v1\"") != std::string::npos,
+          "only generation reset publishes v2; ordinary context retirement preserves v1");
+  char publication[512];
+  if (reset)
+    std::snprintf(publication, sizeof(publication),
+        "\"publication\":{\"kind\":\"selected-decoder-generation-reset\","
+        "\"context\":%llu,\"generation\":%llu,\"status\":0,\"next_generation\":%llu,"
+        "\"close_status\":0,\"device_closed\":true,\"after_driver_unlock\":true,\"all_slots_frozen\":true}",
+        static_cast<unsigned long long>(context), static_cast<unsigned long long>(generation),
+        static_cast<unsigned long long>(next_generation));
+  else
+    std::snprintf(publication, sizeof(publication),
+        "\"publication\":{\"kind\":\"selected-decoder-context-retirement\","
+        "\"context\":%llu,\"generation\":%llu,\"status\":0,"
+        "\"after_driver_unlock\":true,\"all_slots_frozen\":true}",
+        static_cast<unsigned long long>(context), static_cast<unsigned long long>(generation));
+  Require(document.find(publication) != std::string::npos &&
+          document.find("\"slots_required\":2,\"media_pts_observed\":false") != std::string::npos,
+          "publication records exact old/new lifetime, close result and unchanged payload scope");
+  if (!reset)
+    Require(document.find("\"next_generation\"") == std::string::npos &&
+            document.find("\"close_status\"") == std::string::npos &&
+            document.find("\"device_closed\"") == std::string::npos,
+            "ordinary v1 retirement does not acquire reset-only metadata");
+}
+void CheckResetStopReopenPublication() {
+  using namespace centered_payload;
+  Require(kStreams == 3 && kSlots == 2, "controls observer reserves exactly three two-binding lifetimes");
+  std::shared_ptr<State> state(new State(100));
+  Populate(state.get(), 3, 4);
+  Require(state->RetireReset(9, 4, 5, 0, 0, true) == -1 &&
+          state->RetireReset(3, 5, 6, 0, 0, true) == -1 && !state->streams[0].sealed,
+          "unselected context or new generation cannot retire the selected old generation");
+  std::mutex caller_mutex;
+  char manifest[192];
+  ArtifactName(manifest, sizeof(manifest), 100, 3, 4, ".json");
+  {
+    std::array<PublishOnReturn, kStreams> publications;
+    std::unique_lock<std::mutex> lock(caller_mutex);
+    publications[0].state = state;
+    publications[0].index = state->RetireReset(3, 4, 5, 0, 0, true);
+    Require(publications[0].index == 0 && state->Complete(state->streams[0]) &&
+            state->streams[0].generation == 4 && state->streams[0].next_generation == 5 &&
+            state->streams[0].generation_reset && !state->streams[0].publication_started &&
+            faccessat(state->directory, manifest, F_OK, 0) != 0,
+            "successful reset freezes old generation under caller lock without publishing");
+  }
+  Require(caller_mutex.try_lock(), "reset publisher returns after ordinary caller unlock");
+  caller_mutex.unlock();
+  Require(state.use_count() == 1 && state->streams[0].manifest_written &&
+          state->streams[0].status_printed && !state->streams[1].used,
+          "reset publishes first frozen stream while independent State owner remains alive");
+  CheckPublicationSchema(state.get(), 3, 4, true, 5);
+  Require(state->RetireReset(3, 4, 5, 0, 0, true) == -1 && state->Retire(3, 4, 0) == -1,
+          "reset retirement cannot publish again through either retirement API");
+  {
+    CenteredFixture stale(8, 1088, 1080, 3, 4);
+    Require(ComposeObserved(state.get(), &stale, false) && CopyObserved(state.get(), &stale),
+            "old-generation ordinary operations remain unaffected by sealed diagnostics");
+    state->Materialized(stale.Fields());
+    Require(state->streams[0].slots[0].binding.token == 1001 &&
+            state->streams[0].slots[1].binding.token == 1002,
+            "late old-generation observations cannot replace either frozen selected binding");
+  }
+  Populate(state.get(), 3, 5);
+  {
+    std::array<PublishOnReturn, kStreams> publications;
+    std::unique_lock<std::mutex> lock(caller_mutex);
+    publications[1].state = state;
+    publications[1].index = state->Retire(3, 5, 0);
+    Require(publications[1].index == 1 && !state->streams[1].publication_started &&
+            !state->streams[1].generation_reset, "post-seek Stop retains ordinary consuming retirement");
+  }
+  Require(state->streams[1].manifest_written && state->streams[0].next_generation == 5,
+          "post-seek Stop publishes separately without modifying the reset record");
+  CheckPublicationSchema(state.get(), 3, 5, false);
+  Populate(state.get(), 4, 1);
+  {
+    std::array<PublishOnReturn, kStreams> publications;
+    std::unique_lock<std::mutex> lock(caller_mutex);
+    publications[2].state = state;
+    publications[2].index = state->Retire(4, 1, 0);
+    Require(publications[2].index == 2 && !state->streams[2].publication_started,
+            "same-State reopened decoder uses the third fixed lifetime");
+  }
+  Require(state.use_count() == 1 && state->streams[2].manifest_written,
+          "third reopened lifetime publishes without growing observer storage");
+  CheckPublicationSchema(state.get(), 4, 1, false);
+  {
+    CenteredFixture overflow(9, 1088, 1080, 99, 1);
+    Require(ComposeObserved(state.get(), &overflow, false) && CopyObserved(state.get(), &overflow),
+            "fourth-lifetime production composition/copy continue normally beyond diagnostic bound");
+    state->Materialized(overflow.Fields());
+    Require(state->Find(99, 1) == nullptr && state->Retire(99, 1, 0) == -1 &&
+            state->RetireReset(99, 1, 2, 0, 0, true) == -1,
+            "fourth lifetime cannot replace sealed selections or expand the three-stream bound");
+  }
+  for (unsigned i = 0; i != kStreams; ++i) {
+    Require(state->streams[i].slots[0].binding.token == 1001 &&
+            state->streams[i].slots[1].binding.token == 1002,
+            "all three lifetimes preserve their first two distinct source bindings");
+    CheckPackedCanvas(state->streams[i].slots[0].composed_pixels.data(), 1088, 1);
+    CheckPackedCanvas(state->streams[i].slots[0].public_pixels.data(), 1080, 1);
+  }
+  state->Flush(0);
+  Require(state->streams[0].manifest_written && !state->streams[0].publication_errno,
+          "repeated reset flush never rewrites exclusive artifacts");
+  RemoveArtifacts(state.get(), 3, 4); RemoveArtifacts(state.get(), 3, 5);
+  RemoveArtifacts(state.get(), 4, 1);
+}
+void CheckResetBatchPublication() {
+  using namespace centered_payload;
+  std::shared_ptr<State> state(new State(101));
+  for (unsigned i = 0; i != kStreams; ++i) Populate(state.get(), 10 + i, 20 + i);
+  std::mutex caller_mutex;
+  {
+    std::array<PublishOnReturn, kStreams> publications;
+    std::unique_lock<std::mutex> lock(caller_mutex);
+    for (unsigned i = 0; i != kStreams; ++i) {
+      publications[i].state = state;
+      publications[i].index = state->RetireReset(10 + i, 20 + i, 21 + i, i == 1 ? 1 : 0, 0, true);
+      Require(publications[i].index == static_cast<int>(i) &&
+              !state->streams[i].publication_started,
+              "one caller freezes multiple selected old streams without in-lock publication");
+    }
+  }
+  Require(caller_mutex.try_lock(), "all reset publication guards follow the one ordinary unlock");
+  caller_mutex.unlock();
+  Require(state.use_count() == 1, "batch publishers retain no State pins after caller return");
+  for (unsigned i = 0; i != kStreams; ++i) {
+    Require(state->streams[i].sealed && state->streams[i].status_printed &&
+            state->streams[i].manifest_written == (i != 1) &&
+            state->streams[i].publication_started == (i != 1),
+            "one decoder reset failure cannot poison or qualify another decoder's independent result");
+    if (i != 1) {
+      CheckPublicationSchema(state.get(), 10 + i, 20 + i, true, 21 + i);
+      RemoveArtifacts(state.get(), 10 + i, 20 + i);
+    }
+  }
+}
+void CheckFailedResets() {
+  using namespace centered_payload;
+  struct Case {
+    uint64_t previous, next;
+    int status, close_status;
+    bool closed;
+    uint64_t reason;
+  };
+  const Case failures[] = {
+    {4, 5, 1, 0, true, RetirementFailure},
+    {4, 5, 0, 1, true, ResetCloseFailure},
+    {4, 5, 0, -1, true, ResetCloseFailure},
+    {4, 5, 0, 0, false, ResetDeviceOpen},
+    {4, 4, 0, 0, true, ResetGenerationMismatch},
+    {4, 3, 0, 0, true, ResetGenerationMismatch},
+    {4, 6, 0, 0, true, ResetGenerationMismatch},
+    {uint64_t(-1), 0, 0, 0, true, ResetGenerationMismatch}
+  };
+  unsigned number = 0;
+  for (const auto &failure : failures) {
+    std::unique_ptr<State> state(new State(110 + number++));
+    Populate(state.get(), 3, failure.previous);
+    const int index = state->RetireReset(3, failure.previous, failure.next,
+        failure.status, failure.close_status, failure.closed);
+    Require(index == 0 && state->streams[0].sealed && state->streams[0].generation_reset &&
+            state->streams[0].generation == failure.previous &&
+            state->streams[0].next_generation == failure.next &&
+            state->streams[0].close_status == failure.close_status &&
+            state->streams[0].device_closed == failure.closed &&
+            (state->streams[0].reject_mask & failure.reason) && !state->Complete(state->streams[0]),
+            "failed VA reset, close, live device or invalid generation step seals with its original reason");
+    state->PrintStatus(index); state->Flush(index);
+    char manifest[192];
+    ArtifactName(manifest, sizeof(manifest), state->session, 3, failure.previous, ".json");
+    Require(state->streams[0].status_printed && !state->streams[0].publication_started &&
+            faccessat(state->directory, manifest, F_OK, 0) != 0,
+            "failed reset emits bounded status and cannot publish qualifying manifest");
+    Require(state->RetireReset(3, failure.previous, failure.previous + 1, 0, 0, true) == -1 &&
+            state->Retire(3, failure.previous, 0) == -1 &&
+            state->streams[0].retirement_status == failure.status &&
+            state->streams[0].next_generation == failure.next &&
+            state->streams[0].close_status == failure.close_status &&
+            state->streams[0].device_closed == failure.closed &&
+            (state->streams[0].reject_mask & failure.reason),
+            "later successful attempt cannot relabel a failed selected reset as passing");
+    state->Flush(index);
+    Require(!state->streams[0].publication_started, "failed reset remains permanently nonpublishing");
+  }
+  std::unique_ptr<State> state(new State(119));
+  CenteredFixture incomplete(1, 1088, 1088);
+  Require(ComposeObserved(state.get(), &incomplete, true), "incomplete reset fixture composes normally");
+  const int index = state->RetireReset(3, 4, 5, 0, 0, true);
+  state->Materialized(incomplete.Fields());
+  Require(index == 0 && state->streams[0].sealed &&
+          (state->streams[0].reject_mask & Incomplete) &&
+          (state->streams[0].reject_mask & MissingMaterialized) &&
+          !state->streams[0].slots[0].materialized && !state->Complete(state->streams[0]),
+          "successful reset metadata cannot qualify missing slot or late materialized evidence");
+  state->PrintStatus(index); state->Flush(index);
+  Require(!state->streams[0].publication_started && state->RetireReset(3, 4, 5, 0, 0, true) == -1,
+          "incomplete reset stays sealed and cannot be retried into qualification");
+}
 void CheckIncompleteAndUnavailable() {
   using namespace centered_payload;
   {
@@ -539,6 +765,9 @@ int main() {
     CheckRetirementPublication();
     CheckExclusivePublicationFailure();
     CheckIncompleteAndUnavailable();
+    CheckResetStopReopenPublication();
+    CheckResetBatchPublication();
+    CheckFailedResets();
     Require(centered_payload::active == nullptr, "no active observer survives CPU controls");
     std::printf("VA centered payload CPU controls: %u checks PASS\n", checks);
   } catch (const std::exception &error) {

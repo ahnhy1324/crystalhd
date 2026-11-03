@@ -10,7 +10,7 @@ using crystalhd_test_vpp_payload::Describe;
 using crystalhd_test_vpp_payload::PrintGeometry;
 using crystalhd_test_vpp_payload::WriteAll;
 using crystalhd_test_vpp_payload::WriteBlob;
-constexpr unsigned kStreams = 2, kSlots = 2;
+constexpr unsigned kStreams = 3, kSlots = 2;
 constexpr unsigned kSmallWidth = 1280, kSmallHeight = 720;
 constexpr unsigned kCanvasWidth = 1920, kMaxCanvasHeight = 1088;
 constexpr size_t kSmallBytes = size_t{kSmallWidth} * kSmallHeight * 3 / 2;
@@ -18,7 +18,8 @@ constexpr size_t kCanvasBytes = size_t{kCanvasWidth} * kMaxCanvasHeight * 3 / 2;
 enum Reject : uint64_t {
   Directory = 1, GeometryScope = 2, BindingMismatch = 4, StorageMismatch = 8,
   ComposeFailure = 16, PublicFailure = 32, MissingMaterialized = 64,
-  Incomplete = 128, RetirementFailure = 256, RepeatedBinding = 512
+  Incomplete = 128, RetirementFailure = 256, RepeatedBinding = 512,
+  ResetCloseFailure = 1024, ResetGenerationMismatch = 2048, ResetDeviceOpen = 4096
 };
 struct Binding {
   uint64_t context = 0, generation = 0, token = 0, decode_identity = 0;
@@ -41,6 +42,9 @@ struct Stream {
   bool used = false, sealed = false, status_printed = false;
   bool publication_started = false, manifest_written = false;
   int retirement_status = -1, publication_errno = 0;
+  bool generation_reset = false, device_closed = false;
+  int close_status = -1;
+  uint64_t next_generation = 0;
   uint64_t context = 0, generation = 0, candidates = 0, rejected = 0, reject_mask = 0;
   std::array<Slot, kSlots> slots{};
 };
@@ -141,7 +145,7 @@ struct State {
     if (!SameSourceBinding(binding, picture) || !SameSourceBinding(binding, small) ||
         !SameSourceBinding(binding, canvas) || canvas.id != binding.surface ||
         Owner(canvas) != binding.owner) why |= BindingMismatch;
-    // Unsupported geometry cannot consume one of the two eligible lifetimes.
+    // Unsupported geometry cannot consume a bounded eligible lifetime.
     Stream *stream = Find(binding.context, binding.generation, why == 0);
     if (!stream || stream->sealed) return nullptr;
     ++stream->candidates;
@@ -266,8 +270,13 @@ struct State {
         s.compose_ended && s.public_started && s.public_copied && s.public_committed &&
         s.public_ended && s.materialized;
   }
+  static bool GenerationAdvances(uint64_t previous, uint64_t next) {
+    return previous != uint64_t(-1) && next == previous + 1;
+  }
   bool Complete(const Stream &s) const {
     if (!s.sealed || s.retirement_status != 0 || directory < 0) return false;
+    if (s.generation_reset && (s.close_status != 0 || !s.device_closed ||
+        !GenerationAdvances(s.generation, s.next_generation))) return false;
     for (const auto &slot : s.slots) if (!Complete(slot)) return false;
     return true;
   }
@@ -282,6 +291,23 @@ struct State {
       if (slot.selected && !slot.materialized) stream->reject_mask |= MissingMaterialized;
     }
     return static_cast<int>(stream - streams.data());
+  }
+  int RetireReset(uint64_t context, uint64_t previous_generation,
+                  uint64_t next_generation, int status, int close_status,
+                  bool device_closed) {
+    Stream *stream = Find(context, previous_generation);
+    if (!stream || stream->sealed) return -1;
+    // Keep the first reset attempt, including every failure. A later successful
+    // close/reset cannot turn this selected old generation into passing evidence.
+    stream->generation_reset = true;
+    stream->next_generation = next_generation;
+    stream->close_status = close_status;
+    stream->device_closed = device_closed;
+    if (close_status != 0) stream->reject_mask |= ResetCloseFailure;
+    if (!device_closed) stream->reject_mask |= ResetDeviceOpen;
+    if (!GenerationAdvances(previous_generation, next_generation))
+      stream->reject_mask |= ResetGenerationMismatch;
+    return Retire(context, previous_generation, status);
   }
   void PrintStatus(int index);
   void Flush(int index);
@@ -310,7 +336,14 @@ inline void State::PrintStatus(int index) {
     selected += slot.selected; composed += slot.compose_committed;
     published += slot.public_committed; materialized += slot.materialized;
   }
-  char line[1024];
+  char reset_metadata[256] = {};
+  if (s.generation_reset)
+    std::snprintf(reset_metadata, sizeof(reset_metadata),
+        ",\"publication_kind\":\"selected-decoder-generation-reset\","
+        "\"next_generation\":%llu,\"close_status\":%d,\"device_closed\":%s",
+        static_cast<unsigned long long>(s.next_generation), s.close_status,
+        s.device_closed ? "true" : "false");
+  char line[1280];
   const int count = std::snprintf(line, sizeof(line),
       "{\"schema\":\"crystalhd-centered-payload-status-v1\",\"pid\":%lld,"
       "\"driver_instance\":%llu,\"context\":%llu,\"generation\":%llu,"
@@ -318,13 +351,13 @@ inline void State::PrintStatus(int index) {
       "\"directory_open\":%s,\"directory_errno\":%d,\"candidates\":%llu,"
       "\"rejected\":%llu,\"reject_mask\":%llu,\"selected_slots\":%u,"
       "\"compose_committed_slots\":%u,\"public_committed_slots\":%u,"
-      "\"materialized_slots\":%u,\"eligible\":%s}\n",
+      "\"materialized_slots\":%u,\"eligible\":%s%s}\n",
       static_cast<long long>(getpid()), static_cast<unsigned long long>(session),
       static_cast<unsigned long long>(s.context), static_cast<unsigned long long>(s.generation),
       s.retirement_status, directory >= 0 ? "true" : "false", directory_errno,
       static_cast<unsigned long long>(s.candidates), static_cast<unsigned long long>(s.rejected),
       static_cast<unsigned long long>(s.reject_mask), selected, composed, published, materialized,
-      Complete(s) ? "true" : "false");
+      Complete(s) ? "true" : "false", reset_metadata);
   if (count > 0 && static_cast<size_t>(count) < sizeof(line))
     WriteAll(STDERR_FILENO, reinterpret_cast<const uint8_t *>(line), static_cast<size_t>(count));
 }
@@ -360,14 +393,20 @@ inline void State::Flush(int index) {
   if (fd < 0) { stream.publication_errno = errno; return; }
   FILE *out = fdopen(fd, "w");
   if (!out) { stream.publication_errno = errno; close(fd); return; }
-  std::fprintf(out, "{\"schema\":\"crystalhd-centered-payload-v1\",\"pid\":%lld,"
+  std::fprintf(out, "{\"schema\":\"%s\",\"pid\":%lld,"
       "\"driver_instance\":%llu,\"slots_required\":2,\"media_pts_observed\":false,"
-      "\"publication\":{\"kind\":\"selected-decoder-context-retirement\","
-      "\"context\":%llu,\"generation\":%llu,\"status\":%d,"
-      "\"after_driver_unlock\":true,\"all_slots_frozen\":true},\"slots\":[",
+      "\"publication\":{\"kind\":\"%s\","
+      "\"context\":%llu,\"generation\":%llu,\"status\":%d",
+      stream.generation_reset ? "crystalhd-centered-payload-v2" : "crystalhd-centered-payload-v1",
       static_cast<long long>(getpid()), static_cast<unsigned long long>(session),
+      stream.generation_reset ? "selected-decoder-generation-reset" : "selected-decoder-context-retirement",
       static_cast<unsigned long long>(stream.context), static_cast<unsigned long long>(stream.generation),
       stream.retirement_status);
+  if (stream.generation_reset)
+    std::fprintf(out, ",\"next_generation\":%llu,\"close_status\":%d,\"device_closed\":%s",
+        static_cast<unsigned long long>(stream.next_generation), stream.close_status,
+        stream.device_closed ? "true" : "false");
+  std::fputs(",\"after_driver_unlock\":true,\"all_slots_frozen\":true},\"slots\":[", out);
   for (unsigned i = 0; i != kSlots; ++i) {
     const auto &s = stream.slots[i]; const auto &b = s.binding;
     std::fprintf(out, "%s{\"binding\":{\"context\":%llu,\"generation\":%llu,\"token\":%llu,"
