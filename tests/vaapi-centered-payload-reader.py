@@ -17,6 +17,8 @@ import sys
 
 
 SCHEMA = "crystalhd-centered-payload-v1"
+RESET_SCHEMA = "crystalhd-centered-payload-v2"
+SCHEMAS = (SCHEMA, RESET_SCHEMA)
 TRACE_SCHEMA = "crystalhd-vaapi-trace-v4"
 SMALL_WIDTH, SMALL_HEIGHT = 1280, 720
 CANVAS_WIDTH, VISIBLE_HEIGHT = 1920, 1080
@@ -150,7 +152,62 @@ def check_call(rows, exit_row, event, key, begin, end):
             event + " has missing, duplicated, or swapped API binding")
 
 
-def join_binding(rows, binding, destroy):
+def publication_boundary(schema, publication, rows):
+    """Join ordinary retirement or an explicitly witnessed generation reset.
+
+    The existing context_reset trace names the NEW generation and is emitted
+    with a default outcome. It cannot supply the decoder's close result; v2
+    must independently carry the private per-decoder close/device receipt.
+    """
+    context = integer(publication.get("context"), "publication context", 1)
+    generation = integer(publication.get("generation"), "publication generation", 1)
+    require(type(publication.get("status")) is int and publication["status"] == 0,
+            "publication retirement/reset must be successful")
+    if schema == SCHEMA:
+        require(publication.get("kind") == "selected-decoder-context-retirement",
+                "publication must name selected decoder-context retirement")
+        records = [row for row in rows if row["event"] == "context_destroy" and
+                   (row["context"], row["generation"]) == (context, generation)]
+        require(len(records) == 1 and records[0]["outcome"] == 0,
+                "selected lifetime needs one successful raw context_destroy")
+        boundary = records[0]
+    else:
+        require(publication.get("kind") == "selected-decoder-generation-reset",
+                "v2 publication must name selected decoder-generation reset")
+        next_generation = integer(publication.get("next_generation"),
+                                  "publication next_generation", 1)
+        require(next_generation == generation + 1,
+                "reset next_generation must immediately follow the old generation")
+        require(type(publication.get("close_status")) is int and
+                publication["close_status"] == 0 and
+                publication.get("device_closed") is True,
+                "reset needs an explicit successful private decoder close/device receipt")
+        records = [row for row in rows if row["event"] == "context_reset" and
+                   (row["context"], row["generation"]) == (context, next_generation)]
+        require(len(records) == 1 and records[0]["outcome"] == 0,
+                "selected lifetime needs one matching raw context_reset naming the new generation")
+        boundary = records[0]
+        require(not any(row["event"] == "context_destroy" and
+                        (row["context"], row["generation"]) == (context, generation)
+                        for row in rows),
+                "reset publication cannot substitute for an already destroyed old lifetime")
+    require(all(boundary[key] == 0 for key in BINDING_KEYS[2:] + ("operation",)),
+            boundary["event"] + " has non-context binding fields")
+    submits = [row["seq"] for row in rows if row["event"] == "submit_bind" and
+               (row["context"], row["generation"]) == (context, generation)]
+    first_submit = min(submits, default=boundary["seq"])
+    # A reset naming OLD may legitimately precede this generation's first
+    # submission. A later reset, or one already advancing beyond OLD, cannot
+    # be crossed by this selected lifetime. The closing v2 reset is excluded.
+    require(not any(row["event"] == "context_reset" and row["context"] == context and
+                    row["seq"] < boundary["seq"] and
+                    (row["generation"] > generation or row["seq"] > first_submit)
+                    for row in rows),
+            "selected decoder lifetime was reset before retirement/reset publication")
+    return boundary
+
+
+def join_binding(rows, binding, boundary):
     key = binding_key(binding)
     submits = matching(rows, "submit_bind", key)
     require(len(submits) == 1 and submits[0]["outcome"] == 0,
@@ -165,8 +222,9 @@ def join_binding(rows, binding, destroy):
     for identity in ("token", "decode_identity", "submission_ordinal"):
         require(sum(row[identity] == binding[identity] for row in lifetime_submits) == 1,
                 "ambiguous or doubled original " + identity)
-    require(submit["seq"] < destroy["seq"], "submission follows decoder retirement")
-    limits = [destroy["seq"]]
+    require(submit["seq"] < boundary["seq"],
+            "submission follows decoder retirement/reset boundary")
+    limits = [boundary["seq"]]
     for row in rows:
         if row["seq"] <= submit["seq"]:
             continue
@@ -174,8 +232,7 @@ def join_binding(rows, binding, destroy):
                 binding_key(row) == key or row["surface"] == binding["surface"] or
                 row["owner"] == binding["owner"]):
             limits.append(row["seq"])
-        if (row["event"] == "context_reset" and
-                (row["context"], row["generation"]) == lifetime):
+        if row["event"] == "context_reset" and row["context"] == binding["context"]:
             limits.append(row["seq"])
         if row["event"] == "submit_bind" and (
                 row["surface"] == binding["surface"] or
@@ -201,7 +258,7 @@ def join_binding(rows, binding, destroy):
                 "successful export_exit precedes public materialization")
     return {"submit_seq": submit["seq"], "materialized_seq": materialized["seq"],
             "successful_syncs": len(syncs), "successful_exports": len(exports),
-            "binding_end_seq": end if end != destroy["seq"] else None}
+            "binding_end_seq": end if end != boundary["seq"] else None}
 
 
 def compare_canvas(slot_number, stage, small, canvas, height):
@@ -237,7 +294,8 @@ def compare_canvas(slot_number, stage, small, canvas, height):
 def check_document(doc, blobs, trace_rows):
     """Check an already frozen manifest/blob/trace set; no I/O occurs here."""
     doc = object_value(doc, "manifest")
-    require(doc.get("schema") == SCHEMA, "unsupported payload schema")
+    require(doc.get("schema") in SCHEMAS, "unsupported payload schema")
+    schema = doc["schema"]
     pid = integer(doc.get("pid"), "pid", 1)
     instance = integer(doc.get("driver_instance"), "driver_instance", 1)
     require(type(doc.get("slots_required")) is int and
@@ -250,27 +308,13 @@ def check_document(doc, blobs, trace_rows):
             "exactly two selected payload slots are required")
     require(type(blobs) is dict, "payload blobs must be a dictionary")
     publication = object_value(doc.get("publication"), "publication")
-    require(publication.get("kind") == "selected-decoder-context-retirement",
-            "publication must name selected decoder-context retirement")
     require(publication.get("after_driver_unlock") is True and
             publication.get("all_slots_frozen") is True,
             "publication requires unlocked caller and frozen slots")
     context = integer(publication.get("context"), "publication context", 1)
     generation = integer(publication.get("generation"), "publication generation", 1)
-    require(type(publication.get("status")) is int and publication["status"] == 0,
-            "publication retirement must be successful")
     rows = trace_index(trace_rows, pid, instance)
-    retirements = [row for row in rows if row["event"] == "context_destroy" and
-                   (row["context"], row["generation"]) == (context, generation)]
-    require(len(retirements) == 1 and retirements[0]["outcome"] == 0,
-            "selected lifetime needs one successful raw context_destroy")
-    destroy = retirements[0]
-    require(all(destroy[key] == 0 for key in BINDING_KEYS[2:] + ("operation",)),
-            "context_destroy has non-context binding fields")
-    require(not any(row["event"] == "context_reset" and
-                    (row["context"], row["generation"]) == (context, generation) and
-                    row["seq"] < destroy["seq"] for row in rows),
-            "selected decoder lifetime was reset before retirement")
+    boundary = publication_boundary(schema, publication, rows)
     files, seen_tokens, seen_identities, seen_ordinals = set(), set(), set(), set()
     observations = []
     compared = {stage: {plane: 0 for plane in ("Y", "UV")}
@@ -325,7 +369,7 @@ def check_document(doc, blobs, trace_rows):
                                     blobs[slot[stage + "_file"]], slot[descriptor]["height"])
             for plane, count in counts.items():
                 compared[stage][plane] += count
-        observation = join_binding(rows, binding, destroy)
+        observation = join_binding(rows, binding, boundary)
         # Slots are selected when completed outputs are composed. Decode
         # submission order can differ from that completion order (B pictures),
         # so ordinals are unique identities, never a media/presentation clock.
@@ -334,14 +378,14 @@ def check_document(doc, blobs, trace_rows):
         previous_materialized = observation["materialized_seq"]
         observations.append(dict(observation, slot=number, binding=dict(binding)))
     return {
-        "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD", "schema": SCHEMA,
+        "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD", "schema": schema,
         "pid": pid, "driver_instance": instance, "slots": SLOTS_REQUIRED,
         "publication": dict(publication), "compared_bytes": compared,
         "observations": observations, "trace_records_checked": len(rows),
-        "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and decoder retirement joined.",
+        "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and " + ("decoder retirement joined." if schema == SCHEMA else "explicit private decoder close receipt plus generation-reset trace joined."),
         "coded_bottom_rows": "COMPARED_WHEN_PRESENT",
         "pitch_padding": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
-        "trace_scope": "Contiguous frozen selected-session prefix through selected decoder-context retirement.",
+        "trace_scope": "Contiguous frozen selected-session prefix through selected " + ("decoder-context retirement." if schema == SCHEMA else "decoder-generation reset; later generations may continue in this prefix."),
         "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
         "token_identity": "SYNTHETIC_VA_BINDING_TOKEN",
         "actual_media_pts": "NOT_OBSERVED", "source_ffprobe_pts_join": "NOT_OBSERVED",

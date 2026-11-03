@@ -55,7 +55,7 @@ not new hardware or release qualification.
 | Completed subset | #530: explicit `replace()` geometry/ancestry and checked handoff completion waits now share a response deadline; resize was already complete. | Read-only rejection preserves attachment; an indeterminate mutation fails through worker cleanup. [Current-host receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): 15 new embedding controls per native/sanitized variant, actual no-draw reopen and native window/NV12 regressions pass. XID refill, writes, EGL and broader #530 research remain outside this completed subset. |
 | 1, parallel diagnosis | #623: investigate the intermittent GTK CSS assertion/SIGSEGV. The existing Ubuntu24 GTK invocation now captures native/Python stacks in one execution; the validation-teardown/next-window theory remains a hypothesis. | Capture the original failing operation, then fix an established own defect or document a demonstrated external limitation. [Diagnostic controls](tests/fixtures/issue400/gtk-native-capture-20261103.json) pass, but the original crash remains unreproduced. Continue other work while awaiting useful failure evidence; do not loop clean suites or call a green CI run a root-cause fix. |
 | 2 | #513: default-off local timing and initial current-card observations are complete; continue representative congestion and attribution, then broader/endurance work. | [Timing receipt](tests/fixtures/issue513/xv-timing-20261103.json): device-free5 and actual-X11 32 per native/sanitized variant pass; FIFO/latest collect1501 ACK samples each (mean3.570/3.558ms), default-off records zero samples. These are local request-to-reader observations; current-card pending/residence is unexercised, no gain is demonstrated. Preserve the earlier six-run CPU/audio baseline and FIFO default. |
-| 3 | #445/#477: centered Off diagnostic EOF/reopen is complete; continue source-bound seek/requested Stop, actual media PTS and CPU-fallback/29.97 cases. | [Off receipt](tests/fixtures/issue477/centered-off-20261103.json): same stock Kodi process/VA instance, two natural EOFs;750 inputs/1500 field dequeue records/750 public materializations each. Four selected full coded1088 NV12 ROI/border comparisons pass. Actual PTS/GPU return/scanout and normal-backend compatibility remain outside this private observer result. |
+| 3 | #445/#477: Off EOF/reopen and selected progressive seek/Stop/reopen, including post-seek full NV12 targets, are complete. Continue actual media PTS, generation-reset coverage and CPU-fallback/29.97 cases. | [Target receipt](tests/fixtures/issue477/centered-seek-target-20261103.json): fixed source90/91 full NV12, exact submit/materialize/sync bindings inside seek→Stop, same-PID natural reopen180 originals. Four targets total across two plays; exit0/boundary restored/max54°C. [Initial controls](tests/fixtures/issue477/centered-controls-20261103.json) retain their zero-target limit; [interlaced Off](tests/fixtures/issue477/centered-off-20261103.json) remains distinct. Actual reset/PTS/GPU/scanout and normal-backend/release acceptance remain separate. |
 | 4 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
 | 5 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
 | 6 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
@@ -291,6 +291,27 @@ shelve the work or silently exclude implemented features.
    Seek/requested Stop, actual media PTS joins, fallback/29.97, GPU return and
    benefit/endurance remain open; this diagnostic backend does not qualify
    normal installed compatibility or a release.
+   The initial [progressive centered control case](tests/fixtures/issue477/centered-controls-20261103.json)
+   now passes initial content11, forward3s content90, requested Stop/end:false,
+   same-PID/VA-instance natural reopen180 originals/end:true, four total
+   full coded1088 NV12 samples, ordinary exit0 and restored ownership. Native/
+   sanitized894 assertions, payload reader64, content reader12 and controller27
+   controls pass. A failed selected generation can no longer hide behind a
+   different generation's good manifest; incomplete groups remain unqualified.
+   This stock seek keeps its generation. Reset-v2 is CPU-qualified only, and
+   the full-NV12 samples remain source0/1 before seek and after reopen, not the
+   seek-target90. Post-seek BGRA proves selected content, not full YUV borders.
+   The subsequent explicit fixed-target mode now captures full NV12 source90/91
+   under the existing CPU leases. Its [fresh target run](tests/fixtures/issue477/centered-seek-target-20261103.json)
+   joins both target submissions/materializations/successful syncs after seek
+   and before requested Stop. Reopen again supplies180 originals and its own
+   target90/91 samples: four total coded1088 ROI/black-border/neutral-chroma
+   comparisons, normal exit0, restored ownership and max54°C. The original
+   zero-target case is retained unchanged. Native/sanitized1787 assertions,
+   shared reader64, target content28 and controller38 tests pass. Default
+   selection remains unchanged; the private target mode cannot identify
+   acquisition failures before content recognition. Actual reset, AVFrame
+   handoff PTS, GPU return and broader/fallback/29.97 scopes remain open.
 
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted
@@ -717,7 +738,12 @@ its exact-source and acceptance scope in the owning issue.
   [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
   Completed diagnostic subset: [stock Off natural EOF/reopen and four full
   NV12 ROI/border samples](tests/fixtures/issue477/centered-off-20261103.json).
-  Actual media PTS, seek/requested Stop and the broader cases remain open.
+  Actual media PTS and broader seek/Stop/layout cases remain open.
+  Selected progressive seek/requested Stop/reopen content is now observed in
+  the [control receipt](tests/fixtures/issue477/centered-controls-20261103.json);
+  the later [target receipt](tests/fixtures/issue477/centered-seek-target-20261103.json)
+  completes selected post-seek full NV12. Actual generation-reset and broader
+  remaining scopes stay open.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.

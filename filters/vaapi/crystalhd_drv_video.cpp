@@ -1473,8 +1473,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     }
   }
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
-  if (centered_observer)
+  if (centered_observer) {
+    centered_slot = centered_observer->SelectComposedTarget(
+        centered_slot, picture, *canvas, *small, compact, decoded_public);
     centered_observer->CaptureCompose(centered_slot, *small, *canvas);
+  }
 #endif
   const bool committed = decoded_public
       ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();
@@ -8483,6 +8486,13 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
   if (count < 0 || (count != 0 && surface_ids == nullptr))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  // Each selected old generation owns frozen arrays after Reset. Destruction
+  // order keeps their file publication outside the existing Driver lock.
+  std::array<crystalhd_test_centered_payload::PublishOnReturn,
+             crystalhd_test_centered_payload::kStreams> centered_publications;
+  size_t centered_publication_count = 0;
+#endif
   std::unique_lock<std::mutex> lock(driver->mutex);
   if (static_cast<size_t>(count) > driver->surfaces.size())
     return VA_STATUS_ERROR_INVALID_SURFACE;
@@ -8629,6 +8639,9 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
     MarkPendingPicturesFailed(driver, decode);
     ClearTraceReadExportsForContext(
         driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+    const uint64_t centered_old_generation = decode->generation;
+#endif
     const BC_STATUS closed = decode->Reset(close_timeout_ns);
     if (decode->device != nullptr)
       reset_status = VA_STATUS_ERROR_HW_BUSY;
@@ -8636,6 +8649,24 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
       reset_status = VA_STATUS_ERROR_OPERATION_FAILED;
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+    if (driver->centered_payload_observer) {
+      // The existing trace names the new generation even when close failed.
+      // Preserve its meaning; the private receipt records the actual result
+      // for this decoder, rather than the aggregate VA call's reset_status.
+      const VAStatus centered_status = decode->device != nullptr
+          ? VA_STATUS_ERROR_HW_BUSY : closed == BC_STS_SUCCESS
+          ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_OPERATION_FAILED;
+      const int index = driver->centered_payload_observer->RetireReset(
+          TraceId(decode->id, VA_INVALID_ID), centered_old_generation,
+          decode->generation, centered_status, closed, decode->device == nullptr);
+      if (index >= 0 && centered_publication_count < centered_publications.size()) {
+        auto &publication = centered_publications[centered_publication_count++];
+        publication.state = driver->centered_payload_observer;
+        publication.index = index;
+      }
+    }
+#endif
   }
   if (notify_workers)
     driver->NotifyDecodeWorker();
