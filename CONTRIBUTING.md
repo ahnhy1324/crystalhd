@@ -57,6 +57,11 @@ presentation. Preserve exact source/component/host identities with results.
 Separate static firmware findings, synthetic/emulated tests, native hardware
 measurements and proven supported behavior.
 
+Source-qualified logs showing no detected A/V drift satisfy the agreed A/V
+criterion for that exact route. Retain accepted route-specific renderer/QoS
+allowances; do not add a universal zero-loss gate. Physical cadence and scanout
+remain separate research.
+
 Known issues cannot waive unsafe DMA, memory corruption, kernel/lifecycle
 deadlock, silent unsupported fallback, unexplained valid decoded-picture loss,
 or supported count/pixel/PTS, EOS/drain, lifetime/resource and ABI/ioctl gates.
@@ -90,9 +95,11 @@ assignments to entire umbrella issues:
   QoS row on the X61 can be S2/P2; retain its strict full-census FAIL. Card
   `--scale-width 1280` with sink fitting is a measured alternative on that host,
   not a general guarantee or a classification of all #91 work.
-- [#513](https://github.com/ahnhy1324/crystalhd/issues/513): async Xv/SHM is
-  experimental research/P3 pending prerequisites, not a supported backend or
-  proof of scanout/physical A/V.
+- [#513](https://github.com/ahnhy1324/crystalhd/issues/513): the optional
+  latest-frame Xv/SHM mode remains experimental research; selected host tests
+  and local timing are implemented, while representative congestion,
+  reader-return and performance-benefit evidence remain open. Keep this scope
+  separate from ordinary FIFO output and scanout/physical A/V claims.
 - [#92](https://github.com/ahnhy1324/crystalhd/issues/92): MPEG-1 via algorithm 1
   is non-production research. Investigate chroma/reference differences before
   making a production pixel-tolerance claim.
@@ -122,6 +129,21 @@ the resulting integration. Do not bypass protection or auto-delete branches.
 - Add regression tests when practical, report what was actually run, and update affected documentation.
 - Keep existing copyright and SPDX notices; see [LICENSES.md](LICENSES.md).
 
+## Documentation maintenance
+
+Use the [documentation map](DOCUMENTATION.md) to distinguish current guides,
+contracts, dated evidence and legacy material. Update the current status or
+remaining-work table in place rather than adding another competing status
+paragraph. Keep completed narratives in a dated archive or the hardware ledger,
+with navigation back to the current queue.
+
+Preserve original failures, inputs, component identities and qualification
+limits when moving records. Rebase relative links and retain established
+section anchors where other documents or issues use them. A dated snapshot is
+historical even when its text once said "current". Keep issue overviews and
+repository summaries consistent; diagnostic, stock-runtime and release claims
+must retain their separate evidence.
+
 ## Validation
 
 Run relevant [developer checks](README.md#developer-checks). Hardware evidence should identify the installed components, device, test input, frame/PTS/pixel results, errors, and clean teardown. If hardware is unavailable, say **NOT RUN**; CI/build success does not prove physical playback.
@@ -150,9 +172,9 @@ typelib and an X display available, run
 The helper creates its own private D-Bus session and configuration; an owned
 Xvfb is sufficient. A private installed prefix can replace `.`; use
 `LANGUAGE=ko` to test its installed Korean catalogue. The result checks remote
-entry descriptions and change events, correction and profile transitions,
-preserved drafts and normal cleanup. It does not establish spoken Orca,
-`INVALID_ENTRY` state, or general screen-reader acceptance.
+entry descriptions, persistent `INVALID_ENTRY` queries and transition events,
+correction and profile transitions, preserved drafts and normal cleanup. It
+does not establish spoken Orca or general screen-reader acceptance.
 
 Maintainer release gates and support claims are tracked in [RELEASING.md](RELEASING.md).
 
@@ -164,7 +186,7 @@ The first component lane covers ordinary modifications to five explicit packed
 scaler CPU inputs: the plugin, engine and CPU-test C files, `check.sh`, and
 `tests/packed-sanitizer-loader.test.py`. A PR confined to those inputs, with
 optional reviewed prose/configuration documentation, runs the ordinary packed
-CPU check, the isolated ASan/UBSan/leak check and the five loader contracts on
+CPU check, the isolated ASan/UBSan/leak check and the loader contracts on
 both Ubuntu releases. It also runs the configuration inventory/schema validators,
 which check the plugin's read-only properties. GStreamer 1.28.2 executes the
 36 stock/candidate frame comparisons; other versions check factory loading and

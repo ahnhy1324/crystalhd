@@ -5,6 +5,14 @@ using retained native captures from [#92](https://github.com/ahnhy1324/crystalhd
 and [PR217](https://github.com/ahnhy1324/crystalhd/pull/217). It changes no production
 codec advertising, firmware, release oracle or quality threshold.
 
+The original Bicubic comparison, [fixed filter matrix](#fixed-filter-matrix),
+[decoder identity checks](#planar-decoder-and-historical-reference-checks) and
+[separable reference follow-up](#fixed-separable-reference-follow-up) are
+different observations on frozen inputs. [Manual replay](#manual-replay)
+describes the optional tools. Later scoped MPEG-1 frontend qualification is
+recorded separately in [#606](../issue606/README.md); it does not erase the
+historical reference mismatch or recover unknown original commands/PTS.
+
 The [retained report](pristine-reference-20261031.json) freezes exact ES, planar420,
 native YUYV, runtime-library and owned-source identities. The two inputs are
 352x288/25 horizontal chroma with 30 I pictures and a changing checker with 90 I/P/B
@@ -46,6 +54,8 @@ replace the frozen matrix or turn residual mismatch into a quality PASS.
 The earlier installed 7.1.1/8.0.1 matrix also retained 18 byte-identical same-case
 conversions; its evidence remains separate and unchanged.
 
+## Fixed filter matrix
+
 The completed [filter report](filter-reference-20261031.json) adds seven reader
 hand controls, eight exact identities, 108 native comparisons and 54 pre/post
 comparisons for POINT 16, BILINEAR 2 and LANCZOS 512. All 54 pre/post pairs are
@@ -74,6 +84,8 @@ not show that the cited fix has no effect on every conversion path. The separate
 fixed POINT/BILINEAR/LANCZOS matrix broadens this discriminator.
 Nearest-neighbor can legitimately keep the same samples after a quarter-chroma
 sample displacement, so equal POINT output alone is not proof of ignored siting.
+
+## Planar decoder and historical reference checks
 
 The [fresh current decoder receipt](current-planar-decode-20261031.json) records
 unmodified `/usr/bin/ffmpeg` 8.0.1-3ubuntu2 decoding each original ES with named

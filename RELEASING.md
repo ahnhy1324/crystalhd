@@ -1,63 +1,28 @@
 # Releasing the maintained CrystalHD stack
 
-The completed v1.2 release tracker is
-[#473](https://github.com/ahnhy1324/crystalhd/issues/473). It defines the
-bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and research
-work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
-#91, #92 or #204 and is not silently promoted into a release requirement.
+This guide separates current release policy and future-candidate commands
+from completed release campaigns. Installation belongs in [USAGE](USAGE.md)
+and the [DKMS guide](README.dkms); the current native companion has its own
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md). See [TODO](TODO.md) for the live
+work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 
-Use the [issue triage policy](CONTRIBUTING.md#issue-triage-and-known-issue-policy)
-for scheduling and scoped known limitations. These release gates and frozen
-oracles take precedence; a deferred issue does not turn missing or failed
-mandatory evidence into PASS.
+- [Complete RC2 and future candidate preparation](#complete-rc2-and-future-candidate-preparation)
+- [Version identities and compatibility policy](#versions-and-compatibility)
+- [Completed v1.2 scope and campaign reference](#historical-v12-release-scope-and-publication)
+- [Branch and issue maintenance](#branch-and-issue-maintenance)
+- [Useful bug reports](#useful-bug-reports)
 
-The completed 1.0 campaign is historical evidence.
-The published `v1.0.0-rc.1` at
-`79c7cc963f69a6cbe22852c7fa30cee71a0c1737` and its bounded results remain
-unchanged.
-After qualification and explicit maintainer GO,
-[stable `v1.0.0`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
-was published on 2026-10-13 from approved commit
-`2e91a4a612efe236e566362022bf986c1d81c67b`. Its tag is immutable.
-The maintainer's G0 exception and the G1/G2 dispositions recorded in
-[#369](https://github.com/ahnhy1324/crystalhd/issues/369) and
-[#371](https://github.com/ahnhy1324/crystalhd/issues/371) apply only to that
-campaign; they are not v1.1 qualification passes.
+<a id="private-v13-candidate-preparation"></a>
 
-For v1.2, follow **scope/diff audit and exact identity → same-SHA device-free
-gates and short native smoke (G0/G1) → maintainer RC GO → publish an
-immutable RC → exact-RC client, sustained and package qualification (G2/G3)
-→ maintainer stable GO**. A version string or release branch is preparation,
-not permission to publish an RC, tag or stable release. Published v1.1 and its
-RCs remain immutable; their qualification is historical evidence, not a v1.2
-PASS.
+## Complete RC2 and future candidate preparation
 
-Published `v1.2.0-rc.2` completed the bounded G0–G3 qualification in #473.
-Stable [v1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
-was published on 2026-10-23 at `8132043`, whose tree equals tested `f45dbdc`.
-[Final package qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/473#issuecomment-6355980181)
-are complete. Fresh final CI/build, archive/staging, live DKMS upgrade/RC2
-rollback/reinstall and installed application checks retain their actual source
-attribution; RC2 direct-live, physical and endurance evidence was reused only
-for unchanged implementation. These results do not qualify later development.
-
-The selected v1.2 claims are bounded CPU VA-VPP Bob, explicit H.264 card-output
-scaling and reviewed reliability fixes. Selected Kodi Auto, sustained 720p50
-and RC2 package acceptance passed within the linked matrix. Hardware deinterlacing, general FHD50/60,
-Atom real-time and the #470/#471 experiments are not candidate claims. Exact
-boundaries and current status are in
-[USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
-[hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
-
-## Private v1.3 candidate preparation
-
-**Current status — 2026-11-03:** the complete
+**Current status — 2026-11-04:** the complete
 [1.3.0-rc.2 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
 is published with 13 assets. Its current-equipment qualification and companion
 delivery are complete; source, assets and module-DKMS `3.10.17` remain frozen.
-Master contains later research. Stable 1.3 publication is deferred. The heading
-is retained for existing links; this section's packaging examples apply to a
-future candidate, not unfinished RC2 integration or upload work.
+Master contains later research. Stable 1.3 publication is deferred. The
+packaging examples below apply to a future candidate; RC2 integration and
+upload are complete.
 
 RC2 used a separate module identity to preserve package16 and its receipts.
 RC1 is an incomplete historical cut whose retained release entry is now a draft,
@@ -84,31 +49,6 @@ Accepted renderer/QoS losses remain nonblocking within
 [#91's recorded display-performance scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
 Source-qualified logs without detected A/V drift suffice for the tested route.
 These policies do not waive source-picture, lifetime or ABI correctness.
-
-The earlier qualified private checkpoint is source
-`c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`, including the own VA sync-binding
-and bounded H.264 admission repairs in #613/#615. Experimental merge
-`1b17fd9ec1128c56bb55fef1dd79cf1865de3d10` has the same tree
-`32c5b89104fd7b9641c0039760894baa3b926ead`.
-[CI41259036128](https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128)
-passes 15 jobs with the intended standalone packed-scaler job skipped. The
-[scoped package and runtime receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json)
-records the exact artifact identities and subsequent qualification:
-
-| Private artifact | SHA-256 |
-| --- | --- |
-| `crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz` | `26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb` |
-| `script.crystalhd.settings-0.1.0.zip` | `1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a` |
-
-All four generated files reproduce byte-for-byte. The fresh Git-free source
-archive builds VA/DIL binaries identical to the hardware-tested checkout and
-passes full replay, real DRM import, provenance and user-configuration-preserving
-staged install/remove/repeated-remove/reinstall checks. Qualification is pinned to this
-source and these bytes; subsequent documentation does not rewrite the frozen
-packages or qualify another archive. Existing T8100/BCM70015/Intel965 x86_64
-evidence does not supply independently clean OS, physical Atom/i386 or BCM70012
-acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
-frozen.
 
 The maintained master already integrates maintenance/Xv, MPEG-1 and the
 native/runtime work. Use it as the basis of a future candidate while retaining
@@ -165,6 +105,33 @@ work preserves the native default and the independent booted-OS NOT_RUN
 disposition. A future candidate requires a new package identity for changed
 payloads; do not replace registered17 source, RC2 assets or historical RC1 files.
 Stable publication remains deferred.
+
+### Historical private development checkpoint — 2026-11-01
+
+The earlier qualified private checkpoint is source
+`c48fe3a12d4f0443dc444df27c0b6c35be2b3ced`, including the own VA sync-binding
+and bounded H.264 admission repairs in #613/#615. Experimental merge
+`1b17fd9ec1128c56bb55fef1dd79cf1865de3d10` has the same tree
+`32c5b89104fd7b9641c0039760894baa3b926ead`.
+[CI41259036128](https://github.com/ahnhy1324/crystalhd/actions/runs/41259036128)
+passes 15 jobs with the intended standalone packed-scaler job skipped. The
+[scoped package and runtime receipt](tests/fixtures/issue510/v13-private-admission-qualification-20261101.json)
+records the exact artifact identities and subsequent qualification:
+
+| Private artifact | SHA-256 |
+| --- | --- |
+| `crystalhd-1.3.0-dev.1-c48fe3a12d4f.tar.gz` | `26ce5a6ec4fafa34b95ece71a9f2cc219c10c1cbb1c99e1d1d16f0ff9d9906cb` |
+| `script.crystalhd.settings-0.1.0.zip` | `1712f28d006a3e22a6c3601200a00b6912f720c262847605bc18e06f0be9001a` |
+
+All four generated files reproduce byte-for-byte. The fresh Git-free source
+archive builds VA/DIL binaries identical to the hardware-tested checkout and
+passes full replay, real DRM import, provenance and user-configuration-preserving
+staged install/remove/repeated-remove/reinstall checks. Qualification is pinned to this
+source and these bytes; subsequent documentation does not rewrite the frozen
+packages or qualify another archive. Existing T8100/BCM70015/Intel965 x86_64
+evidence does not supply independently clean OS, physical Atom/i386 or BCM70012
+acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
+frozen.
 
 ## Versions and compatibility
 
@@ -280,6 +247,57 @@ and component guides. The optional V4L2/firmware research builds do not add a
 supported frontend. A regression in an advertised opt-in path still requires
 a fix or explicit withdrawal from the candidate.
 
+## Historical v1.2 release scope and publication
+
+The completed v1.2 release tracker is
+[#473](https://github.com/ahnhy1324/crystalhd/issues/473). It defines the
+bounded v1.2.0 scope and G0–G3 GO/HOLD rules. Optional performance and research
+work belongs to [#472](https://github.com/ahnhy1324/crystalhd/issues/472),
+#91, #92 or #204 and is not silently promoted into a release requirement.
+
+Use the [issue triage policy](CONTRIBUTING.md#issue-triage-and-known-issue-policy)
+for scheduling and scoped known limitations. These release gates and frozen
+oracles take precedence; a deferred issue does not turn missing or failed
+mandatory evidence into PASS.
+
+The completed 1.0 campaign is historical evidence.
+The published `v1.0.0-rc.1` at
+`79c7cc963f69a6cbe22852c7fa30cee71a0c1737` and its bounded results remain
+unchanged.
+After qualification and explicit maintainer GO,
+[stable `v1.0.0`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+was published on 2026-10-13 from approved commit
+`2e91a4a612efe236e566362022bf986c1d81c67b`. Its tag is immutable.
+The maintainer's G0 exception and the G1/G2 dispositions recorded in
+[#369](https://github.com/ahnhy1324/crystalhd/issues/369) and
+[#371](https://github.com/ahnhy1324/crystalhd/issues/371) apply only to that
+campaign; they are not v1.1 qualification passes.
+
+For v1.2, follow **scope/diff audit and exact identity → same-SHA device-free
+gates and short native smoke (G0/G1) → maintainer RC GO → publish an
+immutable RC → exact-RC client, sustained and package qualification (G2/G3)
+→ maintainer stable GO**. A version string or release branch is preparation,
+not permission to publish an RC, tag or stable release. Published v1.1 and its
+RCs remain immutable; their qualification is historical evidence, not a v1.2
+PASS.
+
+Published `v1.2.0-rc.2` completed the bounded G0–G3 qualification in #473.
+Stable [v1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
+was published on 2026-10-23 at `8132043`, whose tree equals tested `f45dbdc`.
+[Final package qualification and publication](https://github.com/ahnhy1324/crystalhd/issues/473#issuecomment-6355980181)
+are complete. Fresh final CI/build, archive/staging, live DKMS upgrade/RC2
+rollback/reinstall and installed application checks retain their actual source
+attribution; RC2 direct-live, physical and endurance evidence was reused only
+for unchanged implementation. These results do not qualify later development.
+
+The selected v1.2 claims are bounded CPU VA-VPP Bob, explicit H.264 card-output
+scaling and reviewed reliability fixes. Selected Kodi Auto, sustained 720p50
+and RC2 package acceptance passed within the linked matrix. Hardware deinterlacing, general FHD50/60,
+Atom real-time and the #470/#471 experiments are not candidate claims. Exact
+boundaries and current status are in
+[USAGE.md](USAGE.md#known-issues-and-deinterlacing-roadmap) and the
+[hardware report](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22).
+
 The freeze, qualification and publication procedures below are the retained
 completed v1.2/#473 campaign. They preserve its gates and evidence; they are
 not unfinished 1.3 work. Current RC2 status is above and the active queue is in
@@ -289,6 +307,8 @@ own scope, package identity and affected qualification.
 <a id="freeze-and-prepare"></a>
 
 ## Freeze and prepare a release candidate
+
+The following numbered steps record the completed v1.2/#473 freeze.
 
 1. Agree on the v1.2 scope in #473. Audit the complete
    `v1.1.0...candidate` diff, link #429's compatibility results and separate
@@ -326,6 +346,8 @@ own scope, package identity and affected qualification.
    `v1.0.0-rc.1`, `v1.0.0` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate
+
+This matrix records #473's v1.2 qualification criteria and results.
 
 Run G0/G1 against one exact v1.2 candidate commit before asking to publish an
 RC. Begin G2/G3 only against that immutable RC after maintainer RC GO. Earlier
@@ -462,6 +484,8 @@ standalone processing and physical Moonlight A/V certification remain tracked
 in #91/#92/#204 without becoming prerequisites for this declared scope.
 
 ## Publish and maintain
+
+This is the completed v1.2/#473 publication sequence.
 
 After #473 records G2/G3 evidence and dispositions for the immutable RC,
 freeze final v1.2.0 metadata and a package revision distinct from any changed

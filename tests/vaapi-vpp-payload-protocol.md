@@ -6,13 +6,22 @@ diagnostic environment variable, state, payload reference, allocation or copy:
 `CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD` is defined only by the separate wrapper.
 `all`, `check`, and `install` do not build or install that wrapper.
 
+The completed [case03 receipt](fixtures/issue445/stock-bob-payload-20261031.md)
+qualifies eight selected active 1280x720 OWN CPU outputs from original-stock
+TFF/BFF Bob playback, with natural EOF/reopen. Coded bottom padding, every
+field's pixels, source/output PTS and GPU return remain outside that result.
+The protocol below defines reproduction; a new source or case needs its own
+reviewed plan and execution.
+
+## Retained failed publication revisions
+
 Case `stock-bob-payload-01` remains FAIL: its decoder stream supplied valid
 operation counts and clean normal exit/boundaries, but the destructor-only
 publisher never ran for its active driver instance. A probe instance wrote only
 an empty manifest. That case is preserved unchanged. Root's first CPU controls
-passed 57 checks and 21 independent-reader methods. These revised retirement
-publication controls and a new case require fresh root execution; earlier PASS
-counts do not establish the new payload evidence.
+passed 57 checks and 21 independent-reader methods. Those early PASS counts
+did not establish the revised retirement publication or actual case03 payload
+evidence. The subsequent completed receipt retains their separate scopes.
 
 Case `stock-bob-payload-02` also remains FAIL and its plan/results are preserved:
 normal EOF, operation counts, exit and boundaries passed, but no payload file
@@ -48,9 +57,11 @@ runs the ordinary `linux_lib/libcrystalhd` library submake before linking, so it
 also works from a clean source tree and creates the normal library/SONAME links.
 Command-line compiler and CPU settings propagate normally; no new library flags,
 library behavior or install action is introduced. Root should also run the
-relevant ordinary VA checks and verify that the
-ordinary backend lacks `CRYSTALHD_TEST_VPP_PAYLOAD_DIR` and the observer schema,
-and remains byte-identical to the ordinary artifact at OWN revision `147c142e`.
+relevant ordinary VA checks and verify that the ordinary backend lacks
+`CRYSTALHD_TEST_VPP_PAYLOAD_DIR` and the observer schema. Retained case03 also
+verified byte identity against its ordinary artifact at OWN revision
+`147c142e`; a new revision compares its own before/after ordinary artifacts
+instead of requiring identity with that historical build.
 
 The only diagnostic driver is
 `filters/vaapi/payload-observer/crystalhd_drv_video.so`. Never copy it over the

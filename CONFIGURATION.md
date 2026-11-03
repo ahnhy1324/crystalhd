@@ -429,8 +429,8 @@ literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
 
-The schema conformance check classifies all 43 surfaces: 23 userspace surfaces
-map to 21 canonical keys. The other 20 retain their documented module-load,
+The schema conformance check classifies all 44 surfaces: 23 userspace surfaces
+map to 21 canonical keys. The other 21 retain their documented module-load,
 environment, invocation-only or external GStreamer output boundaries.
 The video output, packed enlargement and tracing selectors are invocation-only;
 adding `field-gpu` as a video-output choice does not add a saved setting.

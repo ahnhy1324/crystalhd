@@ -8,6 +8,15 @@ still returns `EOPNOTSUPP` for the
 [#114 reference-state limitation](https://github.com/ahnhy1324/crystalhd/issues/114);
 the Kick/continuation gates in #533 remain separate.
 
+These source-pinned prototype receipts preserve the original G2 FAIL and
+later independent input-idle/host-PTS findings. They are not current companion
+installation instructions; use [native runtime delivery](../../../NATIVE-RUNTIME-DELIVERY.md)
+for that scope. Read the [resource comparison](#source-paced-resource-comparison--2026-10-27)
+for copy/CPU measurements, [Kick discriminator](#separate-non-destructive-kick-discriminator)
+for the failed complete drain, and [host source PTS](#host-source-pts-with-a-reserved-native-owner)
+for the later reserved-owner strategy. None implements compliant nonempty
+drained STOP/START.
+
 [Memory/render proof](yuy2-interop-20261026.json) and
 [native CAPTURE results](native-capture-20261026.json) retain measurements,
 source identities, unsuccessful controls and subsequent corrections. The heap

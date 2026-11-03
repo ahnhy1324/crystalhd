@@ -1,13 +1,12 @@
 # Native companion support and distribution policy
 
-The CrystalHD maintenance project owns this experimental assembly, its pinned
-inputs, own integration code, packaging instructions and issue intake at
-https://github.com/ahnhy1324/crystalhd/issues. This assigns a project role; it
-does not claim that an individual accepted a new support obligation or SLA.
+This policy covers the optional native V4L2 Kodi companion. Use the
+[delivery guide](NATIVE-RUNTIME-DELIVERY.md) to evaluate its frozen RC2 package;
+for ordinary playback, start with [everyday usage](USAGE.md).
 
-Distribution scope is an optional 1.3 RC companion for the measured x86_64
-Core2 T8100 / BCM70015 / Intel965 cohort and the exact Kodi22RC1, Platform26.08
-and GL commits in the delivery guide. Native FFmpeg was configured `--cpu=core2`
+Distribution scope is the published optional 1.3.0-rc.2 companion for the
+measured x86_64 Core2 T8100 / BCM70015 / Intel965 cohort and the exact
+Kodi22RC1, Platform26.08 and GL commits in the delivery guide. Native FFmpeg was configured `--cpu=core2`
 with runtime CPU detection. No wider minimum CPU or cross-distribution ABI
 support is inferred. The runtime's observed `atan2f@GLIBC_2.43` requirement is
 distinct from the pinned provider package glibc2.44. Provider libdrm2.4.134,
@@ -15,13 +14,18 @@ libva2.24.1 and zlib-ng2.3.3 come from that exact Platform; the delivery does
 not bundle or replace their binaries.
 
 The neutral runtime, reproduced twice from unchanged pinned source, and its
-complete FFmpeg/dependency/SDK source and notice companions may be assembled
-as the scoped experimental RC delivery. A deterministic packager status is
+complete FFmpeg/dependency/SDK source and notice companions form the published
+scoped experimental RC2 delivery. A deterministic packager status is
 only an assembly result. Public release/tag and stable promotion follow the
 main repository's release authorization; no arbitrary machine, clean-OS,
 physical presentation, full FFmpeg or security-certification claim follows.
 The inner historical `PUBLIC_NOT_READY` provenance remains intact and is
 supplemented by dated outer evidence and this policy.
+
+The CrystalHD maintenance project owns this experimental assembly, its pinned
+inputs, own integration code, packaging instructions and issue intake at
+https://github.com/ahnhy1324/crystalhd/issues. This assigns a project role; it
+does not claim that an individual accepted a new support obligation or SLA.
 
 Upstream FFmpeg, Kodi and Platform maintainers own their code and upstream
 security fixes. This project does not maintain a modified external fork or

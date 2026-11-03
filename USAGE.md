@@ -1,84 +1,18 @@
 # Everyday CrystalHD usage
 
-This guide covers installed local playback and common application paths. Start
-with every tuning option unset. Check [README compatibility](README.md#compatibility)
-before choosing the card for a workload; Sunshine/Moonlight has a separate
-[integration guide](MOONLIGHT.md).
+For ordinary local playback, use the latest stable **1.2.0** installation and
+`crystalhd-play`. Leave tuning options at their defaults for the first run.
+This guide starts with that route; optional 1.3 candidate/development features
+are marked separately.
 
-## Choose a path
+1. [Install and verify the stack](#verify-the-installed-stack).
+2. [Play a local file](#play-a-local-file), then use the [controls](#player-controls)
+   and [audio/subtitle instructions](#audio-and-subtitles).
+3. If playback fails, use the [symptom table](#troubleshooting-and-proof-of-hardware-use).
 
-| Goal | Path | Current status |
-| --- | --- | --- |
-| Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
-| Play an HTTP(S) media URL | [HTTP(S) player input](#https-input) | Native loopback HTTP checked; HTTPS and physical playback pending |
-| Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
-| Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
-| Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
-| Use VLC | VA-API, selected H.264/X11 setup only | Focused tested combination |
-| Use Kodi | VA-API on the reference X11 host | Progressive playback; selected 1.2 CPU Bob/Weave on Kodi 21.3, with cadence limits below |
-| Stream from Sunshine with Moonlight | [Moonlight guide](MOONLIGHT.md) | First-class experimental integration |
-| Accelerate Chromium or YouTube | VA-API browser experiment | Hardware path unverified; not daily use |
-
-The card decodes video. Audio decoding, subtitles, synchronization and display
-are provided by the frontend and the rest of the Linux media stack. Only one
-CrystalHD hardware decode session can be open at a time.
-
-## Known issues and deinterlacing roadmap
-
-- **Weave is not deinterlacing.** Hardware and software Weave retain both
-  fields, so moving edges can show combing or shaking. Stable 1.2 provides
-  the bounded CPU VA-VPP Bob path; native hardware Bob is not supported.
-  Applications can also apply
-  [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
-  with additional CPU cost; successful decode does not guarantee smooth FHD
-  presentation or calibrated A/V sync.
-- **Kodi interlaced playback is narrowly bounded in stable 1.2.** Off selects
-  Weave; Auto can select the bounded CPU VA-VPP Bob path. Earlier 1.1.0 lacked
-  that filter and could repeatedly probe for it. The selected installed 1.2 RC2
-  matrix with Kodi 21.3 Auto/Off completed decode, recorded A/V controls, seek,
-  natural EOF and reopen; stable reuse applies only to unchanged implementation.
-  Kodi's adaptive `SKIPDEINT` requests omit some second
-  fields, so this is not an uninterrupted 50p or general Kodi 21–23 claim.
-  Atom real-time playback also remains unsupported
-  ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
-  [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). LIVE/LOW_LATENCY
-  remains a separate experimental path.
-- **Known issue: Kodi VAAPI finite-EOF accounting.** In the observed Kodi 21.3
-  output path, a picture can be published before its processed counter is
-  retired. Diagnostic receiver-priority scheduling exposed an approximately
-  two-second drain timeout at natural EOF; the normal-scheduling control
-  reached EOF. Other builds and ordinary-workload frequency remain unverified.
-  This is a scoped Kodi publication/accounting issue; a general VA-API or
-  CrystalHD-driver defect is not established. See
-  [#445](https://github.com/ahnhy1324/crystalhd/issues/445) and the
-  [stock observation](tests/fixtures/issue445/publish-order-observation-20261029.json).
-  The external patch has been removed under
-  [project policy](EXTERNAL-CODE-POLICY.md); historical modified-Kodi results
-  cannot qualify stock compatibility or a release.
-- **Oversized H.264 rejection is containment, not general stream recovery.**
-  Stable 1.2 includes the transport-specific headroom introduced in 1.1 RC5
-  and rejects selected over-budget extended input
-  before submission and preserves a clean reopen; it intentionally rejects
-  some input that previously worked. Exact firmware reclamation remains a
-  measured signed-firmware/configuration limitation; use software decode for
-  rejected content. See the [admission limits](#codec-boundaries).
-- **Legacy client CPU requirements still apply.** On the reporter's Atom N280
-  / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
-  `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
-  its compatibility is not established. The driver's `LEGACY_CPU=1` build
-  cannot remove ISA requirements from applications or their dependencies.
-
-The remaining work in [#436](https://github.com/ahnhy1324/crystalhd/issues/436)
-targets broader readback/filter integration, field order, cadence and client
-acceptance beyond the selected stable 1.2 scope. Source-qualified no-drift logs
-satisfy A/V acceptance for the exact route; physical cadence/scanout is separate
-research. The existing renderer/QoS policy does not require universal zero loss.
-Hardware deinterlacing remains separate from the published CPU implementation.
-
-Stable `1.2.0` preserves the bounded path qualified for its RC2:
-[CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
-plus the focused completed-source lifetime correction. It is not card-side
-deinterlacing or a general Kodi/Atom playback path.
+For another application, see [Choose a path](#choose-a-path). The
+[documentation index](DOCUMENTATION.md) covers installation, settings and
+advanced guides. Sunshine/Moonlight has its own [integration guide](MOONLIGHT.md).
 
 ## Verify the installed stack
 
@@ -114,15 +48,14 @@ For targeted read-only checks:
 
 For a first run, choose a progressive H.264 8-bit 4:2:0 MP4 at 720p30 or
 smaller. The `.mp4` extension alone does not identify the codec. Replace the
-example paths with your own files; hardware mode is the default:
+example path with your own file:
 
 ```sh
 crystalhd-play "/path/to/video.mp4"
-crystalhd-play --hardware "/path/to/video.mp4"
-crystalhd-play --subtitles "/path/to/subtitles.srt" "/path/to/video.mkv"
 ```
 
-A successful hardware run reports
+Hardware mode is the default; adding `--hardware` requests it explicitly.
+A successful run reports
 `Decoder: crystalhddec (hardware; video output confirmed)` and a nonzero
 decoded-video-frame count. Software mode is an intentional comparison, not a
 fallback:
@@ -131,124 +64,108 @@ fallback:
 crystalhd-play --software "/path/to/video.mp4"
 ```
 
-Unreleased development builds also offer the optional
-[X11 completion-controlled output](filters/gst/xv-output/README.md) through
-`--video-output xv-async`. Build its separate plugin first; `auto` remains the
-default. This is an experimental output choice, not a general speedup or
-physical A/V qualification.
+## Player controls
 
-`--video-output xv-async --xv-latest-frame` selects its separate experimental
-latest/drop arm in either decoder mode. When the three-request ring is busy,
-it keeps only the latest unsent picture with its original pixels and PTS;
-submitted images still wait for matching completion. The before-close summary
-reports intentional replacements separately from QoS drops. Omit the flag
-for FIFO. This invocation-only option requires a rebuilt Xv plugin and has no
-saved setting or established latency/CPU gain.
-The [selected current-card30s comparison](tests/fixtures/issue513/latest-card-abba-20261103.json)
-reaches natural EOS with actual Pulse audio in both modes. It observes no
-intentional replacements or demonstrated CPU gain; FIFO remains the default.
+Run `crystalhd-play` in a terminal and keep that terminal focused when using
+these keys. The ordinary video window does not handle the Player's terminal
+shortcuts. Redirected/non-terminal input disables them and prints a notice.
 
-An additional experimental `--packed-upscale` option fuses packing with the
-method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
-It requires `--hardware --video-output xv-async --scale-width 1280
---software-output-size 1920x1080` and the separately built
-[packed upscale plugin](filters/gst/packed-upscale/README.md).
-Unsupported input, color conversion, spatial metadata or GStreamer versions
-are rejected. It is an invocation-only option; it does not change the default
-output or saved settings. Its frame trace has four measured stages
-(decoder/deinterlace/output-scale/sink), with packing included in output-scale.
+| Key | Action |
+| --- | --- |
+| Space | Pause or resume |
+| Left / `j` | Seek backward 10 seconds |
+| Right / `l` | Seek forward 10 seconds |
+| `1`, `2`, `3` | Select 0.5x, 1x or 2x playback |
+| `q` | Quit |
 
+The controls exercise the whole player; they do not imply that every
+resolution can be decoded at every playback rate. Native Full-HD output at
+60 fps, including 1080p30 at 2x, is beyond the measured output limit.
+[Smaller card output](#optional-bcm70015-output-scaling) can improve throughput
+for Full-HD input at the cost of detail.
 
-The development Player also reports available video-sink rendered/dropped
-buffer counts before closing. These counters are separate from decoded
-pictures: deinterlacing can produce two output buffers per picture, and seeks
-or state changes can reset sink counters. They are a snapshot before teardown,
-not physical display counts or a new playback pass criterion. A renderer
-without these statistics reports `Video sink statistics: unavailable`.
+## Audio and subtitles
 
-### Optional video-stage trace (development)
+The Player uses GStreamer's normal audio output; choose the output device and
+volume in your desktop mixer. CrystalHD accelerates video decoding, while the
+host decodes audio and mixes subtitles. If video plays without sound, check the
+mixer and the required audio codec plugin before changing decoder options.
 
-To investigate a missing frame or field, request a new JSON output file:
+For an external local subtitle file:
 
 ```sh
-crystalhd-play --trace-frames /tmp/playback-trace.json "/path/to/video.mp4"
-crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/video.mp4"
+crystalhd-play --subtitles "/path/to/subtitles.srt" "/path/to/video.mkv"
 ```
 
-This needs the matching native GStreamer helper even in software mode. The
-file must not exist; it is created with mode `0600`. The normal Player does
-not enable these probes. While tracing, native callbacks record the decoder
-source, deinterlacer source when present, and leaf video-sink input. With
-`--software-output-size`, it also records the Player's `output-scale` source
-and, when prepared, its `output-pack` source. These identify the Player's
-own scaler and early packing converter; other intervening transforms are
-not individually observed. There is no additional per-buffer Python callback,
-pixel readback or file writing in
-the streaming thread. The JSON is written after playback teardown.
+The same option works with explicit `--hardware` or `--software` playback.
 
-The default capacity is 4,096 records across all observed stages, events and
-controls. `--trace-limit 16384` raises it to the maximum. Retention keeps the
-first records; `dropped` declares truncation while attachment counters continue.
-Every observed pad also records propagated QoS events. A 30-second 25i/50p
-five-stage trace can use about 14,250 records; use the maximum and check that
-`truncated` is false before comparing complete PTS sets. This is an example,
-not a guarantee that every 30-second input fits.
-This top-level `dropped` counts omitted trace records; it is separate from
-the nested video-sink statistics' dropped-buffer count.
-Attachment history is also limited to 64 entries. Rejected attachments and
-unobserved stages mean incomplete coverage. Truncation, missing PTS, drops and
-an absent deinterlacer do not become new playback failure gates. An unavailable
-helper or output-file error fails the explicitly requested trace operation.
+## Saved settings (1.3 tools)
 
-Add `--trace-window` to keep recent records in the same fixed capacity, then
-freeze after the first timed video QoS bus message with positive jitter and a
-known positive buffer-drop counter, then a quarter-capacity of following records
-(at least one).
-Propagated QoS events, untimed decoder headers and audio/time/unknown counters
-do not trigger capture. Timestamp and running-time zero remain valid.
-Window records include the emitting Linux `thread_id` in the caller's PID
-namespace (`null` when unavailable), not internal scaler-worker identity.
-First-N mode performs no additional thread-ID lookup.
-Without a trigger, final recent records are exported. Playback and cumulative
-counters continue after the window freezes. An older helper without window
-support fails this explicit request before creating a report.
+Stable 1.2.0 does not include the new configuration editors. With matching
+1.3.0-rc.2 tools and updated components installed, use the optional desktop
+window or inspect defaults from the terminal:
 
-`retention: "window"` declares this mode. `window.complete` means the following
-record budget was collected, not a complete picture census. EOS/stop before
-that budget leaves it false. `window_context` preserves known CAPS/segment/flush
-state before the earliest retained record; unknown context stays explicit.
-Original order, ordinals and generations are preserved. Global `dropped` and
-`truncated` include intentionally overwritten/omitted history, not lost video.
-Do not count records outside the retained window as missing frames or subtract
-window counts from cumulative attachment/sink counters. `player.loss_trigger`
-retains the original bus counter snapshot and sequence number, not a unique
-lost-picture identity. Rejected triggers declare incomplete capture.
+```sh
+crystalhd-settings
+crystalhd-config show-effective
+```
 
-Each attachment has independent buffer ordinals, raw video-buffer flags,
-PTS/DTS/duration and stream/segment/flush generations. Timestamp zero is valid;
-unknown times are JSON `null`. Running time is recorded only for a valid TIME
-segment. Pause/resume and seek requests are annotations; observed native
-events determine media generations. Compare the separate stage records without
-assuming PTS uniquely identifies a source picture or a deinterlacer's fields.
+If the window is not installed, follow [desktop settings installation](CONFIGURATION.md#optional-desktop-settings).
+Choose **Player** for decoder/output-size defaults, then **Save changes**.
+Restart the Player after saving. Explicit command-line flags override their
+corresponding saved values. A smaller card output reduces detail; leave native
+size selected unless you need that tradeoff.
 
-`buffers` counts individual BUFFER callbacks. Buffer lists have separate
-`buffer_lists`, `list_items` and `list_missing_pts` counters, with member records
-named `buffer-list-item`. GStreamer's list fallback can expose both a list and
-individual buffers at the same pad. `buffer_list_ambiguity` marks possible
-overlap whenever any list is observed, not proof that a
-particular list was duplicated. Do not add the two counters into a frame
-census. List positions use `list_ordinal` and `list_index`; ordinary `ordinal`
-continues to count individual BUFFER callbacks. The trace observes stream
-start, CAPS, segment, flush, EOS and QoS events as well as attach/detach/stop
-administration. All retained record types share the capacity limit.
+Kodi users can use the [optional Kodi settings add-on](addons/script.crystalhd.settings/README.md).
+After saving there, restart Kodi and keep its own VA-API decoder selection
+enabled. These editors change shared CrystalHD defaults; a saved setting alone
+does not establish active hardware decoding. See [configuration](CONFIGURATION.md)
+for profiles, reset and exact precedence. Follow
+[RC2 settings installation](README.md#install-rc2-for-managed-settings) when
+installing matching 1.3 components.
 
-Sink input records mean delivery to that pad. Sink statistics remain snapshots
-since their last reset. Neither establishes actual screen presentation,
-cadence, unique displayed pictures or physical A/V synchronization. Attached
-candidates without buffers are not confirmed active renderers. The report
-does not contain the media path or URL and does not select a different decoder.
+## Troubleshooting and proof of hardware use
 
-### HTTP(S) input
+Start with `crystalhd-check`, then follow the matching symptom. Change one
+setting at a time.
+
+| Symptom | First check and next action |
+| --- | --- |
+| No card or `/dev/crystalhd` | Check device/module/firmware results in `crystalhd-check`; follow [device recovery](BRINGUP.md#device-access-and-module-identity). |
+| Permission denied | Check the access result in `crystalhd-check`; use the documented `video` group/udev setup and sign in again after group changes. See [device access](BRINGUP.md#device-access-and-module-identity). |
+| Device busy | Run `sudo fuser -v /dev/crystalhd` and close the existing owner normally; one card supports one hardware session. Follow [bring-up recovery](BRINGUP.md) if ownership remains after exit. |
+| Loaded and installed versions differ | Follow the [idle reload or reboot procedure](BRINGUP.md#reload-an-idle-device) for the installation method that owns your module. |
+| Plugin missing or from an old checkout | Check `Filename` in `gst-inspect-1.0 crystalhddec`; remove stale `GST_PLUGIN_PATH`/`LD_LIBRARY_PATH` overrides and follow [installation verification](#verify-the-installed-stack). |
+| Unsupported input | Compare the stream's actual codec/profile with [codec boundaries](#codec-boundaries); try the known supported H.264 first-test file or explicit software playback. |
+| No sound | Check the desktop mixer/output and the audio codec's GStreamer plugin; compare the same file with `--software`. CrystalHD decodes video only. |
+| Keyboard controls do nothing | Run the player in a terminal and focus that terminal; see [controls](#player-controls). |
+| Slow native Full-HD output | Choose [smaller card output](#optional-bcm70015-output-scaling) if loss of detail is acceptable, or evaluate the [session-scoped L0s procedure](#full-hd-pcie-workaround) for a repeatable qualifying shortfall. |
+| Black output or a firmware timeout | Stop playback, inspect current-boot kernel messages, and follow [bring-up recovery](BRINGUP.md). For Moonlight, use its [troubleshooting guide](MOONLIGHT.md#troubleshooting). |
+
+After closing a player, `sudo fuser -v /dev/crystalhd` should report no owner
+and `cat /sys/module/crystalhd/refcnt` should report zero. Discovery alone is
+not a decode result; a complete file, EOS and a clean reopen provide the useful
+lifecycle check.
+
+## Choose a path
+
+| Goal | Path | Current status |
+| --- | --- | --- |
+| Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
+| Play an HTTP(S) media URL | [HTTP(S) player input](#https-input) | Native loopback HTTP checked; HTTPS and physical playback pending |
+| Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
+| Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
+| Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
+| Use VLC | VA-API, selected H.264/X11 setup only | Focused tested combination |
+| Use Kodi | VA-API on the reference X11 host | Progressive playback; selected 1.2 CPU Bob/Weave on Kodi 21.3, with cadence limits below |
+| Stream from Sunshine with Moonlight | [Moonlight guide](MOONLIGHT.md) | First-class experimental integration |
+| Accelerate Chromium or YouTube | VA-API browser experiment | Hardware path unverified; not daily use |
+
+The card decodes video. Audio decoding, subtitles, synchronization and display
+are provided by the frontend and the rest of the Linux media stack. Only one
+CrystalHD hardware decode session can be open at a time.
+
+## HTTP(S) input
 
 HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and
 v1.1.0-rc.3 do not contain it. From the selected source checkout, use
@@ -285,25 +202,12 @@ Real HTTPS/TLS, native network seeking, physical A/V and Internet
 recovery remain unverified. Inclusion in the source is not a release-gate PASS for
 those paths or a reason to replace a qualified installation without testing.
 
+## Interlaced video
+
 ### Explicit Weave playback
 
 `--weave` was introduced in 1.1.0/RC5 and remains in stable 1.2.0.
-For the current stable release:
-
-```sh
-git clone --branch v1.2.0 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd
-cd crystalhd
-```
-
-The earlier `v1.1.0-rc.5` tag remains available for reproducing its historical
-results; use the guide shipped with that tag for that purpose.
-
-Install the [dependencies and build](README.md#quick-start) from this directory,
-then follow the [direct install/update](BRINGUP.md#direct-install-update-and-rollback)
-or [DKMS route](README.dkms), according to the existing module owner. Do not
-mix the two routes. Keep published tags and the previous rollback source
-unchanged.
+Use the [stable installation guide](README.md#quick-start) if needed. The earlier `v1.1.0-rc.5` tag remains available for historical reproduction; use the guide shipped with that tag and retain its rollback source.
 
 After installation, select the decoder and pass a complete interlaced
 frame through without GStreamer's automatic deinterlacing:
@@ -325,20 +229,6 @@ not certified by successful playback. See [codec boundaries](#codec-boundaries).
 If hardware mode fails, start with the
 [symptom table](#troubleshooting-and-proof-of-hardware-use).
 
-| Key | Action |
-| --- | --- |
-| Space | Pause or resume |
-| Left / `j` | Seek backward 10 seconds |
-| Right / `l` | Seek forward 10 seconds |
-| `1`, `2`, `3` | Select 0.5x, 1x or 2x playback |
-| `q` | Quit |
-
-The controls exercise the whole player; they do not imply that every
-resolution can be decoded at every playback rate. Native Full-HD output at
-60 fps, including 1080p30 at 2x, is beyond the measured output limit.
-[Smaller card output](#optional-bcm70015-output-scaling) can improve throughput
-for Full-HD input at the cost of detail.
-
 ### Application deinterlacing after Weave
 
 Weave is the complete interlaced frame supplied by the decoder. An application
@@ -358,57 +248,6 @@ use [GStreamer's filter](#gstreamer-deinterlacing),
 [Kodi's Deinterlace method](#kodi). These filters use CPU time and may increase
 output cadence; successful decoding alone does not certify smooth display or
 A/V synchronization on every host.
-
-### Experimental GPU field output
-
-The development research player also accepts `--video-output field-gpu` to
-select the explicitly built `crystalhdfieldsink`. It performs GPU nearest Bob
-and display fitting for limited-range YUY2 with BT.601/709 colorimetry, and
-disables playbin's automatic deinterlacing. This requires the research plugin
-and its XCB/EGL/GLES2/GBM/DRM dependencies in a local X11 session; remote/TCP
-DISPLAY is rejected. It is not part of an ordinary install.
-See the [field-output build, invocation and qualification limits](tests/fixtures/issue530/README.md#experimental-window-consumer).
-Direct raw-video use of the sink also accepts explicitly declared, limited-range
-NV12 within its [current plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).
-The existing CrystalHD hardware Player route continues negotiating YUY2.
-
-The own local connection/setup has its bounded startup path. Each own
-InternAtom response wait has a fixed one-second limit after its request
-flush, including partial replies and unrelated events. In `resize()`, current
-parent and child geometry requests are sent together and their responses
-share one one-second deadline after that flush. When child resizing is needed,
-a later reply barrier confirms the checked configure within the same budget;
-the following error retrieval needs no additional network sync. Received
-replies are freed and remaining reply sequences are discarded locally on
-failure. Cached size changes only after both geometry responses and any
-required child configure succeed.
-
-During window replacement, own/target geometry, ancestry queries and checked
-standalone creation/reparent/configure/old-parent unsubscribe completions share
-one one-second response deadline after the first geometry request flush.
-Read-only preflight failure on a live connection rejects the target and keeps
-the existing attachment. A missing completion after a mutation may mean the
-server already changed the window; the worker reports an error and cleans up
-instead of claiming the old attachment is intact. Cached parent, standalone,
-mode and dimensions commit together after the required completions.
-XID replenishment inside the standalone allocator, congested writes, EGL and
-other synchronous calls remain outside these explicit response-wait limits.
-These limits do not establish a deadline for the whole Window constructor,
-replacement, resize, shutdown or X-server restart.
-
-The default `--video-output auto` keeps the normal output path. The selector is
-per invocation and is not saved by the configuration manager. With `field-gpu`,
-omit `--weave` and use `--software-output-size native` to clear any saved
-software resize; either conflicting request is rejected before playback.
-
-The experimental sink accepts `GstVideoOverlay.set_window_handle()` during
-PLAYING or PAUSED. Keep the new X11 target and its ancestors alive while it is
-selected. After successful synchronous replacement, a previous parent outside
-that ancestry may be destroyed.
-Handle0 restores an owned standalone window. Invalid targets preserve the
-current output; `field-stats` reports `window-handle`, `window-replacements`
-and `window-rejections`. The GL context and retained field imports survive the
-change. This does not broaden format, live-input or physical display claims.
 
 ## Optional BCM70015 output scaling
 
@@ -430,7 +269,8 @@ crystalhd-play --hardware --scale-width 1280 \
   --software-output-size 1920x1080 "/path/to/video-1080p.mp4"
 ```
 
-Updated players also accept [saved player defaults](CONFIGURATION.md#player-defaults).
+**1.3 tools only:** updated players also accept
+[saved player defaults](CONFIGURATION.md#player-defaults).
 Explicit flags override only their corresponding saved setting. Use
 `--scale-width 0 --software-output-size native` to clear saved scale/resize values
 for one invocation; add `--software` for software decoding. The saved file stays intact.
@@ -439,18 +279,13 @@ Expect `Decoder: crystalhddec (hardware; video output confirmed)`, a nonzero
 decoded-video-frame count and playback through the end of the file. Compare
 motion and detail with the native run. For negotiated dimensions, use the
 verbose [GStreamer scaling example](filters/gst/gst-plugin-1.0/README.md#optional-bcm70015-output-scaling).
-To return to native output with saved defaults, use
-`--scale-width 0 --software-output-size native`; without saved scaling defaults,
-omit both options.
+To return to native output on stable 1.2.0, omit both scaling options in a new
+invocation. With 1.3 saved defaults, use
+`--scale-width 0 --software-output-size native`; the `native` reset value is
+1.3-only. Without saved scaling defaults, omit both options.
 
-With the reference host's qualified L0s workaround active, the H.264 High
-stream rose from about 46 to 65 unpaced frames/s with 1280-wide card output.
-Software enlargement back to Full HD retained
-about 64 frames/s and used about 84% of one CPU core. This is useful headroom
-for the measured input, not native 1080p60 detail or a displayed-frame-rate
-guarantee. Other codecs and hosts have different limits; exact throughput and
-quality results are in the
-[hardware report](HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
+Measured examples and their exact source/host boundaries are in the
+[component scaling observations](filters/gst/gst-plugin-1.0/README.md#retained-player-scaling-observations).
 
 `--scale-width` accepts `0` for native output or any even width from 128 through
 1918 that does not exceed the coded width. The card derives an even output
@@ -486,19 +321,9 @@ down; resizing up does not restore detail discarded by the card. Omitting it
 lets the normal video sink fit the smaller decoded image to its window or
 display.
 
-That display-fitting path is the lower-cost choice when an exact Full-HD raw
-buffer is not required. A five-minute H.264 1080i25 development baseline used
-the source-pinned development player with `--scale-width 1280` alone: the card
-returned
-1280x720, Xv accepted 1280x720 UYVY at 50 fields/s, and all 15,000 fields were
-rendered without a QoS drop. The player used 37.02% of one CPU core. Matched
-explicit 1920x1080 enlargement runs used about 84.17% and lost 13 and 10
-fields. Xv's display interpolation is adaptor-dependent and is not claimed to
-be pixel-equivalent to the player's explicit method-4 software enlargement.
-The separate installed-RC2 [30-minute application run](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
-completed 45,000 originals and 90,000 rendered fields with zero drop/QoS,
-natural EOS and mean CPU 37.16% of one core. Neither run measures physical
-scanout cadence.
+Letting the video sink fit the smaller picture avoids the explicit CPU
+enlargement stage. Its interpolation depends on the display adaptor; use
+`--software-output-size` only when you need that exact raw-buffer size.
 
 For this enlargement path, the 1.2 Player can pack pixels at the
 smaller size when its selected Xv output accepts UYVY but not YUY2. This avoids
@@ -506,14 +331,33 @@ repacking a full-size picture on the display thread; no extra option is needed.
 Deinterlacing still receives YUY2. Custom video sinks, Weave and uncertain
 output negotiation retain the previous format choice.
 
-With GStreamer **1.28.2**, the hardware-scaled Player path, with or without an
-explicit host output size, works around a
-confirmed default LINEAR deinterlacer error for YUY2 25-picture/s input and
-50-field/s output. It bypasses that element's entire local QoS cache while
-forwarding unchanged feedback upstream; decoder, resize/conversion and sink
-QoS remain active. Other versions, rates and methods retain stock behavior.
-This is not a guarantee of lossless FHD50 presentation; see the
-[measured limits](HARDWARE-2026-09-13.md#card720--bob--fhd-physical-playback--2026-10-21).
+The matching 1.2 Player automatically handles the documented GStreamer
+1.28.2 YUY2 deinterlacer/QoS case; no extra user flag is needed. Exact
+conditions and limits are in the component observations linked above.
+
+
+## Codec boundaries
+
+This is the tested BCM70015 subset, not every bitstream allowed by each codec
+standard.
+
+| Codec | Validated subset | Important exclusions or limits |
+| --- | --- | --- |
+| H.264/AVC | Selected Constrained Baseline, Main and High through Full HD; selected MBAFF TFF/BFF fixtures | Maximum coded size 1920x1088; no PAFF, pulldown or arbitrary-stream claim |
+| MPEG-2 | Progressive Simple through 720x576, progressive Main through 1920x1088, and selected TFF/BFF/hard-telecine Main fixtures | No broad profile, chroma, DVD-navigation or interlace conformance claim |
+| MPEG-4 Part 2 | Progressive Simple and Advanced Simple levels 3/5 through 1920x1088 | No GMC/sprites, quarter-pixel, interlace, data partitioning or RVLC |
+| VC-1 | Advanced progressive whole-frame/BDU and documented ASF framing | No interlaced/field-picture, pan-scan or range-mapping claim |
+| WMV3 | Standard Simple/Main frame packets | Nonstandard metadata and multi-resolution variants are outside the subset |
+
+HEVC, VP8, VP9 and AV1 are not supported. BCM70012 has no recent physical
+retest: its legacy H.264 path remains, its VA backend rejects the other codecs,
+and MPEG-4 is explicitly rejected by GStreamer. See the GStreamer and
+[VA-API](filters/vaapi/README.md) guides for the full contracts.
+
+Framing and compressed-picture admission limits depend on the frontend. See
+[GStreamer input contracts](filters/gst/gst-plugin-1.0/README.md) or the
+[VA H.264 admission notes](#va-api-h264-admission) when supported-size input
+is rejected. An unsupported file can be played explicitly with `--software`.
 
 ## GStreamer pipelines
 
@@ -582,54 +426,6 @@ with `gst-inspect-1.0 deinterlace`; the
 describes the choices. Remove the `deinterlace ... !` stage for plain Weave;
 do not select `method=weave` as an interpolation filter. For normal playback
 with audio, use the player above or Kodi instead.
-
-## Codec boundaries
-
-This is the tested BCM70015 subset, not every bitstream allowed by each codec
-standard.
-
-| Codec | Validated subset | Important exclusions or limits |
-| --- | --- | --- |
-| H.264/AVC | Selected Constrained Baseline, Main and High through Full HD; selected MBAFF TFF/BFF fixtures | Maximum coded size 1920x1088; no PAFF, pulldown or arbitrary-stream claim |
-| MPEG-2 | Progressive Simple through 720x576, progressive Main through 1920x1088, and selected TFF/BFF/hard-telecine Main fixtures | No broad profile, chroma, DVD-navigation or interlace conformance claim |
-| MPEG-4 Part 2 | Progressive Simple and Advanced Simple levels 3/5 through 1920x1088 | No GMC/sprites, quarter-pixel, interlace, data partitioning or RVLC |
-| VC-1 | Advanced progressive whole-frame/BDU and documented ASF framing | No interlaced/field-picture, pan-scan or range-mapping claim |
-| WMV3 | Standard Simple/Main frame packets | Nonstandard metadata and multi-resolution variants are outside the subset |
-
-HEVC, VP8, VP9 and AV1 are not supported. BCM70012 has no recent physical
-retest: its legacy H.264 path remains, its VA backend rejects the other codecs,
-and MPEG-4 is explicitly rejected by GStreamer. See the GStreamer and
-[VA-API](filters/vaapi/README.md) guides for the full contracts.
-
-The RC4 candidate includes the following admission and recovery guards; the
-immutable `v1.1.0-rc.3` predates them.
-The VA backend has a conservative **2 MiB assembled H.264 access-unit submission
-limit**, including reconstructed headers. Larger units are rejected before
-hardware/replay admission. Rejected reference pictures require a later actual
-IDR before dependent input resumes; rejecting a non-reference B picture does
-not block valid continuation. This policy is not the chip's
-physical maximum, and the separate 8 MiB software allocation bound does not
-establish 8 MiB hardware decoding. Units above 512 KiB require a matching
-libcrystalhd with `DtsProcInputFragment`.
-
-RC5 includes the [bounded admission changes](https://github.com/ahnhy1324/crystalhd/pull/459),
-not present in published RC4. Development controls qualified **3,014,656 bytes**
-for identified BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
-paths retain 2 MiB. With the identified older Flea PES library, complete AUs up
-to **768 KiB** can use a fully reserved legacy call; larger units still need
-the fragment API. This restores the tested original/padded Sintel paths, not
-arbitrary oversized-input recovery or a silicon maximum. Exact tested code
-and headless results are in the [qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18);
-new RC5 package results are tracked in [#430](https://github.com/ahnhy1324/crystalhd/issues/430).
-
-For finite H.264 files, leave LIVE and LOW_LATENCY unset. RC5 automatically
-prefeeds eligible progressive/MBAFF frame pictures and avoids premature EOS
-while a fully submitted large AU is still outstanding. This is bounded
-finite-input handling, not an automatic streaming mode or deinterlacer. A
-genuine large-AU tail may take up to one second of inactivity inside Sync calls
-before EOS; ready output is not deliberately delayed. Explicit LIVE still
-requires subsequent input or an actual context drain for its reordered tail.
-See the [VA replay/EOS contract](filters/vaapi/README.md#replay-and-end-of-stream).
 
 ## VA-API, FFmpeg, Kodi and VLC
 
@@ -714,7 +510,7 @@ frames plus EOS in 33.95 seconds, at 157% process CPU and 325,296 KiB maximum
 RSS. It used `framemd5` and the older runtime; it is not the current null-output
 benchmark or a directly comparable filter-cost measurement.
 On published 1.1.0, `deinterlace_vaapi=mode=bob` is not a substitute: that release
-does not advertise a VA VPP deinterlacing filter. The bounded 1.2 candidate
+does not advertise a VA VPP deinterlacing filter. The bounded stable 1.2
 implementation is described separately in the
 [VA component contract](filters/vaapi/README.md#development-cpu-va-vpp-bob).
 For one progressive BWDIF output per input picture instead, use `mode=send_frame`;
@@ -746,11 +542,19 @@ LIBVA_DRIVER_NAME=crystalhd kodi
 Enable VA-API hardware acceleration in Kodi's video settings. During playback,
 verify both CrystalHD/`ff-h264-vaapi` in Kodi's debug log and an open hardware
 owner with `sudo fuser -v /dev/crystalhd`; the UI setting alone does not prove
-hardware decoding. The installed RC2 matrix later passed qualitative dialogue
+hardware decoding. The installed 1.2.0-rc.2 matrix passed qualitative dialogue
 A/V and controls for 1080p30 progressive and 720i25 Auto/Off; calibrated
 flash/click offset was not measured. Other
 Kodi releases and display backends are not generally qualified; stock Kodi 22
 has the [interlaced compatibility limits above](#known-issues-and-deinterlacing-roadmap).
+
+Current-master centered Off diagnostics under original Kodi22RC1 add selected
+full NV12 seek-target pixels and Stop/natural reopen. The separate progressive
+CPU-copy case confirms that route's selection. A separate observer joins raw
+returned AVFrame PTS, with runtime time bases still unset. These isolated OWN diagnostic builds do
+not qualify all post-copy bytes, interlaced BWDIF, GPU return or release
+compatibility. See the [current observation scope](filters/vaapi/README.md#development-experiment-centered-card-output)
+and [remaining frontend targets](FRONTEND-ACCEPTANCE.md).
 
 For the selected interlaced subset in Kodi 21.3, keep **VAAPI hardware
 acceleration enabled** for CrystalHD decoding. While playing, open the cog
@@ -842,6 +646,95 @@ lifecycle check does not certify cadence or physical A/V.
 Exact fixtures, rates, resource use and A/V qualifications remain in the
 [hardware report](HARDWARE-2026-09-13.md#current-result-matrix).
 
+## Known issues and deinterlacing roadmap
+
+- **Weave is not deinterlacing.** Hardware and software Weave retain both
+  fields, so moving edges can show combing or shaking. Stable 1.2 provides
+  the bounded CPU VA-VPP Bob path; native hardware Bob is not supported.
+  Applications can also apply
+  [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
+  with additional CPU cost; successful decode does not guarantee smooth FHD
+  presentation or calibrated A/V sync.
+- **Kodi interlaced playback is narrowly bounded in stable 1.2.** Off selects
+  Weave; Auto can select the bounded CPU VA-VPP Bob path. Earlier 1.1.0 lacked
+  that filter and could repeatedly probe for it. The selected installed 1.2 RC2
+  matrix with Kodi 21.3 Auto/Off completed decode, recorded A/V controls, seek,
+  natural EOF and reopen; stable reuse applies only to unchanged implementation.
+  Kodi's adaptive `SKIPDEINT` requests omit some second
+  fields, so this is not an uninterrupted 50p or general Kodi 21–23 claim.
+  Atom real-time playback also remains unsupported
+  ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
+  [#429](https://github.com/ahnhy1324/crystalhd/issues/429)). LIVE/LOW_LATENCY
+  remains a separate experimental path.
+- **Known issue: Kodi VAAPI finite-EOF accounting.** In the observed Kodi 21.3
+  output path, a picture can be published before its processed counter is
+  retired. Diagnostic receiver-priority scheduling exposed an approximately
+  two-second drain timeout at natural EOF; the normal-scheduling control
+  reached EOF. Other builds and ordinary-workload frequency remain unverified.
+  This is a scoped Kodi publication/accounting issue; a general VA-API or
+  CrystalHD-driver defect is not established. See
+  [#445](https://github.com/ahnhy1324/crystalhd/issues/445) and the
+  [stock observation](tests/fixtures/issue445/publish-order-observation-20261029.json).
+  The external patch has been removed under
+  [project policy](EXTERNAL-CODE-POLICY.md); historical modified-Kodi results
+  cannot qualify stock compatibility or a release.
+- **Oversized H.264 rejection is containment, not general stream recovery.**
+  Stable 1.2 includes the transport-specific headroom introduced in 1.1 RC5
+  and rejects selected over-budget extended input
+  before submission and preserves a clean reopen; it intentionally rejects
+  some input that previously worked. Exact firmware reclamation remains a
+  measured signed-firmware/configuration limitation; use software decode for
+  rejected content. See the [admission limits](#codec-boundaries).
+- **Legacy client CPU requirements still apply.** On the reporter's Atom N280
+  / i386 / Kodi 22 build, Render Bob (6) crashed with SIGILL in
+  `libsse4-i486-linux.so`. Deinterlace (7) was not separately run on that host;
+  its compatibility is not established. The driver's `LEGACY_CPU=1` build
+  cannot remove ISA requirements from applications or their dependencies.
+
+The remaining work in [#436](https://github.com/ahnhy1324/crystalhd/issues/436)
+targets broader readback/filter integration, field order, cadence and client
+acceptance beyond the selected stable 1.2 scope. Source-qualified no-drift logs
+satisfy A/V acceptance for the exact route; physical cadence/scanout is separate
+research. The existing renderer/QoS policy does not require universal zero loss.
+Hardware deinterlacing remains separate from the published CPU implementation.
+
+Stable `1.2.0` preserves the bounded path qualified for its RC2:
+[CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
+plus the focused completed-source lifetime correction. It is not card-side
+deinterlacing or a general Kodi/Atom playback path.
+
+### VA-API H.264 admission
+
+Stable 1.2 and the 1.3 source inherit the admission/recovery guards introduced
+in `v1.1.0-rc.4`; immutable `v1.1.0-rc.3` predates them.
+For VA-API, the conservative baseline is a **2 MiB assembled H.264 access-unit submission
+limit**, including reconstructed headers. Units beyond the applicable limit
+are rejected before hardware/replay admission. Rejected reference pictures require a later actual
+IDR before dependent input resumes; rejecting a non-reference B picture does
+not block valid continuation. This policy is not the chip's
+physical maximum, and the separate 8 MiB software allocation bound does not
+establish 8 MiB hardware decoding. Units above 512 KiB require a matching
+libcrystalhd with `DtsProcInputFragment`.
+
+RC5 includes the [bounded admission changes](https://github.com/ahnhy1324/crystalhd/pull/459),
+not present in published RC4. Development controls qualified **3,014,656 bytes**
+for identified BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
+paths retain 2 MiB. With the identified older Flea PES library, complete AUs up
+to **768 KiB** can use a fully reserved legacy call; larger units still need
+the fragment API. This restores the tested original/padded Sintel paths, not
+arbitrary oversized-input recovery or a silicon maximum. Exact tested code
+and headless results are in the [qualification summary](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18);
+the completed RC5 package results are retained in [#430](https://github.com/ahnhy1324/crystalhd/issues/430).
+
+For finite H.264 files, leave LIVE and LOW_LATENCY unset. Since RC5, the backend
+automatically prefeeds eligible progressive/MBAFF frame pictures and avoids premature EOS
+while a fully submitted large AU is still outstanding. This is bounded
+finite-input handling, not an automatic streaming mode or deinterlacer. A
+genuine large-AU tail may take up to one second of inactivity inside Sync calls
+before EOS; ready output is not deliberately delayed. Explicit LIVE still
+requires subsequent input or an actual context drain for its reordered tail.
+See the [VA replay/EOS contract](filters/vaapi/README.md#replay-and-end-of-stream).
+
 ## Full-HD PCIe workaround
 
 Consider this only for a repeatable native 1080p30 throughput shortfall or
@@ -928,6 +821,103 @@ bootloader if its command line was changed, then reboot. A reload with explicit
 zeros affects only that load and does not remove saved options. Do not use
 global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 
+## Experimental outputs and diagnostics (1.3)
+
+These are optional source-build features. Ordinary stable 1.2.0 playback uses
+the earlier commands without these output selectors. The complete 1.3.0-rc.2
+source contains the original optional outputs; later master-only additions
+are identified below and do not update the frozen RC2 payloads.
+
+### Experimental Xv output and packed enlargement
+
+`--video-output xv-async` selects the separately built
+[completion-controlled X11 sink](filters/gst/xv-output/README.md). Keep `auto`
+for ordinary output selection. Current master also offers
+`--video-output xv-async --xv-latest-frame`, which intentionally replaces
+unsent pictures under congestion. FIFO remains the default; the retained
+comparison demonstrates no CPU/latency benefit on the selected noncongested route.
+
+`--packed-upscale` selects a separate experimental packing/enlargement stage
+for its exact supported geometry and GStreamer version. Follow the
+[packed-upscale recipe](filters/gst/packed-upscale/README.md) for required flags,
+plugin build and qualification. Neither option is a saved setting or a general
+performance recommendation.
+
+### Experimental GPU field output
+
+The optional 1.3 research Player accepts `--video-output field-gpu` to
+select the explicitly built `crystalhdfieldsink`. It performs GPU nearest Bob
+and display fitting for limited-range YUY2 with BT.601/709 colorimetry, and
+disables playbin's automatic deinterlacing. This requires the research plugin
+and its XCB/EGL/GLES2/GBM/DRM dependencies in an X11 session. It is not part
+of an ordinary install.
+See the [field-output build, invocation and qualification limits](tests/fixtures/issue530/README.md#experimental-window-consumer).
+
+Frozen RC2 provides the original YUY2 field output; set an embedding window
+before READY. Current master later adds local-display admission, setup/response
+deadlines, direct NV12 input and live window replacement. The additions below
+apply to current master, beyond the frozen RC2 implementation.
+
+The default `--video-output auto` keeps the normal output path. The selector is
+per invocation and is not saved by the configuration manager. With `field-gpu`,
+omit `--weave` and use `--software-output-size native` to clear any saved
+software resize; either conflicting request is rejected before playback.
+
+#### Current-master additions
+
+Direct raw-video input additionally accepts explicitly declared limited-range
+NV12 within its [plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).
+The existing CrystalHD hardware Player route continues negotiating YUY2.
+
+Remote/TCP DISPLAY is rejected. Local X11 setup and explicit atom/geometry/
+window-handoff response waits have bounded deadlines. A rejected read-only
+handoff keeps the current attachment; an uncertain mutation instead reports an
+error and closes the worker. These guards do not bound all EGL, startup, resize
+or shutdown work. The [component deadline contract](tests/fixtures/issue530/README.md#x11-response-deadlines-current-implementation)
+records the exact budgets and remaining scopes.
+
+The experimental sink accepts `GstVideoOverlay.set_window_handle()` during
+PLAYING or PAUSED. Keep the new X11 target and its ancestors alive while it is
+selected. After successful synchronous replacement, a previous parent outside
+that ancestry may be destroyed.
+Handle0 restores an owned standalone window. Invalid targets preserve the
+current output; `field-stats` reports `window-handle`, `window-replacements`
+and `window-rejections`. The GL context and retained field imports survive the
+change. This does not broaden format, live-input or physical display claims.
+
+### Optional video-stage trace (development)
+
+For a focused frame-flow investigation with the matching 1.3 native helper,
+request a new JSON file:
+
+```sh
+crystalhd-play --trace-frames /tmp/playback-trace.json "/path/to/video.mp4"
+crystalhd-play --software --trace-frames /tmp/software-trace.json "/path/to/video.mp4"
+```
+
+The output file must not already exist. Tracing is opt-in and can be incomplete;
+records describe pipeline handoffs rather than screen presentation. The
+[component trace contract](filters/gst/gst-plugin-1.0/README.md#player-video-stage-trace)
+explains bounded retention, `--trace-limit`, `--trace-window`, stages, counters
+and interpretation.
+
+### Reading Player output counts
+
+The development Player also reports available video-sink rendered/dropped
+buffer counts before closing. These counters are separate from decoded
+pictures: deinterlacing can produce two output buffers per picture, and seeks
+or state changes can reset sink counters. They are a snapshot before teardown,
+not physical display counts or a new playback pass criterion. A renderer
+without these statistics reports `Video sink statistics: unavailable`.
+
+The development `crystalhd-play` warns once if GStreamer reports dropped video
+buffers. Its decoded-frame counter measures decoder-pad output, not displayed
+frames;
+natural EOS alone does not prove complete presentation. For lower-cost display
+fitting, keep `--scale-width` and omit `--software-output-size`. The
+[measured frame-flow investigation](HARDWARE-2026-09-13.md#player-frame-flow-2026-10-25)
+separates decoder, transform and sink QoS loss from card/firmware failure.
+
 ## Advanced option index
 
 These are not required for ordinary local playback. Their owning component
@@ -948,32 +938,3 @@ setting's owner, default, dependencies, lifetime and safety level.
 Unset experimental variables after a test; do not put them in a login profile.
 The negotiated event-driven VA receive path is automatic and has no user
 tuning switch.
-
-## Troubleshooting and proof of hardware use
-
-The development `crystalhd-play` warns once if GStreamer reports dropped video
-buffers. Its decoded-frame counter measures decoder-pad output, not displayed
-frames;
-natural EOS alone does not prove complete presentation. For lower-cost display
-fitting, keep `--scale-width` and omit `--software-output-size`. The
-[measured frame-flow investigation](HARDWARE-2026-09-13.md#player-frame-flow-2026-10-25)
-separates decoder, transform and sink QoS loss from card/firmware failure.
-
-Start with `crystalhd-check`, then follow the matching symptom. Change one
-setting at a time.
-
-| Symptom | First check and next action |
-| --- | --- |
-| No card or `/dev/crystalhd` | Check device/module/firmware results in `crystalhd-check`; follow [device recovery](BRINGUP.md#device-access-and-module-identity). |
-| Permission denied | Check the access result in `crystalhd-check`; use the documented `video` group/udev setup and sign in again after group changes. See [device access](BRINGUP.md#device-access-and-module-identity). |
-| Device busy | Run `sudo fuser -v /dev/crystalhd` and close the existing owner normally; one card supports one hardware session. Follow [bring-up recovery](BRINGUP.md) if ownership remains after exit. |
-| Loaded and installed versions differ | Follow the [idle reload or reboot procedure](BRINGUP.md#reload-an-idle-device) for the installation method that owns your module. |
-| Plugin missing or from an old checkout | Check `Filename` in `gst-inspect-1.0 crystalhddec`; remove stale `GST_PLUGIN_PATH`/`LD_LIBRARY_PATH` overrides and follow [installation verification](#verify-the-installed-stack). |
-| Unsupported input | Compare the stream's actual codec/profile with [codec boundaries](#codec-boundaries); try the known supported H.264 first-test file or explicit software playback. |
-| Slow native Full-HD output | Choose [smaller card output](#optional-bcm70015-output-scaling) if loss of detail is acceptable, or evaluate the [session-scoped L0s procedure](#full-hd-pcie-workaround) for a repeatable qualifying shortfall. |
-| Black output or a firmware timeout | Stop playback, inspect current-boot kernel messages, and follow [bring-up recovery](BRINGUP.md). For Moonlight, use its [troubleshooting guide](MOONLIGHT.md#troubleshooting). |
-
-After closing a player, `sudo fuser -v /dev/crystalhd` should report no owner
-and `cat /sys/module/crystalhd/refcnt` should report zero. Discovery alone is
-not a decode result; a complete file, EOS and a clean reopen provide the useful
-lifecycle check.

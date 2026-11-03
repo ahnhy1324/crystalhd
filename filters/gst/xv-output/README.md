@@ -6,6 +6,19 @@ negotiated pool. It does not replace GStreamer's installed plugins or change
 `crystalhd-play`'s default output. Hardware decoding still uses `crystalhddec`;
 the output plugin itself works without a CrystalHD card.
 
+Use this page to evaluate the optional output in a matching source build.
+For first playback with the normal installed output, use the
+[Player guide](../../../USAGE.md#play-a-local-file).
+
+The optional FIFO output is included in the 1.3.0-rc.2 source; current master
+adds the later latest-frame and timing experiments described below. Frozen RC2
+assets are not updated by those later results. Read [build/use](#build-and-input-contract),
+[latest-frame policy](#latest-frame-policy), [timing diagnostics](#timing-diagnostics)
+and [validation](#validation-and-retained-qualification) separately. Dated
+qualification and test counts retain the source scope of each receipt.
+
+## Build and input contract
+
 Build with the GStreamer video development package and `xcb`, `xcb-shm`,
 `xcb-xv`, `xau` and `xdmcp` development packages available to `pkg-config`.
 From the source root:
@@ -62,6 +75,8 @@ zero live clears the next-start preference while keeping the active port.
 For example, an embedding application can use `g_object_set(sink, "port",
 port_id, NULL)`. The Player's default output selection is unchanged.
 
+## Latest-frame policy
+
 The experimental `latest-frame` Boolean defaults to `false` (FIFO). Set it
 before starting the sink, for example `g_object_set(sink, "latest-frame",
 TRUE, NULL)`; an active sink rejects changes with a warning. When the ring
@@ -84,6 +99,8 @@ from FIFO. The Player selects it with `--video-output xv-async
 without this property reports an error when the flag is selected. Ordinary
 FIFO playback remains compatible with that plugin. The Player's before-close
 summary reports intentional replacements separately from BaseSink QoS drops.
+
+## Ownership and statistics
 
 The renderer holds one last source buffer independently of BaseSink's
 `enable-last-sample` setting. For negotiated pool memory, both SHM completion
@@ -132,6 +149,8 @@ Request creation includes a subsequent transport-flush failure, so these
 counters do not prove visible or unique frames. Replacements are separate
 from completion errors and BaseSink QoS drops.
 
+## Timing diagnostics
+
 The optional `observe-timing` Boolean defaults to `false`. Set it in NULL/READY
 before output starts; active changes warn and are ignored. With observation
 enabled, `xv-stats` additionally carries these local monotonic observations:
@@ -160,6 +179,8 @@ when its flush fails, the successful residence count can be smaller. Interpret
 these observations with failures, pending requests, terminal retirement and
 intentional replacement counters. There is no ordinary Player CLI option or
 saved setting for this diagnostic.
+
+## Validation and retained qualification
 
 ```sh
 # Device-free checks. The second command opens temporary X11 windows.
@@ -248,6 +269,8 @@ These single-run means/maxima are descriptive local receipt observations,
 not percentiles or a physical-display measurement. Observed maximum57C and
 related kernel errors0 add no broader target/endurance/release acceptance.
 
+### Window, port and setup controls
+
 `/xv/x11/live-window-replacement` owns two mapped windows and delays a real
 SHM completion while replacement waits. It checks the old request identity,
 source IDs/PTS/pixels, new-window pixels, later pool submissions and balanced
@@ -311,7 +334,9 @@ also retains the initial harness failures. PAUSED pixel regression fixtures
 explicitly map their own windows; an SHM ACK/EOS does not prove a window manager
 has made a managed window viewable. No user desktop policy is changed.
 
-The [current qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
+### Earlier playback and endurance observations
+
+The [October26 qualification](../../../HARDWARE-2026-09-13.md#development-per-instance-xv-output--2026-10-26)
 records complete bounded Player controls and a timestamped MP4 error/reopen
 test. A reused GStreamer 1.28.2 H.264 parser can infer incorrect raw-stream
 PTS after NULL; the same failure occurs with software decoding. A test-local
@@ -357,12 +382,15 @@ E2E and native i386 acceptance remain unverified. Short CPU measurements do
 not establish a speedup. [#513](https://github.com/ahnhy1324/crystalhd/issues/513)
 remains open and this component is experimental.
 
-### Current Player integration, 2026-10-30
+<a id="current-player-integration-2026-10-30"></a>
 
-The optional output is integrated with the current rolling stage trace and
-paired decoder finish collector. Player checks pass 125 tests; configuration
+### Historical Player integration, 2026-10-30
+
+At this revision, the optional output is integrated with the rolling stage trace
+and paired decoder finish collector. Player checks pass 125 tests; configuration
 checks classify 39 surfaces with 21 managed keys. The four device-free and
-14 real-X11 component groups pass. Default output selection remains `auto`.
+14 real-X11 component groups pass. These are historical counts, not the current
+suite inventory. Default output selection remains `auto`.
 
 One pre-frozen original-profile PCM/FHD invocation reuses the exact current
 decoder/DIL images and selects `--video-output xv-async`. Actual negotiation

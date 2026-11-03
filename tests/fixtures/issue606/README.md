@@ -1,5 +1,12 @@
 # Natural MPEG-1 holdout, 2026-10-31
 
+The original observation below is the historical pre-frontend HOLD. The
+subsequent [optional-plugin receipt](experimental-codec-20261031.json) records
+scoped experimental support, staged default-policy playback, eight actual
+sink-buffer identities and removal/recovery. All original numerical residuals
+remain unchanged. Current build/use instructions are in the
+[optional MPEG-1 guide](../../../filters/gst/gst-plugin-1.0/MPEG1-EXPERIMENTAL.md).
+
 The receipt records two physical BCM70015 sessions of one independently
 licensed natural clip. All 1,250 pictures and 253,440,000 active YUYV bytes
 repeat exactly. Real container packet/frame PTS is joined through identical
@@ -79,5 +86,3 @@ Normal frontend playback, audio-clock/no-drift logs and any conditional codec
 admission have their own gates in #606. Calibrated physical lip-sync is not
 required under the current acceptance policy. A still comparison or headless
 capture alone does not qualify cadence, scanout, A/V or a public frontend.
-
-The subsequent [optional-plugin receipt](experimental-codec-20261031.json) records scoped experimental support, staged default-policy playback, eight actual sink-buffer identities and removal/recovery. The original observation remains the historical pre-frontend HOLD, with every numerical residual unchanged.

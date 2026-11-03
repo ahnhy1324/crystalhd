@@ -4,6 +4,11 @@
 kernel driver and firmware. This fork preserves its public headers and ABI
 while updating the build and installation layout for current Linux systems.
 
+This page is for legacy-API client developers. For playback, use
+[`crystalhd-play`](../../USAGE.md#play-a-local-file); for a complete installation,
+follow the [runtime guide](../../README.md#quick-start). Applications should
+normally use the installed library rather than a private test build.
+
 CI freezes the native/compat ioctl layouts and exercises the TX ring,
 flush/cancellation, EOS, AVC1 framing and raw-copy error paths without
 hardware. These checks are not comprehensive device-API conformance. New
@@ -88,7 +93,7 @@ ffprobe -v error -select_streams v:0 -count_frames \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
   tests/library-drain-test --preflight "/path/to/video.h264" 30
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-  timeout --kill-after=10s 60s \
+  timeout --signal=TERM 60s \
   tests/library-drain-test --hardware "/path/to/video.h264" 30 35
 ```
 
@@ -119,9 +124,11 @@ input are rejected.
 Fixtures are limited to 64 MiB, 10,000 pictures and 1920x1088; each packet plus
 framing must fit the transmit ring.
 The in-process timeout defaults to 30 seconds and accepts at most 300. Keep an
-external timeout because blocked ioctls or device close cannot be interrupted
-by the probe's deadline. The probe does not load or replace the module and is
-not part of `make check`. For hardware results, use the
+external TERM timeout because blocked ioctls or device close can exceed the
+probe's deadline. If the owner survives TERM, preserve its PID, logs and owned
+resources; stop new media and use the normal recovery procedure. Do not escalate
+to SIGKILL or unload underneath it. The probe does not load or replace the
+module and is not part of `make check`. For hardware results, use the
 [hardware report](../../HARDWARE-2026-09-13.md).
 
 ## Raw YUY2 copy contract

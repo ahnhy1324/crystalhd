@@ -1,5 +1,23 @@
 # Rebuild the unchanged native FFmpeg runtime
 
+Use this recipe to reproduce the FFmpeg libraries in the frozen 1.3 RC2
+companion from its pinned inputs and measured toolchain. To use the prebuilt
+libraries, follow the [delivery guide](NATIVE-RUNTIME-DELIVERY.md). For ordinary
+local-file playback, start with [everyday usage](USAGE.md).
+
+Start from the extracted native companion, which supplies the `materials/`
+and `tools/` directories used below. Preserve its pinned sources; current
+master and newer dependencies describe different artifacts.
+
+Install ordinary build tools separately: GNU make4.4.1, GCC15.2.0
+Ubuntu15.2.0-16ubuntu1, binutils2.46, NASM3.01, pkg-config and headers/libraries
+libdrm2.4.131, libva pkg-config1.23.0 (libva2.23.0), zlib1.3.1 for the recorded
+reproduction environment. These are compile-time Ubuntu inputs; they differ
+from the target Platform providers documented in SUPPORT. A different
+toolchain may produce different ELF bytes and needs its own qualification.
+The runtime contains no compiler binaries. Selecting its prebuilt FFmpeg
+libraries does not require a compiler.
+
 Verify the outer SHA256SUMS first. Extract the source and its separately
 supplied independent Git metadata into new writable work directories:
 
@@ -18,14 +36,6 @@ Expected revision is `12cc1f42f06ff0e85633c2602c96786fbd280b70`, tree
 archive is unchanged. Its added Git companion contains no remote, alternate,
 promisor, hooks or host-checkout dependency. Offline reconstruction was checked
 with network disabled and the original checkout absent.
-
-Install ordinary build tools separately: GNU make4.4.1, GCC15.2.0
-Ubuntu15.2.0-16ubuntu1, binutils2.46, NASM3.01, pkg-config and headers/libraries
-libdrm2.4.131, libva pkg-config1.23.0 (libva2.23.0), zlib1.3.1 for the recorded
-reproduction environment. These are compile-time Ubuntu inputs; they differ
-from the target Platform providers documented in SUPPORT. A different
-toolchain may produce different ELF bytes and needs its own qualification.
-No compiler binaries are included in the runtime or required at activation.
 
 With NASM3.01 on PATH, use new absolute, disjoint build/prefix paths:
 

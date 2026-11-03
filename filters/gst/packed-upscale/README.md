@@ -1,11 +1,18 @@
 # Optional packed enlargement
 
+This is a separately built 1.3 experiment for the exact path below. For
+ordinary playback or a simpler smaller-output choice, start with the
+[Player guide](../../../USAGE.md#play-a-local-file) and
+[card scaling recipe](../../../USAGE.md#optional-bcm70015-output-scaling).
+
 `crystalhdpackedscale` fuses YUY2 packing and method4 enlargement for the explicit
 progressive1280x720/PAR1/50Hz to UYVY1920x1080/PAR1/50Hz path. It is rank NONE
 and requires GStreamer1.28.2. The normal Player path remains independently
 selectable. Unsupported formats, rates, geometry, color conversion, multiview,
 interlacing and spatial metadata are rejected; there is no automatic fallback.
 Input and output must have the same resolved colorimetry and chroma site.
+
+## Build and select
 
 Build and check from the repository root:
 
@@ -30,6 +37,8 @@ and one persistent worker compute disjoint output stripes. Other GStreamer
 versions pass only the CPU check of version rejection; they do not receive a
 pixel or runtime qualification.
 
+## Processing and ownership contract
+
 The engine uses public GstVideoScaler coefficients and the same Q6 horizontal
 rounding as the qualified stock path. Setup rejects coefficients that cannot
 prove exact integer normalization. A table-verified3:2 periodic kernel uses
@@ -52,6 +61,8 @@ output-pack buffer or fabricated measurement. Read-only properties `method`,
 `n-threads`, `simd-active` and `frames` describe the fixed method, current or
 last negotiated dispatch and successful lifetime transforms. These are not
 physical display counters.
+
+## Validation and qualification
 
 CPU checks compare36 stock/candidate frames over three restart cycles, exact
 pixels/timing/offsets/flags, flush/new segment/EOS, padded offsets/strides with

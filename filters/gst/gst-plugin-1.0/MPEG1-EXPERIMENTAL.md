@@ -1,7 +1,9 @@
 # Optional experimental MPEG-1
 
-This unreleased research-branch feature is **experimental MPEG-1 decoding via
+This optional feature is **experimental MPEG-1 decoding via
 the MPEG-2 algorithm-1 path, natural-content hardware qualified on BCM70015**.
+Its source is included in the complete 1.3.0-rc.2 candidate and current master;
+it remains separately built and default-off. Stable 1.2.0 does not contain it.
 It is separate from official/vendor documented support and generalized MPEG-1
 conformance. The qualified scope is progressive352x288/25, not BCM70012,
 other sizes/rates, interlacing or arbitrary damaged streams.
@@ -53,8 +55,8 @@ sudo make -C filters/gst/gst-plugin-1.0 uninstall-experimental-mpeg1
 ```
 
 Use the same `PLUGINDIR`/`DESTDIR` used for installation. The ordinary plugin
-and default player remain available. Existing releases do not gain this
-feature merely because this research branch contains it.
+and default player remain available. Installing the ordinary runtime does not
+install this separate plugin, even from a source version that contains it.
 
 The [natural holdout receipt](../../../tests/fixtures/issue606/observation-20261031.json)
 records two identical1250-picture captures, true AU/picture/PTS association,

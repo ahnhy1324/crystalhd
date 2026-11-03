@@ -4,6 +4,18 @@
 small C11 metadata source model. It does not open a device, start Kodi, attach a
 tracer or change a module, installed file or external application.
 
+This is a chronological evidence record, not the current installation guide.
+The original heap-only follow-up remains excluded; #538's picture/metadata
+work stays open. Start with the dated sections for [fresh colour captures](#fresh-controlled-captures-on-2026-10-29),
+[one actual EXPBUF image](#one-actual-captureexpbuf-active-image--2026-10-30),
+[full-range/transition checks](#full-range-and-same-size-transitions--2026-11-02)
+and [multi-slice/actual-B checks](#progressive-multi-slice-and-actual-b-checks--2026-11-02).
+Old module identities and promotion/NOT RUN statements below describe those
+revisions; current companion scope belongs to
+[native runtime acceptance](../../../NATIVE-RUNTIME-ACCEPTANCE.md).
+
+## Original retained capture analysis — 2026-10-29
+
 The [retained observation](native-picture-observation-20261029.json) is an
 offline analysis of existing 2026-10-27 native Kodi 22 captures. It preserves the
 original route qualification separately from this new colour check:
@@ -202,7 +214,7 @@ The original BT709 fixtures and independent RGB oracle are published at
 master commit `04fb4654924717617cccba367ee3bab49114f30a` under this fixture
 directory and `tests/native-picture-oracle.py`. Earlier colour failures and
 the excluded shutdown heap investigation remain historical evidence. Issue538
-stays open; this research fix does not promote the native backend to master or
+stays open; that research qualification did not promote the native backend to master or
 establish complete playback or physical presentation acceptance.
 
 ## One actual CAPTURE/EXPBUF active image — 2026-10-30
@@ -308,7 +320,9 @@ First verify whole input/oracle/raw hashes against the receipt. The full metadat
 replay also uses the pinned private observer ABI/reader and continuous A/B traces;
 CRC/image replay alone does not reconstruct the lease proof or a new hardware run.
 
-Actual full-scale Kodi720p/FHD and same-size range transitions (2026-11-02)
+## Full-range and same-size transitions — 2026-11-02
+
+Actual full-scale Kodi720p/FHD and same-size range transitions
 are recorded in [the Kodi receipt](kodi-fullscale-20261102.json) and
 [the transition receipt](same-size-range-staging-20261102.json). The former
 contains both original/corrected-module batches, source extrema and sampled
@@ -358,6 +372,8 @@ textures return at error0. The strict exit1 is the expected reproduction of
 this measured failure, never a PASS. Other implementations can return0 if
 every RGB check passes. Kodi's actual NARROW import logs and the independent
 native90-picture point/raw/GPU controls retain their separate attribution.
+
+## Progressive multi-slice and actual-B checks — 2026-11-02
 
 [Progressive POC2 multi-slice qualification](progressive-multislice-range-20261102.json)
 adds real two/four-slice limited/full sources, independent software YUYV,

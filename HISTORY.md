@@ -1,6 +1,24 @@
 # History
 
-## 1.3.0-rc.2 — integration candidate
+This is the release and development chronology. Candidate gates and future-work
+statements under an older version describe that checkpoint; use
+[current work](TODO.md) for today's queue and the
+[documentation index](DOCUMENTATION.md) for the evidence map. Published
+identities and historical failures retain their original qualification scope.
+
+## Development after the frozen RC2
+
+Later master work includes the isolated centered-output diagnostic sequence:
+Off EOF/reopen, selected seek-target NV12, actual returned raw-PTS bindings and
+progressive Off CPU-copy/readback. The [completion summary](TODO.md#completed-baselines)
+links the distinct receipts, initial failures and remaining limits. These
+private observations do not qualify normal-backend stock compatibility or a
+release; BWDIF/29.97, post-copy full-frame pixels and GPU return remain separate.
+The published RC2 tag and assets have not been rebuilt from current master.
+
+<a id="130-rc2--integration-candidate"></a>
+
+## 1.3.0-rc.2 — published integration candidate
 
 Bundle `1.3.0-rc.2` / module-DKMS `3.10.17` combines the maintained runtime,
 PTS-epoch diagnostics, native V4L2 colour/format/EXPBUF work and explicit
@@ -9,16 +27,22 @@ preflight and slot install/update/rollback/removal contracts. Previously omitted
 native adapter, TX-wrap and field-output build/contracts join automated checks.
 The neutral-prefix private build helper and its 13 existing controls are also
 restored. Package17 preserves the already registered package16 source unchanged.
-Qualification remains in progress; this entry does not announce publication
-or promote optional backends. External application code, firmware and the
-legacy ABI are unchanged.
+Published on 2026-11-02 with all 13 public assets frozen. The agreed
+current-equipment qualification and separately identified
+[native companion delivery](NATIVE-RUNTIME-DELIVERY.md) are complete; the
+[complete claim map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
+records exact sources and evidence-reuse boundaries. Stable 1.3 promotion
+remains deferred, and this candidate does not promote optional backends.
+External application code, firmware and the legacy ABI are unchanged.
 
 ## 1.3.0-dev.1 — unreleased
 
-Development package `3.10.14` is separate from published `1.2.0` / `3.10.13`.
-RX bounds, optional output-aware backing and finite decoded-write performance
-follow-up remain tracked in #470/#471. They require their own qualification;
-this development identity is not a release or a new support claim.
+This historical development package `3.10.14` preceded the complete RC2 and
+was separate from published `1.2.0` / `3.10.13`. RX bounds, optional
+output-aware backing and finite decoded-write performance follow-up were
+tracked in #470/#471 with their own qualification; this development identity
+was not a release or a new support claim. Current #470 work and #471's later
+bounded closure are recorded in [TODO.md](TODO.md).
 
 - Report actual video QoS drops once in `crystalhd-play`; decoded output and
   natural EOS are not a displayed-frame count. Playback policy is unchanged.

@@ -1,18 +1,14 @@
 # CrystalHD VA-API driver
 
+Use this page for FFmpeg/libva setup or VA client development. For ordinary
+local playback, start with [`crystalhd-play`](../../USAGE.md#play-a-local-file);
+for Kodi settings, use the [Kodi instructions](../../USAGE.md#kodi).
+
 This backend exposes H.264 decoding through the standard VA-API VLD interface,
 with bounded MPEG-2 Simple/Main, progressive MPEG-4 Part 2 Simple/Advanced Simple,
 standard WMV3 Simple/Main and VC-1 Advanced support on BCM70015. BCM70012
 retains its H.264 path but is not recently hardware-validated; the other
 codecs are rejected on that device.
-The backend accepts VA-allocated NV12 surfaces and imported
-linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
-also allocates packed BGRA output and exports DRM ARGB8888 surfaces for clients
-whose compositor cannot render NV12 directly. New VA clients should select
-`VA_FOURCC_BGRA`, which describes the actual B/G/R/A byte order. The historical
-`VA_FOURCC_ARGB` storage alias and default selection remain for compatibility;
-that alias is not a claim of standard A/R/G/B byte order.
-
 This is an experimental, client-oriented VA-API subset rather than a complete
 VA-API implementation. See the [hardware report](../../HARDWARE-2026-09-13.md)
 for tested BCM70015 profiles, resolutions, throughput, pixel comparisons and
@@ -22,6 +18,46 @@ playback baseline. DRM PRIME import/export and VPP smoke tests do not themselves
 exercise CrystalHD hardware, and no libva conformance suite is run.
 For the separately characterized live-stream integration, see the top-level
 [Moonlight/Sunshine guide](../../MOONLIGHT.md).
+
+This guide describes current maintained source, with version boundaries called
+out below. Stable 1.2.0 uses module 3.10.13; the frozen complete 1.3.0-rc.2
+candidate uses module 3.10.17. Later diagnostic receipts on master do not
+requalify that candidate. See [release identities](../../RELEASING.md).
+
+- [Decode subset](#supported-decode-subset), [Bob](#v12-cpu-va-vpp-bob) and
+  [replay/EOS](#replay-and-end-of-stream) define the client contract.
+- [Surface/export](#surface-and-export-contracts) covers image/VPP ownership;
+  [centered output](#development-experiment-centered-card-output) is an opt-in experiment.
+- [Build](#build-and-basic-decode), [hardware stress](#hardware-stress) and
+  [seek probes](#seek-flush-and-retained-frames) describe separate validation routes.
+
+## Build and basic decode
+
+For an installed build, choose one of the render nodes reported by
+`crystalhd-check`, then verify driver discovery without source-tree paths:
+
+```sh
+drm_node=/dev/dri/renderDXXX
+LIBVA_DRIVER_NAME=crystalhd \
+vainfo --display drm --device "$drm_node"
+```
+
+This proves libva discovery and initialization, not compressed-stream decode.
+If the machine has multiple render nodes, select the display GPU explicitly.
+
+Decode a known supported progressive H.264 file through the installed driver:
+
+```sh
+LIBVA_DRIVER_NAME=crystalhd \
+ffmpeg -hwaccel vaapi -hwaccel_device "$drm_node" \
+  -hwaccel_output_format vaapi -i video.mp4 \
+  -vf hwdownload,format=nv12 -f null -
+```
+
+Use the actual render node reported above and replace `video.mp4` with your
+file. A completed decode is separate from GUI/audio compatibility. For Kodi,
+follow the [application setup](../../USAGE.md#kodi). Developers using a private
+build should use the [source-tree instructions](#source-tree-build-and-checks).
 
 ## Supported decode subset
 
@@ -218,6 +254,8 @@ at 60 Hz and 1,475/1,500 at 50 Hz because adaptive `DROP_ANY`/`SKIPDEINT`
 omits some second-field VPP calls. This does not qualify uniform displayed 50p
 or general FHD Auto playback.
 
+### Retained Kodi Bob observations
+
 The following source-pinned development results retain their original scope;
 RC1's separate installed Kodi result remains HOLD. The selected 30-second FHD
 development control has Auto commit
@@ -226,7 +264,7 @@ EOF and return resources cleanly; see the source-pinned hardware report above.
 In those source-pinned builds, previously exported targets awaiting decode
 complete synchronously within the existing bounded wait when safe fence setup
 is unavailable, rather than publishing an unfenced asynchronous write.
-In unreleased builds, strictly driver-owned NV12 Bob targets exported only
+In the 1.3 implementation, strictly driver-owned NV12 Bob targets exported only
 read-only can remain VA-pending; external readers must call `vaSyncSurface`
 before reading. Imported aliases and writable exports retain the existing
 fence or synchronous-completion path. No root/debugfs permission change
@@ -300,9 +338,9 @@ are discarded without changing immutable client pixels. H.264 access-unit
 delimiters are placed first in their timestamped packet so they cannot shift
 firmware timestamp association.
 
-The published RC4 candidate includes the following admission/recovery guards; the
-immutable `v1.1.0-rc.3` predates them.
-Its VA backend submits at most **2 MiB per assembled H.264 access unit**,
+Stable 1.2 and the 1.3 source inherit the admission/recovery guards introduced
+in `v1.1.0-rc.4`; immutable `v1.1.0-rc.3` predates them. Their conservative
+baseline is **2 MiB per assembled H.264 access unit**,
 including its reconstructed headers. This is a conservative submission policy,
 not the physical chip maximum: [#442](https://github.com/ahnhy1324/crystalhd/issues/442)
 reported session-wide output loss at 3,112,960 bytes, while primary BCM70015
@@ -321,7 +359,7 @@ this qualified headroom and failed-public-read protection do not establish
 generic out-of-policy recovery or the chip's physical maximum. Previously
 accepted private pictures remain independent of a rejected public transaction.
 
-A [new RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
+A [retained RC5 reporter result](https://github.com/ahnhy1324/crystalhd/issues/468)
 finds some real B-pyramid input failing below that admitted byte limit, although
 the synthetic boundary fixture passes. The limit is not a guarantee for every
 stream. Installed-v1.1.0 observations identify an input-retention limitation:
@@ -412,7 +450,7 @@ selected retained tail without sealing live input or changing reference pictures
 Only one auxiliary can be outstanding, and explicit context close still drains
 its firmware EOS obligation. Other syntax and non-Bob requests retain the existing
 wait/drain policy; this is not a general EOF detector or a new user option.
-In unreleased development builds, eligible ordinary H.264 Bob requests also use
+In the 1.3 implementation, eligible ordinary H.264 Bob requests also use
 this lookahead with LIVE unset and automatic or explicit prefeed enabled.
 This avoids repeatedly sealing and replaying the stream to complete a field.
 Explicit `CRYSTALHD_VAAPI_LIVE_H264=0`, or disabled prefeed with LIVE unset,
@@ -441,7 +479,7 @@ live mode do not gain automatic prefeed. Set
 Automatic progressive prefeed and the large-AU grace above are RC5 changes;
 earlier RC4 only automatically prefed the eligible finite MBAFF subset.
 They do not implement general out-of-policy recovery, physical A/V timing or
-deinterlacing. Exact RC5 package qualification is tracked in
+deinterlacing. Exact RC5 package qualification is recorded in
 [#430](https://github.com/ahnhy1324/crystalhd/issues/430); earlier development
 measurements retain their original source identities.
 
@@ -501,7 +539,7 @@ but individual firmware calls and cleanup can extend wall time. An infinite
 picture. Completed decode surfaces survive context removal; destroyed or reused
 surfaces and canceled VPP epochs report errors.
 
-In the unreleased 1.3 backend, `vaSyncSurface2(..., 0)` is a passive query:
+In the 1.3 backend, `vaSyncSurface2(..., 0)` is a passive query:
 mutex contention returns `VA_STATUS_ERROR_TIMEDOUT` without inspecting or
 changing surface state. Even an invalid surface ID can therefore time out
 until admitted. Decoder-context destruction also waits for the worker's
@@ -509,6 +547,14 @@ borrowed output-poll descriptors to retire. `VA_STATUS_ERROR_HW_BUSY` retains
 ownership and permits a subsequent, non-overlapping destruction retry.
 
 ## Surface and export contracts
+
+The backend accepts VA-allocated NV12 surfaces and imported
+linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
+also allocates packed BGRA output and exports DRM ARGB8888 surfaces for clients
+whose compositor cannot render NV12 directly. New VA clients should select
+`VA_FOURCC_BGRA`, which describes the actual B/G/R/A byte order. The historical
+`VA_FOURCC_ARGB` storage alias and default selection remain for compatibility;
+that alias is not a claim of standard A/R/G/B byte order.
 
 Decode targets may be VA-allocated NV12 surfaces or imported linear or
 GBM-mappable DRM PRIME NV12 surfaces. CrystalHD YUY2 output is converted into
@@ -564,7 +610,7 @@ is a separate, opt-in H.264 path described below; omission or
 `VA_DEC_PROCESSING_NONE` retains ordinary decode. Separate VPP/Bob does not
 implicitly enable the card scaler.
 
-Unreleased 1.3 VPP accepts standard `VA_FILTER_SCALING_FAST` as well as
+The 1.3 VPP implementation accepts standard `VA_FILTER_SCALING_FAST` as well as
 DEFAULT; both select the existing nearest-neighbor kernel. For a built
 1.3 driver selected through `LIBVA_DRIVERS_PATH`, stock FFmpeg can use
 `scale_vaapi=w=1280:h=720:mode=fast` with NV12 output. This is host VPP,
@@ -586,15 +632,15 @@ On the 1.2 implementation, VPP/Bob honors declared full-range NV12 for
 ARGB conversion; UNKNOWN input retains the existing limited-range interpretation.
 NV12 output preserves the input range, with range-correct black padding.
 Explicit NV12 range changes and reduced-range ARGB output are rejected.
-Unreleased 1.3 ordinary VPP additionally accepts BT.601 or BT.709 input with
-the same output standard, or `None` output to inherit it. NV12→ARGB uses the
+The 1.3 ordinary VPP implementation additionally accepts BT.601 or BT.709 input
+with the same output standard, or `None` output to inherit it. NV12→ARGB uses the
 declared matrix; NV12→NV12 preserves samples. `None` input retains the existing
 BT.601 interpretation. Changing standards, explicit color properties,
 primaries/transfer conversion and selectable chroma-site conversion remain
 unsupported; this is not general color management. Decode-integrated scaling
 retains its existing `None`-only color-standard contract.
 RGB output requires a VPP config permitting `VA_RT_FORMAT_RGB32` and a compatible
-pixel format. The default config permits RGB. Unreleased 1.3 also exposes
+pixel format. The default config permits RGB. The 1.3 implementation also exposes
 `VA_FOURCC_BGRA` output plus packed BGRA images for `vaGetImage`, `vaPutImage`
 and `vaDeriveImage`, retaining the usual synchronization and write leases.
 Image transfers copy matching NV12 or BGRA formats; use VPP for conversion.
@@ -602,8 +648,8 @@ Reduced-range RGB remains unsupported: for example, stock FFmpeg VPP needs
 `scale_vaapi=format=bgra:mode=default:out_range=full` before
 `hwdownload,format=bgra`. The legacy ARGB alias's image restrictions remain.
 
-Unreleased 1.3 Bob also accepts an NV12 destination rectangle at even X and
-Y divisible by four, keeping the source origin at zero. For example, a
+The 1.3 Bob implementation also accepts an NV12 destination rectangle at even
+X and Y divisible by four, keeping the source origin at zero. For example, a
 1280×720 source can fill `{320, 180, 1280, 720}` on a 1920×1080 target without
 enlargement; the remaining visible canvas is range-correct black. This does
 not implicitly enable card scaling or alter stock Kodi's full-frame requests.
@@ -623,7 +669,7 @@ rejected, reused or destroyed bindings. Clients must check VA surface status
 and must not treat fence signaling alone as proof
 of valid pixels. Never-exported internal targets use VA synchronization and
 ordinary CPU cache synchronization, without requiring a `sw_sync` timeline.
-Unreleased builds also allow strictly driver-owned, read-only-exported NV12
+The 1.3 implementation also allows strictly driver-owned, read-only-exported NV12
 Bob targets to remain VA-pending until `vaSyncSurface` completes. Imported or
 aliased targets and writable exports retain their existing fence or synchronous
 path; ARGB is rendered privately before the final copy. A canceled or failed
@@ -689,8 +735,9 @@ The explicit test-only [centered payload observer](../../tests/vaapi-centered-pa
 has a separate build/output and never replaces the installed backend.
 [Current-host Off observations](../../tests/fixtures/issue477/centered-off-20261103.json)
 cover two natural EOFs/reopen and four full NV12 ROI/black-border samples under
-original stock Kodi22RC1. They do not establish actual media PTS, GPU-reader
-return, physical presentation, normal-backend compatibility or release quality.
+original stock Kodi22RC1. That receipt alone does not establish actual media
+PTS, GPU-reader return, physical presentation, normal-backend compatibility
+or release quality.
 
 The initial [progressive centered control case](../../tests/fixtures/issue477/centered-controls-20261103.json)
 adds a source-barcode forward seek, requested Stop and same-process natural
@@ -707,6 +754,16 @@ natural reopen captures90/91 again. The explicit private selector reads its
 mode once and does not alter default sampling. It cannot identify a failed
 acquisition before content is readable. Actual reset and handoff PTS/GPU/scanout
 qualification remain outside these observations.
+
+The later [receive-frame observation](../../tests/fixtures/issue477/centered-frame-pts-20261103.json)
+joins actual returned AVFrame raw PTS to OWN bindings, including selected
+source90/91. Runtime time bases are unset (`0/1`), so source-clock seconds
+remain unobserved. The [progressive Off CPU-copy case](../../tests/fixtures/issue477/centered-cpu-copy-20261103.json)
+also confirms the original readback/postprocessor route per play, full selected
+pre-copy NV12 and downstream content barcodes across seek/Stop/reopen.
+All post-copy YUV bytes, 1080i29.97 BWDIF, GPU return and normal-backend/release
+acceptance remain unqualified. The [protocol](../../tests/vaapi-centered-payload-protocol.md)
+keeps these observation boundaries separate.
 
 <a id="development-decode-integrated-card-scaling"></a>
 
@@ -961,19 +1018,7 @@ with:
 sudo make uninstall-browser
 ```
 
-## Build and basic decode
-
-For an installed build, choose one of the render nodes reported by
-`crystalhd-check`, then verify driver discovery without source-tree paths:
-
-```sh
-drm_node=/dev/dri/renderDXXX
-LIBVA_DRIVER_NAME=crystalhd \
-vainfo --display drm --device "$drm_node"
-```
-
-This proves libva discovery and initialization, not compressed-stream decode.
-If the machine has multiple render nodes, select the display GPU explicitly.
+## Source-tree build and checks
 
 For a source-tree test, build and inspect the driver from the repository root:
 
@@ -1051,7 +1096,7 @@ packages, then build the optional probe:
 make -C filters/vaapi seek-test
 LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-timeout --kill-after=10 120s filters/vaapi/vaapi-seek-test \
+timeout --signal=TERM 120s filters/vaapi/vaapi-seek-test \
   /tmp/crystalhd-samples/high.mp4
 ```
 
@@ -1080,8 +1125,10 @@ The default synchronous test requires hardware frames, drains a complete
 reference decode, then compares NV12 pixel SHA-256 and PTS after forward and
 backward seeks and decoder flushes, including a flush with reordered pictures
 pending. `--software` is an explicitly labelled self-check of the probe, not
-CrystalHD validation. Keep the external timeout because firmware calls and
-cleanup can exceed an in-process polling deadline.
+CrystalHD validation. Keep the external TERM timeout because firmware calls
+and cleanup can exceed an in-process polling deadline. If the owner survives
+TERM, retain its PID, logs and resources and stop new media. Follow normal
+recovery; do not escalate to SIGKILL or unload underneath it.
 
 Append `--lookahead 8` for a pipelined-client check: it retains eight future
 output frames before downloading the oldest, leaving an undownloaded suffix at
@@ -1100,7 +1147,7 @@ H.264 MP4 with a declared frame count:
 make -C filters/vaapi seek-test
 LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-timeout --kill-after=5s 210s filters/vaapi/vaapi-seek-test video.mp4 \
+timeout --signal=TERM 210s filters/vaapi/vaapi-seek-test video.mp4 \
   --export-prime --retain-old-frames
 ```
 
