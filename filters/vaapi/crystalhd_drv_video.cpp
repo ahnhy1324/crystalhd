@@ -86,13 +86,16 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #include "crystalhd-wmv3.h"
 #include "crystalhd-vpp-bob.h"
 
-#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD) || defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
 #include "../../tests/vaapi-vpp-payload-observer.h"
 #define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) \
   (surface)->payload_observer_stamp.Installed()
 #else
 // Test diagnostics have no runtime knob, state, arguments or copies here.
 #define CRYSTALHD_TEST_STORAGE_INSTALLED(surface) do {} while (false)
+#endif
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+#include "../../tests/vaapi-centered-payload-observer.h"
 #endif
 
 #if defined(__GNUC__)
@@ -547,7 +550,7 @@ static bool IsBgraStorageFormat(uint32_t fourcc) {
 }
 
 struct Surface {
-#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD) || defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   crystalhd_test_vpp_payload::Stamp payload_observer_stamp;
   bool payload_observer_is_view = false;
   crystalhd_test_vpp_payload::Geometry payload_observer_view_geometry;
@@ -1434,6 +1437,12 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
         canvas->pitch[plane] < canvas->width || small->pitch[plane] < small->width)
       return false;
   }
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  auto *centered_observer = crystalhd_test_centered_payload::active;
+  auto *centered_slot = centered_observer
+      ? centered_observer->Select(picture, *canvas, *small, compact, decoded_public)
+      : nullptr;
+#endif
   if (!small->BeginCpuRead())
     return false;
   bool used_i915_wc = false;
@@ -1463,9 +1472,17 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       }
     }
   }
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (centered_observer)
+    centered_observer->CaptureCompose(centered_slot, *small, *canvas);
+#endif
   const bool committed = decoded_public
       ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();
   const bool released = small->EndCpuRead();
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (centered_observer)
+    centered_observer->EndCompose(centered_slot, committed, released);
+#endif
   if (!committed || !released)
     return false;
   canvas->ready = true;
@@ -2676,7 +2693,7 @@ struct VppPixelView : Surface {
   ~VppPixelView() { object_fds.clear(); }
   void Capture(const std::shared_ptr<Surface> &surface) {
     allocation = surface;
-#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
+#if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD) || defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
     // A borrowed snapshot identifies its pinned allocation, not the view.
     payload_observer_stamp = surface->payload_observer_stamp;
     payload_observer_is_view = true;
@@ -2766,6 +2783,9 @@ static void RunDecodeWorker(Driver *driver);
 static void RunVppWorker(Driver *driver);
 
 struct Driver {
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  std::shared_ptr<crystalhd_test_centered_payload::State> centered_payload_observer;
+#endif
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
   std::shared_ptr<crystalhd_test_vpp_payload::State> payload_observer;
 #endif
@@ -2810,6 +2830,16 @@ struct Driver {
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
             crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+    if (trace.enabled()) {
+      try {
+        centered_payload_observer.reset(
+            new (std::nothrow) crystalhd_test_centered_payload::State(trace.session()));
+      } catch (const std::bad_alloc &) {
+        // Private diagnostic failure does not change ordinary initialization.
+      }
+    }
+#endif
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
     if (trace.enabled()) {
       try {
@@ -4059,6 +4089,11 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination,
     source.EndCpuRead();
     return false;
   }
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  auto *centered_observer = crystalhd_test_centered_payload::active;
+  auto *centered_slot = centered_observer && purpose == CopyPurpose::DecodedPublic
+      ? centered_observer->SelectPublic(source, *destination) : nullptr;
+#endif
   if (width < destination->width)
     for (unsigned int row = 0; row < height; ++row)
       memset(destination->planes[0] + static_cast<size_t>(row) * destination->pitch[0] + width,
@@ -4088,10 +4123,18 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination,
            source.planes[1] + static_cast<size_t>(row) * source.pitch[1],
            width);
   }
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (centered_observer)
+    centered_observer->CapturePublic(centered_slot, *destination);
+#endif
   const bool committed = purpose == CopyPurpose::DecodedPublic
       ? destination->EndDecodedCpuWrite(used_i915_wc)
       : destination->EndCpuWrite();
   const bool released = source.EndCpuRead();
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (centered_observer)
+    centered_observer->EndPublic(centered_slot, committed, released);
+#endif
   if (!committed || !released)
     return false;
   return true;
@@ -4584,6 +4627,10 @@ static CrystalHDDecodeReplay::Output InspectInterlacedOutput(
 static VAStatus ProcessDecodedOutputImpl(
     Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &reported,
     OutputProcessingState *processing) {
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  crystalhd_test_centered_payload::Scope centered_scope(
+      driver->centered_payload_observer.get());
+#endif
   if ((reported.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0)
     return FailDecode(driver, decode, "encrypted output is unsupported");
   BC_DTS_PROC_OUT output = reported;
@@ -5009,6 +5056,11 @@ static VAStatus ProcessDecodedOutputImpl(
     driver->trace.Emit(crystalhd_vaapi_trace::Event::Materialized,
                        TraceFields(decode, materialized,
                                    output.PicInfo.timeStamp));
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+    if (driver->centered_payload_observer)
+      driver->centered_payload_observer->Materialized(
+          TraceFields(decode, materialized, output.PicInfo.timeStamp));
+#endif
   }
   if (!current_picture) {
     const auto remaining =
@@ -9077,6 +9129,10 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
                                           VAContextID context_id,
                                           uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  // Independent frozen arrays publish only after the existing lock releases.
+  crystalhd_test_centered_payload::PublishOnReturn centered_publication;
+#endif
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
   // Declared before lock: normal DestroyCall cleanup and unlock precede I/O.
   // It pins only independent diagnostic arrays, never the Driver or surfaces.
@@ -9183,6 +9239,13 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
   // Their disposal must not interrupt an unrelated decoder's RX poll.
   if (!decode->video_process || !driver->pending_vpp.empty())
     driver->NotifyDecodeWorker();
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (!decode->video_process && driver->centered_payload_observer) {
+    centered_publication.state = driver->centered_payload_observer;
+    centered_publication.index = driver->centered_payload_observer->Retire(
+        fields.context, fields.generation, status);
+  }
+#endif
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD)
   if (!decode->video_process) {
     payload_publication.has_status = true;

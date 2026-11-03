@@ -229,8 +229,8 @@ jobs:
           python3 -B tests/library-selected-sanitizer.test.py
           make library-check-sanitized
 
-      - name: Check private VPP payload observer without hardware
-        run: make -C filters/vaapi check-payload-observer
+      - name: Check private payload observers without hardware
+        run: make -C filters/vaapi check-payload-observer check-centered-observer
       - name: Check MPEG-1 reference model synthetic controls without hardware
         run: make mpeg1-reference-model-check
 

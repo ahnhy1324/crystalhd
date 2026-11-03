@@ -1,0 +1,558 @@
+{
+  "schema": "crystalhd-centered-off-observation-v1",
+  "date": "2026-11-03",
+  "owner_issue": 477,
+  "status": "PASS_SCOPED_DIAGNOSTIC_OFF_EOF_REOPEN",
+  "source_revision": "304baad96f866cdc45596d9e47a429c51fc20f0d",
+  "observer_source_revision": "0522747ee2066d8846c76679e09b6161db688662",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "stock": "Kodi22RC1 / unchanged App FFmpeg",
+    "upstream_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "client_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "backend": "explicit private OWN centered-observer; not normal installed backend",
+    "scheduling": "ordinary inherited scheduling; no priority changes",
+    "source_refs": [
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoSettings.h",
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp"
+    ],
+    "profile_method": 0,
+    "prefer_vaapi_renderer": true
+  },
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-single-field-20261015.boremY/kodi-h264-1080i25-30s.mkv",
+    "bytes": 30504529,
+    "sha256": "7c29a80098b3e96aced48a336061127b61e46583e1119d6fc1369f31f85f9f30",
+    "source_probe": "/home/mache/.cache/crystalhd-centered-off-runtime-20261103/source-ffprobe.json",
+    "probe_sha256": "a010bcdeb1004d3b0888817f184c9ebea8360a57828749b174c3c14ce182ebab",
+    "packets": 750,
+    "decoded_pictures": 750,
+    "visible": [
+      1920,
+      1080
+    ],
+    "nominal_rate": "25/1",
+    "stream_field_order": "tt",
+    "decoded_field_flag_counts": [
+      {
+        "interlaced_frame": 1,
+        "top_field_first": 0,
+        "count": 750
+      }
+    ],
+    "physical_parity_claimed": false
+  },
+  "checks": {
+    "centered_cpu_assertions_native": 527,
+    "centered_cpu_assertions_asan_ubsan_leaks": 527,
+    "independent_reader_tests": 46,
+    "source_census_abort_tests": 19,
+    "retained_case01_corrected_census": "PASS; full original case remains FAIL",
+    "existing_vpp_cpu_assertions": 219,
+    "existing_vpp_reader_tests": 29,
+    "normal_va_build": "PASS; no centered observer state/schema/private environment reader",
+    "independent_review": "production hooks, reused-storage selection, independent reader, runner/census and actual receipts"
+  },
+  "case": {
+    "name": "stock-centered-off-02",
+    "status": "PASS",
+    "same_pid": 1816701,
+    "same_driver_instance": 2,
+    "natural_eofs": 2,
+    "same_process_reopens": 1,
+    "selected_bindings": 4,
+    "plays": [
+      {
+        "cycle": 1,
+        "pid": 1816701,
+        "driver_instance": 2,
+        "publication": {
+          "kind": "selected-decoder-context-retirement",
+          "context": 2,
+          "generation": 1,
+          "status": 0,
+          "after_driver_unlock": true,
+          "all_slots_frozen": true
+        },
+        "actual_labels": {
+          "Player.Filenameandpath": "/fixture.mp4",
+          "Player.Process(deintmethod)": "none",
+          "Player.Process(pixformat)": "vaapi",
+          "Player.Process(videodecoder)": "ff-h264-vaapi",
+          "System.ScreenHeight": "1080",
+          "System.ScreenWidth": "1920"
+        },
+        "source_binding_census": {
+          "status": "PASS",
+          "errors": [],
+          "event_counts": {
+            "sync_enter": 1859,
+            "sync_exit": 1859,
+            "context_destroy": 2,
+            "surface_destroy": 18,
+            "submit_bind": 750,
+            "input_sent": 750,
+            "prefeed_sent": 750,
+            "output_dequeued": 1500,
+            "materialized": 750,
+            "export_enter": 1113,
+            "export_exit": 1113,
+            "read_export_reuse_implicit_fence_probe": 739,
+            "binding_end": 750
+          },
+          "distinct_binding_stage_counts": {
+            "submit_bind": 750,
+            "input_sent": 750,
+            "output_dequeued": 750,
+            "materialized": 750
+          },
+          "binding_multiplicity_histograms": {
+            "submit_bind": {
+              "1": 750
+            },
+            "input_sent": {
+              "1": 750
+            },
+            "output_dequeued": {
+              "2": 750
+            },
+            "materialized": {
+              "1": 750
+            }
+          },
+          "all_stage_binding_sets_equal": true,
+          "source_metadata_pictures": 750,
+          "observed_submit_bindings": 750,
+          "expected_output_dequeues_per_original": 2,
+          "output_record_scope": "Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.",
+          "actual_media_PTS_to_binding": "NOT_OBSERVED",
+          "scope": "Exact750 original submit/input bindings and1500 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts."
+        },
+        "payload_audit": {
+          "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD",
+          "schema": "crystalhd-centered-payload-v1",
+          "pid": 1816701,
+          "driver_instance": 2,
+          "slots": 2,
+          "publication": {
+            "kind": "selected-decoder-context-retirement",
+            "context": 2,
+            "generation": 1,
+            "status": 0,
+            "after_driver_unlock": true,
+            "all_slots_frozen": true
+          },
+          "compared_bytes": {
+            "composed": {
+              "Y": 4177920,
+              "UV": 2088960
+            },
+            "public": {
+              "Y": 4177920,
+              "UV": 2088960
+            }
+          },
+          "observations": [
+            {
+              "submit_seq": 23,
+              "materialized_seq": 41,
+              "successful_syncs": 15,
+              "successful_exports": 15,
+              "binding_end_seq": 172,
+              "slot": 0,
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 100000,
+                "decode_identity": 2,
+                "submission_ordinal": 1,
+                "surface": 1,
+                "owner": 1
+              }
+            },
+            {
+              "submit_seq": 26,
+              "materialized_seq": 46,
+              "successful_syncs": 2,
+              "successful_exports": 2,
+              "binding_end_seq": 241,
+              "slot": 1,
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 200000,
+                "decode_identity": 4,
+                "submission_ordinal": 2,
+                "surface": 2,
+                "owner": 2
+              }
+            }
+          ],
+          "trace_records_checked": 11953,
+          "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and decoder retirement joined.",
+          "coded_bottom_rows": "COMPARED_WHEN_PRESENT",
+          "pitch_padding": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
+          "trace_scope": "Contiguous frozen selected-session prefix through selected decoder-context retirement.",
+          "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
+          "token_identity": "SYNTHETIC_VA_BINDING_TOKEN",
+          "actual_media_pts": "NOT_OBSERVED",
+          "source_ffprobe_pts_join": "NOT_OBSERVED",
+          "gpu_reader_return": "NOT_OBSERVED",
+          "displayed_pixels": "NOT_OBSERVED",
+          "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER"
+        },
+        "sample_geometry": [
+          {
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 100000,
+              "decode_identity": 2,
+              "submission_ordinal": 1,
+              "surface": 1,
+              "owner": 1
+            },
+            "small": [
+              1280,
+              720
+            ],
+            "composed": [
+              1920,
+              1088
+            ],
+            "public": [
+              1920,
+              1088
+            ],
+            "roi": [
+              320,
+              180,
+              1280,
+              720
+            ],
+            "direct_public": true
+          },
+          {
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 200000,
+              "decode_identity": 4,
+              "submission_ordinal": 2,
+              "surface": 2,
+              "owner": 2
+            },
+            "small": [
+              1280,
+              720
+            ],
+            "composed": [
+              1920,
+              1088
+            ],
+            "public": [
+              1920,
+              1088
+            ],
+            "roi": [
+              320,
+              180,
+              1280,
+              720
+            ],
+            "direct_public": true
+          }
+        ]
+      },
+      {
+        "cycle": 2,
+        "pid": 1816701,
+        "driver_instance": 2,
+        "publication": {
+          "kind": "selected-decoder-context-retirement",
+          "context": 4,
+          "generation": 1,
+          "status": 0,
+          "after_driver_unlock": true,
+          "all_slots_frozen": true
+        },
+        "actual_labels": {
+          "Player.Filenameandpath": "/fixture.mp4",
+          "Player.Process(deintmethod)": "none",
+          "Player.Process(pixformat)": "vaapi",
+          "Player.Process(videodecoder)": "ff-h264-vaapi",
+          "System.ScreenHeight": "1080",
+          "System.ScreenWidth": "1920"
+        },
+        "source_binding_census": {
+          "status": "PASS",
+          "errors": [],
+          "event_counts": {
+            "sync_enter": 1853,
+            "sync_exit": 1853,
+            "context_destroy": 2,
+            "surface_destroy": 18,
+            "submit_bind": 750,
+            "input_sent": 750,
+            "prefeed_sent": 750,
+            "output_dequeued": 1500,
+            "materialized": 750,
+            "export_enter": 1107,
+            "export_exit": 1107,
+            "read_export_reuse_implicit_fence_probe": 739,
+            "binding_end": 750
+          },
+          "distinct_binding_stage_counts": {
+            "submit_bind": 750,
+            "input_sent": 750,
+            "output_dequeued": 750,
+            "materialized": 750
+          },
+          "binding_multiplicity_histograms": {
+            "submit_bind": {
+              "1": 750
+            },
+            "input_sent": {
+              "1": 750
+            },
+            "output_dequeued": {
+              "2": 750
+            },
+            "materialized": {
+              "1": 750
+            }
+          },
+          "all_stage_binding_sets_equal": true,
+          "source_metadata_pictures": 750,
+          "observed_submit_bindings": 750,
+          "expected_output_dequeues_per_original": 2,
+          "output_record_scope": "Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.",
+          "actual_media_PTS_to_binding": "NOT_OBSERVED",
+          "scope": "Exact750 original submit/input bindings and1500 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts."
+        },
+        "payload_audit": {
+          "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD",
+          "schema": "crystalhd-centered-payload-v1",
+          "pid": 1816701,
+          "driver_instance": 2,
+          "slots": 2,
+          "publication": {
+            "kind": "selected-decoder-context-retirement",
+            "context": 4,
+            "generation": 1,
+            "status": 0,
+            "after_driver_unlock": true,
+            "all_slots_frozen": true
+          },
+          "compared_bytes": {
+            "composed": {
+              "Y": 4177920,
+              "UV": 2088960
+            },
+            "public": {
+              "Y": 4177920,
+              "UV": 2088960
+            }
+          },
+          "observations": [
+            {
+              "submit_seq": 11976,
+              "materialized_seq": 11994,
+              "successful_syncs": 4,
+              "successful_exports": 4,
+              "binding_end_seq": 12078,
+              "slot": 0,
+              "binding": {
+                "context": 4,
+                "generation": 1,
+                "token": 100000,
+                "decode_identity": 1502,
+                "submission_ordinal": 1,
+                "surface": 19,
+                "owner": 19
+              }
+            },
+            {
+              "submit_seq": 11979,
+              "materialized_seq": 11999,
+              "successful_syncs": 2,
+              "successful_exports": 2,
+              "binding_end_seq": 12162,
+              "slot": 1,
+              "binding": {
+                "context": 4,
+                "generation": 1,
+                "token": 200000,
+                "decode_identity": 1504,
+                "submission_ordinal": 2,
+                "surface": 20,
+                "owner": 20
+              }
+            }
+          ],
+          "trace_records_checked": 23882,
+          "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and decoder retirement joined.",
+          "coded_bottom_rows": "COMPARED_WHEN_PRESENT",
+          "pitch_padding": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
+          "trace_scope": "Contiguous frozen selected-session prefix through selected decoder-context retirement.",
+          "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
+          "token_identity": "SYNTHETIC_VA_BINDING_TOKEN",
+          "actual_media_pts": "NOT_OBSERVED",
+          "source_ffprobe_pts_join": "NOT_OBSERVED",
+          "gpu_reader_return": "NOT_OBSERVED",
+          "displayed_pixels": "NOT_OBSERVED",
+          "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER"
+        },
+        "sample_geometry": [
+          {
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 100000,
+              "decode_identity": 1502,
+              "submission_ordinal": 1,
+              "surface": 19,
+              "owner": 19
+            },
+            "small": [
+              1280,
+              720
+            ],
+            "composed": [
+              1920,
+              1088
+            ],
+            "public": [
+              1920,
+              1088
+            ],
+            "roi": [
+              320,
+              180,
+              1280,
+              720
+            ],
+            "direct_public": true
+          },
+          {
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 200000,
+              "decode_identity": 1504,
+              "submission_ordinal": 2,
+              "surface": 20,
+              "owner": 20
+            },
+            "small": [
+              1280,
+              720
+            ],
+            "composed": [
+              1920,
+              1088
+            ],
+            "public": [
+              1920,
+              1088
+            ],
+            "roi": [
+              320,
+              180,
+              1280,
+              720
+            ],
+            "direct_public": true
+          }
+        ]
+      }
+    ],
+    "retirement_status_receipts": [
+      {
+        "schema": "crystalhd-centered-payload-status-v1",
+        "pid": 1816701,
+        "driver_instance": 2,
+        "context": 2,
+        "generation": 1,
+        "retirement_status": 0,
+        "sealed": true,
+        "after_driver_unlock": true,
+        "directory_open": true,
+        "directory_errno": 0,
+        "candidates": 750,
+        "rejected": 0,
+        "reject_mask": 0,
+        "selected_slots": 2,
+        "compose_committed_slots": 2,
+        "public_committed_slots": 2,
+        "materialized_slots": 2,
+        "eligible": true
+      },
+      {
+        "schema": "crystalhd-centered-payload-status-v1",
+        "pid": 1816701,
+        "driver_instance": 2,
+        "context": 4,
+        "generation": 1,
+        "retirement_status": 0,
+        "sealed": true,
+        "after_driver_unlock": true,
+        "directory_open": true,
+        "directory_errno": 0,
+        "candidates": 750,
+        "rejected": 0,
+        "reject_mask": 0,
+        "selected_slots": 2,
+        "compose_committed_slots": 2,
+        "public_committed_slots": 2,
+        "materialized_slots": 2,
+        "eligible": true
+      }
+    ],
+    "boundary_equal": true,
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "errors": [],
+    "live_resource_handoff": null,
+    "maximum_temperature_mC": 53000,
+    "raw_result": "/home/mache/.cache/crystalhd-centered-off-runtime-20261103/stock-centered-off-02/result.json"
+  },
+  "retained_initial_failure": {
+    "name": "stock-centered-off-01",
+    "status": "FAIL",
+    "reason": "Our census incorrectly required one output_dequeued record per original; this fixture yields two fields. Initial controller retirement gate then delayed ordinary Quit15s; verified TERM subsequently exited0.",
+    "distinct_source_bindings": 750,
+    "output_dequeue_records": 1500,
+    "public_materializations": 750,
+    "two_selected_payload_bindings": "PASS; full initial case remains FAIL",
+    "boundary_equal": true,
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "raw_result": "/home/mache/.cache/crystalhd-centered-off-runtime-20261103/stock-centered-off-01/result.json"
+  },
+  "scope": {
+    "observed": "Four small-source/composed/actual-public NV12 bindings across two decoder contexts in one original stock process/VA instance. Each direct-public coded1920x1088 canvas matches ROI320,180,1280,720 and outside limited black Y16/UV128, including coded bottom rows. Successful binding/sync and normal decoder retirement joined.",
+    "direct_public_note": "Actual runs use direct_public:true; composed and public observations are the same storage view. Separate private-to-public copy is CPU-controlled only.",
+    "dequeue_event_note": "Dequeue records precede field validation; matching later materialization records completed public output. Counts are not rendered/displayed frames.",
+    "actual_media_pts_to_binding": "NOT_OBSERVED; synthetic VA tokens are not PTS",
+    "gpu_reader_return": "NOT_OBSERVED",
+    "scanout": "NOT_OBSERVED",
+    "physical_field_parity": "NOT_OBSERVED",
+    "pitch_padding": "EXCLUDED; active plane rows only",
+    "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER",
+    "release_qualification": "NOT_EXPANDED",
+    "remaining": [
+      "source-bound seek/requested Stop",
+      "actual media PTS join",
+      "CPU fallback",
+      "29.97",
+      "broader object/GPU reader return",
+      "matched performance/endurance"
+    ]
+  }
+}

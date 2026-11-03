@@ -88,6 +88,7 @@ GTAGS
 
 # Explicit private VPP diagnostic backend and CPU probe outputs.
 /filters/vaapi/payload-observer/
+/filters/vaapi/centered-observer/
 
 /filters/gst/field-output/nv12-field-equivalence
 

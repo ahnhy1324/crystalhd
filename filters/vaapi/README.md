@@ -685,6 +685,13 @@ Full-size allocation, composition and presentation costs remain, so smaller
 card transfers do not establish a playback speedup. Stock-client performance,
 field delivery and presentation acceptance remain tracked in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
 
+The explicit test-only [centered payload observer](../../tests/vaapi-centered-payload-protocol.md)
+has a separate build/output and never replaces the installed backend.
+[Current-host Off observations](../../tests/fixtures/issue477/centered-off-20261103.json)
+cover two natural EOFs/reopen and four full NV12 ROI/black-border samples under
+original stock Kodi22RC1. They do not establish actual media PTS, GPU-reader
+return, physical presentation, normal-backend compatibility or release quality.
+
 <a id="development-decode-integrated-card-scaling"></a>
 
 ### v1.2: decode-integrated card scaling
