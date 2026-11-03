@@ -97,24 +97,26 @@ class FramePtsTests(unittest.TestCase):
             with self.subTest(event=event):
                 self.report, self.trace, self.selected = fixture()
                 self.trace[1] = row(2, event, 155, metadata)
-                with self.assertRaisesRegex(ValueError, 'boundary'):
+                with self.assertRaisesRegex(ValueError, 'boundary|context_destroy'):
                     self.check()
 
     def test_other_driver_instance_collision_rejected(self):
         self.trace += [row(1, 'submit_bind', 110, binding(), instance=3),
-                       row(2, 'session_destroy', 190, instance=3)]
+                       row(2, 'context_destroy', 190, {'context': 4, 'generation': 1}, instance=3),
+                       row(3, 'session_destroy', 200, instance=3)]
         with self.assertRaisesRegex(ValueError, 'unique active'):
             self.check()
 
     def test_other_instance_nonoverlap_and_other_pid_are_not_collisions(self):
         self.trace += [row(1, 'submit_bind', 10, binding(), instance=3),
-                       row(2, 'session_destroy', 50, instance=3),
+                       row(2, 'context_destroy', 40, {'context': 4, 'generation': 1}, instance=3),
+                       row(3, 'session_destroy', 50, instance=3),
                        row(1, 'submit_bind', 110, binding(), instance=3, pid=999)]
         self.assertEqual(self.check()['driver_instances_considered'], [2, 3])
 
     def test_unrelated_instance_with_missing_trace_tail_still_rejected(self):
-        self.trace += [row(1, 'context_destroy', 10, instance=3)]
-        with self.assertRaisesRegex(ValueError, 'complete retired'):
+        self.trace += [row(1, 'submit_bind', 10, binding(), instance=3)]
+        with self.assertRaisesRegex(ValueError, 'context retirement'):
             self.check()
 
     def test_missing_duplicated_regressed_trace_rows_rejected(self):
@@ -124,8 +126,66 @@ class FramePtsTests(unittest.TestCase):
                 if change == 'missing': self.trace.pop(1)
                 if change == 'duplicate': self.trace.insert(1, copy.deepcopy(self.trace[0]))
                 if change == 'time': self.trace[1]['ts_monotonic_ns'] = 99
-                if change == 'tail': self.trace.pop()
+                if change == 'tail': self.trace = self.trace[:-2]
                 with self.assertRaises(ValueError): self.check()
+
+    def test_all_decoder_retirements_suffice_without_display_destruction(self):
+        self.trace.pop()
+        self.trace.append(row(8, 'surface_destroy', 550, {'surface': 5}))
+        result = self.check(True)
+        self.assertEqual(result['status'], 'PASS')
+        self.assertFalse(result['instance_coverage'][0]['session_destroy_observed'])
+        self.assertEqual(result['instance_coverage'][0]['last_event'], 'surface_destroy')
+        retired = result['decoder_retirement_coverage']
+        self.assertEqual(retired['submitted_decoder_lifetimes'], 1)
+        self.assertEqual(retired['retired_decoder_lifetimes'], 1)
+        self.assertEqual(retired['lifetimes'][0]['terminal_context_destroy_outcome'], 0)
+
+    def test_binding_end_or_display_destroy_cannot_substitute_for_decoder_close(self):
+        for tail in ('binding_end', 'session_destroy'):
+            with self.subTest(tail=tail):
+                self.report, self.trace, self.selected = fixture()
+                self.trace.pop(6)
+                if tail == 'binding_end': self.trace.pop()
+                else: self.trace[-1]['seq'] = 7
+                with self.assertRaisesRegex(ValueError, 'context retirement'):
+                    self.check()
+
+    def test_failed_or_wrong_generation_decoder_retirement_rejected(self):
+        for field, value in (('outcome', 1), ('generation', 2)):
+            with self.subTest(field=field):
+                self.report, self.trace, self.selected = fixture()
+                self.trace[6][field] = value
+                with self.assertRaisesRegex(ValueError, 'successful matching context_destroy'):
+                    self.check()
+
+    def test_unobserved_initial_generation_or_generation_regression_rejected(self):
+        for prior_reset in (False, True):
+            with self.subTest(prior_reset=prior_reset):
+                self.report, self.trace, self.selected = fixture()
+                if prior_reset:
+                    self.trace.insert(0, row(1, 'context_reset', 50, {'context': 4, 'generation': 2}))
+                    for seq, entry in enumerate(self.trace, 1): entry['seq'] = seq
+                else:
+                    for entry in self.trace:
+                        if entry['context'] == 4: entry['generation'] = 2
+                with self.assertRaisesRegex(ValueError, 'observed lifetime boundary'):
+                    self.check()
+
+    def test_reset_bounds_epoch_with_later_terminal_close_without_inventing_reset_close(self):
+        self.trace[2] = row(3, 'context_reset', 250, {'context': 4, 'generation': 2})
+        for entry in self.trace[3:7]: entry['generation'] = 2
+        self.selected[1]['binding']['generation'] = 2
+        result = self.check(True)
+        retired = result['decoder_retirement_coverage']['lifetimes']
+        self.assertEqual(len(retired), 2)
+        self.assertEqual(retired[0]['retirement_event'], 'context_reset')
+        self.assertEqual(retired[0]['generation_reset_close'], 'NOT_OBSERVED_FROM_TRACE')
+        self.assertEqual(retired[0]['terminal_context_destroy_generation'], 2)
+        self.trace.pop(6)
+        self.trace[-1]['seq'] = 7
+        with self.assertRaisesRegex(ValueError, 'context retirement'):
+            self.check()
 
     def test_no_pts_and_unknown_timebase_remain_explicitly_unobserved(self):
         self.report[1]['pts'] = H.NOPTS

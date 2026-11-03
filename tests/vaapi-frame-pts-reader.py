@@ -92,6 +92,59 @@ def parse_report(raw):
     return header, frames
 
 
+def decoder_retirements(rows, instance):
+    """Bound submitted epochs and require their context's successful close.
+
+    context_reset names the new generation with a default outcome. It bounds
+    an old epoch, but cannot prove that reset's device close. Require a later
+    successful terminal context_destroy; never invent a v2 reset-close receipt.
+    """
+    lifetimes = defaultdict(list)
+    for row in rows:
+        if row['event'] == 'submit_bind':
+            lifetimes[(row['context'], row['generation'])].append(row)
+    retired = []
+    for (context, generation), submits in sorted(lifetimes.items()):
+        first, last = submits[0]['seq'], submits[-1]['seq']
+        preceding = [row for row in rows if row['context'] == context and row['seq'] < first and
+                     row['event'] in ('context_reset', 'context_destroy')]
+        require((not preceding and generation == 1) or
+                (preceding and preceding[-1]['event'] == 'context_reset' and
+                 preceding[-1]['generation'] == generation),
+                'submitted decoder generation differs from its observed lifetime boundary')
+        current, boundary, terminal = generation, None, None
+        for row in rows:
+            if row['seq'] <= first or row['context'] != context:
+                continue
+            if row['event'] == 'context_reset':
+                require(terminal is None and row['generation'] == current + 1,
+                        'submitted decoder lifetime has an invalid reset generation boundary')
+                current = row['generation']
+                if boundary is None:
+                    boundary = row
+            elif row['event'] == 'context_destroy':
+                require(terminal is None and row['outcome'] == 0 and row['generation'] == current,
+                        'submitted decoder lifetime needs one successful matching context_destroy')
+                terminal = row
+                if boundary is None:
+                    boundary = row
+        require(boundary is not None and terminal is not None,
+                'submitted decoder lifetime is missing successful context retirement')
+        require(last < boundary['seq'], 'submission crosses its decoder retirement boundary')
+        require(not any(row['event'] == 'submit_bind' and row['context'] == context and
+                        row['seq'] > terminal['seq'] for row in rows),
+                'submission follows terminal context retirement')
+        retired.append({'driver_instance': instance, 'context': context, 'generation': generation,
+                        'submitted_bindings': len(submits), 'retirement_event': boundary['event'],
+                        'retirement_seq': boundary['seq'], 'retirement_ns': boundary['ts_monotonic_ns'],
+                        'terminal_context_destroy_seq': terminal['seq'],
+                        'terminal_context_destroy_generation': terminal['generation'],
+                        'terminal_context_destroy_outcome': terminal['outcome'],
+                        'generation_reset_close': ('NOT_OBSERVED_FROM_TRACE' if
+                            boundary['event'] == 'context_reset' else 'NOT_APPLICABLE')})
+    return retired
+
+
 def trace_lifetimes(trace_rows, pid):
     """Retain every same-PID instance, including surface namespace collisions."""
     instances = set()
@@ -100,11 +153,18 @@ def trace_lifetimes(trace_rows, pid):
         if row.get('pid') == pid:
             instances.add(P.integer(row.get('driver_instance'), 'trace instance', 1))
     require(instances, 'observed PID has no OWN trace')
-    spans = []
+    spans, instance_coverage, retirements = [], [], []
     for instance in sorted(instances):
         rows = P.trace_index(trace_rows, pid, instance)
-        require(rows[-1]['event'] == 'session_destroy' and rows[-1]['outcome'] == 0,
-                'frame join requires a complete retired trace for every PID instance')
+        session_destroyed = rows[-1]['event'] == 'session_destroy'
+        require(not session_destroyed or rows[-1]['outcome'] == 0, 'session destruction failed')
+        retired = decoder_retirements(rows, instance)
+        retirements.extend(retired)
+        instance_coverage.append({'driver_instance': instance, 'trace_rows': len(rows),
+                                  'last_seq': rows[-1]['seq'], 'last_event': rows[-1]['event'],
+                                  'session_destroy_observed': session_destroyed,
+                                  'submitted_decoder_lifetimes': len(retired),
+                                  'retired_decoder_lifetimes': len(retired)})
         seen, identities = set(), set()
         for submit in (row for row in rows if row['event'] == 'submit_bind'):
             require(submit['outcome'] == 0, 'failed submit_bind cannot supply a frame identity')
@@ -136,7 +196,7 @@ def trace_lifetimes(trace_rows, pid):
                           'submit_seq': submit['seq'], 'submit_ns': submit['ts_monotonic_ns'],
                           'boundary_seq': boundary['seq'], 'boundary_ns': boundary['ts_monotonic_ns'],
                           'boundary_event': boundary['event']})
-    return spans
+    return spans, instance_coverage, retirements
 
 
 def frame_clocks(frame):
@@ -161,7 +221,7 @@ def check_document(report_rows, trace_rows, selected_bindings=None):
     """Audit decoded report rows; also used by device-free controls."""
     raw = ''.join(json.dumps(row) + '\n' for row in report_rows).encode('utf-8')
     header, frames = parse_report(raw)
-    spans = trace_lifetimes(trace_rows, header['pid'])
+    spans, instance_coverage, retirements = trace_lifetimes(trace_rows, header['pid'])
     joins, counts = [], defaultdict(list)
     for frame in frames:
         begin, end = frame['snapshot_begin_ns'], frame['snapshot_end_ns']
@@ -193,6 +253,10 @@ def check_document(report_rows, trace_rows, selected_bindings=None):
             'driver_instances_considered': sorted({row['driver_instance'] for row in trace_rows
                                                    if row['pid'] == header['pid']}),
             'joins': joins, 'selected_joins': selected_joins, 'lifetime_counts': lifetime_counts,
+            'decoder_retirement_coverage': {'status': 'PASS', 'lifetimes': retirements,
+                                            'submitted_decoder_lifetimes': len(retirements),
+                                            'retired_decoder_lifetimes': len(retirements)},
+            'instance_coverage': instance_coverage,
             'selected_clock_status': ('NOT_OBSERVED_UNDECLARED_TIME_BASE' if any(
                 comparison['status'] != 'PASS' for item in selected_joins
                 for comparison in item['source_comparisons'].values()) else
