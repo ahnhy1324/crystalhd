@@ -1757,6 +1757,19 @@ class FirmwarePictureOutputTests(unittest.TestCase):
         self.assertEqual(len({address for address, _ in writes}), 192)
         self.assertEqual(writes[0], (0x90540900, 0))
         self.assertEqual(writes[-1], (0x90540bfc, 0x0008000c))
+        # These mutations bypass mapper pins only in test-owned memory. The
+        # oracle must independently detect loop-bound and address-selection bugs.
+        for offset, replacement in ((0x2398, 0xe356001f), (0x23c0, 0xe354001f),
+                                    (0x23ec, 0xe354003f), (0x2414, 0xe354003f)):
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, replacement)
+            with self.subTest(offset=offset):
+                changed, _ = self.execute_fir_loops(data)
+                self.assertNotEqual(changed, expected)
+        data = bytearray(self.payload)
+        struct.pack_into("<I", data, 0x1e8ec, 0xe7832101)  # incorrect register offset LSL #2
+        with self.assertRaises(AssertionError):
+            self.execute_fir_loops(data)
 
     def test_scaler_fir_enable_tail_and_exact_direct_caller_routes(self):
         result = self.fir_mapping()
@@ -4451,6 +4464,35 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                 domains = sum(low <= command <= high for low, high in dispatch["fallback_domains"])
                 self.assertEqual(domains, int(case == 0x60b8))
         self.assertGreater(len(probes), 850)
+
+    def test_private_selector_signed_rhs_negative_one_and_modular_base_boundaries(self):
+        # The public contract rejects these literal mutations at its pin gate.
+        # Direct evaluator tests exercise supported arithmetic independently,
+        # especially CMP GT's rhs=-1 split at zero and signed wrap boundaries.
+        for base in (0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, 0x6174, base)
+            with self.subTest(base=hex(base)):
+                dispatch = MAP._stock_host_dispatch_domains(changed)
+                cases = {route["command"]: route["case_blob_file_offset"] for route in dispatch["routes"]}
+                segments = sorted([(low, high) for low, high in dispatch["fallback_domains"]] +
+                                  [(command, command) for command in cases])
+                self.assertEqual((segments[0][0], segments[-1][1]), (0, 0xffffffff))
+                self.assertEqual(sum(high - low + 1 for low, high in segments), 1 << 32)
+                self.assertTrue(all(left[1] + 1 == right[0] for left, right in zip(segments, segments[1:])))
+                probes = {0, 1, 2, 0x7ffffffe, 0x7fffffff, 0x80000000,
+                          0x80000001, 0xfffffffd, 0xfffffffe, 0xffffffff}
+                for boundary in set(cases) | {base, (base - 7) & 0xffffffff,
+                                               (base - 264) & 0xffffffff}:
+                    for delta in (-3, -2, -1, 0, 1, 2, 3):
+                        probes.add((boundary + delta) & 0xffffffff)
+                        probes.add((boundary + 0x80000000 + delta) & 0xffffffff)
+                for command in probes:
+                    with self.subTest(command=hex(command)):
+                        case = self.execute_selector(command, changed)
+                        self.assertEqual(case, cases.get(command, 0x60b8))
+                        self.assertEqual(sum(low <= command <= high for low, high in dispatch["fallback_domains"]),
+                                         int(case == 0x60b8))
 
     def test_all_direct_handler_footprints_have_independent_fixed_field_oracles(self):
         report = MAP._stock_host_command_closure(self.payload)

@@ -1,11 +1,11 @@
 # Mandatory development boundary
 
-**We do not modify third-party code, including private builds, temporary
-copies and test excerpts.** Read [EXTERNAL-CODE-POLICY.md](EXTERNAL-CODE-POLICY.md)
-and [AGENTS.md](AGENTS.md) before work. The Kodi patch/application harness and
-FFmpeg excerpt mutation controls and modified-firmware interpreter controls
-are withdrawn. Patched external results are
-historical only and cannot satisfy stock compatibility or release acceptance.
+**Do not implement or ship CrystalHD fixes by patching external applications
+or dependencies. Debugging and test probes are allowed.** Read
+[EXTERNAL-CODE-POLICY.md](EXTERNAL-CODE-POLICY.md) and [AGENTS.md](AGENTS.md).
+The external Kodi product patch is removed; its source-unit probes, FFmpeg
+mutation controls and firmware-model diagnostic coverage are retained.
+Modified-client results cannot qualify stock compatibility or a release.
 
 # Open work
 

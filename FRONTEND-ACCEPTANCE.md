@@ -19,20 +19,24 @@ additional physical target is assumed available.
 
 ## Device-free preparation already available
 
-Follow [the external code policy](EXTERNAL-CODE-POLICY.md): external sources
-remain unmodified, including temporary test copies. The former Kodi patch
-and `kodi-compat-check` harness are withdrawn. Patched-client records cannot
-qualify unmodified compatibility or release acceptance.
+Follow [the external code policy](EXTERNAL-CODE-POLICY.md): external product
+patches are prohibited; isolated debugging and test probes are allowed.
+The distributable Kodi patch is removed, while `kodi-compat-check` remains a
+source-unit diagnostic. Modified-client records cannot qualify stock support
+or release acceptance.
 
 Run these on the selected exact source before any new frontend run:
 
 ```sh
+make kodi-compat-check
 make ffmpeg-compat-check
 make native-picture-check
 make -C filters/vaapi check
 ```
 
-`ffmpeg-compat-check` compiles unmodified retained FFmpeg excerpts and models
+`kodi-compat-check` executes hash-pinned Kodi excerpts with isolated diagnostic
+ordering variants and lifecycle mutation controls. It does not launch Kodi or
+apply a product patch. `ffmpeg-compat-check` models
 the retained stream-loop boundary; it does not turn the real 296/300 FAIL into
 PASS. `native-picture-check` uses inert references/models; complete old capture
 replay still requires the external hashed image/reference files. The VA suite
@@ -98,7 +102,7 @@ dependencies rather than public generic Kodi test commands:
 
 | Path | Safe preparation / exact limitation |
 | --- | --- |
-| `/home/mache/.cache/crystalhd-kodi-controls-20261029/run_v2.py` | Withdrawn from active execution: its private Kodi21.3 default contains the prohibited external patch. Retain existing records only; do not replay this candidate. Future controls require an unmodified external client. |
+| `/home/mache/.cache/crystalhd-kodi-controls-20261029/run_v2.py` | Historical controller defaulting to a modified private Kodi21.3 candidate. Any diagnostic use must be isolated and explicitly labelled with its original sources; it cannot qualify current stock playback. New stock controls require an unmodified external client and repinned own components. |
 | `/home/mache/.cache/crystalhd-kodi-controls-20261029/offline_check_v2.py` | Synthetic asynchronous-control and natural-drain reader controls, never hardware evidence. It writes temporary fixture files under its own cache directory. |
 | `/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/test-replay.py` | Synthetic native EXPBUF allocation/stream/lease/return reader controls, including incorrect index/tracking and copy-window overlap. Never a new capture. |
 | `/home/mache/.cache/crystalhd-window-runtime-20261030/native-observer/analyze.py` | Existing offline reader accepts `--raw`, `--stderr`, `--abi`, `--pid`, optional `--seed`, `--require-closed`, `--output`; exact ABI and original owned PID come from the retained receipt, not guesses. It cannot supply missing GPU/source-PTS/physical-display evidence. |

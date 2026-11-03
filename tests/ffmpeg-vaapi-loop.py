@@ -4,8 +4,7 @@
 
 Only Python's standard library and a C11 compiler are required. The default
 fixtures are offline; --source-dir optionally verifies full retained files.
-Third-party excerpts remain unmodified. Only their retained original form
-is compiled.
+Semantic negatives must fail their stated independent oracles.
 """
 
 import argparse
@@ -73,6 +72,31 @@ def run(command, cwd, expected=0):
     return result
 
 
+NEGATIVES = [
+    ('missing-eof-drain', 'deint-request-frame.inc',
+     '        deint_vaapi_filter_frame(link->src->inputs[0], NULL);',
+     '        /* negative: omit the actual EOF tail request */',
+     'EOF versus teardown did not preserve the expected field count'),
+    ('missing-timestamp-lookahead', 'deint-build.inc',
+     'ctx->extra_delay_for_timestamps = ctx->field_rate == 2 &&',
+     'ctx->extra_delay_for_timestamps = ctx->field_rate == 1 &&',
+     'zero-reference field timestamp lookahead changed'),
+    ('wrong-next-pts', 'deint-filter-frame.inc',
+     'output_frame->pts = input_frame->pts +\n'
+     '                    ctx->frame_queue[current_frame_index + 1]->pts;',
+     'output_frame->pts = 2 * input_frame->pts + 1;',
+     'independent irregular-PTS oracle disagrees'),
+    ('unreleased-queued-reference', 'deint-uninit.inc',
+     '        av_frame_free(&ctx->frame_queue[i]);',
+     '        (void)ctx->frame_queue[i];',
+     'a queued frame reference was not released'),
+    ('wrong-hardware-context-identity', 'filter-hwcontext-reinit.inc',
+     'ifp->hw_frames_ctx->data != frame->hw_frames_ctx->data',
+     'ifp->hw_frames_ctx != frame->hw_frames_ctx',
+     'actual hardware-context identity predicate changed'),
+]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-dir', type=Path,
@@ -100,11 +124,20 @@ def main():
 
         directory, binary = compile_case('retained', original)
         positive = run([str(binary)], directory)
+        for name, filename, old, new, reason in NEGATIVES:
+            require(original[filename].count(old) == 1,
+                    name + ': semantic-negative mutation is not unique')
+            changed = dict(original)
+            changed[filename] = original[filename].replace(old, new)
+            directory, binary = compile_case(name, changed)
+            result = run([str(binary)], directory, expected=1)
+            require(result.stderr.strip() == 'FAIL: ' + reason,
+                    name + ': failed for a different reason:\n' + result.stdout + result.stderr)
     if args.source_dir:
         require(fixtures(metadata, args.source_dir) == original,
                 'retained full sources changed during the test')
     print(positive.stdout.strip())
-    print('External source policy: unmodified excerpts only; no mutation candidates.')
+    print('Semantic-negative discrimination: PASS (' + str(len(NEGATIVES)) + ' cases).')
     print('Native retained playback remains FAIL 296/300; this is no production repair.')
     return 0
 

@@ -2,11 +2,12 @@
 
 Bug reports, test results, documentation fixes, and patches are welcome. A CrystalHD card is not required to contribute.
 
-**We do not modify third-party code.** Read
-[EXTERNAL-CODE-POLICY.md](EXTERNAL-CODE-POLICY.md) before development or testing.
-This includes private builds, copied excerpts, temporary test trees and CI.
-Make integration fixes in maintained CrystalHD components. Results obtained
-with patched external components cannot qualify stock support or a release.
+**Do not implement or ship CrystalHD fixes by patching external applications
+or dependencies.** Make integration fixes in maintained CrystalHD components.
+Isolated debugging instrumentation, temporary test variants and regression
+probes are allowed; retain their original inputs, provenance and stated scope.
+Modified-client results cannot qualify stock support or a release. Read
+[EXTERNAL-CODE-POLICY.md](EXTERNAL-CODE-POLICY.md) before work.
 
 ## Reporting bugs
 

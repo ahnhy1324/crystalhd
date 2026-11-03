@@ -1,39 +1,43 @@
-# External code policy
+# External code and diagnostic probes
 
-**We do not modify third-party code.** This is a maintainer requirement.
+**We do not implement or ship CrystalHD fixes by modifying external applications
+or dependencies.** This is a maintainer requirement. Debugging and test probes
+are distinct from changes to another project's product code.
 
-It applies to development, debugging, experiments, tests, private builds,
-temporary source copies, CI, packaging and releases. There is no private-build,
-research-only or test-only exception.
+## Product and compatibility boundary
 
-- Do not create, apply, maintain, build, execute or distribute project patches
-  to Kodi, FFmpeg, GStreamer, Mesa, GTK, the Linux kernel core, external
-  libraries, external binaries or firmware.
-- Do not rewrite copied third-party source excerpts or create modified
-  third-party candidates in temporary test trees. Location inside this
-  repository does not make third-party code ours.
-- Inspect, build and run external components as supplied by their upstream
-  project or official distribution, using their supported build options.
-  Do not add source edits, replacement translation units or binary-code patches.
-  Modified external code must not be run through an emulator or interpreter.
-- Implement integration fixes in the maintained CrystalHD driver, library,
-  VA-API/GStreamer components, Player and project-owned tools. These maintained
-  project components remain editable; third-party snapshots do not.
-- If an unmodified external component exposes a limitation, retain the failing
-  result and investigate a valid fix in our own code. Record an unsupported or
-  unresolved boundary when appropriate. Do not patch the external component,
-  fabricate success or weaken the acceptance criteria.
+- Do not maintain, apply or distribute functional patches to external Kodi,
+  FFmpeg, GStreamer, Mesa, GTK, kernel core, libraries, binaries or firmware
+  as a CrystalHD product fix or required replacement dependency.
+- Implement product fixes in the maintained CrystalHD driver, library,
+  VA-API/GStreamer components, Player and project-owned integration tools.
+- Qualify stock compatibility and releases with external components as supplied
+  by upstream or their official distribution. A private functional fix does
+  not qualify the unmodified application.
+- Record confirmed external limitations as scoped known issues. Preserve actual
+  failures, original component identities and unresolved boundaries. Do not
+  fabricate success, change our outputs incorrectly to mask a client defect,
+  or weaken acceptance criteria.
 
-Malformed-input tests of our own parsers and integrity guards are test data,
-not external repair candidates. Such data must be rejected before external
-code is executed. This does not authorize building or running modified
-third-party code, even in a temporary test tree.
+## Debugging and test probes
 
-Historical results obtained with modified external code are historical
-observations only. They cannot qualify stock/unmodified compatibility, count
-as a CrystalHD repair or justify a release claim. Keep their provenance and
-failure records visible; do not silently relabel them as stock results.
+- Isolated debugging instrumentation, observation hooks, source-unit scaffolds,
+  semantic mutation controls, negative inputs, emulation and interpreter models
+  are allowed. Temporary modified excerpts or diagnostic copies may be used
+  to test a hypothesis or validate an oracle.
+- Preserve the original inputs, license notices, provenance and integrity
+  checks. Keep diagnostic variants isolated from installed components,
+  distribution artifacts and normal product execution.
+- Label original-runtime observations, instrumented runs, counterfactual test
+  variants and actual product fixes separately. State what each test executes
+  and its limits. A scaffold or modified-client result cannot establish stock
+  application support or release acceptance.
+- Do not delete debugging or regression coverage merely because it observes
+  external code or constructs a test-only variant. The product-code boundary
+  is not a blanket ban on debugging and tests.
 
-The former Kodi publication-order patch and its patch-applying/mutating
-test harness have been withdrawn under this policy. Their historical receipts
-are retained with an explicit withdrawn status; the patch itself is removed.
+The former distributable Kodi publication-order patch remains removed. Its
+observed stock EOF issue is documented as a known issue. Publication/lifecycle
+source-unit probes and their mutation controls remain diagnostic coverage.
+Historical private modified-Kodi playback records retain their provenance and
+cannot qualify stock compatibility or a CrystalHD release.
