@@ -1,0 +1,895 @@
+{
+  "schema": "crystalhd-centered-cpu-copy-observation-v1",
+  "date": "2026-11-03",
+  "owner_issue": 477,
+  "status": "PASS_SCOPED_PROGRESSIVE_OFF_CPU_COPY",
+  "runtime_source_revision": "445c8b0f76cf74b7388afa7cb17c865906d1e1d9",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "original_client": "Unchanged Kodi22RC1/App FFmpeg",
+    "upstream_kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "providers": {
+      "codec_version": 4129126,
+      "util_version": 3998054,
+      "codec_provider": "/app/lib/libavcodec.so.63.1.102",
+      "util_provider": "/app/lib/libavutil.so.61.1.102"
+    },
+    "backend": "Isolated OWN centered observer and transparent receive-frame observer",
+    "render_route": "cpu-copy",
+    "actual_cpu_copy_route": "OBSERVED_FROM_ORIGINAL_LOGS",
+    "method": 0,
+    "actual_deintmethod": "none",
+    "same_pid": 1846505,
+    "scheduling": "ordinary inherited scheduling",
+    "settings_and_provider_checkpoints": [
+      {
+        "settings": {
+          "videoplayer.prefervaapirender": false,
+          "debug.extralogging": true,
+          "debug.setextraloglevel": [
+            32768
+          ]
+        },
+        "provider": {
+          "role": "original-cpu-copy-library",
+          "path": "/app/lib/kodi/system/libsse4-x86_64-linux.so",
+          "device": "08:01",
+          "inode": 11291307,
+          "sha256": "51cbdb94ca9cfbb2fe45d65e8599451f798476d831562e0dc8b85913e967909e"
+        }
+      },
+      {
+        "settings": {
+          "videoplayer.prefervaapirender": false,
+          "debug.extralogging": true,
+          "debug.setextraloglevel": [
+            32768
+          ]
+        },
+        "provider": {
+          "role": "original-cpu-copy-library",
+          "path": "/app/lib/kodi/system/libsse4-x86_64-linux.so",
+          "device": "08:01",
+          "inode": 11291307,
+          "sha256": "51cbdb94ca9cfbb2fe45d65e8599451f798476d831562e0dc8b85913e967909e"
+        }
+      }
+    ]
+  },
+  "fixture": {
+    "path": "/home/mache/.cache/crystalhd-centered-seek-20261103/frozen-1080p180/neutral-spatial-1080p30-180.mp4",
+    "sha256": "226c91b7f6fd361af37fcac88dfa23302072f58f7cce0b8aa0c57c3f94f06555",
+    "source_case": 2,
+    "pictures": 180,
+    "fps": "30/1",
+    "source_time_base": "1/15360",
+    "source_pts": "ordinal*512",
+    "coded": [
+      1920,
+      1088
+    ],
+    "visible": [
+      1920,
+      1080
+    ],
+    "selection": "case2-90-91"
+  },
+  "checks": {
+    "controller_controls": 64,
+    "ordinary_va_default": "Retained; CPU-copy profile/logging/provider/RPC requirements are explicit mode only",
+    "private_backend_and_real_header_probe_build": "PASS; unchanged original codec63/util61 headers, no private candidate libraries",
+    "independent_review": "Frozen route, original source/logging/flush semantics, per-play evidence and unchanged ownership/payload/PTS/shutdown gates reviewed by separate authors"
+  },
+  "route_audits": [
+    {
+      "phase": "interrupted",
+      "audit": {
+        "status": "PASS",
+        "render_route": "cpu-copy",
+        "method": 0,
+        "actual_deintmethod": "none",
+        "owned_pid": 1846505,
+        "begin": 119029,
+        "end": 151769,
+        "completed_initializations": [
+          {
+            "tid": 1846623,
+            "initializing_offset": 135751,
+            "completed_offset": 135845
+          }
+        ],
+        "completed_reinitializations": [
+          {
+            "tid": 1846623,
+            "completed_offset": 143293,
+            "selection_initializing_offset": 135751,
+            "selection_completed_offset": 135845
+          },
+          {
+            "tid": 1846623,
+            "completed_offset": 148375,
+            "selection_initializing_offset": 135751,
+            "selection_completed_offset": 135845
+          },
+          {
+            "tid": 1846623,
+            "completed_offset": 148543,
+            "selection_initializing_offset": 135751,
+            "selection_completed_offset": 135845
+          }
+        ],
+        "class_removals": [],
+        "scope": "Original same-process log records explicit ffmpeg postproc and completed Off CPU-copy Init; worker IDs are thread IDs.",
+        "path": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/profile/temp/kodi.log",
+        "file_identity": {
+          "device": 2049,
+          "inode": 11546951
+        }
+      }
+    },
+    {
+      "phase": "reopen",
+      "audit": {
+        "status": "PASS",
+        "render_route": "cpu-copy",
+        "method": 0,
+        "actual_deintmethod": "none",
+        "owned_pid": 1846505,
+        "begin": 151769,
+        "end": 178067,
+        "completed_initializations": [
+          {
+            "tid": 1846663,
+            "initializing_offset": 164742,
+            "completed_offset": 164836
+          }
+        ],
+        "completed_reinitializations": [
+          {
+            "tid": 1846663,
+            "completed_offset": 172149,
+            "selection_initializing_offset": 164742,
+            "selection_completed_offset": 164836
+          },
+          {
+            "tid": 1846663,
+            "completed_offset": 173296,
+            "selection_initializing_offset": 164742,
+            "selection_completed_offset": 164836
+          }
+        ],
+        "class_removals": [],
+        "scope": "Original same-process log records explicit ffmpeg postproc and completed Off CPU-copy Init; worker IDs are thread IDs.",
+        "path": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/profile/temp/kodi.log",
+        "file_identity": {
+          "device": 2049,
+          "inode": 11546951
+        }
+      }
+    }
+  ],
+  "source_census": {
+    "interrupted": {
+      "status": "PASS",
+      "errors": [],
+      "complete_natural_population_required": false,
+      "event_counts": {
+        "sync_enter": 39,
+        "sync_exit": 39,
+        "context_destroy": 2,
+        "surface_destroy": 18,
+        "submit_bind": 31,
+        "input_sent": 31,
+        "prefeed_sent": 31,
+        "output_dequeued": 31,
+        "materialized": 31,
+        "binding_end": 31
+      },
+      "binding_stage_counts": {
+        "submit_bind": 31,
+        "input_sent": 31,
+        "output_dequeued": 31,
+        "materialized": 31
+      },
+      "public_materialization_count": 31,
+      "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+      "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+      "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+    },
+    "reopen": {
+      "status": "PASS",
+      "errors": [],
+      "complete_natural_population_required": true,
+      "event_counts": {
+        "sync_enter": 188,
+        "sync_exit": 188,
+        "context_destroy": 2,
+        "surface_destroy": 18,
+        "submit_bind": 180,
+        "input_sent": 180,
+        "prefeed_sent": 180,
+        "output_dequeued": 180,
+        "materialized": 180,
+        "binding_end": 180
+      },
+      "binding_stage_counts": {
+        "submit_bind": 180,
+        "input_sent": 180,
+        "output_dequeued": 180,
+        "materialized": 180
+      },
+      "public_materialization_count": 180,
+      "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+      "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+      "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+    }
+  },
+  "captures": [
+    {
+      "source_ordinal": 12,
+      "label": "initial-pause",
+      "paused_clock_seconds": [
+        "69/200",
+        "69/200"
+      ]
+    },
+    {
+      "source_ordinal": 90,
+      "label": "seek-forward",
+      "paused_clock_seconds": [
+        "3",
+        "3"
+      ]
+    }
+  ],
+  "selected_public_NV12": {
+    "samples": 4,
+    "phases": [
+      {
+        "phase": "interrupted",
+        "audit_status": "PASS",
+        "content": [
+          {
+            "source_ordinal": 90,
+            "stage_ordinals": {
+              "small": 90,
+              "composed": 90,
+              "public": 90
+            },
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 2500000,
+              "decode_identity": 50,
+              "submission_ordinal": 25,
+              "surface": 3,
+              "owner": 3
+            }
+          },
+          {
+            "source_ordinal": 91,
+            "stage_ordinals": {
+              "small": 91,
+              "composed": 91,
+              "public": 91
+            },
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 2600000,
+              "decode_identity": 52,
+              "submission_ordinal": 26,
+              "surface": 4,
+              "owner": 4
+            }
+          }
+        ],
+        "observations": [
+          {
+            "submit_seq": 207,
+            "materialized_seq": 216,
+            "successful_syncs": 1,
+            "successful_exports": 0,
+            "binding_end_seq": null,
+            "slot": 0,
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 2500000,
+              "decode_identity": 50,
+              "submission_ordinal": 25,
+              "surface": 3,
+              "owner": 3
+            }
+          },
+          {
+            "submit_seq": 212,
+            "materialized_seq": 219,
+            "successful_syncs": 1,
+            "successful_exports": 0,
+            "binding_end_seq": null,
+            "slot": 1,
+            "binding": {
+              "context": 2,
+              "generation": 1,
+              "token": 2600000,
+              "decode_identity": 52,
+              "submission_ordinal": 26,
+              "surface": 4,
+              "owner": 4
+            }
+          }
+        ],
+        "compared_bytes": {
+          "composed": {
+            "Y": 4177920,
+            "UV": 2088960
+          },
+          "public": {
+            "Y": 4177920,
+            "UV": 2088960
+          }
+        }
+      },
+      {
+        "phase": "reopen",
+        "audit_status": "PASS",
+        "content": [
+          {
+            "source_ordinal": 90,
+            "stage_ordinals": {
+              "small": 90,
+              "composed": 90,
+              "public": 90
+            },
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 9100000,
+              "decode_identity": 244,
+              "submission_ordinal": 91,
+              "surface": 20,
+              "owner": 20
+            }
+          },
+          {
+            "source_ordinal": 91,
+            "stage_ordinals": {
+              "small": 91,
+              "composed": 91,
+              "public": 91
+            },
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 9200000,
+              "decode_identity": 246,
+              "submission_ordinal": 92,
+              "surface": 21,
+              "owner": 21
+            }
+          }
+        ],
+        "observations": [
+          {
+            "submit_seq": 1015,
+            "materialized_seq": 1028,
+            "successful_syncs": 1,
+            "successful_exports": 0,
+            "binding_end_seq": 1102,
+            "slot": 0,
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 9100000,
+              "decode_identity": 244,
+              "submission_ordinal": 91,
+              "surface": 20,
+              "owner": 20
+            }
+          },
+          {
+            "submit_seq": 1024,
+            "materialized_seq": 1036,
+            "successful_syncs": 1,
+            "successful_exports": 0,
+            "binding_end_seq": 1110,
+            "slot": 1,
+            "binding": {
+              "context": 4,
+              "generation": 1,
+              "token": 9200000,
+              "decode_identity": 246,
+              "submission_ordinal": 92,
+              "surface": 21,
+              "owner": 21
+            }
+          }
+        ],
+        "compared_bytes": {
+          "composed": {
+            "Y": 4177920,
+            "UV": 2088960
+          },
+          "public": {
+            "Y": 4177920,
+            "UV": 2088960
+          }
+        }
+      }
+    ],
+    "scope": "Full small/composed/public NV12 at OWN boundary before client CPU-copy, ROI/black border/coded1088 bottom/neutral chroma and independent source barcode. Selected successful sync required; export can be0."
+  },
+  "seek_target_window_audit": {
+    "status": "PASS",
+    "selected_target_bindings": 2,
+    "source_ordinals": [
+      90,
+      91
+    ],
+    "seek_request_ns": 701036275136726,
+    "stop_request_ns": 701037765805122,
+    "window_audits": [
+      {
+        "manifest": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/payload/centered-payload-1846505-2-2-1.json",
+        "audit": {
+          "status": "PASS",
+          "selection": "case2-90-91",
+          "required_targets": [
+            90,
+            91
+          ],
+          "pid": 1846505,
+          "driver_instance": 2,
+          "seek_request_ns": 701036275136726,
+          "stop_request_ns": 701037765805122,
+          "selected_source_bindings": [
+            {
+              "source_ordinal": 90,
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 2500000,
+                "decode_identity": 50,
+                "submission_ordinal": 25,
+                "surface": 3,
+                "owner": 3
+              },
+              "submit_seq": 207,
+              "submit_ns": 701037285479644,
+              "materialized_seq": 216,
+              "materialized_ns": 701037378127612,
+              "successful_syncs_in_window": [
+                {
+                  "seq": 217,
+                  "operation": 33,
+                  "ts_monotonic_ns": 701037378568605
+                }
+              ]
+            },
+            {
+              "source_ordinal": 91,
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 2600000,
+                "decode_identity": 52,
+                "submission_ordinal": 26,
+                "surface": 4,
+                "owner": 4
+              },
+              "submit_seq": 212,
+              "submit_ns": 701037297090176,
+              "materialized_seq": 219,
+              "materialized_ns": 701037413571455,
+              "successful_syncs_in_window": [
+                {
+                  "seq": 221,
+                  "operation": 34,
+                  "ts_monotonic_ns": 701037417085150
+                }
+              ]
+            }
+          ],
+          "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+          "gpu_reader_return": "NOT_OBSERVED",
+          "scanout": "NOT_OBSERVED",
+          "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+        }
+      }
+    ],
+    "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+  },
+  "raw_frame_observation": {
+    "frames_observed": 211,
+    "lifetime_counts": [
+      {
+        "driver_instance": 2,
+        "context": 2,
+        "generation": 1,
+        "frame_returns": 31,
+        "unique_bindings": 31,
+        "raw_pts_observed": 31,
+        "clock_observed": 0,
+        "first_frame_seq": 1,
+        "last_frame_seq": 31
+      },
+      {
+        "driver_instance": 2,
+        "context": 4,
+        "generation": 1,
+        "frame_returns": 180,
+        "unique_bindings": 180,
+        "raw_pts_observed": 180,
+        "clock_observed": 0,
+        "first_frame_seq": 32,
+        "last_frame_seq": 211
+      }
+    ],
+    "selected_joins": [
+      {
+        "driver_instance": 2,
+        "binding": {
+          "context": 2,
+          "generation": 1,
+          "token": 2500000,
+          "decode_identity": 50,
+          "submission_ordinal": 25,
+          "surface": 3,
+          "owner": 3
+        },
+        "submit_seq": 207,
+        "submit_ns": 701037285479644,
+        "boundary_seq": 262,
+        "boundary_ns": 701038197377556,
+        "boundary_event": "context_destroy",
+        "frame_seq": 25,
+        "pid": 1846505,
+        "tid": 1846622,
+        "snapshot_begin_ns": 701037291567707,
+        "snapshot_end_ns": 701037291571409,
+        "clocks": {
+          "pts": {
+            "raw": 3000000,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          },
+          "best_effort_timestamp": {
+            "raw": 3000000,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x74181c07e440",
+          "frame": "0x74181c049b80",
+          "pool": "0x0",
+          "display": null
+        },
+        "phase": "interrupted",
+        "source_ordinal": 90,
+        "source_pts_ticks": 46080,
+        "source_time_base": "1/15360",
+        "source_comparisons": {
+          "pts": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3000000,
+            "source_seconds": "3",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          },
+          "best_effort_timestamp": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3000000,
+            "source_seconds": "3",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          }
+        }
+      },
+      {
+        "driver_instance": 2,
+        "binding": {
+          "context": 2,
+          "generation": 1,
+          "token": 2600000,
+          "decode_identity": 52,
+          "submission_ordinal": 26,
+          "surface": 4,
+          "owner": 4
+        },
+        "submit_seq": 212,
+        "submit_ns": 701037297090176,
+        "boundary_seq": 262,
+        "boundary_ns": 701038197377556,
+        "boundary_event": "context_destroy",
+        "frame_seq": 26,
+        "pid": 1846505,
+        "tid": 1846622,
+        "snapshot_begin_ns": 701037297949672,
+        "snapshot_end_ns": 701037297952535,
+        "clocks": {
+          "pts": {
+            "raw": 3033333,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          },
+          "best_effort_timestamp": {
+            "raw": 3033333,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x74181c07e440",
+          "frame": "0x74181c049b80",
+          "pool": "0x0",
+          "display": null
+        },
+        "phase": "interrupted",
+        "source_ordinal": 91,
+        "source_pts_ticks": 46592,
+        "source_time_base": "1/15360",
+        "source_comparisons": {
+          "pts": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          },
+          "best_effort_timestamp": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          }
+        }
+      },
+      {
+        "driver_instance": 2,
+        "binding": {
+          "context": 4,
+          "generation": 1,
+          "token": 9100000,
+          "decode_identity": 244,
+          "submission_ordinal": 91,
+          "surface": 20,
+          "owner": 20
+        },
+        "submit_seq": 1015,
+        "submit_ns": 701043395604380,
+        "boundary_seq": 1102,
+        "boundary_ns": 701043775922354,
+        "boundary_event": "binding_end",
+        "frame_seq": 122,
+        "pid": 1846505,
+        "tid": 1846662,
+        "snapshot_begin_ns": 701043397437985,
+        "snapshot_end_ns": 701043397441338,
+        "clocks": {
+          "pts": {
+            "raw": 3000000,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          },
+          "best_effort_timestamp": {
+            "raw": 3000000,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x74183c164e00",
+          "frame": "0x74183c125740",
+          "pool": "0x0",
+          "display": null
+        },
+        "phase": "reopen",
+        "source_ordinal": 90,
+        "source_pts_ticks": 46080,
+        "source_time_base": "1/15360",
+        "source_comparisons": {
+          "pts": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3000000,
+            "source_seconds": "3",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          },
+          "best_effort_timestamp": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3000000,
+            "source_seconds": "3",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          }
+        }
+      },
+      {
+        "driver_instance": 2,
+        "binding": {
+          "context": 4,
+          "generation": 1,
+          "token": 9200000,
+          "decode_identity": 246,
+          "submission_ordinal": 92,
+          "surface": 21,
+          "owner": 21
+        },
+        "submit_seq": 1024,
+        "submit_ns": 701043447356922,
+        "boundary_seq": 1110,
+        "boundary_ns": 701043794870868,
+        "boundary_event": "binding_end",
+        "frame_seq": 123,
+        "pid": 1846505,
+        "tid": 1846662,
+        "snapshot_begin_ns": 701043448145876,
+        "snapshot_end_ns": 701043448148670,
+        "clocks": {
+          "pts": {
+            "raw": 3033333,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          },
+          "best_effort_timestamp": {
+            "raw": 3033333,
+            "observed": true,
+            "time_base_source": null,
+            "time_base": null,
+            "seconds": null
+          }
+        },
+        "descriptive_pointers": {
+          "codec": "0x74183c164e00",
+          "frame": "0x74183c125740",
+          "pool": "0x0",
+          "display": null
+        },
+        "phase": "reopen",
+        "source_ordinal": 91,
+        "source_pts_ticks": 46592,
+        "source_time_base": "1/15360",
+        "source_comparisons": {
+          "pts": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          },
+          "best_effort_timestamp": {
+            "status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+            "raw": 3033333,
+            "source_seconds": "91/30",
+            "actual_seconds": null,
+            "delta_seconds": null,
+            "tolerance_seconds": null
+          }
+        }
+      }
+    ],
+    "selected_clock_status": "NOT_OBSERVED_UNDECLARED_TIME_BASE",
+    "selected_clock_qualified_bindings": 0,
+    "decoder_retirement_coverage": {
+      "status": "PASS",
+      "lifetimes": [
+        {
+          "driver_instance": 2,
+          "context": 2,
+          "generation": 1,
+          "submitted_bindings": 31,
+          "retirement_event": "context_destroy",
+          "retirement_seq": 262,
+          "retirement_ns": 701038197377556,
+          "terminal_context_destroy_seq": 262,
+          "terminal_context_destroy_generation": 1,
+          "terminal_context_destroy_outcome": 0,
+          "generation_reset_close": "NOT_APPLICABLE"
+        },
+        {
+          "driver_instance": 2,
+          "context": 4,
+          "generation": 1,
+          "submitted_bindings": 180,
+          "retirement_event": "context_destroy",
+          "retirement_seq": 1738,
+          "retirement_ns": 701046854917892,
+          "terminal_context_destroy_seq": 1738,
+          "terminal_context_destroy_generation": 1,
+          "terminal_context_destroy_outcome": 0,
+          "generation_reset_close": "NOT_APPLICABLE"
+        }
+      ],
+      "submitted_decoder_lifetimes": 2,
+      "retired_decoder_lifetimes": 2
+    },
+    "instance_coverage": [
+      {
+        "driver_instance": 1,
+        "trace_rows": 7,
+        "last_seq": 7,
+        "last_event": "session_destroy",
+        "session_destroy_observed": true,
+        "submitted_decoder_lifetimes": 0,
+        "retired_decoder_lifetimes": 0
+      },
+      {
+        "driver_instance": 2,
+        "trace_rows": 1760,
+        "last_seq": 1760,
+        "last_event": "surface_destroy",
+        "session_destroy_observed": false,
+        "submitted_decoder_lifetimes": 2,
+        "retired_decoder_lifetimes": 2
+      }
+    ]
+  },
+  "shutdown": {
+    "application_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "live_resource_handoff": null,
+    "max_temperature_mC": 51000,
+    "AC_present_all_samples": true,
+    "module_operations": "NONE",
+    "forced_card_reset": "NONE",
+    "actual_context_reset_events": 0
+  },
+  "preserved_failure": {
+    "case": "instrumented-centered-cpu-copy-01",
+    "status": "FAIL",
+    "source_revision": "2b5ed19f1412a2d601b93ebb35176c4316db0751",
+    "pid": 1845153,
+    "original_result": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-01/result.json",
+    "reason": "OWN oracle wrongly required a new factory-intent marker for every Off Init completion. Original Flush reinitializes the retained object; one factory pair followed by3 same-worker completions is legitimate. Corrected oracle records reinitialization separately and preserves orphan/foreign-worker/removal/fallback/error rejection.",
+    "partial_result": "First play BGRA13\u219290 and two pre-copy NV12 targets90/91 passed, but controller aborted before same-PID natural reopen; original FAIL retained.",
+    "application_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "not_reclassified": true
+  },
+  "artifacts": {
+    "plan": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/plan-02.json",
+    "result": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/result.json",
+    "original_log": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/profile/temp/kodi.log",
+    "trace": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/kodi.stdout",
+    "raw_frame_report": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/payload/frame-pts-1846505.jsonl",
+    "frame_pts_audit": "/home/mache/.cache/crystalhd-cpu-copy-runtime-20261103/instrumented-centered-cpu-copy-02/frame-pts-audit.json"
+  },
+  "limits": [
+    "Private OWN instrumentation under original unmodified client; no normal-backend stock/release qualification.",
+    "Downstream BGRA barcode checkpoints are source12 and90 in the interrupted play. Four source90/91 full-NV12 samples are before client CPU-copy, not all post-copy CPU-frame YUV bytes or all rendered pixels.",
+    "Both runtime time bases are0/1; raw PTS association observed, seconds/source-clock comparison NOT_OBSERVED.",
+    "This is progressive Off CPU-copy/readback, not BWDIF,29.97, GPU-reader completion, scanout, or VPP sidecar-mismatch/promotion coverage.",
+    "31 interrupted and180 natural originals match at the observed driver/receive APIs; these are not renderer-frame counts or a universal zero-loss requirement."
+  ]
+}

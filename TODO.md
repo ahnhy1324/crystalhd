@@ -55,7 +55,7 @@ not new hardware or release qualification.
 | Completed subset | #530: explicit `replace()` geometry/ancestry and checked handoff completion waits now share a response deadline; resize was already complete. | Read-only rejection preserves attachment; an indeterminate mutation fails through worker cleanup. [Current-host receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): 15 new embedding controls per native/sanitized variant, actual no-draw reopen and native window/NV12 regressions pass. XID refill, writes, EGL and broader #530 research remain outside this completed subset. |
 | 1, parallel diagnosis | #623: investigate the intermittent GTK CSS assertion/SIGSEGV. The existing Ubuntu24 GTK invocation now captures native/Python stacks in one execution; the validation-teardown/next-window theory remains a hypothesis. | Capture the original failing operation, then fix an established own defect or document a demonstrated external limitation. [Diagnostic controls](tests/fixtures/issue400/gtk-native-capture-20261103.json) pass, but the original crash remains unreproduced. Continue other work while awaiting useful failure evidence; do not loop clean suites or call a green CI run a root-cause fix. |
 | 2 | #513: default-off local timing and initial current-card observations are complete; continue representative congestion and attribution, then broader/endurance work. | [Timing receipt](tests/fixtures/issue513/xv-timing-20261103.json): device-free5 and actual-X11 32 per native/sanitized variant pass; FIFO/latest collect1501 ACK samples each (mean3.570/3.558ms), default-off records zero samples. These are local request-to-reader observations; current-card pending/residence is unexercised, no gain is demonstrated. Preserve the earlier six-run CPU/audio baseline and FIFO default. |
-| 3 | #445/#477: Off EOF/reopen, selected seek/Stop/full NV12 and instrumented actual AVFrame raw-PTS binding joins are complete. Next: centered CPU-fallback/29.97. | [Raw-PTS receipt](tests/fixtures/issue477/centered-frame-pts-20261103.json):212 returned frames,180 distinct natural-reopen bindings and four source90/91 targets; unchanged capture reanalysed after correcting the OWN reader. Both declared time bases are unset, so clock comparison remains unobserved. Decoder retirement is proven; display termination is separate. Ordinary Kodi flush does not trigger the defensive live-pool reset. Earlier failures/receipts remain intact; GPU/scanout, benefit/endurance and normal-backend/release qualification remain open. |
+| 3 | #445/#477: selected progressive Off CPU-copy/readback is complete alongside the prior VA route. Next:29.97/method7 CPU deinterlacing as a separate case. | [CPU-copy receipt](tests/fixtures/issue477/centered-cpu-copy-20261103.json): original per-play selection/completed initialization, original SSE4 provider, BGRA12→90, four pre-copy NV12 source90/91 targets,211 actual raw-frame joins (31 interrupted+180 natural), Stop/reopen, exit0/restored boundary/kernel0/max51°C.64 controller controls pass; the initial flush-oracle FAIL is retained. [Earlier raw-PTS receipt](tests/fixtures/issue477/centered-frame-pts-20261103.json) keeps its distinct result. Unset time bases, all post-copy bytes, GPU/scanout, VPP mismatch, benefit/endurance and normal-backend/release qualification remain outside this completed subset. |
 | 4 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
 | 5 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
 | 6 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
@@ -322,6 +322,15 @@ shelve the work or silently exclude implemented features.
    zero context_reset count is expected; defensive reset-v2 remains CPU-only.
    GPU return, actual packet-clock declaration, broader/fallback/29.97 and
    benefit/endurance scopes remain open. No normal-backend/release claim.
+   The [subsequent CPU-copy case](tests/fixtures/issue477/centered-cpu-copy-20261103.json)
+   now selects original Kodi Off `CFFmpegPostproc` with the published render
+   preference, checks original SSE4 mapping and completed selection per play,
+   and passes seek/Stop/same-PID natural reopen180. It observes211 raw-frame
+   joins and four full pre-copy NV12 targets90/91; downstream BGRA checks
+   source12/90. Original flush reuses the selected postproc: repeated same-worker
+   Off Init is recorded separately, while orphan/removed/fallback/error cases
+   still fail. The initial controller-oracle failure is retained, not relabeled.
+   Method7/BWDIF/29.97 and all post-copy pixels are not covered by this Off case.
 
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted
@@ -756,6 +765,10 @@ its exact-source and acceptance scope in the owning issue.
   adds actual returned-frame/surface associations without inventing runtime
   time bases. Ordinary Kodi flush and defensive generation reset are distinct;
   actual defensive-reset, GPU and broader remaining scopes stay open.
+  [Progressive Off CPU-copy/readback](tests/fixtures/issue477/centered-cpu-copy-20261103.json)
+  also passes original per-play route selection, source checkpoints, pre-copy
+  NV12 targets, actual raw-frame bindings and normal Stop/natural reopen.
+  CPU deinterlacing/29.97 and the separate VPP mismatch branch remain open.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
