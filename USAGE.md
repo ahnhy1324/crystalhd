@@ -144,6 +144,9 @@ submitted images still wait for matching completion. The before-close summary
 reports intentional replacements separately from QoS drops. Omit the flag
 for FIFO. This invocation-only option requires a rebuilt Xv plugin and has no
 saved setting or established latency/CPU gain.
+The [selected current-card30s comparison](tests/fixtures/issue513/latest-card-abba-20261103.json)
+reaches natural EOS with actual Pulse audio in both modes. It observes no
+intentional replacements or demonstrated CPU gain; FIFO remains the default.
 
 An additional experimental `--packed-upscale` option fuses packing with the
 method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
