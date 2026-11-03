@@ -14,6 +14,15 @@ coverage by misapplying the external product-code rule. Keep original inputs,
 provenance and test scope explicit; diagnostic variants are not product fixes
 or stock compatibility/release acceptance. Follow the full policy.
 
+## Integration into master
+
+Use a task branch and a PR for every change to master, including documentation.
+Run affected checks and independent review, then require the existing `CI gate`
+to pass against the current base before merging. Refresh the integration if
+master advances. Do not push directly to master, bypass checks or disable its
+protection to finish a task. GitHub protection also applies to administrators
+and disallows force pushes and deletion. Keep automatic branch deletion off.
+
 ## Upstream PR branches
 
 Preserve `upstream/01-linux-6.1`, the submission branch for

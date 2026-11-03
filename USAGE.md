@@ -144,6 +144,9 @@ submitted images still wait for matching completion. The before-close summary
 reports intentional replacements separately from QoS drops. Omit the flag
 for FIFO. This invocation-only option requires a rebuilt Xv plugin and has no
 saved setting or established latency/CPU gain.
+The [selected current-card30s comparison](tests/fixtures/issue513/latest-card-abba-20261103.json)
+reaches natural EOS with actual Pulse audio in both modes. It observes no
+intentional replacements or demonstrated CPU gain; FIFO remains the default.
 
 An additional experimental `--packed-upscale` option fuses packing with the
 method4, two-thread resize for progressive1280x720YUY2 to1920x1080UYVY50Hz.
@@ -378,9 +381,20 @@ a later reply barrier confirms the checked configure within the same budget;
 the following error retrieval needs no additional network sync. Received
 replies are freed and remaining reply sequences are discarded locally on
 failure. Cached size changes only after both geometry responses and any
-required child configure succeed. Other synchronous X11 calls, congested
-writes and EGL remain outside these reply-wait limits. They do not
-establish a deadline for the whole Window constructor, resize or shutdown.
+required child configure succeed.
+
+During window replacement, own/target geometry, ancestry queries and checked
+standalone creation/reparent/configure/old-parent unsubscribe completions share
+one one-second response deadline after the first geometry request flush.
+Read-only preflight failure on a live connection rejects the target and keeps
+the existing attachment. A missing completion after a mutation may mean the
+server already changed the window; the worker reports an error and cleans up
+instead of claiming the old attachment is intact. Cached parent, standalone,
+mode and dimensions commit together after the required completions.
+XID replenishment inside the standalone allocator, congested writes, EGL and
+other synchronous calls remain outside these explicit response-wait limits.
+These limits do not establish a deadline for the whole Window constructor,
+replacement, resize, shutdown or X-server restart.
 
 The default `--video-output auto` keeps the normal output path. The selector is
 per invocation and is not saved by the configuration manager. With `field-gpu`,

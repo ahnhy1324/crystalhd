@@ -1,0 +1,103 @@
+{
+  "date": "2026-11-03",
+  "issue": 623,
+  "status": "PASS_DIAGNOSTIC_CONTROLS_ORIGINAL_FAILURE_UNREPRODUCED",
+  "change": "One existing Ubuntu24 GTK CI execution under GDB; all-thread native and best-effort Python fatal-signal backtraces, original signal delivery including faulthandler re-raise, nonzero captured-signal result, unchanged ordinary exit codes and separate private-bus tray invocation. No retry, reordered tests, fatal-warning override or runtime fix. Unexpected debugger stops fail after SIGTERM and a bounded retirement check, without implicit GDB kill.",
+  "environment": {
+    "userspace": "Existing isolated Ubuntu24 rootfs",
+    "gdb": "15.1-1ubuntu1~24.04.1",
+    "python": "Stock /usr/bin/python3 with distribution python3-dbg symbols; debug interpreter not substituted",
+    "gtk": "3.24.41-4ubuntu1.3",
+    "uid": 0,
+    "kernel": "Current host; not an independent Ubuntu24 boot or original hosted runner"
+  },
+  "exit_controls": [
+    {
+      "control": "success",
+      "exit": 0,
+      "seconds": 0.267,
+      "native_stack": false,
+      "status": "PASS"
+    },
+    {
+      "control": "failure",
+      "exit": 3,
+      "seconds": 0.266,
+      "native_stack": false,
+      "status": "PASS"
+    }
+  ],
+  "fatal_signal_controls": [
+    {
+      "control": "sigsegv",
+      "exit": 1,
+      "seconds": 1.323,
+      "native_stack": true,
+      "python_stack": true,
+      "status": "PASS"
+    },
+    {
+      "control": "sigabrt",
+      "exit": 1,
+      "seconds": 1.325,
+      "native_stack": true,
+      "python_stack": true,
+      "status": "PASS"
+    },
+    {
+      "control": "sigbus",
+      "exit": 1,
+      "seconds": 1.324,
+      "native_stack": true,
+      "python_stack": true,
+      "status": "PASS"
+    },
+    {
+      "control": "sigill",
+      "exit": 1,
+      "seconds": 1.323,
+      "native_stack": true,
+      "python_stack": true,
+      "status": "PASS"
+    },
+    {
+      "control": "handled-sigabrt",
+      "exit": 1,
+      "seconds": 1.021,
+      "native_stack": true,
+      "python_stack": true,
+      "status": "PASS"
+    }
+  ],
+  "focused_gtk": {
+    "exit": 0,
+    "seconds": 4.538,
+    "cases": [
+      "GtkSettingsTests.test_player_validation_description_follows_editing_scope_and_cleared_override",
+      "GtkSettingsTests.test_player_validation_description_is_localized_and_changes_only_with_error",
+      "GtkSettingsTests.test_profile_buttons_target_preview_default_and_confirmed_removal"
+    ],
+    "scope": "Ubuntu24 private userspace, UID0, stock Python3/GTK3, current-host kernel under Xvfb/GDB; not original hosted runner or independent OS"
+  },
+  "initial_wrapper_failure": "With only one continue and stop-on-fatal still enabled, faulthandler re-raised the original signal and stopped again. Preserved initial sigsegv/sigabrt logs; corrected to pass subsequent fatal deliveries without another stop, then all four fatal controls and handled-signal-zero guard passed. This was a capture-wrapper issue, not reproduction of #623.",
+  "original_failure": {
+    "run": 41384822456,
+    "job": 125083261154,
+    "observation": "17 completed cases, CSS RGBA critical, SIGSEGV; no native stack in original log",
+    "root_cause": "UNRESOLVED; test-order/teardown theory remains a hypothesis"
+  },
+  "limits": [
+    "GDB changes scheduling; clean focused or CI runs cannot establish a crash repair.",
+    "Python backtraces are best effort and depend on distribution symbols/helpers; native capture remains available if they fail.",
+    "Fatal signals explicitly return failure; ordinary unittest exit codes preserve their actual value.",
+    "No new hardware, playback, accessibility, release qualification or external product-code change."
+  ],
+  "private_evidence_directory": "/home/mache/.cache/crystalhd-issue623-native-capture-run-20261103",
+  "unexpected_debugger_stop": {
+    "control": "unexpected nonfatal SIGUSR1 debugger stop; handler would otherwise sleep30s",
+    "exit": 1,
+    "seconds": 0.72,
+    "inferior_retired": true,
+    "status": "PASS"
+  }
+}

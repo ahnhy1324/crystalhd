@@ -490,6 +490,11 @@ unchanged.
 
 ## Branch and issue maintenance
 
+Integrate through task branches and PRs. Require the existing `CI gate` on the
+current base plus affected validation and independent review. Master protection
+applies to administrators and rejects direct pushes, force pushes and deletion;
+keep it enabled while preparing releases. Automatic branch deletion stays off.
+
 Use an issue for a distinct unresolved objective or reproduced defect; use a
 PR directly for a small self-contained fix. Name short-lived branches
 `fix/…`, `feature/…`, `docs/…` or `research/…` and record their issue/owner in

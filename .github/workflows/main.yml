@@ -170,6 +170,10 @@ jobs:
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             nodejs node-ws
 
+      - name: Install native GTK crash capture for Ubuntu24
+        if: matrix.os == 'ubuntu-24.04'
+        run: sudo apt-get install -y gdb python3-dbg
+
       - name: Record userspace toolchain versions
         shell: bash
         run: |
@@ -194,7 +198,12 @@ jobs:
       - name: Validate optional settings window without hardware
         run: |
           make settings-l10n-check
-          xvfb-run -a make settings-ui-check
+          if [ "${{ matrix.os }}" = ubuntu-24.04 ]; then
+            xvfb-run -a make settings-ui-check \
+              GTK_TEST_DEBUGGER='gdb --quiet --nx --batch --return-child-result -x tests/gtk-native-backtrace.gdb --args'
+          else
+            xvfb-run -a make settings-ui-check
+          fi
           desktop-file-validate share/applications/crystalhd-settings.desktop
 
       - name: Check Kodi settings adapter and private candidate packaging without hardware

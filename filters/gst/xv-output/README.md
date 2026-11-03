@@ -149,6 +149,37 @@ records the executed paths and original failed attempts. This bounded synthetic
 qualification establishes no latency/CPU improvement, card-decoder/A/V result,
 physical scanout or endurance acceptance.
 
+The separate [current-card comparison](../../../tests/fixtures/issue513/latest-card-abba-20261103.json)
+records six30s H264/PCM sessions on BCM70015/module13 and Intel965GM: the
+initial FIFO/latest pair followed by FIFO/latest/latest/FIFO. Every session
+decodes750 original pictures, renders1500 output buffers, reaches natural
+EOS with actual Pulse audio/clock and returns all image/module/PM ownership.
+The matched ABBA process CPU observations are40.16% FIFO and40.23% latest
+(one-core units, two samples each). No intentional replacement occurs;
+replacement behavior and a CPU/latency benefit are not demonstrated on this
+noncongested route. FIFO remains the default. The logs detect no A/V drift,
+accepted for this exact route; sampled clock identity is not a measured offset.
+
+The explicit30s harness uses a fixed640x360 mapped area and the current
+Player's scale1280/native output path. Build the own decoder/DIL and Xv plugin,
+select their process-local paths as above, and supply a known750-picture
+H264/PCM fixture in the current X11/Pulse session:
+
+```sh
+python3 -B tests/gst-xv-output-bench.py /absolute/dialogue-30s.mkv \
+  --mode fifo --expected-pictures 750 \
+  --expected-plugin "$PWD/filters/gst/xv-output/libgstcrystalhdxv.so" \
+  --results /absolute/new-fifo.json
+```
+
+Use `--mode latest` and a different new result file for the other arm.
+It records CPU, before/after-NULL Xv ownership, intentional replacements,
+QoS and sampled Pulse-clock identity with45s/75C guards. Pre-NULL pending is
+diagnostic; safe terminal retirement counts alongside ACKs after NULL.
+The harness does not measure queue age, submit-to-ACK latency, source pixels,
+unique displayed pictures, physical scanout or endurance. The retained raw
+logs include an unrelated dbind accessibility-bus warning at GUI startup.
+
 `/xv/x11/live-window-replacement` owns two mapped windows and delays a real
 SHM completion while replacement waits. It checks the old request identity,
 source IDs/PTS/pixels, new-window pixels, later pool submissions and balanced

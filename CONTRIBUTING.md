@@ -105,6 +105,14 @@ evidence and scheduling remain in each problem's issue.
 
 ## Pull requests
 
+Use a task branch and PR for changes to master. Master requires the existing
+`CI gate`, an up-to-date base and resolved review conversations; the rule also
+applies to administrators. Force pushes and deletion are disabled. Complete
+affected validation and independent review before merging. A single-maintainer
+repository does not require an additional human approval, but the PR and check
+requirements still apply. If master advances, update the branch and validate
+the resulting integration. Do not bypass protection or auto-delete branches.
+
 - Preserve branches used by upstream submissions, including
   [`upstream/01-linux-6.1` for yeradis/crystalhd#9](https://github.com/yeradis/crystalhd/pull/9).
   Do not delete, rewrite or reuse them without the maintainer's explicit
@@ -119,6 +127,23 @@ evidence and scheduling remain in each problem's issue.
 Run relevant [developer checks](README.md#developer-checks). Hardware evidence should identify the installed components, device, test input, frame/PTS/pixel results, errors, and clean teardown. If hardware is unavailable, say **NOT RUN**; CI/build success does not prove physical playback.
 
 `make settings-ui-check` includes real GTK validation-description regressions.
+For the unresolved Ubuntu24 CSS assertion/SIGSEGV in #623, CI runs that same
+GTK suite once under native crash capture. With GDB and the distribution's
+Python debug symbols installed, the optional local invocation is:
+
+```sh
+xvfb-run -a make settings-ui-check \
+  GTK_TEST_DEBUGGER='gdb --quiet --nx --batch --return-child-result -x tests/gtk-native-backtrace.gdb --args'
+```
+
+The wrapper records all-thread native and best-effort Python stacks on a fatal
+signal, then passes that signal through, including faulthandler's re-raise.
+A captured fatal signal fails the check even if a handler later exits zero.
+Ordinary unittest exit codes are preserved. The tray still runs separately
+under its existing private bus. No automatic retry, fatal-warning override,
+test reordering or runtime workaround is added. GDB changes scheduling; a
+clean instrumented run does not establish the original crash cause or a fix.
+
 For an explicit cross-process accessibility check, with GTK3, the Atspi2 GI
 typelib and an X display available, run
 `timeout --signal=TERM 65 python3 -B tests/crystalhd-settings-atspi.test.py --source=. --report=NEW.json`.

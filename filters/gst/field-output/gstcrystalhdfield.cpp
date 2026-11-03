@@ -155,6 +155,113 @@ static void resize_current_bounded(xcb_connection_t *connection,xcb_window_t par
     width=geometry.width;height=geometry.height;
 }
 
+// A later reply proves that a checked request was processed. Error retrieval
+// then consumes an already queued result without an implicit network sync.
+static XcbReply<xcb_generic_error_t> checked_request_bounded(xcb_connection_t *connection,
+        xcb_void_cookie_t cookie,gint64 end,const char *operation) {
+    ReplyRequest checked(connection,cookie.sequence);
+    ReplyRequest barrier(connection,xcb_get_input_focus(connection).sequence);
+    need(xcb_flush(connection)>0,"XCB checked completion flush failed");
+    auto completed=barrier.wait<xcb_get_input_focus_reply_t>(end,operation);
+    need(!xcb_connection_has_error(connection),"XCB checked completion connection failed");
+    XcbReply<xcb_generic_error_t> error(xcb_request_check(connection,cookie),&free);
+    checked.pending=false;
+    need(!xcb_connection_has_error(connection),"XCB checked completion connection failed");
+    need(g_get_monotonic_time()<end,(std::string(operation)+" reply timed out").c_str());
+    return error;
+}
+static bool inside_bounded(xcb_connection_t *connection,xcb_window_t target,
+        xcb_window_t ancestor,xcb_window_t root,gint64 end) {
+    // Reject a descendant before destroying its old owned wrapper. All hops
+    // share the caller's deadline, including an unreasonably deep tree.
+    for(unsigned depth=0;target&&target!=root;++depth) {
+        if(target==ancestor||depth==256)return true;
+        ReplyRequest request(connection,xcb_query_tree(connection,target).sequence);
+        need(xcb_flush(connection)>0,"XCB handoff ancestry flush failed");
+        auto tree=request.wait<xcb_query_tree_reply_t>(end,"XCB handoff ancestry");
+        if(tree->root!=root)return true;
+        target=tree->parent;
+    }
+    return false;
+}
+template<class CreateStandalone>
+static bool replace_window_bounded(xcb_connection_t *connection,xcb_window_t window,
+        guintptr handle,xcb_window_t &parent,xcb_window_t &standalone,bool &embedded,
+        unsigned &width,unsigned &height,CreateStandalone create_standalone) {
+    if(handle>G_MAXUINT32||handle==window||(standalone&&handle==standalone))return false;
+    if(!handle&&!embedded)return true;
+    xcb_window_t candidate=0,target=0;
+    unsigned next_width=width,next_height=height;
+    gint64 end=0;bool create_started=false;
+    auto reject=[&] {
+        if(candidate){xcb_destroy_window(connection,candidate);xcb_flush(connection);}
+        return false;
+    };
+    try {
+        // The window's actual root supports nondefault screens. Starting the
+        // response budget here covers the explicit query/completion waits.
+        // XID replenishment inside a standalone allocator remains separate.
+        ReplyRequest own_request(connection,xcb_get_geometry(connection,window).sequence);
+        need(xcb_flush(connection)>0,"XCB handoff own geometry flush failed");
+        end=g_get_monotonic_time()+G_USEC_PER_SEC;
+        auto own=own_request.wait<xcb_get_geometry_reply_t>(end,"XCB handoff own geometry");
+        const auto root=own->root;
+        if(handle==root||(handle&&standalone&&
+                inside_bounded(connection,xcb_window_t(handle),standalone,root,end)))return false;
+        if(g_get_monotonic_time()>=end)return false;
+        if(!handle) {
+            create_started=true;
+            candidate=create_standalone(root,end);
+            need(candidate,"XCB handoff standalone creation failed");
+        }
+        target=handle?xcb_window_t(handle):candidate;
+        if(target==parent&&embedded==(handle!=0))return true;
+        ReplyRequest target_request(connection,xcb_get_geometry(connection,target).sequence);
+        need(xcb_flush(connection)>0,"XCB handoff target geometry flush failed");
+        auto geometry=target_request.wait<xcb_get_geometry_reply_t>(end,"XCB handoff target geometry");
+        if(geometry->root!=root||!geometry->width||!geometry->height)return reject();
+        next_width=handle?geometry->width:width;
+        next_height=handle?geometry->height:height;
+    } catch(const std::exception &) {
+        // No child mutation was sent during ordinary preflight. A live
+        // connection can retain its old attachment after a rejected query.
+        // Candidate creation or a lost connection instead needs worker cleanup.
+        if(create_started||xcb_connection_has_error(connection))throw;
+        return false;
+    }
+    if(g_get_monotonic_time()>=end)return reject();
+    auto error=checked_request_bounded(connection,
+        xcb_reparent_window_checked(connection,window,target,0,0),end,"XCB handoff reparent");
+    if(error)return reject(); // An explicit protocol error did not move the child.
+    // Once reparenting was sent, a missing completion cannot safely be called
+    // a rejection with the old attachment intact. Let the worker close instead.
+    uint32_t size[]={next_width,next_height};
+    error=checked_request_bounded(connection,xcb_configure_window_checked(connection,window,
+        XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size),end,"XCB handoff configure");
+    need(!error,"XCB handoff configure failed");
+    if(embedded) {
+        uint32_t mask=0;
+        error=checked_request_bounded(connection,xcb_change_window_attributes_checked(connection,
+            parent,XCB_CW_EVENT_MASK,&mask),end,"XCB handoff old parent");
+        // An explicitly rejected old-parent unsubscribe is harmless: that
+        // parent can already have been retired. A missing completion still throws.
+    }
+    need(!xcb_connection_has_error(connection),"XCB handoff connection failed");
+    if(handle) {
+        uint32_t mask=XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+        xcb_change_window_attributes(connection,target,XCB_CW_EVENT_MASK,&mask);
+    }
+    xcb_map_window(connection,window);
+    if(candidate)xcb_map_window(connection,candidate);
+    if(standalone)xcb_destroy_window(connection,standalone);
+    need(xcb_flush(connection)>0,"XCB handoff final flush failed");
+    need(!xcb_connection_has_error(connection),"XCB handoff connection failed");
+    // Commit the public binding only after all required completion checks.
+    standalone=candidate;parent=target;embedded=handle!=0;
+    width=next_width;height=next_height;
+    return true;
+}
+
 // This object and all GPU objects are constructed/destroyed on the worker.
 struct Window {
     xcb_connection_t *connection=nullptr;
@@ -255,13 +362,15 @@ struct Window {
         }
     }
     ~Window(){cleanup();}
-    xcb_window_t make_standalone(xcb_window_t root) {
+    xcb_window_t make_standalone(xcb_window_t root,gint64 end=0) {
         auto id=xcb_generate_id(connection);
         uint32_t values[]={0,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_STRUCTURE_NOTIFY|XCB_EVENT_MASK_KEY_PRESS};
-        auto *error=xcb_request_check(connection,xcb_create_window_checked(connection,XCB_COPY_FROM_PARENT,
+        const auto made=xcb_create_window_checked(connection,XCB_COPY_FROM_PARENT,
             id,root,0,0,width,height,0,XCB_WINDOW_CLASS_INPUT_OUTPUT,XCB_COPY_FROM_PARENT,
-            XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK,values));
-        if(error){free(error);need(false,"standalone output window");}
+            XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK,values);
+        auto error=end?checked_request_bounded(connection,made,end,"XCB handoff standalone"):
+            XcbReply<xcb_generic_error_t>(xcb_request_check(connection,made),&free);
+        need(!error,"standalone output window");
         const char title[]="CrystalHD GPU field output (experimental)";
         const char klass[]="crystalhd-field\0CrystalHD\0";
         xcb_change_property(connection,XCB_PROP_MODE_REPLACE,id,XCB_ATOM_WM_NAME,XCB_ATOM_STRING,8,sizeof(title)-1,title);
@@ -272,62 +381,9 @@ struct Window {
     void resize() {
         resize_current_bounded(connection,parent,window,width,height);
     }
-    bool inside(xcb_window_t target,xcb_window_t ancestor,xcb_window_t root) {
-        // The caller keeps its target stable through the synchronous request.
-        // Never move into the old owned wrapper's tree and then destroy it.
-        for(unsigned depth=0;target&&target!=root;++depth) {
-            if(target==ancestor||depth==256)return true;
-            xcb_generic_error_t *error=nullptr;
-            auto *tree=xcb_query_tree_reply(connection,xcb_query_tree(connection,target),&error);
-            if(error||!tree){free(error);free(tree);return true;}
-            target=tree->parent;free(tree);
-        }
-        return false;
-    }
     bool replace(guintptr handle) {
-        if(handle>G_MAXUINT32||handle==window||(standalone&&handle==standalone))return false;
-        if(!handle&&!embedded)return true;
-        // Use the root belonging to this window, including on nondefault X screens.
-        auto *own=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,window),nullptr);
-        if(!own)return false;
-        const xcb_window_t root=own->root;free(own);
-        if(handle==root||(handle&&standalone&&inside(xcb_window_t(handle),standalone,root)))return false;
-        const xcb_window_t candidate=handle?0:make_standalone(root);
-        const xcb_window_t target=handle?xcb_window_t(handle):candidate;
-        if(target==parent&&embedded==(handle!=0))return true;
-        xcb_generic_error_t *error=nullptr;
-        auto *geometry=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,target),&error);
-        if(error){free(error);free(geometry);if(candidate)xcb_destroy_window(connection,candidate);return false;}
-        if(!geometry){if(candidate)xcb_destroy_window(connection,candidate);return false;}
-        const bool valid=geometry->root==root&&geometry->width&&geometry->height;
-        const unsigned next_width=handle?geometry->width:width;
-        const unsigned next_height=handle?geometry->height:height;
-        free(geometry);
-        if(!valid){if(candidate)xcb_destroy_window(connection,candidate);return false;}
-        // A checked reparent leaves the owned child and EGL surface/context
-        // intact. Reject invalid/foreign-screen targets before changing state.
-        error=xcb_request_check(connection,xcb_reparent_window_checked(connection,window,target,0,0));
-        if(error){free(error);if(candidate)xcb_destroy_window(connection,candidate);return false;}
-        if(embedded) {
-            uint32_t mask=0;
-            error=xcb_request_check(connection,xcb_change_window_attributes_checked(connection,parent,XCB_CW_EVENT_MASK,&mask));
-            free(error); // A retired old parent may already have disappeared.
-        }
-        const auto old_standalone=standalone;standalone=candidate;
-        embedded=handle!=0;parent=target;width=next_width;height=next_height;
-        if(embedded) {
-            uint32_t mask=XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-            xcb_change_window_attributes(connection,parent,XCB_CW_EVENT_MASK,&mask);
-        }
-        uint32_t size[]={width,height};
-        error=xcb_request_check(connection,xcb_configure_window_checked(connection,window,
-            XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT,size));
-        if(error){free(error);need(false,"attached window size");}
-        xcb_map_window(connection,window);xcb_flush(connection);
-        if(standalone)xcb_map_window(connection,standalone);
-        if(old_standalone)xcb_destroy_window(connection,old_standalone);
-        xcb_flush(connection);
-        return true;
+        return replace_window_bounded(connection,window,handle,parent,standalone,
+            embedded,width,height,[&](xcb_window_t root,gint64 end){return make_standalone(root,end);});
     }
     void toggle_fullscreen() {
         if(embedded)return;

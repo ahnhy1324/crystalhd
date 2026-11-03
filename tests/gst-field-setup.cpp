@@ -378,6 +378,208 @@ static void resize_exchanges() {
     }
     puts("PASS6 owned resize completion controls; shared geometry/configure budget and atomic cached dimensions");
 }
+enum HandoffMode : unsigned {
+    handoff_success, handoff_missing_own, handoff_missing_target,
+    handoff_target_error, handoff_foreign_root, handoff_descendant,
+    handoff_ancestry_budget, handoff_reparent_error, handoff_missing_reparent,
+    handoff_configure_error, handoff_missing_configure, handoff_missing_old_parent,
+    handoff_disconnect, handoff_shared_budget, handoff_old_parent_error,
+    handoff_modes
+};
+struct HandoffPeer : GeometryPeer {unsigned extra_bytes=0;};
+static constexpr xcb_window_t handoff_root=0x100,handoff_target=0x200103,handoff_middle=0x200104;
+static gpointer handoff_peer(gpointer user) {
+    auto *p=static_cast<HandoffPeer *>(user);const int fd=p->fd;
+    const auto end=g_get_monotonic_time()+3500*1000;
+    auto finish=[&]()->gpointer {
+        if(p->mode!=handoff_disconnect) {
+            while(g_get_monotonic_time()<end) {
+                pollfd event{fd,POLLIN,0};const auto ready=poll(&event,1,20);
+                if(ready<0&&errno==EINTR)continue;
+                if(ready>0) {
+                    unsigned char bytes[64];const auto count=recv(fd,bytes,sizeof(bytes),0);
+                    if(count==0){p->eof=true;break;}
+                    if(count<0)break;
+                    p->extra_bytes+=unsigned(count);
+                }
+            }
+            p->expired=!p->eof;
+        }
+        close(fd);return nullptr;
+    };
+    if(!plain_peer_setup(fd,end,p->caller))return finish();
+    auto request=[&](auto &value,uint8_t opcode,unsigned payload_bytes=0) {
+        if(!setup_read(fd,&value,sizeof(value),end)||value.major_opcode!=opcode||
+           value.length!=(sizeof(value)+payload_bytes)/4)return false;
+        ++p->requests;return true;
+    };
+    auto geometry=[&](uint16_t sequence,unsigned width,unsigned height,xcb_window_t root=handoff_root) {
+        xcb_get_geometry_reply_t value{};value.response_type=1;value.sequence=sequence;
+        value.depth=24;value.root=root;value.width=width;value.height=height;
+        std::array<unsigned char,32> wire{};memcpy(wire.data(),&value,sizeof(value));
+        return send(fd,wire.data(),wire.size(),MSG_NOSIGNAL)==ssize_t(wire.size());
+    };
+    auto error=[&](uint16_t sequence,uint8_t opcode,xcb_window_t resource) {
+        xcb_generic_error_t value{};value.error_code=XCB_WINDOW;value.sequence=sequence;
+        value.major_code=opcode;value.resource_id=resource;
+        return send(fd,&value,32,MSG_NOSIGNAL)==32;
+    };
+    auto focus_request=[&]() {
+        xcb_get_input_focus_request_t value{};
+        return request(value,XCB_GET_INPUT_FOCUS);
+    };
+    auto focus_reply=[&]() {
+        xcb_get_input_focus_reply_t value{};value.response_type=1;
+        value.sequence=uint16_t(p->requests);value.focus=handoff_target;
+        std::array<unsigned char,32> wire{};memcpy(wire.data(),&value,sizeof(value));
+        return send(fd,wire.data(),wire.size(),MSG_NOSIGNAL)==ssize_t(wire.size());
+    };
+    xcb_get_geometry_request_t own{};
+    if(!request(own,XCB_GET_GEOMETRY)||own.drawable!=geometry_child)return finish();
+    if(p->mode==handoff_missing_own){p->valid=true;return finish();}
+    if(p->mode==handoff_success)g_usleep(300000);
+    if(p->mode==handoff_shared_budget)g_usleep(600000);
+    if(!geometry(1,200,120))return finish();
+    const bool wrapper=p->mode==handoff_descendant||p->mode==handoff_ancestry_budget;
+    if(wrapper) {
+        for(auto window:{handoff_target,handoff_middle}) {
+            xcb_query_tree_request_t value{};
+            if(!request(value,XCB_QUERY_TREE)||value.window!=window)return finish();
+            if(p->mode==handoff_ancestry_budget)g_usleep(600000);
+            xcb_query_tree_reply_t reply{};reply.response_type=1;
+            reply.sequence=uint16_t(p->requests);reply.root=handoff_root;
+            reply.parent=p->mode==handoff_descendant?geometry_parent:
+                window==handoff_target?handoff_middle:handoff_root;
+            if(p->mode==handoff_descendant||window==handoff_middle)p->valid=true;
+            if(send(fd,&reply,32,MSG_NOSIGNAL)!=32)return finish();
+            if(p->mode==handoff_descendant)return finish();
+        }
+        // An incorrect per-query deadline can continue through the complete
+        // exchange. Its accepted state/count must fail the unchanged oracle.
+    }
+    xcb_get_geometry_request_t target{};
+    if(!request(target,XCB_GET_GEOMETRY)||target.drawable!=handoff_target)return finish();
+    if(p->mode==handoff_missing_target){p->valid=true;return finish();}
+    if(p->mode==handoff_target_error) {
+        p->valid=true;(void)error(uint16_t(p->requests),XCB_GET_GEOMETRY,handoff_target);return finish();
+    }
+    if(!geometry(uint16_t(p->requests),400,240,p->mode==handoff_foreign_root?0x999:handoff_root))return finish();
+    if(p->mode==handoff_foreign_root){p->valid=true;return finish();}
+    xcb_reparent_window_request_t reparent{};
+    if(!request(reparent,XCB_REPARENT_WINDOW)||reparent.window!=geometry_child||
+       reparent.parent!=handoff_target||reparent.x||reparent.y)return finish();
+    const auto reparent_sequence=uint16_t(p->requests);
+    if(!focus_request())return finish();
+    if(p->mode==handoff_missing_reparent||p->mode==handoff_disconnect) {
+        p->valid=true;return finish();
+    }
+    if(p->mode==handoff_reparent_error) {
+        p->valid=true;
+        if(error(reparent_sequence,XCB_REPARENT_WINDOW,geometry_child))(void)focus_reply();
+        return finish();
+    }
+    if(p->mode==handoff_success)g_usleep(300000);
+    if(p->mode==handoff_shared_budget){p->valid=true;g_usleep(600000);}
+    if(!focus_reply())return finish();
+    xcb_configure_window_request_t configure{};uint32_t size[2]{};
+    if(!request(configure,XCB_CONFIGURE_WINDOW,sizeof(size))||configure.window!=geometry_child||
+       configure.value_mask!=(XCB_CONFIG_WINDOW_WIDTH|XCB_CONFIG_WINDOW_HEIGHT)||
+       !setup_read(fd,size,sizeof(size),end)||size[0]!=400||size[1]!=240)return finish();
+    const auto configure_sequence=uint16_t(p->requests);
+    if(!focus_request())return finish();
+    if(p->mode==handoff_missing_configure){p->valid=true;return finish();}
+    if(p->mode==handoff_configure_error) {
+        p->valid=true;
+        if(error(configure_sequence,XCB_CONFIGURE_WINDOW,geometry_child))(void)focus_reply();
+        return finish();
+    }
+    if(!focus_reply())return finish();
+    if(!wrapper) {
+        xcb_change_window_attributes_request_t attributes{};uint32_t mask=1;
+        if(!request(attributes,XCB_CHANGE_WINDOW_ATTRIBUTES,sizeof(mask))||
+           attributes.window!=geometry_parent||attributes.value_mask!=XCB_CW_EVENT_MASK||
+           !setup_read(fd,&mask,sizeof(mask),end)||mask)return finish();
+        const auto attributes_sequence=uint16_t(p->requests);
+        if(!focus_request())return finish();
+        if(p->mode==handoff_missing_old_parent){p->valid=true;return finish();}
+        if(p->mode==handoff_old_parent_error&&
+           !error(attributes_sequence,XCB_CHANGE_WINDOW_ATTRIBUTES,geometry_parent))return finish();
+        if(!focus_reply())return finish();
+    }
+    xcb_change_window_attributes_request_t attributes{};uint32_t mask=0;
+    if(!request(attributes,XCB_CHANGE_WINDOW_ATTRIBUTES,sizeof(mask))||
+       attributes.window!=handoff_target||attributes.value_mask!=XCB_CW_EVENT_MASK||
+       !setup_read(fd,&mask,sizeof(mask),end)||mask!=XCB_EVENT_MASK_STRUCTURE_NOTIFY)return finish();
+    xcb_map_window_request_t map{};
+    if(!request(map,XCB_MAP_WINDOW)||map.window!=geometry_child)return finish();
+    if(wrapper) {
+        xcb_destroy_window_request_t destroy{};
+        if(!request(destroy,XCB_DESTROY_WINDOW)||destroy.window!=geometry_parent)return finish();
+    }
+    p->valid=true;return finish();
+}
+static void handoff_exchanges() {
+    for(unsigned mode=0;mode<handoff_modes;++mode) {
+        const auto before=setup_fd_count();int sockets[2]{};
+        need(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets),"owned handoff socket pair");
+        HandoffPeer peer{};peer.fd=sockets[1];peer.mode=mode;
+        auto *server=g_thread_new("owned-field-handoff",handoff_peer,&peer);
+        auto *connection=xcb_connect_to_fd(sockets[0],nullptr);
+        const bool connected=!xcb_connection_has_error(connection);
+        const bool wrapper=mode==handoff_descendant||mode==handoff_ancestry_budget;
+        xcb_window_t parent=geometry_parent,standalone=wrapper?geometry_parent:0;
+        bool embedded=!wrapper,accepted=false,created=false;
+        unsigned width=17,height=19;std::string failure;discarded_sequences=0;
+        const auto start=g_get_monotonic_time();
+        try {
+            if(connected)accepted=crystalhd_field::replace_window_bounded(connection,geometry_child,handoff_target,
+                parent,standalone,embedded,width,height,[&](xcb_window_t,gint64)->xcb_window_t {
+                    created=true;throw std::runtime_error("unexpected standalone handoff candidate");
+                });
+        }catch(const std::exception &e){failure=e.what();}
+        const auto elapsed=g_get_monotonic_time()-start;const auto discarded=discarded_sequences.load();
+        xcb_disconnect(connection);g_thread_join(server);
+        printf("field handoff mode=%u elapsed_us=%lld requests=%u extra=%u accepted=%u parent=%u standalone=%u embedded=%u cache=%ux%u discarded=%llu failure=%s\n",
+            mode,static_cast<long long>(elapsed),peer.requests,peer.extra_bytes,unsigned(accepted),parent,standalone,
+            unsigned(embedded),width,height,static_cast<unsigned long long>(discarded),failure.c_str());
+        need(connected&&peer.valid&&peer.caller==getpid()&&!peer.expired&&!created,
+            "owned handoff handshake/request/PID/retirement");
+        need((mode==handoff_disconnect||peer.eof)&&setup_fd_count()==before,"handoff connection/thread/FD retirement");
+        need(peer.extra_bytes==0,"no hidden handoff sync or mutation after rejection");
+        const unsigned requests[]={10,1,2,2,2,2,3,4,4,6,6,8,4,4,10};
+        need(peer.requests==requests[mode],"exact handoff phase requests");
+        if(mode==handoff_success||mode==handoff_old_parent_error) {
+            need(accepted&&failure.empty()&&parent==handoff_target&&!standalone&&embedded&&
+                width==400&&height==240&&discarded==0,"handoff commits attachment only after completion");
+            if(mode==handoff_success)need(elapsed>=400000,"delayed successful handoff exercised");
+        }else {
+            need(!accepted&&parent==geometry_parent&&standalone==(wrapper?geometry_parent:0)&&
+                embedded==!wrapper&&width==17&&height==19,"failed handoff preserves all local attachment fields");
+            if(mode<=handoff_ancestry_budget||mode==handoff_reparent_error)
+                need(failure.empty(),"read-only or explicitly rejected handoff is a safe rejection");
+            else {
+                need(!failure.empty(),"indeterminate mutation or later failure is fatal");
+                const char *phase=mode==handoff_configure_error||mode==handoff_missing_configure?"configure":
+                    mode==handoff_missing_old_parent?"old parent":"reparent";
+                need(failure.find(phase)!=std::string::npos,"handoff fatal error identifies its phase");
+            }
+        }
+        if(mode==handoff_missing_own)need(discarded==2,"missing own geometry retires its sequence");
+        if(mode==handoff_missing_target)need(discarded==4,"missing target geometry retires its sequence");
+        if(mode==handoff_ancestry_budget)need(discarded==8,"ancestry shares the original deadline");
+        if(mode==handoff_missing_reparent||mode==handoff_shared_budget)
+            need(discarded==24,"unconfirmed reparent retires checked request and barrier");
+        if(mode==handoff_missing_configure)need(discarded==96,"unconfirmed configure retires both sequences");
+        if(mode==handoff_missing_old_parent)need(discarded==384,"old parent cleanup retires both sequences");
+        if(mode==handoff_disconnect)need(discarded&8,"disconnect retires pending reparent request");
+        if(mode==handoff_missing_own||mode==handoff_missing_target||mode==handoff_ancestry_budget||
+           mode==handoff_missing_reparent||mode==handoff_missing_configure||
+           mode==handoff_missing_old_parent||mode==handoff_shared_budget)
+            need(elapsed>=800000,"handoff deadline path exercised");
+        need(elapsed<2*G_USEC_PER_SEC,"whole handoff response wait budget");
+    }
+    puts("PASS15 owned handoff controls; shared response budget, safe preflight rejection and fatal uncertain mutation");
+}
 int main(int argc,char **argv) {
  try {
     setvbuf(stdout,nullptr,_IOLBF,0);need(argc==1||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11]");
@@ -385,10 +587,11 @@ int main(int argc,char **argv) {
     atom_exchanges();
     geometry_exchanges();
     resize_exchanges();
+    handoff_exchanges();
     if(argc==2) {
         need(temperature()<75000,"thermal admission");
         {crystalhd_field::Window window(0);need(window.context!=EGL_NO_CONTEXT,"valid display after setup timeouts");}
-        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry and6 resize controls in same process");
+        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry,6 resize and15 handoff controls in same process");
     }
  }catch(const std::exception &e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
 }
