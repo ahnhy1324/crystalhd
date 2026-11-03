@@ -41,19 +41,20 @@ all three `upstream/` submission branches. Stable 1.2 is published. The complete
 1.3 RC2 and its 13 public assets are frozen; stable 1.3 remains deferred.
 The retained partial RC1 release entry is a draft, not the current public RC.
 
-The resize completion repair is integrated, with its existing current-host
-receipt and affected checks. The
-[November 3 source CI](https://github.com/ahnhy1324/crystalhd/actions/runs/41571818845)
+The field handoff repair, GTK native capture and selected Xv card comparison
+are integrated through [#643](https://github.com/ahnhy1324/crystalhd/pull/643).
+That [November 3 source CI](https://github.com/ahnhy1324/crystalhd/actions/runs/41586145294)
 passes both Ubuntu userspaces, ten kernel/architecture lanes and the final gate
-(15 successful jobs, two intended component skips). Its initial runner package
-installation failure remains visible in the earlier attempt. This is source CI,
+(15 successful jobs, two intended component skips). The earlier
+[checkpoint's runner package-install failure](https://github.com/ahnhy1324/crystalhd/actions/runs/41571818845)
+remains visible in its first attempt. This is source CI,
 not new hardware or release qualification.
 
 | Order | Existing owner and next work | Completion or disposition |
 | --- | --- | --- |
 | Completed subset | #530: explicit `replace()` geometry/ancestry and checked handoff completion waits now share a response deadline; resize was already complete. | Read-only rejection preserves attachment; an indeterminate mutation fails through worker cleanup. [Current-host receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): 15 new embedding controls per native/sanitized variant, actual no-draw reopen and native window/NV12 regressions pass. XID refill, writes, EGL and broader #530 research remain outside this completed subset. |
 | 1, parallel diagnosis | #623: investigate the intermittent GTK CSS assertion/SIGSEGV. The existing Ubuntu24 GTK invocation now captures native/Python stacks in one execution; the validation-teardown/next-window theory remains a hypothesis. | Capture the original failing operation, then fix an established own defect or document a demonstrated external limitation. [Diagnostic controls](tests/fixtures/issue400/gtk-native-capture-20261103.json) pass, but the original crash remains unreproduced. Continue other work while awaiting useful failure evidence; do not loop clean suites or call a green CI run a root-cause fix. |
-| 2 | #513: the selected current-card30s FIFO/latest A/B and ABBA CPU/audio comparison is complete; continue queue-age/submit-to-ACK attribution and representative congestion, then broader/endurance work. | [Current-card receipt](tests/fixtures/issue513/latest-card-abba-20261103.json): six sessions pass EOS/source counts/actual Pulse clock/retirement; matched CPU40.16% FIFO vs40.23% latest, zero intentional replacements, no demonstrated gain. Queue age/ACK latency are not public metrics yet; add bounded observation before claiming latency. Keep FIFO default. |
+| 2 | #513: default-off local timing and initial current-card observations are complete; continue representative congestion and attribution, then broader/endurance work. | [Timing receipt](tests/fixtures/issue513/xv-timing-20261103.json): device-free5 and actual-X11 32 per native/sanitized variant pass; FIFO/latest collect1501 ACK samples each (mean3.570/3.558ms), default-off records zero samples. These are local request-to-reader observations; current-card pending/residence is unexercised, no gain is demonstrated. Preserve the earlier six-run CPU/audio baseline and FIFO default. |
 | 3 | #445/#477: extend selected stock-client seek/Stop/reopen and centered Off/CPU-fallback/29.97 cases. | Source-bound pixels/PTS, ROI/borders and object return conclusions for the selected cases, using the accepted renderer/QoS policy. |
 | 4 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
 | 5 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
@@ -199,8 +200,20 @@ shelve the work or silently exclude implemented features.
    Pulse clock, no detected A/V drift, clean ownership and maximum60C.
    Matched ABBA CPU is40.16% FIFO/40.23% latest with zero intentional
    replacements; replacement behavior/benefit is not demonstrated here.
-   Queue age/ACK latency, congested performance, broader formats/controls,
-   physical presentation and endurance remain open. No default promotion.
+   The subsequent default-off `observe-timing` property now records local
+   request-to-ACK receipt and eventually submitted pending-source residence
+   count/sum/max. The [timing receipt](tests/fixtures/issue513/xv-timing-20261103.json)
+   records device-free5 and actual-X11 32 groups per native/sanitized variant,
+   retained pixels/PTS/ownership and exact final-source residence, including
+   replacement/PAUSED/error/late/missing-ACK/terminal controls and saturation.
+   Current-card FIFO/latest timing-on and FIFO timing-off each decode750
+   originals, render1500 buffers and reach EOS with actual Pulse audio/clock
+   and clean ownership. Timing-on ACK means3.570/3.558ms are local receipt
+   observations; this route has no actual pending source or replacement.
+   Off records zero samples; maximum57C, kernel errors0. No latency benefit,
+   percentile, server/GPU/display-time or default promotion follows.
+   Representative congestion/pending residence, broader formats/controls,
+   physical presentation and endurance remain open.
    Player `--video-output xv-async --xv-latest-frame` now selects this arm
    before output starts, rejects older plugins explicitly when selected and
    reports intentional replacements separately from QoS drops before close.

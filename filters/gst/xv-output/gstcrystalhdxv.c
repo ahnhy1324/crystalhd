@@ -54,6 +54,7 @@ typedef struct {
   GstClockTime pts;
   gint64 submitted;
 } XvFlight;
+typedef struct { guint64 count, sum, max; } XvTiming;
 struct XvContext {
   gint references, stopping, flushing;
   GMutex lock;
@@ -78,6 +79,9 @@ struct XvContext {
   GstVideoInfo latest_info;
   guint64 latest_epoch, latest_serial, latest_queued, latest_replaced, latest_submitted, latest_cancelled;
   gboolean latest_frame;
+  gboolean observe_timing, timing_overflow;
+  gint64 latest_queued_us;
+  XvTiming ack_receipt, latest_residence;
   GstVideoInfo last_info;
   guint64 last_epoch, video_submitted, redraw_submitted;
   guint redraw_suspended;
@@ -94,6 +98,19 @@ typedef enum { XV_VIDEO, XV_REDRAW, XV_LATEST } XvSubmitKind;
 static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
     GstBuffer *buffer, XvMemory *direct, XvSubmitKind kind, guint64 epoch, guint64 serial);
 
+/* Diagnostic aggregates never wrap or change playback/error policy. */
+static guint64 timing_add(guint64 value, guint64 delta, gboolean *overflow)
+{
+  if (delta > G_MAXUINT64 - value) { *overflow = TRUE; return G_MAXUINT64; }
+  return value + delta;
+}
+static void record_timing_locked(XvContext *c, XvTiming *timing, guint64 us)
+{
+  timing->count = timing_add(timing->count, 1, &c->timing_overflow);
+  timing->sum = timing_add(timing->sum, us, &c->timing_overflow);
+  timing->max = MAX(timing->max, us);
+}
+
 /* Transfer ownership to the caller; Gst unref may reenter the pool/context. */
 static GstBuffer *forget_picture_locked(XvContext *c)
 {
@@ -107,6 +124,7 @@ static GstBuffer *forget_latest_locked(XvContext *c)
 {
   GstBuffer *old = c->latest_buffer;
   if (old) { c->latest_buffer = NULL; c->latest_cancelled++; }
+  c->latest_queued_us = 0;
   g_cond_broadcast(&c->changed);
   return old;
 }
@@ -441,9 +459,18 @@ static void receive_locked(XvContext *c, GstBuffer **release, guint *n)
           owner = &c->flights[i];
         }
       if (!owner) { c->stale++; context_error(c, "Stale or mismatched shared image completion"); }
-      else if (g_get_monotonic_time() - owner->submitted > XV_TIMEOUT_US)
-        context_error(c, "Shared image completion exceeded its deadline");
-      else if (!c->failed) retire_locked(c, owner, TRUE, release, n);
+      else {
+        /* Reuse the existing deadline observation even when timing is off.
+         * This is reader receipt time, not a server/GPU/scanout timestamp. */
+        gint64 received = g_get_monotonic_time();
+        if (received - owner->submitted > XV_TIMEOUT_US)
+          context_error(c, "Shared image completion exceeded its deadline");
+        else if (!c->failed) {
+          if (c->observe_timing)
+            record_timing_locked(c, &c->ack_receipt, received - owner->submitted);
+          retire_locked(c, owner, TRUE, release, n);
+        }
+      }
     } else if (type == XCB_CONFIGURE_NOTIFY) {
       const xcb_configure_notify_event_t *e = (const void *)raw;
       if (e->window == c->window) {
@@ -695,6 +722,7 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
       if (old) c->latest_replaced++;
       c->latest_buffer = gst_buffer_ref(buffer); c->latest_info = *info;
       c->latest_epoch = epoch; c->latest_serial++; c->latest_queued++;
+      c->latest_queued_us = c->observe_timing ? g_get_monotonic_time() : 0;
       wake_context(c); g_cond_broadcast(&c->changed);
       g_mutex_unlock(&c->lock); gst_video_frame_unmap(&frame);
       if (old) gst_buffer_unref(old);
@@ -775,14 +803,19 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
             .sequence = sequence, .generation = m->generation, .epoch = c->epoch,
             .pts = GST_BUFFER_PTS(buffer), .submitted = g_get_monotonic_time()};
         m->server_owned = TRUE; c->pending++; c->submitted++;
+        guint64 residence_us = 0;
         if (queued) {
+          if (c->observe_timing) residence_us = f->submitted - c->latest_queued_us;
           consumed = c->latest_buffer; c->latest_buffer = NULL; c->latest_submitted++;
+          c->latest_queued_us = 0;
           g_cond_broadcast(&c->changed);
         }
         if (redraw) c->redraw_submitted++; else c->video_submitted++;
         if (direct) c->pool_submitted++;
         if (xcb_flush(c->connection) > 0) {
           result = GST_FLOW_OK;
+          if (queued && c->observe_timing)
+            record_timing_locked(c, &c->latest_residence, residence_us);
           if (!redraw) {
             old = c->last_buffer; c->last_buffer = gst_buffer_ref(buffer);
             c->last_info = *info; c->last_epoch = c->epoch;
@@ -880,13 +913,14 @@ static void crystal_xv_pool_class_init(CrystalXvPoolClass *klass)
 static void crystal_xv_pool_init(CrystalXvPool *pool) { (void)pool; }
 
 typedef struct { GstVideoSink parent; GMutex lock, control; XvContext *context;
-  GstVideoInfo info; gchar *display; guintptr window; guint requested_port; gboolean latest_frame; GstStructure *last_stats; } GstCrystalHdXv;
+  GstVideoInfo info; gchar *display; guintptr window; guint requested_port;
+  gboolean latest_frame, observe_timing; GstStructure *last_stats; } GstCrystalHdXv;
 typedef struct { GstVideoSinkClass parent; } GstCrystalHdXvClass;
 static void overlay_init(GstVideoOverlayInterface *interface);
 G_DEFINE_TYPE_WITH_CODE(GstCrystalHdXv, gst_crystalhd_xv, GST_TYPE_VIDEO_SINK,
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_OVERLAY, overlay_init))
 #define XV_SINK(o) ((GstCrystalHdXv *)(o))
-enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS, PROP_PORT, PROP_LATEST_FRAME };
+enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS, PROP_PORT, PROP_LATEST_FRAME, PROP_OBSERVE_TIMING };
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK,
     GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format=UYVY,width=[2,4096],height=[1,2160],"
       "framerate=[0/1,2147483647/1],interlace-mode=progressive"));
@@ -905,6 +939,16 @@ static GstStructure *stats_locked(XvContext *c)
       "latest-frame", G_TYPE_BOOLEAN, c->latest_frame, "latest-pending", G_TYPE_BOOLEAN, c->latest_buffer != NULL,
       "latest-queued", G_TYPE_UINT64, c->latest_queued, "latest-replaced", G_TYPE_UINT64, c->latest_replaced,
       "latest-submitted", G_TYPE_UINT64, c->latest_submitted, "latest-cancelled", G_TYPE_UINT64, c->latest_cancelled,
+      "observe-timing", G_TYPE_BOOLEAN, c->observe_timing,
+      "timing-overflow", G_TYPE_BOOLEAN, c->timing_overflow,
+      "ack-receipt-count", G_TYPE_UINT64, c->ack_receipt.count,
+      "ack-receipt-us-sum", G_TYPE_UINT64, c->ack_receipt.sum,
+      "ack-receipt-us-max", G_TYPE_UINT64, c->ack_receipt.max,
+      "latest-residence-count", G_TYPE_UINT64, c->latest_residence.count,
+      "latest-residence-us-sum", G_TYPE_UINT64, c->latest_residence.sum,
+      "latest-residence-us-max", G_TYPE_UINT64, c->latest_residence.max,
+      "latest-pending-age-us", G_TYPE_UINT64,
+          c->observe_timing && c->latest_buffer ? (guint64)(g_get_monotonic_time() - c->latest_queued_us) : 0,
       "terminal-retired", G_TYPE_UINT64, c->terminal, "copied-bytes", G_TYPE_UINT64, c->copied_bytes,
       "pool-submitted", G_TYPE_UINT64, c->pool_submitted, "pending", G_TYPE_UINT, c->pending,
       "images", G_TYPE_UINT, c->image_count, "bytes", G_TYPE_UINT, c->image_bytes,
@@ -921,7 +965,7 @@ static gboolean sink_start(GstBaseSink *base)
   g_mutex_lock(&s->control);
   g_mutex_lock(&s->lock);
   gchar *display_name = g_strdup(s->display); guintptr window = s->window; guint port = s->requested_port;
-  gboolean latest_frame = s->latest_frame;
+  gboolean latest_frame = s->latest_frame, observe_timing = s->observe_timing;
   g_mutex_unlock(&s->lock);
   GstBus *bus = gst_element_get_bus(GST_ELEMENT(s));
   GError *error = NULL;
@@ -933,7 +977,7 @@ static gboolean sink_start(GstBaseSink *base)
     GST_ELEMENT_ERROR(s, RESOURCE, OPEN_READ_WRITE, ("%s", error->message), (NULL));
     g_error_free(error); return FALSE;
   }
-  g_mutex_lock(&c->lock); c->latest_frame = latest_frame; g_mutex_unlock(&c->lock);
+  g_mutex_lock(&c->lock); c->latest_frame = latest_frame; c->observe_timing = observe_timing; g_mutex_unlock(&c->lock);
   g_mutex_lock(&s->lock); s->context = c; g_mutex_unlock(&s->lock);
   g_mutex_unlock(&s->control);
   return TRUE;
@@ -1325,6 +1369,11 @@ static void sink_set_property(GObject *object, guint id, const GValue *value, GP
     if (!s->context) s->latest_frame = g_value_get_boolean(value);
     else GST_WARNING_OBJECT(s, "Latest-frame changes take effect only while output is stopped");
     g_mutex_unlock(&s->lock); g_mutex_unlock(&s->control);
+  } else if (id == PROP_OBSERVE_TIMING) {
+    g_mutex_lock(&s->control); g_mutex_lock(&s->lock);
+    if (!s->context) s->observe_timing = g_value_get_boolean(value);
+    else GST_WARNING_OBJECT(s, "Timing observation changes take effect only while output is stopped");
+    g_mutex_unlock(&s->lock); g_mutex_unlock(&s->control);
   } else if (id == PROP_DISPLAY) {
     g_mutex_lock(&s->lock);
     if (!s->context) { g_free(s->display); s->display = g_value_dup_string(value); }
@@ -1341,6 +1390,8 @@ static void sink_get_property(GObject *object, guint id, GValue *value, GParamSp
     g_mutex_lock(&s->lock); g_value_set_uint(value, s->requested_port); g_mutex_unlock(&s->lock);
   } else if (id == PROP_LATEST_FRAME) {
     g_mutex_lock(&s->lock); g_value_set_boolean(value, s->latest_frame); g_mutex_unlock(&s->lock);
+  } else if (id == PROP_OBSERVE_TIMING) {
+    g_mutex_lock(&s->lock); g_value_set_boolean(value, s->observe_timing); g_mutex_unlock(&s->lock);
   } else if (id == PROP_STATS) {
     XvContext *c = sink_context(s);
     if (c) {
@@ -1376,6 +1427,9 @@ static void gst_crystalhd_xv_class_init(GstCrystalHdXvClass *klass)
       0, G_MAXUINT, 0, G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property(object, PROP_LATEST_FRAME, g_param_spec_boolean("latest-frame", "Latest pending frame",
       "Experimental: replace one unsent picture when the output ring is busy; submitted slots remain owned until completion",
+      FALSE, G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property(object, PROP_OBSERVE_TIMING, g_param_spec_boolean("observe-timing", "Observe local timing",
+      "Aggregate local request-to-ACK receipt and latest-pending residence times; not physical display timing",
       FALSE, G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property(object, PROP_STATS, g_param_spec_boxed("xv-stats", "Xv statistics",
       "Submission/SHM ownership counters; not physical display statistics", GST_TYPE_STRUCTURE,

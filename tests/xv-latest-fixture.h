@@ -78,6 +78,28 @@ static void latest_ledger(XvContext *c)
 {
   g_assert_cmpuint(c->latest_queued, ==, c->latest_replaced + c->latest_submitted +
       c->latest_cancelled + (c->latest_buffer != NULL));
+  if (!c->observe_timing) {
+    g_assert_cmpint(c->latest_queued_us, ==, 0); g_assert_false(c->timing_overflow);
+    g_assert_cmpuint(c->ack_receipt.count, ==, 0); g_assert_cmpuint(c->ack_receipt.sum, ==, 0);
+    g_assert_cmpuint(c->ack_receipt.max, ==, 0); g_assert_cmpuint(c->latest_residence.count, ==, 0);
+    g_assert_cmpuint(c->latest_residence.sum, ==, 0); g_assert_cmpuint(c->latest_residence.max, ==, 0);
+  }
+}
+static void latest_timing_snapshot(GstElement *sink, XvContext *c)
+{
+  GstStructure *stats = sink_stats(sink); gboolean observed = FALSE, overflow = TRUE;
+  g_assert_true(gst_structure_get_boolean(stats, "observe-timing", &observed));
+  g_assert_true(gst_structure_get_boolean(stats, "timing-overflow", &overflow));
+  g_mutex_lock(&c->lock); g_assert_true(c->closed);
+  g_assert_cmpint(observed, ==, c->observe_timing); g_assert_cmpint(overflow, ==, c->timing_overflow);
+  g_assert_cmpuint(stat64(stats, "ack-receipt-count"), ==, c->ack_receipt.count);
+  g_assert_cmpuint(stat64(stats, "ack-receipt-us-sum"), ==, c->ack_receipt.sum);
+  g_assert_cmpuint(stat64(stats, "ack-receipt-us-max"), ==, c->ack_receipt.max);
+  g_assert_cmpuint(stat64(stats, "latest-residence-count"), ==, c->latest_residence.count);
+  g_assert_cmpuint(stat64(stats, "latest-residence-us-sum"), ==, c->latest_residence.sum);
+  g_assert_cmpuint(stat64(stats, "latest-residence-us-max"), ==, c->latest_residence.max);
+  g_assert_cmpuint(stat64(stats, "latest-pending-age-us"), ==, 0);
+  latest_ledger(c); g_mutex_unlock(&c->lock); gst_structure_free(stats);
 }
 static void latest_rgb(XvContext *c, guint8 rgb[3])
 {
@@ -139,11 +161,15 @@ static void latest_coalescing(guint mode, guint control)
 {
   if (!x11_enabled()) return;
   LatestOutput output; latest_output_open(&output);
-  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", TRUE, NULL);
+  gboolean timing = mode == 1 && control == 0;
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", TRUE,
+      "observe-timing", timing, NULL);
   gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), output.window);
   g_assert_true(sink_start(GST_BASE_SINK(sink))); XvContext *c = sink_context(XV_SINK(sink));
   gboolean enabled = FALSE; g_object_set(sink, "latest-frame", FALSE, NULL);
   g_object_get(sink, "latest-frame", &enabled, NULL); g_assert_true(enabled);
+  g_object_set(sink, "observe-timing", !timing, NULL);
+  g_object_get(sink, "observe-timing", &enabled, NULL); g_assert_cmpint(enabled, ==, timing);
   GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
   g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
   GstBufferPool *pool = mode ? make_pool(sink, &info) : NULL;
@@ -168,9 +194,20 @@ static void latest_coalescing(guint mode, guint control)
     pixels[i] = g_memdup2(frozen[i].memory->data, frozen[i].memory->size);
   }
   g_mutex_unlock(&c->lock);
+  gint64 published = 0;
   for (guint id = 3; id < 8; id++) {
     GstBuffer *buffer = latest_source(mode == 1 ? pool : NULL, &info, id);
+    gint64 before = g_get_monotonic_time();
     g_assert_cmpint(submit_buffer(c, &info, buffer, buffer_memory(buffer)), ==, GST_FLOW_OK);
+    gint64 after = g_get_monotonic_time();
+    if (timing) {
+      g_mutex_lock(&c->lock);
+      g_assert_cmpint(c->latest_queued_us, >=, before); g_assert_cmpint(c->latest_queued_us, <=, after);
+      g_assert_cmpint(c->latest_queued_us, >, published); published = c->latest_queued_us;
+      g_assert_cmpuint(c->ack_receipt.count, ==, 0); g_assert_cmpuint(c->latest_residence.count, ==, 0);
+      g_mutex_unlock(&c->lock);
+      if (id != 7) g_usleep(1000); /* Distinguish replacement publication times. */
+    }
     if (id == 7) expected = gst_buffer_ref(buffer);
     gst_buffer_unref(buffer);
   }
@@ -178,6 +215,12 @@ static void latest_coalescing(guint mode, guint control)
   g_assert_cmpuint(c->pending, ==, 3); g_assert_cmpuint(c->video_submitted, ==, 3);
   g_assert_cmpuint(c->latest_queued, ==, 5); g_assert_cmpuint(c->latest_replaced, ==, 4);
   g_assert_true(c->latest_buffer == expected); g_assert_true(c->last_buffer == first[2]); latest_ledger(c);
+  if (timing) {
+    gint64 before = g_get_monotonic_time(); GstStructure *stats = stats_locked(c);
+    gint64 after = g_get_monotonic_time(); guint64 age = stat64(stats, "latest-pending-age-us");
+    g_assert_cmpuint(age, >=, before - published); g_assert_cmpuint(age, <=, after - published);
+    gst_structure_free(stats);
+  }
   for (guint i = 0; i < 3; i++) {
     XvFlight *f = &c->flights[i]; g_assert_true(f->memory == frozen[i].memory);
     g_assert_true(f->buffer == frozen[i].buffer); g_assert_cmpuint(f->pts, ==, frozen[i].pts);
@@ -215,6 +258,13 @@ static void latest_coalescing(guint mode, guint control)
   for (guint i = 0; i < 3; i++) if (c->flights[i].memory) last = &c->flights[i];
   g_assert_nonnull(last); g_assert_cmpuint(last->pts, ==, 140 * GST_MSECOND);
   g_assert_true(mode == 1 ? last->buffer == expected : last->buffer == NULL);
+  if (timing) {
+    guint64 expected_us = last->submitted - published;
+    g_assert_cmpuint(c->ack_receipt.count, ==, 3); g_assert_cmpuint(c->latest_residence.count, ==, 1);
+    g_assert_cmpuint(c->latest_residence.sum, ==, expected_us);
+    g_assert_cmpuint(c->latest_residence.max, ==, expected_us); g_assert_cmpint(c->latest_queued_us, ==, 0);
+    g_assert_false(c->timing_overflow);
+  }
   latest_memory(last->memory, &info, 7); g_mutex_unlock(&c->lock);
   guint8 actual[3], reference[3]; g_mutex_lock(&c->lock); latest_rgb(c, actual); g_mutex_unlock(&c->lock);
   latest_release(c, 1); g_thread_join(thread);
@@ -241,7 +291,9 @@ static void latest_coalescing(guint mode, guint control)
   } else g_assert_cmpmem(actual, 3, reference, 3);
   g_assert_cmpuint(c->video_submitted, ==, 5);
   g_assert_cmpuint(c->acknowledged, ==, c->submitted); latest_ledger(c); c->redraw_suspended--;
+  if (timing) { g_assert_cmpuint(c->ack_receipt.count, ==, 5); g_assert_cmpuint(c->latest_residence.count, ==, 1); }
   g_mutex_unlock(&c->lock); g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+  latest_timing_snapshot(sink, c);
   for (guint i = 0; i < 3; i++) gst_buffer_unref(first[i]);
   gst_buffer_unref(expected); if (new_layout) gst_buffer_unref(new_layout);
   if (pool) { g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool); }
@@ -344,7 +396,7 @@ static void latest_pipeline_begin(LatestPipeline *p, gboolean seekable)
   memset(p, 0, sizeof(*p)); latest_output_open(&p->output);
   GError *error = NULL;
   p->pipeline = gst_parse_launch("appsrc name=input format=time is-live=true ! "
-      "crystalhdxvsink name=output latest-frame=true sync=false qos=false "
+      "crystalhdxvsink name=output latest-frame=true observe-timing=true sync=false qos=false "
       "show-preroll-frame=false enable-last-sample=false", &error);
   g_assert_no_error(error); p->source = gst_bin_get_by_name(GST_BIN(p->pipeline), "input");
   p->sink = gst_bin_get_by_name(GST_BIN(p->pipeline), "output"); p->bus = gst_element_get_bus(p->pipeline);
@@ -367,12 +419,14 @@ static void latest_pipeline_begin(LatestPipeline *p, gboolean seekable)
   g_assert_true(queued); g_mutex_lock(&p->c->lock);
   g_assert_nonnull(p->c->latest_buffer); g_assert_cmpuint(GST_BUFFER_OFFSET(p->c->latest_buffer), ==, 7);
   g_assert_cmpuint(GST_BUFFER_PTS(p->c->latest_buffer), ==, 140 * GST_MSECOND); latest_ledger(p->c);
+  g_assert_true(p->c->observe_timing); g_assert_cmpint(p->c->latest_queued_us, >, 0);
+  g_assert_cmpuint(p->c->ack_receipt.count, ==, 0); g_assert_cmpuint(p->c->latest_residence.count, ==, 0);
   g_mutex_unlock(&p->c->lock);
 }
 static void latest_pipeline_end(LatestPipeline *p)
 {
   g_assert_cmpint(gst_element_set_state(p->pipeline, GST_STATE_NULL), !=, GST_STATE_CHANGE_FAILURE);
-  latest_unhold(p->c); context_unref(p->c);
+  latest_timing_snapshot(p->sink, p->c); latest_unhold(p->c); context_unref(p->c);
   gst_object_unref(p->source); gst_object_unref(p->sink); gst_object_unref(p->bus); gst_object_unref(p->pipeline);
   clean_contexts(); gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   while ((guint)g_atomic_int_get(&p->returned) != p->offered && g_get_monotonic_time() < end) g_usleep(1000);
@@ -392,6 +446,9 @@ static void test_latest_eos(void)
 {
   if (!x11_enabled()) return;
   LatestPipeline p; latest_pipeline_begin(&p, FALSE);
+  g_mutex_lock(&p.c->lock); gint64 published = p.c->latest_queued_us;
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 0); g_assert_cmpuint(p.c->latest_residence.count, ==, 0);
+  g_mutex_unlock(&p.c->lock);
   g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(p.source)), ==, GST_FLOW_OK); latest_wait_eos_drain(p.c);
   GstMessage *message = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
   g_assert_null(message);
@@ -403,10 +460,30 @@ static void test_latest_eos(void)
   g_assert_cmpuint(GST_BUFFER_PTS(p.c->last_buffer), ==, 140 * GST_MSECOND);
   XvFlight *last = NULL;
   for (guint i = 0; i < XV_DEPTH; i++) if (p.c->flights[i].memory) last = &p.c->flights[i];
-  g_assert_nonnull(last); latest_memory(last->memory, &p.info, 7); g_mutex_unlock(&p.c->lock);
+  g_assert_nonnull(last); latest_memory(last->memory, &p.info, 7);
+  guint64 residence_us = last->submitted - published;
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 3);
+  g_assert_cmpuint(p.c->ack_receipt.sum, >=, 3 * 600000);
+  g_assert_cmpuint(p.c->ack_receipt.max, >=, 600000);
+  g_assert_cmpuint(p.c->ack_receipt.max, <=, XV_TIMEOUT_US);
+  g_assert_cmpuint(p.c->latest_residence.count, ==, 1);
+  g_assert_cmpuint(p.c->latest_residence.sum, ==, residence_us);
+  g_assert_cmpuint(p.c->latest_residence.max, ==, residence_us);
+  g_assert_cmpint(p.c->latest_queued_us, ==, 0);
+  GstStructure *stats = stats_locked(p.c);
+  g_assert_cmpuint(stat64(stats, "latest-pending-age-us"), ==, 0); gst_structure_free(stats);
+  g_mutex_unlock(&p.c->lock);
   g_usleep(600000); latest_release(p.c, 1); await_message(p.pipeline, GST_MESSAGE_EOS);
   g_mutex_lock(&p.c->lock); g_assert_cmpuint(p.c->pending, ==, 0); g_assert_null(p.c->latest_buffer);
   g_assert_cmpuint(p.c->video_submitted, ==, 4); g_assert_cmpuint(p.c->latest_replaced, ==, 4);
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 4);
+  g_assert_cmpuint(p.c->ack_receipt.sum, >=, 4 * 600000);
+  g_assert_cmpuint(p.c->ack_receipt.max, <=, XV_TIMEOUT_US);
+  g_assert_cmpuint(p.c->latest_residence.count, ==, 1);
+  g_assert_cmpuint(p.c->latest_residence.sum, ==, residence_us); g_assert_false(p.c->timing_overflow);
+  g_test_message("Timing EOS:4 matched ACK receipt samples, local sum=%" G_GUINT64_FORMAT
+      "us max=%" G_GUINT64_FORMAT "us; final ID7 residence=%" G_GUINT64_FORMAT "us",
+      p.c->ack_receipt.sum, p.c->ack_receipt.max, residence_us);
   g_assert_cmpuint(p.c->acknowledged, ==, p.c->submitted); latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
   latest_pipeline_end(&p); g_test_message("Actual EOS waits for pending latest and its real matching final ACK");
 }
@@ -421,11 +498,13 @@ static void test_latest_flush_seek(void)
 {
   if (!x11_enabled()) return;
   LatestPipeline p; latest_pipeline_begin(&p, TRUE);
+  g_mutex_lock(&p.c->lock); gint64 published = p.c->latest_queued_us; g_mutex_unlock(&p.c->lock);
   g_assert_cmpint(gst_element_set_state(p.pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
   GstState state; g_assert_cmpint(gst_element_get_state(p.pipeline, &state, NULL, 50 * GST_MSECOND), !=, GST_STATE_CHANGE_FAILURE);
   g_assert_cmpint(state, ==, GST_STATE_PAUSED);
   g_mutex_lock(&p.c->lock); g_assert_nonnull(p.c->latest_buffer);
   g_assert_cmpuint(GST_BUFFER_OFFSET(p.c->latest_buffer), ==, 7); g_assert_cmpuint(p.c->latest_cancelled, ==, 0);
+  g_assert_cmpint(p.c->latest_queued_us, ==, published);
   g_mutex_unlock(&p.c->lock);
   LatestSeek job = {.pipeline = p.pipeline}; GThread *thread = g_thread_new("latest-flush-seek", latest_do_seek, &job);
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US; gboolean cancelled = FALSE;
@@ -434,6 +513,8 @@ static void test_latest_flush_seek(void)
     g_mutex_unlock(&p.c->lock); if (!cancelled) g_usleep(1000);
   }
   g_assert_true(cancelled); g_mutex_lock(&p.c->lock);
+  g_assert_cmpint(p.c->latest_queued_us, ==, 0); g_assert_cmpuint(p.c->latest_residence.count, ==, 0);
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 0);
   g_assert_cmpuint(p.c->pending, ==, 3); g_assert_cmpuint(p.c->video_submitted, ==, 3);
   for (guint i = 0; i < 3; i++) { g_assert_true(p.c->flights[i].memory->server_owned); latest_memory(p.c->flights[i].memory, &p.info, i); }
   latest_ledger(p.c); g_mutex_unlock(&p.c->lock); latest_release(p.c, 3);
@@ -449,6 +530,8 @@ static void test_latest_flush_seek(void)
   g_assert_cmpuint(p.c->latest_submitted, ==, 0); g_assert_cmpuint(p.c->latest_cancelled, ==, 1);
   g_assert_cmpuint(GST_BUFFER_OFFSET(p.c->last_buffer), ==, 8);
   g_assert_cmpuint(GST_BUFFER_PTS(p.c->last_buffer), ==, 400 * GST_MSECOND); latest_ledger(p.c);
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, p.c->acknowledged);
+  g_assert_cmpuint(p.c->latest_residence.count, ==, 0); g_assert_cmpint(p.c->latest_queued_us, ==, 0);
   g_mutex_unlock(&p.c->lock); latest_pipeline_end(&p);
   g_test_message("Actual pause preserves latest; flushing seek cancels it without reusing3 server-owned slots; original fresh ID8/PTS400ms reaches EOS");
 }
@@ -466,6 +549,9 @@ static void test_latest_submit_error(void)
   g_assert_cmpstr(p.c->failure, ==, "Xv image submission flush failed");
   g_assert_cmpuint(p.c->pending, ==, 0); g_assert_cmpuint(p.c->terminal, ==, 1);
   g_assert_cmpuint(p.c->acknowledged, ==, 3); g_assert_cmpuint(p.c->latest_submitted, ==, 1);
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 3); g_assert_cmpuint(p.c->latest_residence.count, ==, 0);
+  g_assert_cmpuint(p.c->latest_residence.sum, ==, 0); g_assert_cmpuint(p.c->latest_residence.max, ==, 0);
+  g_assert_cmpint(p.c->latest_queued_us, ==, 0);
   g_assert_null(p.c->latest_buffer); latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
   g_assert_null(g_atomic_pointer_get(&fail_flush_connection));
   GstMessage *eos = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS); g_assert_null(eos);
@@ -475,7 +561,8 @@ static void test_latest_stop_pool(void)
 {
   if (!x11_enabled()) return;
   LatestOutput output; latest_output_open(&output);
-  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", TRUE, NULL);
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", TRUE,
+      "observe-timing", TRUE, NULL);
   gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), output.window);
   g_assert_true(sink_start(GST_BASE_SINK(sink))); XvContext *c = sink_context(XV_SINK(sink));
   GstVideoInfo info = info_for(320, 240); GstCaps *caps = gst_video_info_to_caps(&info);
@@ -485,13 +572,18 @@ static void test_latest_stop_pool(void)
     buffers[i] = latest_source(pool, &info, i);
     g_assert_cmpint(submit_buffer(c, &info, buffers[i], buffer_memory(buffers[i])), ==, GST_FLOW_OK);
   }
-  latest_wait_held(3); g_assert_true(sink_unlock(GST_BASE_SINK(sink)));
-  g_mutex_lock(&c->lock); g_assert_true(c->latest_buffer == buffers[3]); g_assert_cmpuint(c->latest_cancelled, ==, 0); g_mutex_unlock(&c->lock);
+  latest_wait_held(3); g_mutex_lock(&c->lock); gint64 published = c->latest_queued_us;
+  g_assert_cmpint(published, >, 0); g_mutex_unlock(&c->lock); g_assert_true(sink_unlock(GST_BASE_SINK(sink)));
+  g_mutex_lock(&c->lock); g_assert_true(c->latest_buffer == buffers[3]); g_assert_cmpuint(c->latest_cancelled, ==, 0);
+  g_assert_cmpint(c->latest_queued_us, ==, published); g_mutex_unlock(&c->lock);
   g_assert_true(sink_stop(GST_BASE_SINK(sink))); latest_unhold(c); g_mutex_lock(&c->lock);
   g_assert_true(c->closed); g_assert_false(c->failed); g_assert_false(c->quarantined);
   g_assert_cmpuint(c->pending, ==, 0); g_assert_cmpuint(c->terminal, ==, 3);
   g_assert_cmpuint(c->latest_cancelled, ==, 1); g_assert_cmpuint(c->latest_submitted, ==, 0);
+  g_assert_cmpuint(c->ack_receipt.count, ==, 0); g_assert_cmpuint(c->ack_receipt.sum, ==, 0);
+  g_assert_cmpuint(c->latest_residence.count, ==, 0); g_assert_cmpint(c->latest_queued_us, ==, 0);
   g_assert_null(c->last_buffer); g_assert_null(c->latest_buffer); latest_ledger(c); g_mutex_unlock(&c->lock);
+  latest_timing_snapshot(sink, c);
   for (guint i = 0; i < 4; i++) gst_buffer_unref(buffers[i]);
   g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
   context_unref(c); gst_object_unref(sink); clean_contexts(); latest_output_close(&output);
@@ -512,7 +604,40 @@ static void test_latest_missing_ack(void)
   g_assert_cmpuint(p.c->pending, ==, 0); g_assert_cmpuint(p.c->terminal, ==, 3);
   g_assert_cmpuint(p.c->acknowledged, ==, 0); g_assert_cmpuint(p.c->latest_submitted, ==, 0);
   g_assert_cmpuint(p.c->latest_cancelled, ==, 1); g_assert_null(p.c->latest_buffer);
+  g_assert_cmpuint(p.c->ack_receipt.count, ==, 0); g_assert_cmpuint(p.c->ack_receipt.sum, ==, 0);
+  g_assert_cmpuint(p.c->ack_receipt.max, ==, 0); g_assert_cmpuint(p.c->latest_residence.count, ==, 0);
+  g_assert_cmpuint(p.c->latest_residence.sum, ==, 0); g_assert_cmpuint(p.c->latest_residence.max, ==, 0);
+  g_assert_cmpint(p.c->latest_queued_us, ==, 0); g_assert_false(p.c->timing_overflow);
   latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
   GstMessage *eos = gst_bus_timed_pop_filtered(p.bus, 20 * GST_MSECOND, GST_MESSAGE_EOS); g_assert_null(eos);
   latest_pipeline_end(&p); g_test_message("Missing old ACKs still fail the original per-flight deadline; unsent latest cancelled, positive detach, no successful EOS");
+}
+static void test_timing_late_ack(void)
+{
+  if (!x11_enabled()) return;
+  LatestPipeline p; latest_pipeline_begin(&p, FALSE);
+  GstBuffer *release[XV_DEPTH + 2]; guint n = 0;
+  g_mutex_lock(&p.c->lock); g_mutex_lock(&latest_event_lock);
+  const xcb_generic_event_t *event = g_queue_peek_head(&latest_events); g_assert_nonnull(event);
+  XvFlight *owner = NULL;
+  for (guint i = 0; i < XV_DEPTH; i++)
+    if (matches_locked(p.c, &p.c->flights[i], (const void *)event, event->full_sequence)) owner = &p.c->flights[i];
+  g_assert_nonnull(owner); g_mutex_unlock(&latest_event_lock);
+  /* Timestamp-only expiry control: preserve the real matching server event,
+   * source and request identity; do not claim an observed server stall. */
+  owner->submitted = g_get_monotonic_time() - XV_TIMEOUT_US - 1;
+  latest_release(p.c, 1); receive_locked(p.c, release, &n);
+  g_assert_cmpuint(n, ==, 0); g_assert_true(p.c->failed);
+  g_assert_cmpstr(p.c->failure, ==, "Shared image completion exceeded its deadline");
+  g_assert_cmpuint(p.c->acknowledged, ==, 0); g_assert_cmpuint(p.c->ack_receipt.count, ==, 0);
+  g_assert_cmpuint(p.c->ack_receipt.sum, ==, 0); g_mutex_unlock(&p.c->lock);
+  await_message(p.pipeline, GST_MESSAGE_ERROR);
+  gint64 end = g_get_monotonic_time() + 2 * XV_TIMEOUT_US; g_mutex_lock(&p.c->lock);
+  while (!p.c->closed && g_get_monotonic_time() < end) g_cond_wait_until(&p.c->changed, &p.c->lock, end);
+  g_assert_true(p.c->closed); g_assert_false(p.c->quarantined);
+  g_assert_cmpuint(p.c->terminal, ==, 3); g_assert_cmpuint(p.c->ack_receipt.count, ==, 0);
+  g_assert_cmpuint(p.c->latest_cancelled, ==, 1); g_assert_cmpuint(p.c->latest_residence.count, ==, 0);
+  g_assert_cmpint(p.c->latest_queued_us, ==, 0); latest_ledger(p.c); g_mutex_unlock(&p.c->lock);
+  latest_pipeline_end(&p);
+  g_test_message("Timestamp-only late matching ACK: original deadline error, no ACK/residence sample, terminal retirement remains separate");
 }
