@@ -1,0 +1,4 @@
+LIBAVCODEC_63 {
+    global: avcodec_receive_frame;
+    local: *;
+};

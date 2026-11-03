@@ -213,3 +213,53 @@ before field validation, so its default outcome alone is not proof of a valid
 field pair. Matching later public materializations are recorded separately,
 and the payload reader requires successful materialization for its selected
 bindings. These records do not independently measure physical field parity.
+
+## Actual returned AVFrame PTS (isolated observation)
+
+`make -C filters/vaapi frame-pts-observer FFMPEG63_INCLUDE=/path/to/headers`
+builds a separate OWN `frame-pts-observer/frame-pts-probe.so`. It requires the
+unchanged codec63.1.102/util61.1.102 public headers used by the original App;
+host codec62/util60 headers are unsuitable. No FFmpeg library is linked into
+the probe. The artifact is excluded from ordinary build/install/package paths.
+`check-frame-pts-observer` uses synthetic public-structure/provider controls;
+those controls do not establish the original runtime ABI.
+
+The optional prepare-only `--observe-frame-pts` mode of
+`vaapi-centered-controls-stock.py` freezes this explicit LD_PRELOAD observer
+and its reader alongside the existing original-App and fixture inputs. This
+is an instrumented diagnostic run. It does not replace the previous
+source-content-only receipts or qualify normal stock compatibility, release,
+GPU-reader completion or scanout. No external product source or binary is
+modified, and the rejected private FFmpeg candidate libraries are never used.
+
+The probe forwards `avcodec_receive_frame@LIBAVCODEC_63` unchanged. Only after
+a successful VAAPI return and verified original codec/util providers does it
+copy scalar PTS, best-effort timestamp, declared frame/packet time bases,
+`data[3]` surface identity and descriptive codec/frame/pool pointer identities.
+It does not retain frames, alter references or access picture bytes. A fixed
+bounded memory buffer replaces per-frame file output/allocation. The report
+is written at ordinary process shutdown; overflow, ABI/provider failure and
+incomplete output cannot qualify an observation. Return values and errno are
+preserved. Metadata capture still adds work, so timing/performance is not
+qualified by this probe.
+
+The JSONL report uses `crystalhd-frame-pts-v1`: one header, sequenced frame
+records and one complete footer. Each record brackets its metadata snapshot
+with CLOCK_MONOTONIC nanoseconds. PTS values retain the signed AV_NOPTS_VALUE
+sentinel. Unknown time bases remain unknown; a valid codec packet time base
+is explicitly identified when a frame time base is unset. Pointer identities
+may be reused and are descriptive only; display identity is unobserved.
+
+`vaapi-frame-pts-reader.py` joins the actual surface over the whole snapshot
+interval to exactly one unchanged OWN binding, across every driver instance
+in the same PID. Complete trace sequences and retirement boundaries are
+required. A gap, collision or binding change during capture fails; nearest
+timestamps and synthetic VA tokens are not media clocks. Existing independent
+full-NV12 content audits supply selected source90/91 identities. Their actual
+returned timestamps are compared to the fixture clock with the explicitly
+declared runtime tick precision, without inferring source content from PTS.
+When both declared time bases are unset, a successful raw-PTS/binding join
+remains an observation while the source-clock comparison is explicitly
+`NOT_OBSERVED_UNDECLARED_TIME_BASE`. The natural reopen requires180 distinct
+returned bindings with actual raw PTS; declared-clock coverage is reported
+separately. The fixture clock is never substituted for missing runtime units.

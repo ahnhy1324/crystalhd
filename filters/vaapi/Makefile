@@ -88,6 +88,27 @@ centered-observer: $(ROOTDIR)/tests/vaapi-centered-payload-backend.cpp \
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o centered-observer/$(DRIVER) \
 		$(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
+# Explicit receive-frame observation only. Use the original client's unchanged
+# 63.1.102/61.1.102 public headers; no FFmpeg library is linked or replaced.
+# This artifact is deliberately absent from all/check/install and packaging.
+.PHONY: frame-pts-observer check-frame-pts-observer frame-pts-observer-clean
+frame-pts-observer: $(ROOTDIR)/tests/vaapi-frame-pts-probe.c \
+		$(ROOTDIR)/tests/vaapi-frame-pts-probe.map
+	@test -n "$(FFMPEG63_INCLUDE)" || { echo 'Set FFMPEG63_INCLUDE to unchanged codec63/util61 headers' >&2; exit 1; }
+	mkdir -p frame-pts-observer
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
+		-I"$(FFMPEG63_INCLUDE)" $< -o frame-pts-observer/frame-pts-probe.so \
+		-Wl,--version-script=$(ROOTDIR)/tests/vaapi-frame-pts-probe.map -ldl -pthread
+
+check-frame-pts-observer:
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-frame-pts-probe.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-frame-pts-reader.test.py
+
+frame-pts-observer-clean:
+	rm -f frame-pts-observer/frame-pts-probe.so
+	@rmdir frame-pts-observer 2>/dev/null || true
+clean: frame-pts-observer-clean
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.
