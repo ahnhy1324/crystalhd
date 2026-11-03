@@ -51,10 +51,16 @@ boundaries and current status are in
 
 ## Private v1.3 candidate preparation
 
-The complete integration candidate uses bundle `1.3.0-rc.2` and the previously
-unused module-DKMS identity `3.10.17`. The helper/test restoration uses a new
-identity so the registered package16 source and its receipts remain immutable.
-RC1 is an incomplete historical cut,
+**Current status — 2026-11-03:** the complete
+[1.3.0-rc.2 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
+is published with 13 assets. Its current-equipment qualification and companion
+delivery are complete; source, assets and module-DKMS `3.10.17` remain frozen.
+Master contains later research. Stable 1.3 publication is deferred. The heading
+is retained for existing links; this section's packaging examples apply to a
+future candidate, not unfinished RC2 integration or upload work.
+
+RC2 used a separate module identity to preserve package16 and its receipts.
+RC1 is an incomplete historical cut whose retained release entry is now a draft,
 not the final scope of 1.3. Implemented PTS-epoch diagnostics, native V4L2
 decoding and its colour/format/EXPBUF repairs, explicit experimental field-GPU
 output, runtime producer/lifecycle and host/metadata/materials tools remain in
@@ -69,9 +75,10 @@ unchanged-source reproductions, complete source/notice companions, measured
 fresh acquisition/build costs and fresh-acquired target native EOS/reopen.
 Its [support policy](NATIVE-RUNTIME-SUPPORT.md) explicitly disposes unavailable
 independent booted-OS acceptance without claiming PASS. The private source/UI
-checkpoint below retains only its original qualified scope. Master merge, tags, public uploads and default-backend
-promotion remain separate maintainer decisions. Published RC1 tags/assets and
-registered module payloads remain immutable.
+checkpoint below retains only its original qualified scope. The complete
+master integration and public RC2 delivery are finished. Default-backend
+promotion and a later stable release remain separate decisions. Existing RC1
+artifacts and registered module payloads remain immutable.
 
 Accepted renderer/QoS losses remain nonblocking within
 [#91's recorded display-performance scope](https://github.com/ahnhy1324/crystalhd/issues/91#issuecomment-6392485987).
@@ -103,14 +110,15 @@ evidence does not supply independently clean OS, physical Atom/i386 or BCM70012
 acceptance. Earlier ce4cab1/c488f01 artifacts and their original results remain
 frozen.
 
-Use the experimental integration branch combining maintenance/Xv and MPEG-1.
-Do not substitute one child's CI for the combined source. Integrate the
-developed native/runtime work while retaining evidence for each component and
-for the final combination. Existing
-registered module package identities must never be overwritten with new bytes;
-private staging does not install or register a host DKMS module.
+The maintained master already integrates maintenance/Xv, MPEG-1 and the
+native/runtime work. Use it as the basis of a future candidate while retaining
+the implemented scope and component evidence. Do not substitute one child's
+CI for affected combined-source checks. Registered module package identities
+must never be overwritten with changed bytes; private staging does not install
+or register a host DKMS module.
 
-After committing and checking the exact source:
+When preparing a future candidate, commit its intended source and run the
+affected package checks:
 
 ```sh
 make configuration-check kodi-settings-check candidate-package-check
@@ -137,23 +145,26 @@ Native dialog tests do not replace actual D-pad, ZIP installation or a new Kodi
 process consuming the saved defaults. Source-qualified no-drift logs suffice
 for the tested playback route's A/V sync; pixels/cadence/ownership stay separate.
 
-Proposed candidate scope is the committed maintained stack, optional experimental
-features under their existing opt-ins, and optional Kodi configuration UI #611.
+The complete RC2 supplies the maintained stack, optional experimental features
+under their existing opt-ins, and optional Kodi configuration UI #611.
+Later master research does not change those frozen artifacts.
 Do not advertise general MPEG-1 conformance, selector5, hardware deinterlacing,
 full-rate FHD, Atom/i386/BCM70012 acceptance or every open research issue as done.
 Keep historical FAILs and unavailable-target boundaries. #538 remains open;
 only its explicitly excluded heap-abort follow-up stays ignored.
 
-#607 tracks native-runtime delivery prerequisites. Its new outer companion
-keeps the historical inner PUBLIC_NOT_READY metadata immutable and adds the
+#607 is closed after the bounded current-cohort delivery. The published outer
+companion keeps the historical inner PUBLIC_NOT_READY metadata immutable and supplies the
 complete source/build/dependency materials, tools, evidence and scoped project
 maintenance policy. The frozen complete core source940/module17 and the
 separately identified delivery-tool source retain their own attribution;
 registered package17 source must never be overwritten with supplemental files.
 Use the frozen core source for DKMS, not the supplemental delivery-tool branch.
 All developed features remain supplied across these artifacts. This packaging
-work does not silently change the native default, imply independent booted-OS
-acceptance, move RC1 tags/assets or authorize stable publication.
+work preserves the native default and the independent booted-OS NOT_RUN
+disposition. A future candidate requires a new package identity for changed
+payloads; do not replace registered17 source, RC2 assets or historical RC1 files.
+Stable publication remains deferred.
 
 ## Versions and compatibility
 
@@ -166,8 +177,8 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Complete integration candidate / module package | `1.3.0-rc.2` / `3.10.17` | Core runtime/install qualification complete; immutable registered payloads |
-| Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Immutable tag/assets; incomplete 1.3 scope |
+| Published complete RC2 / module package | `1.3.0-rc.2` / `3.10.17` | Current-cohort runtime/install/delivery complete; immutable registered payloads |
+| Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Retained draft release entry and unchanged artifacts; incomplete 1.3 scope |
 | Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
 | Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
@@ -268,6 +279,12 @@ browser launcher. Their exact scope is in the [option index](USAGE.md#advanced-o
 and component guides. The optional V4L2/firmware research builds do not add a
 supported frontend. A regression in an advertised opt-in path still requires
 a fix or explicit withdrawal from the candidate.
+
+The freeze, qualification and publication procedures below are the retained
+completed v1.2/#473 campaign. They preserve its gates and evidence; they are
+not unfinished 1.3 work. Current RC2 status is above and the active queue is in
+[TODO.md](TODO.md#current-priorities--2026-11-03). Future candidates need their
+own scope, package identity and affected qualification.
 
 <a id="freeze-and-prepare"></a>
 
@@ -471,11 +488,19 @@ the next minor version. Evidence alone need not trigger a new release. The
 published v1.0/v1.1 tags, release notes and qualification records remain
 unchanged.
 
+## Branch and issue maintenance
+
 Use an issue for a distinct unresolved objective or reproduced defect; use a
 PR directly for a small self-contained fix. Name short-lived branches
 `fix/…`, `feature/…`, `docs/…` or `research/…` and record their issue/owner in
-the PR. Delete after verified integration and checking for post-merge work.
-Preserve unique research fixtures and failures before removing their branch;
+the PR. Before any authorized cleanup, check current worktrees and PRs in this
+fork and upstream repositories. Integration into our master does not end an
+upstream submission. Preserve all `upstream/` submission branches, including
+`upstream/01-linux-6.1`, `upstream/02-userspace` and `upstream/03-chromium`.
+Do not delete, rewrite or reuse them without an explicit maintainer instruction
+for the specific branch; a backup does not replace a live PR head. Follow
+[AGENTS.md](AGENTS.md#upstream-pr-branches) and [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests).
+Preserve unique research fixtures and failures before removing any branch;
 retain unmerged V4L2 PR #115 and its stateful-contract failure evidence.
 Keep usage in the guides, results in the hardware report, and current work in
 issues. Hardware support claims require hardware evidence.

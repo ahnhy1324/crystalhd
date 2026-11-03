@@ -25,7 +25,9 @@ The distributable Kodi patch is removed, while `kodi-compat-check` remains a
 source-unit diagnostic. Modified-client records cannot qualify stock support
 or release acceptance.
 
-Run these on the selected exact source before any new frontend run:
+Choose the affected checks when a source change makes them relevant. Reuse
+valid results for unchanged components; these are available diagnostics, not
+four mandatory full-suite reruns before every frontend operation:
 
 ```sh
 make kodi-compat-check
@@ -60,6 +62,11 @@ source/build IDs and flags still belong in each eventual hardware receipt.
 
 ## Ordinary Kodi, VA and CPU Bob
 
+A/V acceptance uses source-qualified no-drift logs for the exact route.
+Calibrated physical lip-sync measurement is optional research. Accepted
+renderer/QoS losses are not a universal zero-loss requirement; source-picture,
+pixel/PTS and ownership evidence retain their separate scope.
+
 The [selected original-stock Bob receipt](tests/fixtures/issue445/stock-bob-payload-20261031.md)
 now verifies all active Y/U/V bytes of8 selected VPP outputs from4 originals,
 both physical parities across TFF/BFF natural EOF/reopen. Actual requested
@@ -72,9 +79,9 @@ claiming all-field, source/outputPTS, GPU retirement or displayed cadence.
 | --- | --- | --- |
 | #445 interrupted seek/pause/Stop source identity and per-object return | Original-stock progressive control in `tests/fixtures/issue510/player-window-trace-20261030.json`; the private patched `publish-order-*` records are withdrawn historical observations only | Current original Kodi/FFmpeg executable and mapped own VA/DIL identities; selected decoded source/frame/field PTS; actual full NV12 crop/chroma; object acquisition/borrow/return across cancellation/flush/reset/reopen. Empty global counters and media-clock settlement alone are insufficient. |
 | #436 selected TFF/BFF Bob and BWDIF semantics | Existing #319 TFF/BFF and #414 750-picture FHD fixtures; `tests/fixtures/issue436/native-single-field.json`, `card-scaled-bob.json`; preserved FFmpeg field references | Off/Auto/CPU fallback distinguished, exact input count versus two progressive outputs per complete picture, parity/cadence/chroma and independently captured field-rate reference. Keep default stream-loop 296/300 and original Kodi duplicate-pair PTS FAILs. |
-| #429 reporter/native-i386 current stack | Reporter RC3/RC4/RC5 fixture identities and original results in #429 | Physical native32 Atom run with exact current source, original stock Kodi selection, post-seek pixels/PTS, interlaced Bob A/V and hour-long measured A/V drift. Primary-host/headless software cannot complete this row. |
+| Historical #429 reporter/native-i386 disposition | Reporter RC3/RC4/RC5 identities and original results in closed #429 | Current physical Atom/i386 is unavailable/NOT_RUN and outside this execution queue. Current-host follow-up belongs to #91/#436/#445/#510; do not reopen #429 or require a new target to proceed. |
 | #477 centered crop and cadence | `tests/fixtures/issue477/l0s-kodi-20261024.json`, original 902/9,001-picture progressive, TFF/BFF and true60p no-B/B-reference cases | Extend full NV12 ROI/borders/field identity to Off/CPU fallback and 1080i29.97, natural EOS/seek/reopen and current sources. For any performance claim, matched source/policy/link state, useful ROI and declared detail reduction; software render selection and elapsed time remain separate from scanout. |
-| Full physical presentation/A/V | Existing source barcodes/field-order references; selected dialogue content | Source-bound physical display capture and audio measurement with a declared tolerance and reference clock, repeatability and target panel refresh. A RenderCapture barcode establishes content, not display time. Neither queued renders nor OSD A/V estimates replace this. |
+| Optional physical cadence/scanout research | Existing source barcodes/field-order references and display observations | Physical display capture is needed only for a physical cadence/scanout claim. It is not an added A/V gate: source-qualified logs with no detected drift suffice for the exact route. A RenderCapture barcode establishes content rather than display time. |
 
 The public synchronous/pipelined VA readback/export probe already supplies a
 useful own-stack checkpoint without a GUI. Select a progressive fixture with
@@ -114,8 +121,10 @@ different private Kodi21.3 candidate and `663c3a7`. Preserve that distinction.
 
 ## Native Kodi experiment, excluding heap work
 
-Reusing the READY / UNMERGED #579→#581→#590 stack is preferable to reproducing
-its code. #579 records source colour tuples/sampled RGB error0 in four frozen
+The #579/#581/#590 native implementations are integrated in master and the
+complete RC2 scope; do not reimplement or re-merge their old proposal branches.
+Their historical receipts retain their original source limits. #579 records
+source colour tuples/sampled RGB error0 in four frozen
 original-client cases; #581 executes the actual format handler with mutations;
 #590 binds one held EXPBUF active image to exact YUYV bytes, source barcode/PTS
 and later QBUF/fd close. Earlier colour FAILs, collector errors and EPIPE
@@ -141,10 +150,10 @@ captured data beyond the sampled oracle. See [fixture semantics](tests/fixtures/
 
 | Outstanding native row | Actual prerequisite |
 | --- | --- |
-| K2b colour/crop/pixels | Native stack at the selected exact own source; unmodified original Kodi/private matched FFmpeg; retained software raw reference; source-bound GPU/readback and all intended active/cropped pixels/chroma. Broader full-range/mixed-client/colour-only notification claims need their own cases. |
-| K3b presentation/control | Frozen displayed picture while paused, exact unique displayed-frame and A/V clock behavior across seek/resume, source PTS and per-object returns. Existing render accepts/seek settlement are insufficient. |
+| K2b remaining crop/chroma/syntax scope | Selected limited/full native colour, same-size transitions and POC0/2 multi-slice cases are complete in #538. Extend only a named missing crop/chroma/object-return or POC1 case with an independent reference and unmodified external client; sampled Kodi RGB is not an all-frame GPU census. |
+| K3b presentation/control | Selected pause/seek/resume picture identity, source PTS and per-object returns. Existing render accepts/seek settlement alone do not establish them. Exact-route source-qualified no-drift logs suffice for A/V; physical display cadence remains separate. |
 | K4 nonempty STOP→START | Retain current `-EOPNOTSUPP` and #533 G2 FAIL/G3–G5 NOT RUN. Destructive reset recovery and input-only pause do not prove nondestructive same-DPB restart. No dummy/progress insertion without a separate demonstrated requirement. |
-| K5b other targets/endurance | Physical native-i686/Atom, BCM70012, other GPU, broader codecs/interlace, controlled long-GOP/backpressure/endurance and physical A/V/E2E/power. These targets are absent or unmeasured in the current connected-host scope. |
+| K5b current-host endurance and unavailable targets | Continue selected current-host codec/interlace, long-GOP/backpressure and endurance research. Physical Atom/i686, BCM70012 and other GPUs are unavailable/NOT_RUN outside the current queue; they do not block current-host work. |
 
 **#538 stays OPEN. Only its shutdown heap-abort subtask is ignored/wontfix.**
 No command or acceptance row here resumes investigation/reproduction of that

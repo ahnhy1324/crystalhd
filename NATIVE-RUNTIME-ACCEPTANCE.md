@@ -1,10 +1,11 @@
-# Compilerless native runtime: retained preparation and #607 follow-up
+# Compilerless native runtime: current cohort and retained preparation
 
 The compatible-host private installation scope of
 [#539](https://github.com/ahnhy1324/crystalhd/issues/539) is complete: it can
 activate the measured native Kodi route without compiling FFmpeg at activation.
-[#607](https://github.com/ahnhy1324/crystalhd/issues/607) owns the remaining
-clean-target and public-distribution deliverables. The latest
+[#607](https://github.com/ahnhy1324/crystalhd/issues/607) is closed after the
+bounded current-equipment RC2 delivery. The public RC2 companion supplies its
+source/build/notice materials and tools within the declared cohort. The latest
 [delivery guide](NATIVE-RUNTIME-DELIVERY.md),
 [build reproduction](NATIVE-RUNTIME-BUILDING.md) and
 [scoped support policy](NATIVE-RUNTIME-SUPPORT.md) record the completed
@@ -74,8 +75,9 @@ recompute symbol resolution, infer a minimum CPU or approve redistribution.
    published [FFmpeg implementation at12cc1f42](https://github.com/jc-kynesim/rpi-ffmpeg/tree/12cc1f42f06ff0e85633c2602c96786fbd280b70)
    supplies hardware-config/get-format, EXPBUF/AVDRM descriptors and
    FD/context/consumer-buffer lifetime handling. An advertisement-only change
-   cannot supply those contracts. No external source/binary patch is part of
-   this plan, and a minimal upstream patch remains unproved.
+   cannot supply those contracts. Record missing official-package capability as
+   a scoped package gap; this plan does not propose an external source/binary
+   product patch.
 4. Keep the matching seven-DSO closure and target providers together. Exact
    SONAMEs, ABI, versioned symbols, CPU options and provider bytes matter;
    replacing only libavcodec is not a qualified compatibility route. Stage
@@ -85,8 +87,9 @@ recompute symbol resolution, infer a minimum CPU or approve redistribution.
    checks from each new package's actual Kodi selection, source-qualified
    no-drift A/V logs, control/EOS/reopen and retirement acceptance. A new
    package does not inherit the older private-prefix native playback result.
-   Independent clean-target and public source/notices/maintenance decisions
-   remain with #607.
+   Closed #607 records the completed cohort's source/notices/maintenance and
+   unavailable independent-OS disposition. Broader frontend work stays with
+   #538/#91; each future package needs its own declared scope.
 
 ## Private slot selection and cost records
 
@@ -503,7 +506,7 @@ listed in the actual CLI receipt. Missing retained raw inputs are a **NOT RUN**
 prerequisite, not permission to regenerate a convenient golden from the tested
 FFmpeg binary.
 
-## Remaining work and constraints
+## Completed dispositions and future-package constraints
 
 | Deliverable | Next concrete evidence | Current disposition |
 | --- | --- | --- |
@@ -512,7 +515,7 @@ FFmpeg binary.
 | D4 independent clean-target acceptance | Independently booted OS if available; narrower userspace proof must keep its actual scope. | NOT_RUN/unavailable under current equipment/non-disruptive constraint, explicitly outside this RC cohort. Fresh minbase shares the host kernel and is not reported as clean-OS PASS. No Atom/i386/BCM70012 claim. |
 | D4 each proposed new package | Bind exact target, native module, selected slot, source PTS, EOS/reopen, controls, A/V logs and retirement to the declared cohort. | Existing neutral720/1080 and scoped long pause records retained under accepted-loss scope; other frontend control evidence retains its own attribution. Fresh acquired App/Platform/GL + final17 native module + delivered active slot now play180 source pictures twice, independently match PTS, reach EOS/reopen, retire and restore stable13/all36 runtime leaves. Old native-lib/probe/deps mounts removed. Private equivalent-wrapper update/rollback/remove/repeated-remove pass; no additional runtime payload is proposed. Headless GL/null sink is not physical scanout/audio or general desktop acceptance. |
 | D5 redistribution/maintenance | Complete source/notice companion, reproducible unchanged build, CPU/ABI target, update ownership and bounded distribution decision. | Two independent fresh builds exactly match each other and retained9 ELFs; complete FFmpeg/dependency/SDK archives and offline Git reconstruction pass. [Scoped project maintenance/distribution policy](NATIVE-RUNTIME-SUPPORT.md) and [build guide](NATIVE-RUNTIME-BUILDING.md) define the experimental RC companion. Historical inner PUBLIC_NOT_READY is preserved; assembly status does not itself publish or authorize a tag. |
-| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg edits are outside scope; an upstreamable minimum patch remains unproved and is not required to record the package gap. |
+| Minimum credible compatibility plan | Document selection metadata, real EXPBUF/AVDRM descriptors and FD/context/consumer lifetime requirements from existing published implementations. | Advertisement-only own-driver/device changes cannot create missing FFmpeg selection metadata. The minimum compatibility plan above documents these published selection/delivery/lifetime requirements. External Kodi/FFmpeg product patches are outside scope; retain the official-package gap as a known limitation rather than a proposed external fix. |
 
 The private runtime is a minimal configured subset, not a drop-in FFmpeg
 distribution. Replacing only `libavcodec` does not establish the matched ABI,

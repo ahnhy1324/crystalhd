@@ -9,7 +9,7 @@ Modified-client results cannot qualify stock compatibility or a release.
 
 # Open work
 
-Release status **2026-10-23**: [stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
+Release status **2026-11-03**: [stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
 with module-DKMS identity `3.10.13` and prereleases
 [`v1.2.0-rc.1`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1)
 (`3.10.11`) and
@@ -30,7 +30,64 @@ broader performance and research continue in their owning #91/#436/#445/
 retains the completed bounded attempts and stop decisions; it does not expand
 the scope to general full-rate FHD or hardware deinterlacing.
 
-## Current priorities — 2026-11-02
+## Current priorities — 2026-11-03
+
+The current audit finds 13 open owning issues and no open PR in this fork.
+[Upstream PR #9](https://github.com/yeradis/crystalhd/pull/9) is open; preserve
+all three `upstream/` submission branches. Stable 1.2 is published. The complete
+1.3 RC2 and its 13 public assets are frozen; stable 1.3 remains deferred.
+The retained partial RC1 release entry is a draft, not the current public RC.
+
+The resize completion repair is integrated, with its existing current-host
+receipt and affected checks. The
+[November 3 source CI](https://github.com/ahnhy1324/crystalhd/actions/runs/41571818845)
+passes both Ubuntu userspaces, ten kernel/architecture lanes and the final gate
+(15 successful jobs, two intended component skips). Its initial runner package
+installation failure remains visible in the earlier attempt. This is source CI,
+not new hardware or release qualification.
+
+| Order | Existing owner and next work | Completion or disposition |
+| --- | --- | --- |
+| 1 | #530: bound the remaining `replace()` / ancestry-query / checked handoff response waits in our Window code. The handoff branch is preparation only; resize is already complete. | Share a response budget. Reject read-only failures without changing attachment; treat an indeterminate post-mutation timeout as an error requiring cleanup. Preserve existing window/field lifetime regressions. |
+| 2, parallel | #623: investigate the intermittent GTK CSS assertion/SIGSEGV, starting from the test-order hypothesis about validation teardown and the next window. The failure location is not established. | Capture the failing native/Python stack and identify the wrong operation. Fix our defect if established; call an external cause a known issue only with evidence. A later green CI run is not a root-cause fix. |
+| 3 | #513: measure the implemented FIFO/latest-frame modes on the current card/audio route. | Matched latency, CPU, queue age, intentional replacement/QoS and no-drift log observations. Record no benefit if that is the result; do not promote a default without evidence. |
+| 4 | #445/#477: extend selected stock-client seek/Stop/reopen and centered Off/CPU-fallback/29.97 cases. | Source-bound pixels/PTS, ROI/borders and object return conclusions for the selected cases, using the accepted renderer/QoS policy. |
+| 5 | #538: bounded POC1 multi-slice association; #445: authoritative colour-input contract for direct packed RGB. | Establish a valid independent POC1 input before extending association. Do not infer lost source colour declarations from geometry, output words or whichever pixels match. POC0/2, selected full-range and same-size transitions are already qualified. |
+| 6 | #436: the actual original-Kodi BWDIF selection/readback path. | Determine selection for the named client, then selected field/parity/chroma/PTS and controls. Record a version-specific unsupported boundary if it cannot select the path. Do not redo the completed separate CPU BWDIF reference work. |
+| 7 | #470: current-BCM70015 sized/fixed16/8 paced allocation comparisons and needed native-planar/PM/format cases. | A measured conclusion while preserving conservative defaults and DMA ownership. Output-aware allocation is implemented; this is not a reimplementation task. |
+| 8 | #400: current-desktop Orca/accessibility and specifically proposed frontend adapters. | Actual user interaction for the named route. Existing AT-SPI validation state, Korean UI and settings storage are complete within their scope. |
+| 9, parallel research | #92/#204: source-picture ownership and processing-engine completion. | A coherent acquire/hold/publish/complete/release contract or a precise evidenced limitation. Standalone scaler/CSC/DNR work follows that contract. |
+| Follow-up queue | #91/#510: HTTP(S)/network controls, broader streams and browser/frontend work; CI component lanes when a concrete change needs them. | Select a bounded user problem and record its result in the existing owner. Do not turn this into a new universal verification project. |
+
+Use current equipment only. Physical Atom/i386, BCM70012, another GPU and an
+independently booted OS remain unavailable/NOT_RUN, outside the current execution
+queue. Their disposition does not reopen closed #429/#607 or qualify hardware.
+Keep the 13 owning issues open for their actual remaining work; this audit does
+not establish another completed umbrella issue.
+
+Source-qualified logs with no detected drift satisfy A/V acceptance for that
+exact route. Physical cadence/scanout is separate research. Accepted renderer/QoS
+losses do not create a universal zero-loss gate; source-picture correctness,
+ownership and ABI requirements remain. The original #538 heap subtask stays
+excluded; the rest of #538 stays open.
+
+Choose checks that distinguish the affected behavior and reuse existing results
+for unchanged components. Do not add per-action SHA calculations, repeated full
+suites or new generic manifests as proof of progress. Preserve existing probes,
+meaningful pixel/integrity oracles and frozen release requirements. Nonblocking
+research continues; it is not silently dropped from the work queue.
+
+Historical dirty worktrees are preserved as probes, before-cases or experiments,
+not automatically counted as missing product features. One old scale-only
+packing candidate adds no user option and has no demonstrated CPU improvement;
+its specific integration/discard decision is not established, so preserve it
+without declaring it a missing feature or reviving it as an active fix.
+
+When release work resumes, identify a new candidate/module revision for changed
+payloads, package the complete intended scope and qualify the affected paths.
+Do not replace RC2 assets or registered module17 source with current master.
+
+### Completed integration baseline — 2026-11-02
 
 Master now integrates #619/#620/#621/#622: complete core, native companion,
 live field-window replacement and same-layout Xv port handoff. The
@@ -65,15 +122,16 @@ its source/UI checkpoint does not authorize excluding already-developed work.
   disposition and independently verify all 13 public assets; #607 is closed.
   Stable 1.3 remains a separate step.
 
-### Active research execution — 2026-11-02
+### Active research status — 2026-11-03
 
 The maintainer explicitly requires nonblocking research to continue alongside
 release work. Nonblocking is a release-impact decision, not authorization to
 shelve the work or silently exclude implemented features.
 
 1. #530: live PLAYING/PAUSED overlay-window replacement, owned standalone
-   host and current-parent geometry, same field generation/deadline and bounded
-   stop are implemented in the follow-up; see its current-host receipt.
+   host and current-parent geometry, preservation of the field generation/deadline
+   and ordinary stop regressions are implemented; see the current-host receipt.
+   The remaining handoff response waits are the next code task above.
    The explicit sink also accepts limited601/709 NV12 with declared JPEG/MPEG2
    chroma site and complete progressive/interleaved pictures. Native current-host
    plane/field/pixel/EOS/reopen checks pass; actual GL LeakSanitizer remains FAIL,
@@ -194,7 +252,10 @@ shelve the work or silently exclude implemented features.
 Withdrawn copy/performance prototypes remain withdrawn. The original #538 heap
 subtask alone remains excluded; #538 and its other work stay open. Accepted
 renderer/QoS losses and source-qualified no-drift A/V logs retain their recorded
-scope. External Kodi/FFmpeg/kernel-core/firmware code remains unchanged.
+scope. Product integration uses unmodified external Kodi/FFmpeg/kernel-core/
+firmware components; isolated diagnostic variants keep their own test scope.
+
+### Historical private runtime/package checkpoints — 2026-11-01
 
 The earlier qualified private v1.3 runtime source is `c48fe3a12d4f`, merged only
 into `research/issue513-xv-lifecycle-20261031` through #615 at checkpoint `1b17fd9`.
@@ -306,9 +367,9 @@ Earlier checkpoint (preserved with its original qualification):
 
 #594 is merged into the experimental `feat/gst-xv-output` base at `9b85e41`.
 Its fresh parent CI passes15/15 on tested merge `6259ce9`, tree `6f3b605`.
-Master remains `04fb465`; releases/default output are unchanged. The current
-integration candidate combines the own-code work below. Its final combined
-hosted result must be recorded separately from earlier individual runs.
+At that checkpoint master was `04fb465` and integration was still proposed.
+That merge work is now complete; retain the following receipts with their
+original scope rather than treating the old proposal as current work.
 
 - [x] Whole-attachment fixed25/50Hz PTS summaries and an independent expectation
   reader:14 native groups/65 snapshots pass ordinary and ASan/UBSan/leaks,
@@ -345,28 +406,23 @@ hosted result must be recorded separately from earlier individual runs.
   zero fuzzy entries, installed glyph/label/save/mnemonic/focus validation.
   Actual spoken screen-reader use and additional desktops remain open (#400).
 
-1. Keep source/package/issue checkpoints current and refresh the separate
-   master proposal #585 from the qualified experimental work. Record its final
-   proposal-head CI independently; existing experimental CI does not establish
-   that result. Master merge, tags and public release remain separate decisions.
-2. Continue original-client interlaced/Bob natural-EOF/field-content and actual
-   per-object return work (#445/#429/#436/#477/#538). Current progressive RGB
-   checkpoints do not prove those cases. Fix demonstrated own faults only.
-3. Continue matched repeatability, sustained/endurance, port/X-server lifecycle,
-   actual display and log-based A/V acceptance (#513). No-drift playback logs
-   satisfy A/V sync; calibrated physical lip-sync is not required. Preserve earlier failures;
-   different initial thermals or metadata do not establish causal speedup.
-4. Complete genuinely clean-target packaging/user burden and reviewed language/
-   assistive-technology/other-desktop acceptance when those targets exist.
-   Maintainer confirms current equipment only: no new Atom/native-i386/BCM70012
-   acceptance is inferred from this T8100/BCM70015 host.
-5. The bounded MPEG-1 reference isolation (#529), two-session natural-video
-   decode/PTS/pixel census and #606 optional experimental352x288/25 progressive
-   BCM70015 factory are delivered with staged installation, clocked playback,
-   actual sink pixels and rollback checks. Broader MPEG-1 conformance, other
-   sizes/rates/chips and physical scanout remain unqualified; ordinary caps/defaults stay unchanged.
-   Hardware ownership/firmware/UART/DMA research (#92/#204) retains its gates;
-   #533's completed safe negative STOP/START investigation remains preserved.
+Current disposition of that historical queue:
+
+1. Complete master integration and current-cohort RC2 delivery are finished.
+   #585 is closed; do not refresh it as a current proposal. Published RC2 stays
+   frozen and stable 1.3 remains deferred.
+2. Continue the selected stock-client field/pixel/object-return work in
+   #445/#436/#477/#538. Closed #429 retains its unavailable-target disposition.
+3. #513 live-window and same-layout port handoff are implemented. Matched
+   performance, endurance and system X-server interruption remain research.
+   Exact-route no-drift logs satisfy A/V; physical scanout is separate.
+4. #607 current-cohort packaging and first-user burden are complete. An
+   independent booted OS is unavailable/NOT_RUN outside this queue. Broader
+   current-desktop accessibility and named adapters remain with #400.
+5. The bounded MPEG-1 reference/natural-video experiment and optional factory
+   are delivered. Broader conformance, sizes/rates/chips and physical scanout
+   remain unqualified. #92/#204 source ownership and completion contracts
+   remain research; #533's safe negative STOP/START disposition is preserved.
 
 **Shutdown heap abort subtask only: ignored / wontfix (2026-10-29). #538 stays
 open.** Per maintainer direction, stop investigation/reproduction of this
@@ -469,7 +525,9 @@ its exact-source and acceptance scope in the owning issue.
   and short progressive/Off physical A/V measurements. Exact Kodi output
   identity, interlaced Bob A/V, hour-long measured A/V drift and out-of-policy
   B-pyramid recovery remain unproved in this historical matrix; continuing
-  work belongs to #91/#436/#445/#538. The later actual Atom 1.2 readback/control
+  work belongs to #91/#436/#445/#538 within the current-equipment scope.
+  The old hour-long physical measurement is not an added A/V gate; current
+  exact-route no-drift logs suffice. The later actual Atom 1.2 readback/control
   report and own admission defect #614, fixed via #615, retain their separate
   scope; no current 1.3 Atom or new 1.2 Bob acceptance is inferred.
 - [x] [#468: admitted real B-pyramid input can stop output](https://github.com/ahnhy1324/crystalhd/issues/468)
@@ -495,19 +553,24 @@ its exact-source and acceptance scope in the owning issue.
   Kodi21.3 directly observed Bob metadata still duplicates each field-pair PTS;
   one seek takes its 5-second cache-startup fallback. Uniform presentation is not
   qualified. Selected 720i25 dialogue A/V and controls have qualitative maintainer
-  confirmation; calibrated/FHD timing and displayed endurance remain open. The
+  confirmation. Exact-route source-qualified no-drift logs satisfy A/V;
+  broader field/cadence and displayed endurance remain separate research. The
   [native Atom report](https://github.com/ahnhy1324/crystalhd/pull/467#issuecomment-6272584392)
   adds passing tests/pixel controls but failing Kodi Bob timing and LIVE-EOS
   on its earlier source. A [current-userspace stock Kodi control](https://github.com/ahnhy1324/crystalhd/issues/445#issuecomment-6289514942)
   completes all 750 originals / 1,500 Bob operations and natural EOF under
-  LIVE+LL; presentation and current Atom acceptance remain open.
+  LIVE+LL within that record. Broader presentation remains research; current
+  physical Atom acceptance is unavailable/NOT_RUN, not a current-host task.
   Keep existing Weave playback intact. Hardware Bob remains separate research,
   not a prerequisite for this software integration.
 - [ ] [#538: experimental Kodi native playback acceptance](https://github.com/ahnhy1324/crystalhd/issues/538)
-  — bounded selection, original-PTS, input-only pause and cost studies are
-  recorded. Broader native pixels/color, displayed cadence, physical A/V,
-  other hardware and endurance remain open. Only the shutdown heap-abort
-  investigation is excluded for the reason above; the issue remains open.
+  — native selection/PTS/input-only pause, selected limited/full colour,
+  same-size range transitions and POC0/2 multi-slice scopes are implemented and
+  qualified as recorded above. Remaining work is POC1/broader syntax, active
+  crop/chroma and object/GPU-return census, additional available-host controls
+  and endurance. Exact-route no-drift logs suffice for A/V. Unavailable targets
+  retain NOT_RUN dispositions. Only the original shutdown heap-abort
+  investigation is excluded; the issue stays open.
 - [x] [#539: compatible-host compilerless proof and handoff](https://github.com/ahnhy1324/crystalhd/issues/539)
   — closed completed on 2026-10-31 for the original installation/removal/
   re-extraction feasibility deliverable. Public/clean-target/burden work moved
@@ -516,8 +579,8 @@ its exact-source and acceptance scope in the owning issue.
   not establish arbitrary-host or zero-setup availability.
 - [ ] Player HTTP(S) acceptance — implementation is included in RC4, with
   bounded errors and explicit hardware/software selection. Selected native
-  loopback HTTP decoding/EOS/reopen passed; HTTPS, physical A/V, network
-  seeking and Internet recovery remain unverified.
+  loopback HTTP decoding/EOS/reopen passed; HTTPS, exact-route A/V logs,
+  network seeking and Internet recovery remain unverified.
 
 - [x] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
   — G0–G6 and experimental dispositions are complete. The exact commit and
@@ -546,24 +609,27 @@ its exact-source and acceptance scope in the owning issue.
   retain its historical failure evidence. Local atomic mode updates now preserve
   unrelated bits through open and consuming close. Same-process mode references
   now preserve the diagnostic bit until the final local handle closes.
-  Cross-process same-mode accounting and same-handle close/use lifetime remain
-  separate follow-ups; the
-  shared-mapping fix alone does not qualify them. CI/provenance
-  and admission-timing acceptance remain separately tracked. The userspace CI
+  Cross-process same-mode accuracy is a recorded diagnostic limitation with
+  no current production consumer; revisit if a real caller/failure needs it.
+  Same-handle close/use follows the documented caller-managed lifetime contract.
+  Those #510 triage dispositions are complete, not pending implementation.
+  Historical-loss attribution and broader owning-issue acceptance remain. The userspace CI
   matrix selects Ubuntu 24.04 and 26.04 and records actual image/toolchain
   versions; component-specific lanes and selected sanitizer promotion remain
   follow-ups. This does not qualify hardware or frontend playback.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
-  — alternate hardware, the LTS item executed through #371, bounded BCM70015
-  deep-S3 coverage completed through #395/#397, remaining fault/removal work,
-  broader streams, and physical presentation/A/V synchronization.
+  — the LTS item through #371 and bounded BCM70015 deep-S3 coverage through
+  #395/#397 are complete. Broader available-host streams, network/frontend
+  controls and presentation research remain. A/V uses exact-route no-drift logs;
+  unavailable physical targets retain NOT_RUN dispositions outside this queue.
   The matched output-size screen rules out deterministic 900p/990p failure:
   low-iowait repeats are zero-drop, while both FHD repeats retain small losses at low
   iowait. The [frame-flow investigation](HARDWARE-2026-09-13.md#player-frame-flow-2026-10-25)
   now partitions bounded explicit-FHD loss into decoder/transform/sink QoS and
   reproduces loss without CrystalHD. Complete FHD presentation and the original
-  30-minute FAIL (174/90,000 lost outputs) remain unresolved; pursue measured
-  render/CPU-cost reductions, not disabled QoS. Keep the separate intermittent
+  30-minute FAIL (174/90,000 lost outputs) remain preserved. Apply the existing
+  accepted renderer/QoS policy while measuring render/CPU costs; a universal
+  zero-loss gate is not required. Keep the separate intermittent
   firmware/input-space stall distinct.
 - [ ] [#400: Managed settings and desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400)
   — shared storage, native readers, named profiles, Player defaults and the
@@ -574,8 +640,9 @@ its exact-source and acceptance scope in the owning issue.
 - [ ] [#470: Output-aware RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470)
   — checked allocation/registration and reduced-output sizing are integrated
   through #479/#480; #507 adds retired-page reclamation and selected native
-  EOS/reopen qualification. Physical paced A/B, BCM70012 and broader PM/format
-  acceptance remain open; the fixed default and DMA quarantine stay intact.
+  EOS/reopen qualification. Current-BCM70015 paced A/B and needed native-planar,
+  PM/format work remain open; BCM70012 is unavailable/NOT_RUN outside this queue.
+  The fixed default and DMA quarantine stay intact.
   See the [retirement results](HARDWARE-2026-09-13.md#rx-pool-retirement-and-reopen-2026-10-24).
   The former fixed-size pool alone was not evidence of a DMA overrun.
 - [x] [#471: bounded output-cost measurements and prototype decisions](https://github.com/ahnhy1324/crystalhd/issues/471)
@@ -601,7 +668,9 @@ its exact-source and acceptance scope in the owning issue.
   five-minute centered path in both link states; native-ON falls short. New
   interlace/60p misses and physical-versus-software observations remain explicit
   in the [results](HARDWARE-2026-09-13.md#stock-kodi-centered-output-with-l0s-2026-10-24).
-  Broader codec/host and zero-loss presentation acceptance remain open. See the
+  Broader available-host ROI/controls/cadence work remains open under the
+  accepted renderer/QoS policy. Original strict count FAILs stay recorded;
+  zero-loss presentation is not a universal gate. See the
   [development usage](filters/vaapi/README.md#development-experiment-centered-card-output).
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
@@ -715,8 +784,10 @@ integrated API to obtain smaller card output; stock FFmpeg/Kodi do not do so.
   no failure, 37.02% of one CPU core, natural EOS and a clean boundary. Xv
   receives 1280x720 UYVY and owns display fitting; this is not physical
   scanout, A/V or interpolation-quality acceptance.
-- [ ] Qualify physical A/V/display cadence and genuinely changing decoded
-  field order separately. Mixed SEI labels are not a decoded-parity oracle:
+- [ ] Qualify any remaining exact-route A/V using source-qualified no-drift
+  logs, and investigate display cadence and genuinely changing decoded field
+  order separately. Physical lip-sync measurement is optional. Mixed SEI labels
+  are not a decoded-parity oracle:
   the existing 30-second fixture produces 750 BFF pictures in both software
   and hardware despite its stream-level TFF label. Batch wall time is not
   per-frame latency; these headless passes do not establish smooth presentation.

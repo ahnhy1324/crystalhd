@@ -22,3 +22,20 @@ PR head. Do not delete, rewrite or reuse upstream PR branches without an explici
 maintainer instruction for that branch. A local merge or closed fork PR does
 not establish that an upstream submission is disposable. Check cross-repository
 PR relationships before any branch cleanup.
+
+## Planning and verification
+
+Before choosing development work, read the current owning issue and TODO.
+Distinguish implemented/merged work, actual remaining work, scoped known issues
+and unavailable-target dispositions. A successful rerun does not establish
+that an earlier crash was fixed. Nonblocking research continues.
+
+Use checks that can distinguish the changed behavior. Do not calculate hashes
+for every action or rerun whole suites merely to produce more verification.
+This does not authorize removing existing diagnostic probes, meaningful
+pixel/integrity tests or frozen release requirements.
+
+Use current equipment only. Source-qualified no-drift logs satisfy A/V for the
+exact route; accepted renderer/QoS losses do not create a universal zero-loss
+gate. Keep source-picture/ownership/ABI requirements. The original #538 heap
+subtask stays excluded; #538 remains open for its other work.

@@ -14,9 +14,11 @@ Read the [external code policy](EXTERNAL-CODE-POLICY.md) before work.
 with module-DKMS `3.10.13`. The quick start installs that stable release. See the
 [final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23)
 and [change summary](HISTORY.md#120).
-This integration candidate is `1.3.0-rc.2` / `3.10.17`; qualification is in
-progress. Its version does not extend stable compatibility claims. See the
-[complete 1.3 scope](RELEASING.md#private-v13-candidate-preparation).
+The complete [1.3.0-rc.2 prerelease](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
+uses module-DKMS `3.10.17`. Its current-equipment qualification and companion
+delivery are complete; its tag and 13 assets remain frozen. Stable 1.3 is
+deferred while later master research continues. See the
+[complete scope and remaining work](TODO.md#current-priorities--2026-11-03).
 For published [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0),
 use the instructions shipped with that tag. The
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)

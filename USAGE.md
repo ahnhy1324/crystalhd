@@ -26,16 +26,18 @@ CrystalHD hardware decode session can be open at a time.
 ## Known issues and deinterlacing roadmap
 
 - **Weave is not deinterlacing.** Hardware and software Weave retain both
-  fields, so moving edges can show combing or shaking. Published 1.1.0 does not
-  provide native hardware Bob or a VA deinterlacing filter. Applications can
-  apply [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
+  fields, so moving edges can show combing or shaking. Stable 1.2 provides
+  the bounded CPU VA-VPP Bob path; native hardware Bob is not supported.
+  Applications can also apply
+  [CPU deinterlacing after Weave](#application-deinterlacing-after-weave),
   with additional CPU cost; successful decode does not guarantee smooth FHD
   presentation or calibrated A/V sync.
-- **Kodi interlaced playback is narrowly bounded in the prepared v1.2
-  package.** Published 1.1.0 does not advertise VA Bob, so Auto may repeatedly
-  probe an unavailable filter; Off selects Weave. The selected installed-RC2
-  Kodi 21.3 Auto/Off matrix completed decode, physical A/V controls, seek,
-  natural EOF and reopen. Kodi's adaptive `SKIPDEINT` requests omit some second
+- **Kodi interlaced playback is narrowly bounded in stable 1.2.** Off selects
+  Weave; Auto can select the bounded CPU VA-VPP Bob path. Earlier 1.1.0 lacked
+  that filter and could repeatedly probe for it. The selected installed 1.2 RC2
+  matrix with Kodi 21.3 Auto/Off completed decode, recorded A/V controls, seek,
+  natural EOF and reopen; stable reuse applies only to unchanged implementation.
+  Kodi's adaptive `SKIPDEINT` requests omit some second
   fields, so this is not an uninterrupted 50p or general Kodi 21–23 claim.
   Atom real-time playback also remains unsupported
   ([#445](https://github.com/ahnhy1324/crystalhd/issues/445),
@@ -54,8 +56,8 @@ CrystalHD hardware decode session can be open at a time.
   [project policy](EXTERNAL-CODE-POLICY.md); historical modified-Kodi results
   cannot qualify stock compatibility or a release.
 - **Oversized H.264 rejection is containment, not general stream recovery.**
-  Stable 1.1.0 includes the qualified transport-specific headroom from RC5.
-  The prepared v1.2 package additionally rejects selected over-budget extended input
+  Stable 1.2 includes the transport-specific headroom introduced in 1.1 RC5
+  and rejects selected over-budget extended input
   before submission and preserves a clean reopen; it intentionally rejects
   some input that previously worked. Exact firmware reclamation remains a
   measured signed-firmware/configuration limitation; use software decode for
@@ -66,15 +68,14 @@ CrystalHD hardware decode session can be open at a time.
   its compatibility is not established. The driver's `LEGACY_CPU=1` build
   cannot remove ISA requirements from applications or their dependencies.
 
-The bounded **v1.2 deinterlacing work** in
-[#436](https://github.com/ahnhy1324/crystalhd/issues/436) targets decode/readback/
-filter integration, field order, cadence and A/V validation. These are not
-capabilities added by published 1.1.0 or a promise that every interlaced input will be
-fixed. The limitations above can remain until the relevant implementation and
-host-specific validation are complete; hardware deinterlacing remains separate
-research.
+The remaining work in [#436](https://github.com/ahnhy1324/crystalhd/issues/436)
+targets broader readback/filter integration, field order, cadence and client
+acceptance beyond the selected stable 1.2 scope. Source-qualified no-drift logs
+satisfy A/V acceptance for the exact route; physical cadence/scanout is separate
+research. The existing renderer/QoS policy does not require universal zero loss.
+Hardware deinterlacing remains separate from the published CPU implementation.
 
-The prepared `1.2.0` package preserves RC2's bounded
+Stable `1.2.0` preserves the bounded path qualified for its RC2:
 [CPU VA-VPP Bob path](filters/vaapi/README.md#development-cpu-va-vpp-bob),
 plus the focused completed-source lifetime correction. It is not card-side
 deinterlacing or a general Kodi/Atom playback path.
@@ -283,16 +284,17 @@ those paths or a reason to replace a qualified installation without testing.
 
 ### Explicit Weave playback
 
-`--weave` is included in stable 1.1.0 and published RC5, not v1.0.0. Select
-the immutable stable release with:
+`--weave` was introduced in 1.1.0/RC5 and remains in stable 1.2.0.
+For the current stable release:
 
 ```sh
-git clone --branch v1.1.0 --single-branch \
+git clone --branch v1.2.0 --single-branch \
   https://github.com/ahnhy1324/crystalhd.git crystalhd
 cd crystalhd
 ```
 
-Use `v1.1.0-rc.5` instead to select the earlier immutable candidate.
+The earlier `v1.1.0-rc.5` tag remains available for reproducing its historical
+results; use the guide shipped with that tag for that purpose.
 
 Install the [dependencies and build](README.md#quick-start) from this directory,
 then follow the [direct install/update](BRINGUP.md#direct-install-update-and-rollback)
