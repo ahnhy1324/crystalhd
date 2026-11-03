@@ -74,7 +74,10 @@ struct XvContext {
   XvMemory *images, *copies[XV_DEPTH];
   XvPoolLayout *pool_layouts;
   XvFlight flights[XV_DEPTH];
-  GstBuffer *last_buffer;
+  GstBuffer *last_buffer, *latest_buffer;
+  GstVideoInfo latest_info;
+  guint64 latest_epoch, latest_serial, latest_queued, latest_replaced, latest_submitted, latest_cancelled;
+  gboolean latest_frame;
   GstVideoInfo last_info;
   guint64 last_epoch, video_submitted, redraw_submitted;
   guint redraw_suspended;
@@ -87,14 +90,24 @@ struct XvContext {
 /* Bounds contexts retained after an unproved detach; no unbounded error loop. */
 static gint live_contexts;
 static XvMemory *buffer_memory(GstBuffer *buffer);
+typedef enum { XV_VIDEO, XV_REDRAW, XV_LATEST } XvSubmitKind;
 static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
-    GstBuffer *buffer, XvMemory *direct, gboolean redraw, guint64 epoch);
+    GstBuffer *buffer, XvMemory *direct, XvSubmitKind kind, guint64 epoch, guint64 serial);
 
 /* Transfer ownership to the caller; Gst unref may reenter the pool/context. */
 static GstBuffer *forget_picture_locked(XvContext *c)
 {
   GstBuffer *old = c->last_buffer;
   c->last_buffer = NULL; c->redraw_pending = FALSE;
+  return old;
+}
+
+/* Transfer an unsent queue reference; never unref a pool buffer under lock. */
+static GstBuffer *forget_latest_locked(XvContext *c)
+{
+  GstBuffer *old = c->latest_buffer;
+  if (old) { c->latest_buffer = NULL; c->latest_cancelled++; }
+  g_cond_broadcast(&c->changed);
   return old;
 }
 
@@ -464,8 +477,9 @@ static gpointer event_reader(gpointer user)
   gboolean posted = FALSE;
   gint64 disconnect_time = 0;
   for (;;) {
-    GstBuffer *release[XV_DEPTH + 1]; guint n = 0;
-    GstBuffer *redraw = NULL; GstVideoInfo redraw_info; guint64 redraw_epoch = 0;
+    GstBuffer *release[XV_DEPTH + 2]; guint n = 0;
+    GstBuffer *redraw = NULL, *latest = NULL; GstVideoInfo redraw_info, latest_info;
+    guint64 redraw_epoch = 0, latest_epoch = 0, latest_serial = 0;
     XvMemory *garbage[XV_MAX_IMAGES]; guint ng = 0;
     gboolean done = FALSE, post = FALSE;
     g_mutex_lock(&c->lock);
@@ -473,6 +487,7 @@ static gpointer event_reader(gpointer user)
     if ((c->failed || g_atomic_int_get(&c->stopping)) && c->last_buffer)
       release[n++] = forget_picture_locked(c);
     if (c->failed || g_atomic_int_get(&c->stopping)) {
+      if (c->latest_buffer) release[n++] = forget_latest_locked(c);
       if (c->connection) {
         if (!c->failed && c->colorspace_atom && c->active_colorspace != c->original_colorspace) {
           xcb_xv_set_port_attribute(c->connection, c->port, c->colorspace_atom, c->original_colorspace);
@@ -509,13 +524,19 @@ static gpointer event_reader(gpointer user)
       m = next;
     }
     int fd = c->connection ? xcb_get_file_descriptor(c->connection) : -1;
-    gint timeout = c->connection ? (c->pending ? 50 : -1) : 100;
+    gint timeout = c->connection ? ((c->pending || c->latest_buffer) ? 50 : -1) : 100;
     for (m = c->images; m; m = m->next)
       if (m->dispose) timeout = 10;
     /* A bus sync handler can stop the pipeline from this reader. Complete
      * the bounded connection-close phase before invoking that handler. */
     if (c->failed && c->closed && !posted) { posted = TRUE; post = TRUE; }
     if (!c->failed && !g_atomic_int_get(&c->stopping) && !g_atomic_int_get(&c->flushing) &&
+        !c->output_changing && c->latest_buffer && c->pending < XV_DEPTH) {
+      latest = gst_buffer_ref(c->latest_buffer); latest_info = c->latest_info;
+      latest_epoch = c->latest_epoch; latest_serial = c->latest_serial;
+    }
+    if (!latest && !c->latest_buffer && !c->failed &&
+        !g_atomic_int_get(&c->stopping) && !g_atomic_int_get(&c->flushing) &&
         !c->redraw_suspended && c->redraw_pending && c->last_buffer && c->pending < XV_DEPTH) {
       XvMemory *direct = buffer_memory(c->last_buffer);
       if (!direct || !direct->server_owned) {
@@ -527,11 +548,17 @@ static gpointer event_reader(gpointer user)
     g_mutex_unlock(&c->lock);
     for (guint i = 0; i < n; i++) gst_buffer_unref(release[i]);
     for (guint i = 0; i < ng; i++) destroy_memory(garbage[i]);
+    if (latest) {
+      XvMemory *direct = buffer_memory(latest);
+      if (direct && direct->context != c) direct = NULL;
+      submit_picture(c, &latest_info, latest, direct, XV_LATEST, latest_epoch, latest_serial);
+      gst_buffer_unref(latest);
+    }
     if (redraw) {
       XvMemory *direct = buffer_memory(redraw);
       if (direct && direct->context != c) direct = NULL;
       /* Never wait for ring space on the only SHM-completion reader. */
-      submit_picture(c, &redraw_info, redraw, direct, TRUE, redraw_epoch);
+      submit_picture(c, &redraw_info, redraw, direct, XV_REDRAW, redraw_epoch, 0);
       gst_buffer_unref(redraw);
     }
     if (post && c->bus) {
@@ -585,12 +612,16 @@ static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus
   c->thread = g_thread_new("crystalhd-xv", event_reader, context_ref(c));
   return c;
 }
-static gboolean drain_locked(XvContext *c)
+static gboolean drain_locked(XvContext *c, gboolean include_latest)
 {
-  gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
+  /* An unsent latest may first wait for an old flight, then its own ACK.
+   * Each flight still has its original1s deadline; FIFO/handoff stays1 stage. */
+  gint64 budget = XV_TIMEOUT_US + (include_latest && c->latest_buffer ? XV_TIMEOUT_US : 0);
+  gint64 end = g_get_monotonic_time() + budget;
   gboolean ok = TRUE;
   c->redraw_suspended++;
-  while (c->pending && !c->failed && !g_atomic_int_get(&c->flushing) &&
+  if (include_latest && c->latest_buffer) wake_context(c);
+  while ((c->pending || (include_latest && c->latest_buffer)) && !c->failed && !g_atomic_int_get(&c->flushing) &&
       !g_atomic_int_get(&c->stopping)) {
     if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
       ok = context_error(c, "Output drain exceeded its completion deadline"); break;
@@ -616,25 +647,61 @@ static gboolean colorspace_locked(XvContext *c, const GstVideoInfo *info)
   }
   return TRUE;
 }
-static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
-    GstBuffer *buffer, XvMemory *direct, gboolean redraw, guint64 epoch)
+/* The completion reader cannot allocate/wait. Prepare one compatible copy
+ * cache on the producer before publishing an unpooled pending picture. */
+static gboolean prepare_latest_locked(XvContext *c, const GstVideoInfo *info, XvMemory *direct)
 {
+  if (direct) return TRUE;
+  for (guint i = 0; i < XV_DEPTH; i++) {
+    XvMemory *m = c->copies[i];
+    if (m && !m->dispose && m->width == (guint)info->width && m->height == (guint)info->height)
+      return TRUE;
+  }
+  for (guint i = 0; i < XV_DEPTH; i++) {
+    XvMemory *m = c->copies[i];
+    if (!m || !m->server_owned) {
+      c->copies[i] = NULL;
+      if (m) dispose_memory_locked(c, m);
+      c->copies[i] = allocate_locked(c, info->width, info->height);
+      return c->copies[i] != NULL;
+    }
+  }
+  return context_error(c, "No compatible Xv latest copy storage");
+}
+static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
+    GstBuffer *buffer, XvMemory *direct, XvSubmitKind kind, guint64 epoch, guint64 serial)
+{
+  const gboolean redraw = kind == XV_REDRAW, queued = kind == XV_LATEST, nonwaiting = kind != XV_VIDEO;
   GstVideoFrame frame;
   if (!gst_video_frame_map(&frame, info, buffer, GST_MAP_READ)) {
-    if (redraw) { g_mutex_lock(&c->lock); context_error(c, "Cannot map retained Xv picture"); g_mutex_unlock(&c->lock); }
+    if (nonwaiting) { g_mutex_lock(&c->lock); context_error(c, "Cannot map retained Xv picture"); g_mutex_unlock(&c->lock); }
     return GST_FLOW_ERROR;
   }
-  GstBuffer *old = NULL;
+  GstBuffer *old = NULL, *consumed = NULL;
   g_mutex_lock(&c->lock);
-  if (epoch != c->epoch || (redraw && (c->last_buffer != buffer || !c->redraw_pending || c->redraw_suspended))) {
+  if (epoch != c->epoch || (queued && (c->latest_buffer != buffer || c->latest_serial != serial ||
+      c->latest_epoch != epoch)) || (redraw && (c->last_buffer != buffer || !c->redraw_pending || c->redraw_suspended))) {
     g_mutex_unlock(&c->lock); gst_video_frame_unmap(&frame);
-    return redraw ? GST_FLOW_OK : GST_FLOW_FLUSHING;
+    return nonwaiting ? GST_FLOW_OK : GST_FLOW_FLUSHING;
   }
   gint64 end = g_get_monotonic_time() + XV_TIMEOUT_US;
   XvFlight *f = NULL; guint index = 0;
   while (!c->failed && !g_atomic_int_get(&c->flushing) && !g_atomic_int_get(&c->stopping)) {
+    if (!nonwaiting && c->latest_frame &&
+        (c->latest_buffer || c->pending == XV_DEPTH || c->output_changing || (direct && direct->server_owned))) {
+      if (!prepare_latest_locked(c, info, direct)) break;
+      if (epoch != c->epoch || c->failed || g_atomic_int_get(&c->flushing) || g_atomic_int_get(&c->stopping)) break;
+      old = c->latest_buffer;
+      if (old) c->latest_replaced++;
+      c->latest_buffer = gst_buffer_ref(buffer); c->latest_info = *info;
+      c->latest_epoch = epoch; c->latest_serial++; c->latest_queued++;
+      wake_context(c); g_cond_broadcast(&c->changed);
+      g_mutex_unlock(&c->lock); gst_video_frame_unmap(&frame);
+      if (old) gst_buffer_unref(old);
+      return GST_FLOW_OK;
+    }
     if (c->output_changing) {
-      if (redraw) break;
+      if (nonwaiting) break;
       if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
         context_error(c, "Output replacement exceeded its completion deadline"); break;
       }
@@ -642,7 +709,7 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
     }
     for (index = 0; index < XV_DEPTH; index++) {
       XvMemory *copy = c->copies[index];
-      if (!c->flights[index].memory && (!redraw || direct ||
+      if (!c->flights[index].memory && (!nonwaiting || direct ||
           (copy && !copy->dispose && !copy->server_owned &&
            copy->width == (guint)info->width && copy->height == (guint)info->height))) {
         f = &c->flights[index]; break;
@@ -650,7 +717,7 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
     }
     if (f && (!direct || !direct->server_owned)) break;
     f = NULL;
-    if (redraw) break; /* Retry after completion; never self-wait here. */
+    if (nonwaiting) break; /* Retry after completion; never self-wait here. */
     if (!g_cond_wait_until(&c->changed, &c->lock, end)) {
       context_error(c, "No completed Xv ring slot within deadline"); break;
     }
@@ -658,17 +725,18 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
   GstFlowReturn result = GST_FLOW_ERROR;
   if (g_atomic_int_get(&c->flushing) || g_atomic_int_get(&c->stopping)) result = GST_FLOW_FLUSHING;
   else if (epoch != c->epoch) result = GST_FLOW_FLUSHING;
-  else if (redraw && !f && !c->failed) result = GST_FLOW_OK;
+  else if (nonwaiting && !f && !c->failed) result = GST_FLOW_OK;
   else if (!c->failed && f && c->connection) {
     XvMemory *m = direct;
     if (!m) {
       m = c->copies[index];
       if (!m || m->width != (guint)info->width || m->height != (guint)info->height) {
+        c->copies[index] = NULL;
         if (m) dispose_memory_locked(c, m);
         c->copies[index] = m = allocate_locked(c, info->width, info->height);
       }
     }
-    gboolean valid = m && !m->server_owned && !m->dispose && m->context == c &&
+    gboolean valid = !f->memory && m && !m->server_owned && !m->dispose && m->context == c &&
         m->width == (guint)info->width && m->height == (guint)info->height;
     if (direct) valid = valid && GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) == m->data + m->offset &&
         GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0) == (gint)m->pitch;
@@ -707,6 +775,10 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
             .sequence = sequence, .generation = m->generation, .epoch = c->epoch,
             .pts = GST_BUFFER_PTS(buffer), .submitted = g_get_monotonic_time()};
         m->server_owned = TRUE; c->pending++; c->submitted++;
+        if (queued) {
+          consumed = c->latest_buffer; c->latest_buffer = NULL; c->latest_submitted++;
+          g_cond_broadcast(&c->changed);
+        }
         if (redraw) c->redraw_submitted++; else c->video_submitted++;
         if (direct) c->pool_submitted++;
         if (xcb_flush(c->connection) > 0) {
@@ -726,13 +798,14 @@ static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
   g_mutex_unlock(&c->lock);
   gst_video_frame_unmap(&frame);
   if (old) gst_buffer_unref(old);
+  if (consumed) gst_buffer_unref(consumed);
   return result;
 }
 static GstFlowReturn submit_buffer(XvContext *c, const GstVideoInfo *info,
                                    GstBuffer *buffer, XvMemory *direct)
 {
   g_mutex_lock(&c->lock); guint64 epoch = c->epoch; GstVideoInfo snapshot = *info; g_mutex_unlock(&c->lock);
-  return submit_picture(c, &snapshot, buffer, direct, FALSE, epoch);
+  return submit_picture(c, &snapshot, buffer, direct, XV_VIDEO, epoch, 0);
 }
 
 /* Pool ownership is independent of X-server completion. Holding the actual
@@ -807,13 +880,13 @@ static void crystal_xv_pool_class_init(CrystalXvPoolClass *klass)
 static void crystal_xv_pool_init(CrystalXvPool *pool) { (void)pool; }
 
 typedef struct { GstVideoSink parent; GMutex lock, control; XvContext *context;
-  GstVideoInfo info; gchar *display; guintptr window; guint requested_port; GstStructure *last_stats; } GstCrystalHdXv;
+  GstVideoInfo info; gchar *display; guintptr window; guint requested_port; gboolean latest_frame; GstStructure *last_stats; } GstCrystalHdXv;
 typedef struct { GstVideoSinkClass parent; } GstCrystalHdXvClass;
 static void overlay_init(GstVideoOverlayInterface *interface);
 G_DEFINE_TYPE_WITH_CODE(GstCrystalHdXv, gst_crystalhd_xv, GST_TYPE_VIDEO_SINK,
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_OVERLAY, overlay_init))
 #define XV_SINK(o) ((GstCrystalHdXv *)(o))
-enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS, PROP_PORT };
+enum { PROP_ZERO, PROP_DISPLAY, PROP_STATS, PROP_PORT, PROP_LATEST_FRAME };
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK,
     GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format=UYVY,width=[2,4096],height=[1,2160],"
       "framerate=[0/1,2147483647/1],interlace-mode=progressive"));
@@ -829,6 +902,9 @@ static GstStructure *stats_locked(XvContext *c)
       "submitted", G_TYPE_UINT64, c->submitted, "acknowledged", G_TYPE_UINT64, c->acknowledged,
       "video-submitted", G_TYPE_UINT64, c->video_submitted, "redraw-submitted", G_TYPE_UINT64, c->redraw_submitted,
       "retained-picture", G_TYPE_BOOLEAN, c->last_buffer != NULL,
+      "latest-frame", G_TYPE_BOOLEAN, c->latest_frame, "latest-pending", G_TYPE_BOOLEAN, c->latest_buffer != NULL,
+      "latest-queued", G_TYPE_UINT64, c->latest_queued, "latest-replaced", G_TYPE_UINT64, c->latest_replaced,
+      "latest-submitted", G_TYPE_UINT64, c->latest_submitted, "latest-cancelled", G_TYPE_UINT64, c->latest_cancelled,
       "terminal-retired", G_TYPE_UINT64, c->terminal, "copied-bytes", G_TYPE_UINT64, c->copied_bytes,
       "pool-submitted", G_TYPE_UINT64, c->pool_submitted, "pending", G_TYPE_UINT, c->pending,
       "images", G_TYPE_UINT, c->image_count, "bytes", G_TYPE_UINT, c->image_bytes,
@@ -845,6 +921,7 @@ static gboolean sink_start(GstBaseSink *base)
   g_mutex_lock(&s->control);
   g_mutex_lock(&s->lock);
   gchar *display_name = g_strdup(s->display); guintptr window = s->window; guint port = s->requested_port;
+  gboolean latest_frame = s->latest_frame;
   g_mutex_unlock(&s->lock);
   GstBus *bus = gst_element_get_bus(GST_ELEMENT(s));
   GError *error = NULL;
@@ -856,6 +933,7 @@ static gboolean sink_start(GstBaseSink *base)
     GST_ELEMENT_ERROR(s, RESOURCE, OPEN_READ_WRITE, ("%s", error->message), (NULL));
     g_error_free(error); return FALSE;
   }
+  g_mutex_lock(&c->lock); c->latest_frame = latest_frame; g_mutex_unlock(&c->lock);
   g_mutex_lock(&s->lock); s->context = c; g_mutex_unlock(&s->lock);
   g_mutex_unlock(&s->control);
   return TRUE;
@@ -887,6 +965,7 @@ static gboolean sink_unlock(GstBaseSink *base)
     /* BaseSink also calls unlock for PLAYING -> PAUSED. Preserve the picture
      * across that temporary suspension; real flush/segment events discard it. */
     if (c->last_buffer) c->last_epoch = c->epoch;
+    if (c->latest_buffer) c->latest_epoch = c->epoch;
     g_cond_broadcast(&c->changed); g_mutex_unlock(&c->lock);
     context_unref(c);
   }
@@ -910,8 +989,9 @@ static gboolean sink_set_caps(GstBaseSink *base, GstCaps *caps)
   if (!c) return FALSE;
   g_mutex_lock(&s->control);
   g_mutex_lock(&c->lock);
+  gboolean ok = drain_locked(c, TRUE);
   GstBuffer *old = forget_picture_locked(c);
-  gboolean ok = drain_locked(c) && colorspace_locked(c, &info);
+  ok = ok && colorspace_locked(c, &info);
   if (ok) {
     s->info = info; c->epoch++;
     c->borders_dirty = TRUE; /* New aspect/PAR can expose previously covered bars. */
@@ -974,7 +1054,7 @@ static GstFlowReturn sink_wait_event(GstBaseSink *base, GstEvent *event)
   if (result != GST_FLOW_OK || GST_EVENT_TYPE(event) != GST_EVENT_EOS) return result;
   XvContext *c = sink_context(XV_SINK(base));
   if (!c) return GST_FLOW_FLUSHING;
-  g_mutex_lock(&c->lock); gboolean ok = drain_locked(c);
+  g_mutex_lock(&c->lock); gboolean ok = drain_locked(c, TRUE);
   result = ok ? GST_FLOW_OK : (c->failed ? GST_FLOW_ERROR : GST_FLOW_FLUSHING);
   g_mutex_unlock(&c->lock); context_unref(c); return result;
 }
@@ -983,14 +1063,17 @@ static gboolean sink_event(GstBaseSink *base, GstEvent *event)
   if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START) {
     XvContext *c = sink_context(XV_SINK(base));
     if (c) {
-      g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); c->epoch++;
-      g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
+      g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c), *latest = forget_latest_locked(c); c->epoch++;
+      g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old);
+      if (latest) gst_buffer_unref(latest);
+      context_unref(c);
     }
   }
   if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
     XvContext *c = sink_context(XV_SINK(base));
     if (c) {
-      g_mutex_lock(&c->lock); GstBuffer *old = forget_picture_locked(c); gboolean ok = drain_locked(c);
+      g_mutex_lock(&c->lock); gboolean ok = drain_locked(c, TRUE);
+      GstBuffer *old = forget_picture_locked(c);
       if (ok) c->epoch++;
       g_mutex_unlock(&c->lock); if (old) gst_buffer_unref(old); context_unref(c);
       if (!ok) { gst_event_unref(event); return FALSE; }
@@ -1033,7 +1116,7 @@ static gboolean replace_window_locked(XvContext *c, xcb_window_t window)
   g_cond_broadcast(&c->changed);
   /* The completion matcher still sees the old drawable until pending==0.
    * Normal video submissions wait without changing their source epoch. */
-  gboolean ok = drain_locked(c) && target_geometry_locked(c, window, &width, &height);
+  gboolean ok = drain_locked(c, FALSE) && target_geometry_locked(c, window, &width, &height);
   if (ok) {
     guint32 mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_EXPOSURE;
     xcb_void_cookie_t selection = xcb_change_window_attributes_checked(
@@ -1144,7 +1227,7 @@ static gboolean replace_port_locked(XvContext *c, xcb_xv_port_t port, const GstV
     g_cond_broadcast(&c->changed);
     /* Keep the old port/drawable and exact flights until their ACKs retire.
      * Recheck the registry because draining releases the context mutex. */
-    ok = drain_locked(c) && c->connection && port_layouts_locked(c, port, info);
+    ok = drain_locked(c, FALSE) && c->connection && port_layouts_locked(c, port, info);
     if (ok && atom && desired != original) {
       xcb_void_cookie_t color = xcb_xv_set_port_attribute_checked(c->connection, port, atom, desired);
       ok = barrier_locked(c) && checked_void_result_locked(c, color);
@@ -1237,6 +1320,11 @@ static void sink_set_property(GObject *object, guint id, const GValue *value, GP
   GstCrystalHdXv *s = XV_SINK(object);
   if (id == PROP_PORT) {
     sink_set_port(s, g_value_get_uint(value));
+  } else if (id == PROP_LATEST_FRAME) {
+    g_mutex_lock(&s->control); g_mutex_lock(&s->lock);
+    if (!s->context) s->latest_frame = g_value_get_boolean(value);
+    else GST_WARNING_OBJECT(s, "Latest-frame changes take effect only while output is stopped");
+    g_mutex_unlock(&s->lock); g_mutex_unlock(&s->control);
   } else if (id == PROP_DISPLAY) {
     g_mutex_lock(&s->lock);
     if (!s->context) { g_free(s->display); s->display = g_value_dup_string(value); }
@@ -1251,6 +1339,8 @@ static void sink_get_property(GObject *object, guint id, GValue *value, GParamSp
     g_mutex_lock(&s->lock); g_value_set_string(value, s->display); g_mutex_unlock(&s->lock);
   } else if (id == PROP_PORT) {
     g_mutex_lock(&s->lock); g_value_set_uint(value, s->requested_port); g_mutex_unlock(&s->lock);
+  } else if (id == PROP_LATEST_FRAME) {
+    g_mutex_lock(&s->lock); g_value_set_boolean(value, s->latest_frame); g_mutex_unlock(&s->lock);
   } else if (id == PROP_STATS) {
     XvContext *c = sink_context(s);
     if (c) {
@@ -1284,6 +1374,9 @@ static void gst_crystalhd_xv_class_init(GstCrystalHdXvClass *klass)
   g_object_class_install_property(object, PROP_PORT, g_param_spec_uint("port", "Xv port",
       "Preferred UYVY port; zero selects automatically at startup and keeps the active port live",
       0, G_MAXUINT, 0, G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property(object, PROP_LATEST_FRAME, g_param_spec_boolean("latest-frame", "Latest pending frame",
+      "Experimental: replace one unsent picture when the output ring is busy; submitted slots remain owned until completion",
+      FALSE, G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property(object, PROP_STATS, g_param_spec_boxed("xv-stats", "Xv statistics",
       "Submission/SHM ownership counters; not physical display statistics", GST_TYPE_STRUCTURE,
       G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));

@@ -96,6 +96,14 @@ shelve the work or silently exclude implemented features.
    a4:3 white picture left white pixels in newly exposed16:9 letterbox bars.
    The current-host19 actual-X11 groups pass ordinary and ASan/UBSan/leaks;
    [source/regression](https://github.com/ahnhy1324/crystalhd/blob/42ded7e0cdff8030f72aba71a328b6d0f9724e78/filters/gst/xv-output/gstcrystalhdxv.c).
+   The separate default-off `latest-frame` arm now holds one unsent source,
+   records intentional replacements and preserves submitted SHM/pixel/PTS
+   ownership. Matched eight-source FIFO/latest controls and actual pipeline
+   EOS/PAUSED/flush-seek/error/stop/missing-ACK paths pass in all31 X11 groups
+   ordinary and ASan/UBSan/leaks. The
+   [receipt](tests/fixtures/issue513/latest-frame-20261103.json) preserves failed
+   attempts and the corrected initial19-vs31 test selection. Performance,
+   card/A/V, physical presentation and endurance remain separate open scopes.
 3. #538: SPS prefix #624 is merged. The admission-binding follow-up now
    observes PPS/SPS/single-first-slice prefixes, snapshots range/SPS generation
    per token and returns the matching observation to private CAPTURE storage.

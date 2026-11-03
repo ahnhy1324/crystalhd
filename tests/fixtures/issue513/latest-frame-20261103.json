@@ -1,0 +1,183 @@
+{
+  "base_master": "436349aad4042ebd4622ada0d30a85b7bc4312bf",
+  "controls": {
+    "fifo": "same8 IDs/PTS and3 held ACKs; producer blocks then all8 requests/ACKs/pixels retained",
+    "latest": "queued5/replaced4/submitted1; original ID7/PTS140ms follows old ACKs; final ACK and one explicitly labelled duplicate reference request",
+    "lifecycle": [
+      "window/port handoff preserves unsent identity to selected target",
+      "CAPS drains pending old layout before new640x360; retained old picture retired",
+      "actual appsrc EOS waits old ACK600ms plus final ACK600ms",
+      "actual PAUSED preserves pending; flushing seek cancels it while3 old server slots stay owned; ID8/PTS400ms then EOS",
+      "controlled queued request transport-flush failure posts ERROR/no EOS; positive detach then terminal retirement",
+      "pooled stop cancels pending and frees all6 pool images",
+      "missing old ACKs still trigger original per-flight1s failure; pending cancelled, terminal3/ACK0/no EOS"
+    ],
+    "memory": "ordinary copies, negotiated pool and mixed pool-to-copy; no image allocation in completion reader; real pipeline original GstMemory weakref returns8/9 after NULL",
+    "ring": "3 original real ACKs held; all flight sequence/generation/epoch/PTS/pointers and complete SHM bytes frozen while source3..7 replaces one unsent slot",
+    "source": "8 distinct neutral-gray IDs0..7, original PTS=id*20ms; complete active UYVY raster inspected"
+  },
+  "date": "2026-11-03",
+  "deadline_repair": "A pending latest may need old-flight and own-flight stages. Aggregate drain permits2s only if pending at entry; each request1s and ordinary FIFO/handoff1s remain. Before:600ms+600ms healthy ACK sequence failed aggregate1s. After: natural EOS, final ACK and all source memory returned.",
+  "default": "latest-frame=false; FIFO retained; no external code change",
+  "device_free": "make check: discovery plus5 groups PASS",
+  "host": "ThinkPad X61/Core2 Duo T8100/Intel965GM X11; no CrystalHD decoder opened",
+  "issue": 513,
+  "limits": [
+    "bounded synthetic source and controlled real-X11 completion tests only",
+    "No measured latency/CPU/throughput gain, card-decoder/A-V qualification, physical presentation or endurance acceptance",
+    "Historical field-GPU GL LeakSanitizer FAIL remains separate and unchanged",
+    "No Atom/i386/BCM70012 result; no system X-server interruption/restart claim",
+    "Stable1.3 and frozenRC2 remain deferred/unchanged; #538 heap exclusion remains untouched"
+  ],
+  "raw_evidence_directory": "/home/mache/.cache/crystalhd-issue513-latest-frame-run-20261103",
+  "retained_attempts": [
+    {
+      "attempt": "x11-native-01",
+      "failure": "GetImage BadMatch from test-owned managed window/geometry assumption",
+      "repair": "test uses owned fixed override-redirect window; no general WM/driver defect inferred"
+    },
+    {
+      "attempt": "eos-budget-before-01",
+      "failure": "own latest prototype aggregate1s rejected two separately healthy600ms ACK stages",
+      "repair": "conditional two-stage aggregate budget, unchanged individual request timeout"
+    },
+    {
+      "attempts": [
+        "x11-native-final-01",
+        "x11-san-final-01"
+      ],
+      "failure": "scope claim31 invalid: GLib -p selected baseline19 only",
+      "raw_exit_for_baseline19": 0,
+      "repair": "12 latest registrations moved to sibling latest-*; final03 asserts exact31 expected executed paths and no skips"
+    },
+    {
+      "attempt": "x11-native-final-02",
+      "failure": "existing paused-resize-pool counter4 vs3; sample before FLUSH_START allowed normal pre-flush redraw",
+      "repair": "freeze suppression counter after synchronous FLUSH_START, then assert no post-flush stale source/redraw"
+    }
+  ],
+  "runs": {
+    "native": {
+      "additional_sources": {
+        "tests/x11-setup-peer.h": "975aa57d6f9252e171064a06fa0e64e639302e17a098041b43eef020ede60df0",
+        "tests/xv-latest-fixture.h": "6f7d91b8b04c0f44771243d71d7e0a028f9b4df52182f578f0d07a0e0d80ae1d"
+      },
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 45000,
+      "probe_sha256": "461dbbbab007eb2a4ac0ab8b7db29217f015691e39de491df42e42049b5bb41d",
+      "seconds": 19.27303040609695,
+      "source_files": {
+        "filters/gst/xv-output/Makefile": "d2e7156b2c4f5dd936906d228df611fe17334088b0ce0beada8a4a9a6db11cde",
+        "filters/gst/xv-output/gstcrystalhdxv.c": "0283e988428565034d9df3eda893b7951ef930164daa41aec4cc8151dd6ea43f",
+        "filters/gst/xv-output/xv-connect.h": "48d0c2cf2bc6f835802a470ecd237b6680bd0f70766601d1ef18adfe9a7e6c66",
+        "tests/gst-xv-output.c": "7bdbdde13548ce227a3969fbbb4eca7744fe87cf0c3ceee8c9327dddad184d0c",
+        "tests/xv-setup-fixture.h": "39133710518dba06bd82fe0027b05dba941748136207201ea5b62e8caf2c3fec"
+      },
+      "status": "PASS_XV_X11_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "54419bd3c62c3b8ad0d0bf697488c7f2d27ecf0f94f96e16e933c940a560dde6",
+      "test_count": 31,
+      "tests": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/caps-aspect-borders",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine",
+        "/xv/x11/latest-copy",
+        "/xv/x11/latest-pool",
+        "/xv/x11/latest-mixed",
+        "/xv/x11/latest-fifo-control",
+        "/xv/x11/latest-window",
+        "/xv/x11/latest-port",
+        "/xv/x11/latest-caps",
+        "/xv/x11/latest-eos",
+        "/xv/x11/latest-flush-seek",
+        "/xv/x11/latest-submit-error",
+        "/xv/x11/latest-stop-pool",
+        "/xv/x11/latest-missing-ack"
+      ]
+    },
+    "san": {
+      "additional_sources": {
+        "tests/x11-setup-peer.h": "975aa57d6f9252e171064a06fa0e64e639302e17a098041b43eef020ede60df0",
+        "tests/xv-latest-fixture.h": "6f7d91b8b04c0f44771243d71d7e0a028f9b4df52182f578f0d07a0e0d80ae1d"
+      },
+      "boundary_equal": true,
+      "exit": 0,
+      "maximum_temperature_mC": 52000,
+      "probe_sha256": "3d2428baa41a18fb0841d545665c1df157723fa0deead26d658de57ae65c1a48",
+      "seconds": 19.814218800980598,
+      "source_files": {
+        "filters/gst/xv-output/Makefile": "d2e7156b2c4f5dd936906d228df611fe17334088b0ce0beada8a4a9a6db11cde",
+        "filters/gst/xv-output/gstcrystalhdxv.c": "0283e988428565034d9df3eda893b7951ef930164daa41aec4cc8151dd6ea43f",
+        "filters/gst/xv-output/xv-connect.h": "48d0c2cf2bc6f835802a470ecd237b6680bd0f70766601d1ef18adfe9a7e6c66",
+        "tests/gst-xv-output.c": "7bdbdde13548ce227a3969fbbb4eca7744fe87cf0c3ceee8c9327dddad184d0c",
+        "tests/xv-setup-fixture.h": "39133710518dba06bd82fe0027b05dba941748136207201ea5b62e8caf2c3fec"
+      },
+      "status": "PASS_XV_ASAN_UBSAN_LSAN_REGRESSION",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "0c06e2b486ec82418ebc70b45ce3860fa82d9d5ea551a6fd4b9895cde2f47a41",
+      "test_count": 31,
+      "tests": [
+        "/xv/x11/reopen",
+        "/xv/x11/setup-reopen",
+        "/xv/x11/preroll",
+        "/xv/x11/padded-copy",
+        "/xv/x11/paused-expose",
+        "/xv/x11/paused-resize-pool",
+        "/xv/x11/paused-resize-copy",
+        "/xv/x11/partial-setup",
+        "/xv/x11/transport-reopen",
+        "/xv/x11/reentrant-error-stop",
+        "/xv/x11/two-instances",
+        "/xv/x11/port-contention-reopen",
+        "/xv/x11/caps-flush",
+        "/xv/x11/caps-aspect-borders",
+        "/xv/x11/held-pool-caps",
+        "/xv/x11/live-window-replacement",
+        "/xv/x11/live-port-handoff",
+        "/xv/x11/submit-flush-failure",
+        "/xv/x11/quarantine",
+        "/xv/x11/latest-copy",
+        "/xv/x11/latest-pool",
+        "/xv/x11/latest-mixed",
+        "/xv/x11/latest-fifo-control",
+        "/xv/x11/latest-window",
+        "/xv/x11/latest-port",
+        "/xv/x11/latest-caps",
+        "/xv/x11/latest-eos",
+        "/xv/x11/latest-flush-seek",
+        "/xv/x11/latest-submit-error",
+        "/xv/x11/latest-stop-pool",
+        "/xv/x11/latest-missing-ack"
+      ]
+    }
+  },
+  "runtime": {
+    "installed": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "kernel_rows": 0,
+    "kernel_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel_since_local": "2026-11-03 09:02:06",
+    "no_card_or_module_actions": true
+  },
+  "schema": 1,
+  "status": "PASS_BOUNDED_OPTIONAL_LATEST_ARM"
+}

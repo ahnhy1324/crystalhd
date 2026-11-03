@@ -62,6 +62,25 @@ zero live clears the next-start preference while keeping the active port.
 For example, an embedding application can use `g_object_set(sink, "port",
 port_id, NULL)`. The Player's default output selection is unchanged.
 
+The experimental `latest-frame` Boolean defaults to `false` (FIFO). Set it
+before starting the sink, for example `g_object_set(sink, "latest-frame",
+TRUE, NULL)`; an active sink rejects changes with a warning. When the ring
+is busy, this mode retains at most one unsent source and replaces that
+pending source with newer input. Submitted images remain protected until
+their matching completion or proven terminal retirement. The completion
+reader submits the pending source with its original pixels and PTS, without
+waiting for ring space or allocating images on that reader. Ordinary copied
+input prepares compatible storage on the producer when needed.
+
+EOS, CAPS and SEGMENT drain the pending source as well as submitted requests.
+With an unsent source, the aggregate drain permits two one-second stages
+(old requests, then the latest request); each individual request still has
+its original one-second completion limit. Temporary PAUSED unlock preserves
+the pending source; a real flush, output failure or stop cancels it. A live
+window/port handoff drains old requests before dispatching that source to the
+new target. This arm deliberately replaces unsent video and remains separate
+from FIFO. It has no Player flag or managed configuration key.
+
 The renderer holds one last source buffer independently of BaseSink's
 `enable-last-sample` setting. For negotiated pool memory, both SHM completion
 and the final Gst owner must retire before that storage is writable again.
@@ -100,12 +119,31 @@ stop-time snapshot; later quarantine cleanup is not a live snapshot.
 live handoffs and `port-rejections` counts rejected live nonzero requests.
 The readable `port` property reports the preferred selection rather than an
 automatically acquired ID.
+`latest-frame` and `latest-pending` report this arm's state. `latest-queued`
+counts entries into the pending slot; `latest-replaced` counts intentional
+replacement of that slot; `latest-submitted` counts requests created from it;
+`latest-cancelled` counts unsent cancellation. The ledger is
+`queued = replaced + submitted + cancelled + pending` (pending is zero or one).
+Request creation includes a subsequent transport-flush failure, so these
+counters do not prove visible or unique frames. Replacements are separate
+from completion errors and BaseSink QoS drops.
 
 ```sh
 # Device-free checks. The second command opens temporary X11 windows.
 make -C filters/gst/xv-output check
 make -C filters/gst/xv-output check-x11
 ```
+
+The twelve `/xv/x11/latest-*` controls are included in `check-x11`. They use
+the same eight distinct source IDs/PTS with held real ACKs for FIFO and latest
+arms, verify complete active source rasters and final RGB pixels, and cover
+copied/pooled/mixed memory, window/port/CAPS changes, actual pipeline EOS,
+PAUSED/flush-seek, submit failure, pooled stop and missing ACK. An explicit
+duplicate final reference request is counted as a reference, not a new
+unique picture. The [current-host receipt](../../../tests/fixtures/issue513/latest-frame-20261103.json)
+records the executed paths and original failed attempts. This bounded synthetic
+qualification establishes no latency/CPU improvement, card-decoder/A/V result,
+physical scanout or endurance acceptance.
 
 `/xv/x11/live-window-replacement` owns two mapped windows and delays a real
 SHM completion while replacement waits. It checks the old request identity,

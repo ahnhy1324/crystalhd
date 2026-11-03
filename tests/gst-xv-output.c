@@ -23,6 +23,10 @@ static gpointer drop_connection;
 static gpointer fail_flush_connection;
 static gpointer delay_connection, delayed_event;
 static gint release_delayed;
+static gpointer latest_event_connection;
+static GMutex latest_event_lock;
+static GQueue latest_events = G_QUEUE_INIT;
+static guint latest_release_budget;
 static gint drop_type;
 static gint force_setup_pipe, observed_setup_pipe;
 static xcb_connection_t *test_setup_connect(int fd, xcb_auth_info_t *auth)
@@ -86,11 +90,24 @@ static int test_shmctl(int id, int command, struct shmid_ds *status)
 static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 {
   xcb_generic_event_t *event;
+  if (g_atomic_pointer_get(&latest_event_connection) == connection) {
+    g_mutex_lock(&latest_event_lock);
+    event = latest_release_budget ? g_queue_pop_head(&latest_events) : NULL;
+    if (event) latest_release_budget--;
+    g_mutex_unlock(&latest_event_lock);
+    if (event) return event;
+  }
   if (g_atomic_pointer_get(&delay_connection) == connection && g_atomic_int_get(&release_delayed)) {
     event = g_atomic_pointer_get(&delayed_event);
     if (event && g_atomic_pointer_compare_and_exchange(&delayed_event, event, NULL)) return event;
   }
   while ((event = xcb_poll_for_event(connection))) {
+    if (g_atomic_pointer_get(&latest_event_connection) == connection &&
+        (event->response_type & 0x7f) == g_atomic_int_get(&drop_type)) {
+      g_mutex_lock(&latest_event_lock);
+      if (latest_release_budget) { latest_release_budget--; g_mutex_unlock(&latest_event_lock); return event; }
+      g_queue_push_tail(&latest_events, event); g_mutex_unlock(&latest_event_lock); continue;
+    }
     if (g_atomic_pointer_get(&delay_connection) == connection &&
         (event->response_type & 0x7f) == g_atomic_int_get(&drop_type) &&
         !g_atomic_int_get(&release_delayed) &&
@@ -272,6 +289,10 @@ static GstBuffer *pattern_buffer(const GstVideoInfo *info, guint value)
 }
 static void test_identity(void)
 {
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), NULL);
+  gboolean latest = TRUE; g_object_get(sink, "latest-frame", &latest, NULL); g_assert_false(latest);
+  g_object_set(sink, "latest-frame", TRUE, NULL); g_object_get(sink, "latest-frame", &latest, NULL);
+  g_assert_true(latest); gst_object_unref(sink);
   XvContext c = {.window = 11, .opcode = 42, .completion_type = 65};
   XvMemory m = {.server_owned = TRUE, .segment = 17, .generation = 7};
   XvFlight f = {.memory = &m, .sequence = 65536, .generation = 7};
@@ -378,7 +399,7 @@ static void test_padded_copy(void)
   for (guint index = 0; index < 16; index++) {
     GstBuffer *buffer = pattern_buffer(&info, index);
     g_assert_cmpint(submit_buffer(c, &info, buffer, NULL), ==, GST_FLOW_OK);
-    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
     XvMemory *m = NULL;
     for (guint i = 0; i < XV_DEPTH; i++)
       if (c->copies[i] && (!m || c->copies[i]->generation > m->generation)) m = c->copies[i];
@@ -401,7 +422,7 @@ static void test_paused_expose(void)
   GstBuffer *buffer = pattern_buffer(&info, 7);
   GST_BUFFER_PTS(buffer) = 40 * GST_MSECOND;
   g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   guint64 before = c->submitted; g_mutex_unlock(&c->lock);
   gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   gint64 end = g_get_monotonic_time() + G_USEC_PER_SEC;
@@ -506,7 +527,7 @@ static void paused_resize(gboolean pooled)
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "output");
   g_assert_null(gst_base_sink_get_last_sample(GST_BASE_SINK(sink)));
   XvContext *c = sink_context(XV_SINK(sink)); g_assert_nonnull(c);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   g_assert_nonnull(c->last_buffer);
   g_assert_cmpint(buffer_memory(c->last_buffer) != NULL, ==, pooled);
   guint64 video = c->video_submitted, before = c->redraw_submitted;
@@ -534,8 +555,12 @@ static void paused_resize(gboolean pooled)
   window_pixel_locked(c, 320, 180, TRUE); window_pixel_locked(c, 0, 0, FALSE);
   g_assert_true(c->last_buffer == identity); g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, pts);
   g_assert_cmpuint(c->video_submitted, ==, video);
-  before = c->redraw_submitted; g_mutex_unlock(&c->lock);
+  g_mutex_unlock(&c->lock);
   gst_element_send_event(pipeline, gst_event_new_flush_start());
+  /* An already requested redraw may retire before FLUSH_START reaches the
+   * sink. Measure suppression after that synchronous cancellation boundary. */
+  g_mutex_lock(&c->lock); g_assert_null(c->last_buffer);
+  before = c->redraw_submitted; g_mutex_unlock(&c->lock);
   gst_element_send_event(pipeline, gst_event_new_flush_stop(TRUE));
   gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   g_usleep(50000);
@@ -700,7 +725,7 @@ static void test_held_pool_and_caps(void)
   XvMemory *m = buffer_memory(new_buffer), *held = buffer_memory(buffers[0]);
   g_assert_cmpuint(m->segment, !=, held->segment); memset(m->data, 55, m->size);
   g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), new_buffer), ==, GST_FLOW_OK);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   for (guint i = 0; i < held->size; i++) g_assert_cmpuint(held->data[i], ==, 17);
   g_assert_cmpuint(c->epoch, ==, 2); g_mutex_unlock(&c->lock);
   gst_buffer_unref(new_buffer);
@@ -869,7 +894,7 @@ static void test_live_window_replacement(void)
   solid_pool_buffer(second, &info, FALSE, 4);
   XvMemory *next = buffer_memory(second); g_assert_nonnull(next); g_assert_true(next != memory);
   g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), second), ==, GST_FLOW_OK);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   g_assert_cmpuint(memory->generation, ==, first_generation);
   g_assert_cmpuint(next->generation, >, first_generation);
   g_assert_true(c->last_buffer == second); g_assert_cmpuint(GST_BUFFER_PTS(second), ==, 80 * GST_MSECOND);
@@ -1021,7 +1046,7 @@ static void test_live_port_handoff(void)
   g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &second, NULL), ==, GST_FLOW_OK);
   solid_pool_buffer(second, &info, FALSE, 4);
   g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), second), ==, GST_FLOW_OK);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   window_pixel_locked(c, c->width / 2, c->height / 2, FALSE);
   solid_memory(memory, &info, TRUE); solid_memory(buffer_memory(second), &info, FALSE);
   g_assert_cmpuint(c->port, ==, candidate); g_assert_cmpuint(c->port_switches, ==, 1);
@@ -1099,7 +1124,7 @@ static void test_live_port_handoff(void)
   GstState state;
   g_assert_cmpint(gst_element_get_state(pipeline, &state, NULL, 2 * GST_SECOND), ==, GST_STATE_CHANGE_SUCCESS);
   g_assert_cmpint(state, ==, GST_STATE_PAUSED); c = sink_context(XV_SINK(sink));
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c)); epoch = c->epoch;
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE)); epoch = c->epoch;
   guint64 redraw = c->redraw_submitted; g_assert_nonnull(c->last_buffer);
   /* appsrc can make a writable GstBuffer header (e.g. DISCONT) while keeping
    * the exact source GstMemory. Check storage/metadata, not wrapper identity. */
@@ -1118,12 +1143,12 @@ static void test_live_port_handoff(void)
   g_assert_nonnull(c->last_buffer);
   g_assert_true(gst_buffer_peek_memory(c->last_buffer, 0) == gst_buffer_peek_memory(second, 0));
   g_assert_cmpuint(GST_BUFFER_PTS(c->last_buffer), ==, GST_BUFFER_PTS(second));
-  g_assert_true(drain_locked(c)); redraw = c->redraw_submitted;
+  g_assert_true(drain_locked(c, TRUE)); redraw = c->redraw_submitted;
   g_mutex_unlock(&c->lock);
   g_object_set(sink, "port", original, NULL); await_redraw(c, redraw, 320, 240);
   g_assert_cmpint(gst_app_src_end_of_stream(GST_APP_SRC(source)), ==, GST_FLOW_OK);
   await_message(pipeline, GST_MESSAGE_EOS);
-  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
   g_assert_cmpuint(c->port, ==, original); g_assert_cmpuint(c->port_switches, ==, 2);
   g_assert_cmpuint(c->epoch, ==, epoch); g_assert_nonnull(c->last_buffer);
   g_assert_true(gst_buffer_peek_memory(c->last_buffer, 0) == gst_buffer_peek_memory(second, 0));
@@ -1456,7 +1481,7 @@ static void test_caps_aspect_borders(void)
     GstBuffer *buffer = pattern_buffer(&info, step);
     solid_pool_buffer(buffer, &info, step == 0, step);
     g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
-    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c));
+    g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE));
     window_pixel_locked(c, 160, 120, step == 0); /* New source is actually painted. */
     window_pixel_locked(c, 160, 1, step == 0); /* Newly exposed bar must become black. */
     g_mutex_unlock(&c->lock); gst_buffer_unref(buffer);
@@ -1688,6 +1713,7 @@ static void test_setup_reopen(void)
   setup_exchange(&peer, FALSE, FALSE); close(peer.listener);
   test_reopen();
 }
+#include "xv-latest-fixture.h"
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -1719,6 +1745,19 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/live-port-handoff", test_live_port_handoff);
   g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);
   g_test_add_func("/xv/x11/quarantine", test_quarantine);
+  g_test_add_func("/xv/x11/latest-copy", test_latest_copy);
+  g_test_add_func("/xv/x11/latest-pool", test_latest_pool);
+  g_test_add_func("/xv/x11/latest-mixed", test_latest_mixed);
+  g_test_add_func("/xv/x11/latest-fifo-control", test_latest_fifo);
+  g_test_add_func("/xv/x11/latest-window", test_latest_window);
+  g_test_add_func("/xv/x11/latest-port", test_latest_port);
+  g_test_add_func("/xv/x11/latest-caps", test_latest_caps);
+  g_test_add_func("/xv/x11/latest-eos", test_latest_eos);
+  g_test_add_func("/xv/x11/latest-flush-seek", test_latest_flush_seek);
+  g_test_add_func("/xv/x11/latest-submit-error", test_latest_submit_error);
+  g_test_add_func("/xv/x11/latest-stop-pool", test_latest_stop_pool);
+  g_test_add_func("/xv/x11/latest-missing-ack", test_latest_missing_ack);
+
   g_test_add_func("/xv/card/error-reopen", test_native_error_reopen);
   g_test_add_func("/xv/card/error-reopen-lifetime", test_native_error_reopen_lifetime);
   g_test_add_func("/xv/card/error-reopen-default", test_native_error_reopen_default);
