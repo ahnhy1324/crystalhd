@@ -1,0 +1,1275 @@
+{
+  "schema": "crystalhd-centered-controls-observation-v1",
+  "date": "2026-11-03",
+  "owner_issue": 477,
+  "status": "PASS_SCOPED_CENTERED_PROGRESSIVE_CONTENT_SEEK_STOP_REOPEN",
+  "source_revision": "58cb5b54e0ab99c7b55deaec15214992c53af711",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "stock": "Kodi22RC1 / unchanged App FFmpeg",
+    "upstream_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "backend": "explicit private OWN centered observer",
+    "method": 0,
+    "actual_deintmethod": "none",
+    "same_pid": 1823088,
+    "client_executable_sha256": "2862331a8a047f929d8019987a518527fcb45330082435bec7b7756141cf688f",
+    "scheduling": "ordinary inherited scheduling"
+  },
+  "fixture": {
+    "path": "/home/mache/.cache/crystalhd-centered-seek-20261103/frozen-1080p180/neutral-spatial-1080p30-180.mp4",
+    "sha256": "226c91b7f6fd361af37fcac88dfa23302072f58f7cce0b8aa0c57c3f94f06555",
+    "source_case": 2,
+    "pictures": 180,
+    "fps": "30/1",
+    "field_order": "progressive",
+    "range": "limited BT709",
+    "coded": [
+      1920,
+      1088
+    ],
+    "visible": [
+      1920,
+      1080
+    ],
+    "source_time_base": "1/15360",
+    "fixture_pts": "ordinal*512",
+    "provenance": "/home/mache/.cache/crystalhd-centered-seek-20261103/preparation-origin.json",
+    "coordinate_contract": "/home/mache/.cache/crystalhd-centered-seek-20261103/coordinate-contract.json",
+    "preparation_receipt": "/home/mache/.cache/crystalhd-centered-seek-20261103/preparation-result.json"
+  },
+  "checks": {
+    "centered_cpu_assertions_native": 894,
+    "centered_cpu_assertions_asan_ubsan_leaks": 894,
+    "shared_payload_reader_tests": 64,
+    "content_reader_tests": 12,
+    "stock_control_tests": 27,
+    "legacy_stock_census_tests": {
+      "total": 19,
+      "passed": 18,
+      "skipped": 1,
+      "scope": "Optional retained-trace positive was not rerun; prior #645 evidence remains preserved."
+    },
+    "normal_va_build": "PASS; private observer state/schema/environment reader excluded",
+    "independent_review": "reset writer/reader, production hook, barcode reader, controller, status-to-manifest join and actual scope"
+  },
+  "case": {
+    "name": "stock-centered-controls-01",
+    "status": "PASS",
+    "source_census": {
+      "interrupted": {
+        "status": "PASS",
+        "errors": [],
+        "complete_natural_population_required": false,
+        "event_counts": {
+          "sync_enter": 131,
+          "sync_exit": 131,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 35,
+          "input_sent": 35,
+          "prefeed_sent": 35,
+          "output_dequeued": 35,
+          "materialized": 35,
+          "export_enter": 105,
+          "export_exit": 105,
+          "read_export_reuse_implicit_fence_probe": 17,
+          "binding_end": 35
+        },
+        "binding_stage_counts": {
+          "submit_bind": 35,
+          "input_sent": 35,
+          "output_dequeued": 35,
+          "materialized": 35
+        },
+        "public_materialization_count": 35,
+        "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+        "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+        "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+      },
+      "reopen": {
+        "status": "PASS",
+        "errors": [],
+        "complete_natural_population_required": true,
+        "event_counts": {
+          "sync_enter": 426,
+          "sync_exit": 426,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 180,
+          "input_sent": 180,
+          "prefeed_sent": 180,
+          "output_dequeued": 180,
+          "materialized": 180,
+          "export_enter": 250,
+          "export_exit": 250,
+          "read_export_reuse_implicit_fence_probe": 169,
+          "binding_end": 180
+        },
+        "binding_stage_counts": {
+          "submit_bind": 180,
+          "input_sent": 180,
+          "output_dequeued": 180,
+          "materialized": 180
+        },
+        "public_materialization_count": 180,
+        "output_outcome_scope": "Dequeue events precede codec validation; matching later materialized records completed public output.",
+        "scope": "Pinned progressive source: one dequeue per original; interrupted seek/Stop is partial. Public counts are separate from renderer loss.",
+        "actual_media_PTS_to_VA_binding": "NOT_OBSERVED"
+      }
+    },
+    "captures": [
+      {
+        "capture": {
+          "file": "initial-pause.bgra",
+          "format": "BGRA",
+          "width": 1920,
+          "height": 1080,
+          "bytes": 8294400,
+          "player_before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 342,
+              "minutes": 0,
+              "seconds": 0
+            }
+          },
+          "player_after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 342,
+              "minutes": 0,
+              "seconds": 0
+            }
+          },
+          "monotonic_ns": 687494276457118,
+          "target_seconds": null
+        },
+        "audit": {
+          "status": "PASS",
+          "source_ordinal": 11,
+          "source_pts_ticks": 5632,
+          "source_time_base": "1/15360",
+          "source_case": 2,
+          "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+          "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED.",
+          "label": "initial-pause",
+          "paused_clock_seconds": [
+            "171/500",
+            "171/500"
+          ],
+          "content_clock_difference_seconds": [
+            "37/1500",
+            "37/1500"
+          ]
+        }
+      },
+      {
+        "capture": {
+          "file": "seek-forward.bgra",
+          "format": "BGRA",
+          "width": 1920,
+          "height": 1080,
+          "bytes": 8294400,
+          "player_before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          },
+          "player_after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          },
+          "monotonic_ns": 687496266794642,
+          "target_seconds": 3
+        },
+        "audit": {
+          "status": "PASS",
+          "source_ordinal": 90,
+          "source_pts_ticks": 46080,
+          "source_time_base": "1/15360",
+          "source_case": 2,
+          "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+          "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED.",
+          "label": "seek-forward",
+          "paused_clock_seconds": [
+            "3",
+            "3"
+          ],
+          "content_clock_difference_seconds": [
+            "0",
+            "0"
+          ]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "action": "initial-pause",
+        "hold": {
+          "before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 311,
+              "minutes": 0,
+              "seconds": 0
+            }
+          },
+          "after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 342,
+              "minutes": 0,
+              "seconds": 0
+            }
+          }
+        }
+      },
+      {
+        "action": "capture",
+        "label": "initial-pause",
+        "capture": {
+          "file": "initial-pause.bgra",
+          "format": "BGRA",
+          "width": 1920,
+          "height": 1080,
+          "bytes": 8294400,
+          "player_before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 342,
+              "minutes": 0,
+              "seconds": 0
+            }
+          },
+          "player_after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 342,
+              "minutes": 0,
+              "seconds": 0
+            }
+          },
+          "monotonic_ns": 687494276457118,
+          "target_seconds": null
+        }
+      },
+      {
+        "action": "seek-forward",
+        "target_seconds": 3,
+        "begin_ns": 687494895647845,
+        "answer": {
+          "percentage": 9.133333206176758,
+          "time": {
+            "hours": 0,
+            "milliseconds": 548,
+            "minutes": 0,
+            "seconds": 0
+          },
+          "totaltime": {
+            "hours": 0,
+            "milliseconds": 0,
+            "minutes": 0,
+            "seconds": 6
+          }
+        },
+        "samples": [
+          {
+            "monotonic_ns": 687495396842608,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495417612596,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495438313020,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495459284992,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495480098981,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495500998317,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495521888154,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495543056665,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495563852005,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495584807634,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495605602207,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495626310243,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495647196798,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495667985504,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495688837696,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495709635411,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495730494029,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495751375415,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495772182769,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495792973429,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495813772402,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495834551049,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495855336263,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495876120707,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495896919679,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 548,
+                "minutes": 0,
+                "seconds": 0
+              }
+            }
+          },
+          {
+            "monotonic_ns": 687495919786557,
+            "properties": {
+              "speed": 1,
+              "time": {
+                "hours": 0,
+                "milliseconds": 0,
+                "minutes": 0,
+                "seconds": 3
+              }
+            }
+          }
+        ],
+        "settled": {
+          "speed": 1,
+          "time": {
+            "hours": 0,
+            "milliseconds": 0,
+            "minutes": 0,
+            "seconds": 3
+          }
+        },
+        "pause": {
+          "before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          },
+          "after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          }
+        },
+        "fresh_events": [
+          {
+            "event": "OnSeek",
+            "phase": "await-capture-initial-pause",
+            "monotonic_ns": 687495416466685,
+            "time_ms": 3000,
+            "seek_offset_ms": 2452
+          },
+          {
+            "event": "notification",
+            "phase": "await-capture-initial-pause",
+            "monotonic_ns": 687495437284445,
+            "sender": "xbmc",
+            "method": "Player.OnSeek",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "seekoffset": {
+                  "hours": 0,
+                  "milliseconds": 452,
+                  "minutes": 0,
+                  "seconds": 2
+                },
+                "speed": 1,
+                "time": {
+                  "hours": 0,
+                  "milliseconds": 0,
+                  "minutes": 0,
+                  "seconds": 3
+                }
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-capture-initial-pause",
+            "monotonic_ns": 687495971453526,
+            "sender": "xbmc",
+            "method": "Player.OnPause",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 0
+              }
+            }
+          }
+        ]
+      },
+      {
+        "action": "capture",
+        "label": "seek-forward",
+        "capture": {
+          "file": "seek-forward.bgra",
+          "format": "BGRA",
+          "width": 1920,
+          "height": 1080,
+          "bytes": 8294400,
+          "player_before": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          },
+          "player_after": {
+            "speed": 0,
+            "time": {
+              "hours": 0,
+              "milliseconds": 0,
+              "minutes": 0,
+              "seconds": 3
+            }
+          },
+          "monotonic_ns": 687496266794642,
+          "target_seconds": 3
+        }
+      },
+      {
+        "action": "stop",
+        "begin_ns": 687496332972497,
+        "answer": "OK",
+        "fresh_events": [
+          {
+            "event": "OnStopped",
+            "phase": "await-capture-seek-forward",
+            "monotonic_ns": 687496806112604
+          },
+          {
+            "event": "notification",
+            "phase": "await-capture-seek-forward",
+            "monotonic_ns": 687496827582556,
+            "sender": "xbmc",
+            "method": "Player.OnStop",
+            "data": {
+              "end": false,
+              "item": {
+                "title": "",
+                "type": "movie"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "action": "natural-reopen",
+        "fresh_events": [
+          {
+            "event": "OnStarted",
+            "phase": "await-reopen",
+            "monotonic_ns": 687497694499855
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687497694607134,
+            "sender": "xbmc",
+            "method": "Player.OnPlay",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687497882890924,
+            "sender": "xbmc",
+            "method": "Player.OnAVChange",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "OnAVStarted",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498822174852
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498822267673,
+            "sender": "xbmc",
+            "method": "Player.OnAVChange",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498893623185,
+            "sender": "xbmc",
+            "method": "Player.OnAVChange",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498893675846,
+            "sender": "xbmc",
+            "method": "Player.OnAVStart",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498893735282,
+            "sender": "xbmc",
+            "method": "Player.OnAVChange",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen",
+            "monotonic_ns": 687498914138456,
+            "sender": "xbmc",
+            "method": "Player.OnPause",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 0
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen-identity",
+            "monotonic_ns": 687499255366146,
+            "sender": "xbmc",
+            "method": "Player.OnResume",
+            "data": {
+              "item": {
+                "title": "",
+                "type": "movie"
+              },
+              "player": {
+                "playerid": -1,
+                "speed": 1
+              }
+            }
+          },
+          {
+            "event": "notification",
+            "phase": "await-reopen-identity",
+            "monotonic_ns": 687505475258274,
+            "sender": "xbmc",
+            "method": "Player.OnStop",
+            "data": {
+              "end": true,
+              "item": {
+                "title": "",
+                "type": "movie"
+              }
+            }
+          },
+          {
+            "event": "OnEnded",
+            "phase": "await-reopen-identity",
+            "monotonic_ns": 687505496104740
+          }
+        ],
+        "eof_ns": 687505515805365
+      }
+    ],
+    "payload_audits": [
+      {
+        "phase": "interrupted",
+        "manifest": "/home/mache/.cache/crystalhd-centered-controls-runtime-20261103/stock-centered-controls-01/payload/centered-payload-1823088-2-2-1.json",
+        "trace_prefix": "/home/mache/.cache/crystalhd-centered-controls-runtime-20261103/stock-centered-controls-01/interrupted.trace-prefix.log",
+        "audit": {
+          "status": "PASS",
+          "payload_audit": {
+            "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD",
+            "schema": "crystalhd-centered-payload-v1",
+            "pid": 1823088,
+            "driver_instance": 2,
+            "slots": 2,
+            "publication": {
+              "kind": "selected-decoder-context-retirement",
+              "context": 2,
+              "generation": 1,
+              "status": 0,
+              "after_driver_unlock": true,
+              "all_slots_frozen": true
+            },
+            "compared_bytes": {
+              "composed": {
+                "Y": 4177920,
+                "UV": 2088960
+              },
+              "public": {
+                "Y": 4177920,
+                "UV": 2088960
+              }
+            },
+            "observations": [
+              {
+                "submit_seq": 23,
+                "materialized_seq": 34,
+                "successful_syncs": 4,
+                "successful_exports": 4,
+                "binding_end_seq": 122,
+                "slot": 0,
+                "binding": {
+                  "context": 2,
+                  "generation": 1,
+                  "token": 100000,
+                  "decode_identity": 2,
+                  "submission_ordinal": 1,
+                  "surface": 1,
+                  "owner": 1
+                }
+              },
+              {
+                "submit_seq": 27,
+                "materialized_seq": 37,
+                "successful_syncs": 2,
+                "successful_exports": 2,
+                "binding_end_seq": 156,
+                "slot": 1,
+                "binding": {
+                  "context": 2,
+                  "generation": 1,
+                  "token": 200000,
+                  "decode_identity": 4,
+                  "submission_ordinal": 2,
+                  "surface": 2,
+                  "owner": 2
+                }
+              }
+            ],
+            "trace_records_checked": 719,
+            "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and decoder retirement joined.",
+            "coded_bottom_rows": "COMPARED_WHEN_PRESENT",
+            "pitch_padding": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
+            "trace_scope": "Contiguous frozen selected-session prefix through selected decoder-context retirement.",
+            "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
+            "token_identity": "SYNTHETIC_VA_BINDING_TOKEN",
+            "actual_media_pts": "NOT_OBSERVED",
+            "source_ffprobe_pts_join": "NOT_OBSERVED",
+            "gpu_reader_return": "NOT_OBSERVED",
+            "displayed_pixels": "NOT_OBSERVED",
+            "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER"
+          },
+          "selected_source_bindings": [
+            {
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 100000,
+                "decode_identity": 2,
+                "submission_ordinal": 1,
+                "surface": 1,
+                "owner": 1
+              },
+              "stage_ordinals": {
+                "small": 0,
+                "composed": 0,
+                "public": 0
+              },
+              "source_ordinal": 0,
+              "source_pts_ticks": 0,
+              "source_time_base": "1/15360",
+              "source_case": 2,
+              "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+              "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+            },
+            {
+              "binding": {
+                "context": 2,
+                "generation": 1,
+                "token": 200000,
+                "decode_identity": 4,
+                "submission_ordinal": 2,
+                "surface": 2,
+                "owner": 2
+              },
+              "stage_ordinals": {
+                "small": 1,
+                "composed": 1,
+                "public": 1
+              },
+              "source_ordinal": 1,
+              "source_pts_ticks": 512,
+              "source_time_base": "1/15360",
+              "source_case": 2,
+              "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+              "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+            }
+          ],
+          "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+        }
+      },
+      {
+        "phase": "reopen",
+        "manifest": "/home/mache/.cache/crystalhd-centered-controls-runtime-20261103/stock-centered-controls-01/payload/centered-payload-1823088-2-4-1.json",
+        "trace_prefix": "/home/mache/.cache/crystalhd-centered-controls-runtime-20261103/stock-centered-controls-01/reopen.trace-prefix.log",
+        "audit": {
+          "status": "PASS",
+          "payload_audit": {
+            "status": "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD",
+            "schema": "crystalhd-centered-payload-v1",
+            "pid": 1823088,
+            "driver_instance": 2,
+            "slots": 2,
+            "publication": {
+              "kind": "selected-decoder-context-retirement",
+              "context": 4,
+              "generation": 1,
+              "status": 0,
+              "after_driver_unlock": true,
+              "all_slots_frozen": true
+            },
+            "compared_bytes": {
+              "composed": {
+                "Y": 4177920,
+                "UV": 2088960
+              },
+              "public": {
+                "Y": 4177920,
+                "UV": 2088960
+              }
+            },
+            "observations": [
+              {
+                "submit_seq": 742,
+                "materialized_seq": 753,
+                "successful_syncs": 3,
+                "successful_exports": 3,
+                "binding_end_seq": 842,
+                "slot": 0,
+                "binding": {
+                  "context": 4,
+                  "generation": 1,
+                  "token": 100000,
+                  "decode_identity": 72,
+                  "submission_ordinal": 1,
+                  "surface": 19,
+                  "owner": 19
+                }
+              },
+              {
+                "submit_seq": 746,
+                "materialized_seq": 756,
+                "successful_syncs": 2,
+                "successful_exports": 2,
+                "binding_end_seq": 847,
+                "slot": 1,
+                "binding": {
+                  "context": 4,
+                  "generation": 1,
+                  "token": 200000,
+                  "decode_identity": 74,
+                  "submission_ordinal": 2,
+                  "surface": 20,
+                  "owner": 20
+                }
+              }
+            ],
+            "trace_records_checked": 3340,
+            "scope": "Each full coded-height composed and actual public NV12 canvas independently matches the small source at ROI [320,180,1280,720], with limited black outside; successful OWN bindings and decoder retirement joined.",
+            "coded_bottom_rows": "COMPARED_WHEN_PRESENT",
+            "pitch_padding": "EXCLUDED_FROM_PAYLOAD_COMPARISON",
+            "trace_scope": "Contiguous frozen selected-session prefix through selected decoder-context retirement.",
+            "allocation_identity": "Surface storage-view lifetime only; no global DMA-BUF alias identity.",
+            "token_identity": "SYNTHETIC_VA_BINDING_TOKEN",
+            "actual_media_pts": "NOT_OBSERVED",
+            "source_ffprobe_pts_join": "NOT_OBSERVED",
+            "gpu_reader_return": "NOT_OBSERVED",
+            "displayed_pixels": "NOT_OBSERVED",
+            "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER"
+          },
+          "selected_source_bindings": [
+            {
+              "binding": {
+                "context": 4,
+                "generation": 1,
+                "token": 100000,
+                "decode_identity": 72,
+                "submission_ordinal": 1,
+                "surface": 19,
+                "owner": 19
+              },
+              "stage_ordinals": {
+                "small": 0,
+                "composed": 0,
+                "public": 0
+              },
+              "source_ordinal": 0,
+              "source_pts_ticks": 0,
+              "source_time_base": "1/15360",
+              "source_case": 2,
+              "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+              "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+            },
+            {
+              "binding": {
+                "context": 4,
+                "generation": 1,
+                "token": 200000,
+                "decode_identity": 74,
+                "submission_ordinal": 2,
+                "surface": 20,
+                "owner": 20
+              },
+              "stage_ordinals": {
+                "small": 1,
+                "composed": 1,
+                "public": 1
+              },
+              "source_ordinal": 1,
+              "source_pts_ticks": 512,
+              "source_time_base": "1/15360",
+              "source_case": 2,
+              "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+              "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+            }
+          ],
+          "scope": "Observed barcode content -> prepared fixture ordinal/PTS only; actual packet/AVFrame PTS-to-VA binding, GPU-reader return and scanout NOT_OBSERVED."
+        }
+      }
+    ],
+    "payload_status_receipts": [
+      {
+        "schema": "crystalhd-centered-payload-status-v1",
+        "pid": 1823088,
+        "driver_instance": 2,
+        "context": 2,
+        "generation": 1,
+        "retirement_status": 0,
+        "sealed": true,
+        "after_driver_unlock": true,
+        "directory_open": true,
+        "directory_errno": 0,
+        "candidates": 35,
+        "rejected": 0,
+        "reject_mask": 0,
+        "selected_slots": 2,
+        "compose_committed_slots": 2,
+        "public_committed_slots": 2,
+        "materialized_slots": 2,
+        "eligible": true
+      },
+      {
+        "schema": "crystalhd-centered-payload-status-v1",
+        "pid": 1823088,
+        "driver_instance": 2,
+        "context": 4,
+        "generation": 1,
+        "retirement_status": 0,
+        "sealed": true,
+        "after_driver_unlock": true,
+        "directory_open": true,
+        "directory_errno": 0,
+        "candidates": 180,
+        "rejected": 0,
+        "reject_mask": 0,
+        "selected_slots": 2,
+        "compose_committed_slots": 2,
+        "public_committed_slots": 2,
+        "materialized_slots": 2,
+        "eligible": true
+      }
+    ],
+    "payload_status_classifications": [
+      {
+        "lifetime": [
+          2,
+          2,
+          1
+        ],
+        "selected_slots": 2,
+        "status": "AUDITED"
+      },
+      {
+        "lifetime": [
+          2,
+          4,
+          1
+        ],
+        "selected_slots": 2,
+        "status": "AUDITED"
+      }
+    ],
+    "selected_full_NV12_bindings": 4,
+    "seek_target_full_NV12_samples": 0,
+    "seek_target_full_NV12_scope": "NOT_CAPTURED; post-seek BGRA barcode is controls/content proof only",
+    "application_exit": 0,
+    "boundary_equal": true,
+    "kernel_exit": 0,
+    "maximum_temperature_mC": 51000,
+    "errors": [],
+    "live_resource_handoff": null,
+    "raw_result": "/home/mache/.cache/crystalhd-centered-controls-runtime-20261103/stock-centered-controls-01/result.json"
+  },
+  "scope": {
+    "observed": "Paused BGRA barcode content11 and post-forward-seek90, fresh requested Stop/end:false, same-PID/VA-instance natural reopen/end:true. Interrupted play35 originals; natural reopen180. Four total NV12 bindings: source0/1 in contexts2/1 and4/1, with full ROI/black-border/coded-bottom and neutral-chroma checks.",
+    "generation_reset_runtime": "NOT_EXERCISED; stock seek kept its generation and no context_reset was observed. Reset v2 is CPU-controlled only.",
+    "post_seek_full_NV12": "NOT_CAPTURED; post-seek BGRA barcode is content/control proof, not a new full-NV12/border sample.",
+    "content_pts": "Ordinal selects known fixture PTS; actual packet/AVFrame PTS-to-VA handoff remains NOT_OBSERVED.",
+    "scaler_mapping": "Selected frozen patch positions work on this card; visible1080/coded1088 height models are not disambiguated.",
+    "BGRA_scope": "Observed3x3 barcode patches only, checked by unchanged public CRC reader via sparse proxy; no full-image reconstruction/comparison.",
+    "public_route": "Actual sampled canvases are direct-public. Separate private-to-public copy is CPU-controlled only.",
+    "GPU_reader_return": "NOT_OBSERVED",
+    "scanout": "NOT_OBSERVED",
+    "normal_backend_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER",
+    "release_qualification": "NOT_EXPANDED",
+    "remaining": [
+      "post-seek full NV12 target sample",
+      "actual media PTS-to-VA handoff",
+      "actual reset-generation route",
+      "CPU fallback/29.97",
+      "broader lifetime/GPU reader return",
+      "matched benefit/endurance"
+    ]
+  }
+}

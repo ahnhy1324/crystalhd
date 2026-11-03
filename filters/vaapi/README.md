@@ -692,6 +692,13 @@ cover two natural EOFs/reopen and four full NV12 ROI/black-border samples under
 original stock Kodi22RC1. They do not establish actual media PTS, GPU-reader
 return, physical presentation, normal-backend compatibility or release quality.
 
+The [progressive centered control case](../../tests/fixtures/issue477/centered-controls-20261103.json)
+adds a source-barcode forward seek, requested Stop and same-process natural
+reopen. Its four NV12 samples cover source0/1 in each play; the seek-target90
+checkpoint is BGRA content-only. This stock route keeps its generation, so
+the new reset-close observation remains CPU-qualified rather than actual
+reset coverage. See the protocol for explicit reset/publication and PTS limits.
+
 <a id="development-decode-integrated-card-scaling"></a>
 
 ### v1.2: decode-integrated card scaling
