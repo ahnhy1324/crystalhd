@@ -70,6 +70,7 @@ extern "C" {
 #include "../crystalhd-h264-output.h"
 #include "crystalhd-access-unit-limits.h"
 #include "crystalhd-centered-output.h"
+#include "crystalhd-cow-snapshot.h"
 #include "crystalhd-decode-replay.h"
 #include "crystalhd-h264.h"
 #include "crystalhd-mpeg4.h"
@@ -337,6 +338,9 @@ struct Buffer {
   unsigned int element_size = 0;
   unsigned int elements = 0;
   std::vector<uint8_t> data;
+  // Only VAImage buffers may own a private file-COW view. Decode parameter
+  // buffers retain their existing vector representation and validation.
+  std::shared_ptr<crystalhd_cow_snapshot::Snapshot> cow_snapshot;
   unsigned int map_count = 0;
   bool export_busy = false;
   bool data_failed = false;
@@ -345,6 +349,33 @@ struct Buffer {
   VAImageID derived_image = VA_INVALID_ID;
   bool derived_write_active = false;
   bool derived_was_ready = false;
+
+  uint8_t *Data() {
+    return type == VAImageBufferType && cow_snapshot ? cow_snapshot->Data() : data.data();
+  }
+  const uint8_t *Data() const {
+    return type == VAImageBufferType && cow_snapshot ? cow_snapshot->Data() : data.data();
+  }
+  size_t Size() const {
+    return type == VAImageBufferType && cow_snapshot ? cow_snapshot->Size() : data.size();
+  }
+  bool MaterializeImageData(size_t bytes) {
+    if (!cow_snapshot)
+      return true;
+    if (type != VAImageBufferType)
+      return false;
+    try {
+      std::vector<uint8_t> replacement(bytes);
+      const size_t copied = std::min(bytes, cow_snapshot->Size());
+      if (copied != 0)
+        memcpy(replacement.data(), cow_snapshot->Data(), copied);
+      data.swap(replacement);
+      cow_snapshot.reset();
+      return true;
+    } catch (const std::bad_alloc &) {
+      return false;
+    }
+  }
 };
 
 static bool BufferBorrowed(const Buffer &buffer) {
@@ -632,6 +663,10 @@ struct Surface {
   crystalhd_test_vpp_payload::Stamp payload_observer_stamp;
   bool payload_observer_is_view = false;
   crystalhd_test_vpp_payload::Geometry payload_observer_view_geometry;
+  size_t PayloadCpuStorageBytes() const {
+    return cpu_primary_canvas && planes[0] == cpu_primary_canvas->Data()
+        ? cpu_primary_canvas->Size() : storage.size();
+  }
 #endif
   VASurfaceID id = VA_INVALID_SURFACE;
   unsigned int width = 0;
@@ -723,6 +758,10 @@ struct Surface {
   CpuPrimaryCharge cpu_primary_charge;
   std::vector<uint8_t> storage;
   std::vector<uint8_t> retired_cpu_primary_storage;
+  // COW snapshots and frozen pixel views share the actual primary allocation.
+  // Its internal fd and page-rounded64MiB charge follow the LAST such owner.
+  std::shared_ptr<crystalhd_cow_snapshot::Canvas> cpu_primary_canvas;
+  std::shared_ptr<crystalhd_cow_snapshot::Canvas> retired_cpu_primary_canvas;
   bool cpu_primary = false;
   bool cpu_primary_gpu_promoted = false;
   std::weak_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
@@ -757,6 +796,7 @@ struct Surface {
       close(dumb_drm_fd);
     }
     if (!cpu_primary && cpu_primary_charge.bytes == 0 &&
+        !cpu_primary_canvas && !retired_cpu_primary_canvas &&
         bo == nullptr && dumb_drm_fd < 0 && object_fds.empty() &&
         object_maps.empty() && !layout.valid && !direct_picture && !direct_backing) {
       if (auto pool = private_backing_pool.lock())
@@ -1086,12 +1126,18 @@ struct Surface {
   }
 
   bool BeginCpuAccess(uint64_t direction) const {
-    if ((direction & DMA_BUF_SYNC_WRITE) != 0)
-      InvalidateCenteredReadback();
     CH_COST_SCOPE_FLAGS(cost_scope, CpuAccessBegin,
         crystalhd_test_maintained_cost::SurfaceIdentity(this),
         ((direction & DMA_BUF_SYNC_READ) ? 32U : 0U) |
             ((direction & DMA_BUF_SYNC_WRITE) ? 64U : 0U), direction);
+    if ((direction & DMA_BUF_SYNC_WRITE) != 0) {
+      // This includes frozen VppPixelView writers, whose retained Canvas is
+      // the allocation behind their unchanged raw plane addresses. Freeze all
+      // surviving mapped/unmapped private images BEFORE any source store.
+      if (cpu_primary_canvas && !cpu_primary_canvas->PrepareWrite())
+        CH_COST_RETURN(cost_scope, false);
+      InvalidateCenteredReadback();
+    }
     for (size_t object = 0; object < object_fds.size(); ++object) {
       if (!SyncDmaBuf(object_fds[object], DMA_BUF_SYNC_START | direction)) {
         const int saved_errno = errno;
@@ -1156,13 +1202,16 @@ struct Surface {
   // writes. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
   // imported surfaces and VPP never inherit this i915-specific policy.
   bool BeginDecodedCpuWrite(bool *used_i915_wc) {
-    // The WC path bypasses BeginCpuAccess, including its invalidation.
-    InvalidateCenteredReadback();
     CH_COST_SCOPE_FLAGS(cost_scope, DecodedCpuBegin,
         crystalhd_test_maintained_cost::SurfaceIdentity(this), 64, 0);
     if (used_i915_wc == nullptr)
       CH_COST_RETURN(cost_scope, false);
     *used_i915_wc = false;
+    if (cpu_primary_canvas && !cpu_primary_canvas->PrepareWrite())
+      CH_COST_RETURN(cost_scope, false);
+    // The WC path bypasses BeginCpuAccess. Retain its successful invalidation,
+    // but a failed COW preparation must preserve prior bytes AND provenance.
+    InvalidateCenteredReadback();
     if (experimental_i915_wc) {
       if (SetI915Domain(I915_GEM_DOMAIN_WC, I915_GEM_DOMAIN_WC)) {
         *used_i915_wc = true;
@@ -1542,6 +1591,7 @@ static bool CenteredReadbackAllocation(const Surface &surface) {
       surface.backing_owner == VA_INVALID_SURFACE &&
       !surface.cpu_primary && !surface.cpu_primary_gpu_promoted &&
       surface.cpu_primary_charge.bytes == 0 && surface.retired_cpu_primary_storage.empty() &&
+      !surface.cpu_primary_canvas && !surface.retired_cpu_primary_canvas &&
       surface.direct_decode_eligible && !surface.centered_allocation_exposed &&
       !surface.layout.valid && surface.bo == nullptr && surface.storage.empty() &&
       surface.dumb_drm_fd >= 0 && surface.dumb_handle != 0 &&
@@ -2928,12 +2978,14 @@ struct VppPixelView : Surface {
     trace_generation = surface->trace_generation;
     centered_geometry = surface->centered_geometry;
     object_fds = surface->object_fds;
+    cpu_primary_canvas = surface->cpu_primary_canvas;
   }
 };
 
 static bool PrivateVppPixels(const Surface &surface) {
-  return surface.fourcc == VA_FOURCC_NV12 && !surface.storage.empty() &&
-      surface.planes[0] == surface.storage.data() && surface.bo == nullptr &&
+  return surface.fourcc == VA_FOURCC_NV12 &&
+      ((!surface.storage.empty() && surface.planes[0] == surface.storage.data()) ||
+       CpuPrimaryStorageMatches(surface)) && surface.bo == nullptr &&
       surface.dumb_drm_fd < 0 && surface.object_fds.empty() &&
       surface.object_maps.empty() && !surface.direct_backing;
 }
@@ -4417,6 +4469,7 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination,
 // allocation state moves; callers finish every fallible operation beforehand.
 static void SwapSurfaceStorage(Surface &a, Surface &b) noexcept {
   a.storage.swap(b.storage);
+  a.cpu_primary_canvas.swap(b.cpu_primary_canvas);
   a.private_backing_pool.swap(b.private_backing_pool);
   std::swap(a.bo, b.bo);
   a.object_maps.swap(b.object_maps);
@@ -4442,13 +4495,17 @@ static bool CpuPrimaryStorageMatches(const Surface &surface) {
       !surface.layout.valid && surface.bo == nullptr && surface.dumb_drm_fd < 0 &&
       surface.object_fds.empty() && surface.object_maps.empty() &&
       surface.retired_cpu_primary_storage.empty() &&
+      !surface.retired_cpu_primary_canvas && surface.cpu_primary_canvas &&
       surface.fourcc == VA_FOURCC_NV12 && surface.width != 0 &&
       surface.width <= kMaxWidth && surface.height != 0 && surface.height <= kMaxHeight &&
       (surface.width & 1U) == 0 && (surface.height & 3U) == 0 &&
       surface.pitch[0] == Align(surface.width, 64) && surface.pitch[1] == surface.pitch[0] &&
-      surface.storage.size() == size_t{surface.pitch[0]} * (surface.height + surface.height / 2U) &&
-      surface.storage.capacity() == surface.cpu_primary_charge.bytes &&
-      surface.planes[0] == surface.storage.data() &&
+      surface.storage.empty() && surface.cpu_primary_charge.bytes == 0 &&
+      surface.cpu_primary_canvas->Size() == size_t{surface.pitch[0]} *
+          (surface.height + surface.height / 2U) &&
+      surface.cpu_primary_canvas->Capacity() ==
+          crystalhd_cow_snapshot::AllocationBytes(surface.cpu_primary_canvas->Size()) &&
+      surface.planes[0] == surface.cpu_primary_canvas->Data() &&
       surface.planes[1] == surface.planes[0] + size_t{surface.pitch[0]} * surface.height;
 }
 
@@ -4459,6 +4516,7 @@ static bool TryCpuPrimaryTarget(Surface *surface, const DecodeContext &decode) {
       decode.decode_processing || !CenteredReadbackAllocation(*surface) ||
       surface->cpu_primary || surface->cpu_primary_gpu_promoted ||
       surface->cpu_primary_charge.bytes != 0 || !surface->retired_cpu_primary_storage.empty() ||
+      surface->cpu_primary_canvas || surface->retired_cpu_primary_canvas ||
       !surface->ready || surface->failed || surface->destroyed ||
       surface->expected_timestamp != 0 || surface->frame_timestamp != 0 ||
       surface->vpp_readers != 0 || surface->vpp_writers != 0 ||
@@ -4472,13 +4530,18 @@ static bool TryCpuPrimaryTarget(Surface *surface, const DecodeContext &decode) {
     Surface candidate;
     const size_t bytes = size_t{Align(surface->width, 64)} *
         (surface->height + surface->height / 2U);
-    if (!candidate.cpu_primary_charge.Acquire(bytes) ||
-        !candidate.AllocateCpuNv12(surface->width, surface->height) ||
-        candidate.storage.capacity() != candidate.cpu_primary_charge.bytes ||
-        !CopyNv12Surface(*surface, &candidate))
+    candidate.cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(bytes);
+    if (!candidate.cpu_primary_canvas)
+      return false;
+    candidate.width = surface->width;
+    candidate.height = surface->height;
+    candidate.fourcc = VA_FOURCC_NV12;
+    candidate.pitch[0] = candidate.pitch[1] = Align(surface->width, 64);
+    candidate.planes[0] = candidate.cpu_primary_canvas->Data();
+    candidate.planes[1] = candidate.planes[0] + size_t{candidate.pitch[0]} * candidate.height;
+    if (!CopyNv12Surface(*surface, &candidate))
       return false;
     SwapSurfaceStorage(*surface, candidate);
-    surface->cpu_primary_charge.Swap(candidate.cpu_primary_charge);
     surface->cpu_primary = true;
     surface->InvalidateCenteredReadback();
     return true;
@@ -9814,7 +9877,12 @@ static VAStatus BufferSetNumElements(VADriverContextP context,
   if (total_bytes > buffer->second.data.max_size())
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   try {
-    buffer->second.data.resize(total_bytes);
+    if (buffer->second.cow_snapshot) {
+      if (!buffer->second.MaterializeImageData(total_bytes))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    } else {
+      buffer->second.data.resize(total_bytes);
+    }
   } catch (const std::bad_alloc &) {
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   }
@@ -9856,7 +9924,7 @@ static VAStatus MapBufferWithFlags(VADriverContextP context, VABufferID buffer_i
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
   ++buffer->second.map_count;
-  *data = buffer->second.data.data();
+  *data = buffer->second.Data();
   return VA_STATUS_SUCCESS;
 }
 
@@ -11318,7 +11386,8 @@ static VAStatus QueryImageFormats(VADriverContextP, VAImageFormat *formats,
 
 static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
                                   int width, int height, VAImage *va_image,
-                                  bool full_derived_snapshot = false) {
+                                  bool full_derived_snapshot = false,
+                                  std::shared_ptr<crystalhd_cow_snapshot::Snapshot> cow_snapshot = {}) {
   if ((format.fourcc != VA_FOURCC_NV12 && format.fourcc != VA_FOURCC_BGRA) ||
       width <= 0 || height <= 0 ||
       static_cast<unsigned int>(width) > kMaxWidth ||
@@ -11354,7 +11423,13 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
   image.va.offsets[1] = bgra ? 0 : uv_offset;
   bool buffer_created = false;
   try {
-    if (full_derived_snapshot &&
+    if (cow_snapshot) {
+      // A private view has exactly the same complete tight NV12 bytes and
+      // descriptor as the existing independent derived vector snapshot.
+      if (!full_derived_snapshot || bgra || cow_snapshot->Size() != data_size)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+      buffer.cow_snapshot = std::move(cow_snapshot);
+    } else if (full_derived_snapshot &&
         driver->retired_snapshot_bytes.size() == buffer.elements &&
         driver->retired_snapshot_bytes.capacity() <= kMaxRetiredSnapshotBytes) {
       buffer.data.swap(driver->retired_snapshot_bytes);
@@ -11406,6 +11481,7 @@ static VAStatus DestroyImage(VADriverContextP context, VAImageID image_id) {
       buffer->second.derived_image == image_id &&
       buffer->second.context == VA_INVALID_ID &&
       buffer->second.type == VAImageBufferType &&
+      !buffer->second.cow_snapshot &&
       !buffer->second.derived_write_active && !buffer->second.data_failed &&
       buffer->second.data.size() == image->second.va.data_size &&
       !buffer->second.data.empty() &&
@@ -11434,9 +11510,9 @@ static bool ImageBufferFits(const Image &image, const Buffer &buffer) {
     const size_t pitch = image.va.pitches[plane];
     // Buffers are separately public objects and may have been resized after
     // image creation. Check their actual size without overflowing arithmetic.
-    if (pitch < row_bytes || offset > buffer.data.size() ||
-        row_bytes > buffer.data.size() - offset ||
-        rows - 1 > (buffer.data.size() - offset - row_bytes) / pitch)
+    if (pitch < row_bytes || offset > buffer.Size() ||
+        row_bytes > buffer.Size() - offset ||
+        rows - 1 > (buffer.Size() - offset - row_bytes) / pitch)
       return false;
   }
   return true;
@@ -11449,7 +11525,7 @@ static bool ImageRectangleFits(const Surface &surface, const Image &image,
          height <= image.va.height;
 }
 
-static std::shared_ptr<Surface> CenteredImageReadback(
+static bool CenteredImageReadbackOwner(
     const Driver *driver, const Surface &surface, const Image &image,
     unsigned int width, unsigned int height) {
   if (!CenteredReadbackSourceAllocation(surface) || !surface.ready || surface.failed ||
@@ -11457,7 +11533,7 @@ static std::shared_ptr<Surface> CenteredImageReadback(
       surface.export_waiters != 0 || width != surface.width || height != surface.height ||
       image.va.width != width || image.va.height != height ||
       image.va.format.fourcc != VA_FOURCC_NV12)
-    return {};
+    return false;
   const auto &r = surface.centered_readback;
   if (r.timestamp == 0 || r.identity == 0 || r.context == 0 || r.context > UINT32_MAX ||
       r.generation == 0 || r.ordinal == 0 || r.write_epoch != surface.centered_write_epoch ||
@@ -11465,7 +11541,7 @@ static std::shared_ptr<Surface> CenteredImageReadback(
       surface.decode_identity != r.identity || surface.trace_decode_identity != r.identity ||
       surface.trace_context != r.context || surface.trace_generation != r.generation ||
       surface.trace_submission_ordinal != r.ordinal)
-    return {};
+    return false;
   const auto decoder = driver->contexts.find(static_cast<VAContextID>(r.context));
   if (decoder == driver->contexts.end() || decoder->second->video_process ||
       decoder->second->decode_processing || decoder->second->retired ||
@@ -11475,12 +11551,21 @@ static std::shared_ptr<Surface> CenteredImageReadback(
       decoder->second->width != surface.width ||
       decoder->second->centered_geometry.canvas_width != decoder->second->width ||
       decoder->second->centered_geometry.canvas_height != decoder->second->height)
-    return {};
+    return false;
   auto geometry = decoder->second->centered_geometry;
   geometry.canvas_width = surface.width;
   geometry.canvas_height = surface.height;
   if (!geometry.enabled || !SameCenteredGeometry(geometry, r.geometry))
+    return false;
+  return true;
+}
+
+static std::shared_ptr<Surface> CenteredImageReadback(
+    const Driver *driver, const Surface &surface, const Image &image,
+    unsigned int width, unsigned int height) {
+  if (!CenteredImageReadbackOwner(driver, surface, image, width, height))
     return {};
+  const auto &r = surface.centered_readback;
   const auto picture = surface.decode_picture.lock();
   const auto small = r.small.lock();
   if (!picture || !small || picture->centered_pixels != small ||
@@ -11526,6 +11611,8 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
   // Never wait under the driver lock on our own queued asynchronous fence.
   if (!owner->ready || owner->vpp_writers != 0)
     return VA_STATUS_ERROR_SURFACE_BUSY;
+  if (!buffer->second.MaterializeImageData(buffer->second.Size()))
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
   const auto centered = CenteredImageReadback(driver, *surface, *image, width, height);
   if (!surface->BeginCpuRead())
     return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -11544,7 +11631,7 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
       const unsigned active = plane == 0 ? centered->height : centered->height / 2U;
       const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
       for (unsigned row = 0; row != rows; ++row) {
-        uint8_t *line = buffer->second.data.data() + image->va.offsets[plane] +
+        uint8_t *line = buffer->second.Data() + image->va.offsets[plane] +
             size_t{row} * image->va.pitches[plane];
         if (row < first || row - first >= active) {
           memset(line, black, width);
@@ -11562,12 +11649,12 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
       return VA_STATUS_ERROR_OPERATION_FAILED;
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_READBACK)
     // Test-only API-read evidence; never a materialization/source census.
-    CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(*surface, image->va, buffer->second.data.data());
+    CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(*surface, image->va, buffer->second.Data());
 #endif
     return VA_STATUS_SUCCESS;
   }
-  uint8_t *destination_y = buffer->second.data.data() + image->va.offsets[0];
-  uint8_t *destination_uv = buffer->second.data.data() + image->va.offsets[1];
+  uint8_t *destination_y = buffer->second.Data() + image->va.offsets[0];
+  uint8_t *destination_uv = buffer->second.Data() + image->va.offsets[1];
   for (unsigned int y = 0; y < height; ++y) {
     memcpy(destination_y + static_cast<size_t>(y) * image->va.pitches[0],
            surface->planes[0] + static_cast<size_t>(y) * surface->pitch[0],
@@ -11583,7 +11670,7 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
 #if defined(CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK)
   if (CpuPrimaryStorageMatches(*surface) && width == surface->width &&
       height == surface->height && image->va.width == width && image->va.height == height)
-    CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(*surface, image->va, buffer->second.data.data());
+    CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(*surface, image->va, buffer->second.Data());
 #endif
   return VA_STATUS_SUCCESS;
 }
@@ -11617,22 +11704,48 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
   if (BackingOwner(driver, surface->second.get())->opaque_reference)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   const VAImageFormat format = ImageFormatFor(surface->second->fourcc);
+  std::shared_ptr<crystalhd_cow_snapshot::Snapshot> cow_snapshot;
+  Image requested;
+  requested.va.format = format;
+  requested.va.width = surface->second->width;
+  requested.va.height = surface->second->height;
+  // Only the existing tight full-sized NV12 image layout can alias the full
+  // regular-file canvas. No compact/small-only READY or format conversion is
+  // involved. The original full Compose/identity/write-epoch proof is still
+  // required, but private-small lifetime is irrelevant to these actual public
+  // pixels. All unsupported/expired/cold/exported cases keep vector snapshots.
+  if (CpuPrimaryStorageMatches(*surface->second) &&
+      surface->second->pitch[0] == surface->second->width &&
+      surface->second->pitch[1] == Align(surface->second->width, 2) &&
+      CenteredImageReadbackOwner(driver, *surface->second, requested,
+                                surface->second->width, surface->second->height)) {
+    if (!surface->second->BeginCpuRead())
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    cow_snapshot = surface->second->cpu_primary_canvas->CreateSnapshot();
+    if (!surface->second->EndCpuRead())
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    // An optional mmap/registry allocation failure falls back to the existing
+    // independent snapshot. A failed READ lease is never hidden by that retry.
+  }
   VAImage snapshot = {};
   // These tight layouts are overwritten completely before publication:
   // BGRA width*4 bytes per row; NV12 width Y bytes and Align(width,2) UV bytes
   // for ceil(height/2) rows, including odd final columns/rows. No pitch gap or
   // old image bytes are exposed, and failure erases the unpublished snapshot.
   VAStatus status = CreateImageLocked(driver, format, surface->second->width,
-                                      surface->second->height, &snapshot, true);
+                                      surface->second->height, &snapshot, true,
+                                      std::move(cow_snapshot));
   if (status != VA_STATUS_SUCCESS)
     return status;
-  status = CopySurfaceToImage(driver, surface->second.get(),
-                              &driver->images.at(snapshot.image_id),
-                              surface->second->width, surface->second->height);
-  if (status != VA_STATUS_SUCCESS) {
-    driver->buffers.erase(snapshot.buf);
-    driver->images.erase(snapshot.image_id);
-    return status;
+  if (!driver->buffers.at(snapshot.buf).cow_snapshot) {
+    status = CopySurfaceToImage(driver, surface->second.get(),
+                                &driver->images.at(snapshot.image_id),
+                                surface->second->width, surface->second->height);
+    if (status != VA_STATUS_SUCCESS) {
+      driver->buffers.erase(snapshot.buf);
+      driver->images.erase(snapshot.image_id);
+      return status;
+    }
   }
   Buffer &derived = driver->buffers.at(snapshot.buf);
   derived.derived_image = snapshot.image_id;
@@ -11645,6 +11758,12 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
   }
   *va_image = snapshot;
   owner->external_accessed = true;
+#if defined(CRYSTALHD_VAAPI_TEST_COW_DERIVED_IMAGE)
+  // Private evidence only, after successful READ END and descriptor/buffer
+  // publication. Ordinary builds contain no route observer, allocation or I/O.
+  if (derived.cow_snapshot)
+    CRYSTALHD_VAAPI_TEST_COW_DERIVED_IMAGE(*surface->second, snapshot, derived.Data());
+#endif
   return VA_STATUS_SUCCESS;
 }
 
@@ -11739,9 +11858,9 @@ static VAStatus PutImageLocked(Driver *driver, VASurfaceID surface_id,
   const VAStatus writable = ImageWriteStatus(driver, surface->second.get());
   if (writable != VA_STATUS_SUCCESS)
     return writable;
-  const uint8_t *source_y_plane = buffer->second.data.data() +
+  const uint8_t *source_y_plane = buffer->second.Data() +
                                   image->second.va.offsets[0];
-  const uint8_t *source_uv_plane = buffer->second.data.data() +
+  const uint8_t *source_uv_plane = buffer->second.Data() +
                                    image->second.va.offsets[1];
   owner->completed_decode_picture = {};
   owner->picture_transaction = NextDecodeIdentity(driver);
@@ -11937,8 +12056,12 @@ static VAStatus AcquireBufferHandle(VADriverContextP context,
                                  });
   if (image == driver->images.end() || !ImageBufferFits(image->second, buffer))
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  // The canvas fd is private. Export only the existing independent GBM image
+  // store, transactionally materializing any private file view first.
+  if (!buffer.MaterializeImageData(buffer.Size()))
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
   const std::shared_ptr<ImageExportBacking> backing =
-      AllocateImageExportBacking(driver, buffer.data.size());
+      AllocateImageExportBacking(driver, buffer.Size());
   if (!backing)
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   if (buffer.derived_source) {
@@ -11952,7 +12075,7 @@ static VAStatus AcquireBufferHandle(VADriverContextP context,
   }
   // Never export uninitialized GBM padding along with the image bytes.
   memset(backing->mapping, 0, backing->size);
-  memcpy(backing->mapping, buffer.data.data(), buffer.data.size());
+  memcpy(backing->mapping, buffer.Data(), buffer.Size());
   if (!SyncDmaBuf(backing->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)) {
     CancelDerivedWrite(buffer);
     return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -11998,7 +12121,7 @@ static VAStatus ReleaseBufferHandle(VADriverContextP context,
   const std::shared_ptr<ImageExportBacking> backing = found->second.exported;
   std::vector<uint8_t> updated;
   try {
-    updated.resize(found->second.data.size());
+    updated.resize(found->second.Size());
   } catch (const std::bad_alloc &) {
     // No synchronization or ownership change has started. Keep the same
     // borrowed handle and any derived-write lease intact for a later retry.
@@ -12030,6 +12153,7 @@ static VAStatus ReleaseBufferHandle(VADriverContextP context,
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
   buffer.data.swap(updated);
+  buffer.cow_snapshot.reset();
   return FinishDerivedWrite(driver, buffer, true);
 }
 
@@ -12240,6 +12364,7 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       // Existing read-only views keep their exact old plane addresses alive;
       // these charged CPU bytes retire only with the LAST Surface reference.
       surface->second->retired_cpu_primary_storage.swap(surface->second->storage);
+      surface->second->retired_cpu_primary_canvas = surface->second->cpu_primary_canvas;
       SwapSurfaceStorage(*surface->second, *cpu_promotion);
       surface->second->cpu_primary = false;
       surface->second->cpu_primary_gpu_promoted = true;

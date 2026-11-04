@@ -756,7 +756,44 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
              : __real_ioctl(fd, request, argument);
 }
 
+// Only the COW helper's named real memfd bypasses the DRM model. Its VMAs
+// are real kernel private/shared mappings; keep fixed bookkeeping so allocator
+// fault tests do not accidentally fail in this test-only forwarding path.
+namespace cow_kernel_io {
+struct Mapping { void *address = nullptr; size_t size = 0; };
+static std::array<Mapping, 256> mappings;
+static std::mutex mutex;
+static bool File(int fd) {
+  const int saved = errno;
+  char path[64], name[128];
+  std::snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+  const ssize_t bytes = readlink(path, name, sizeof(name) - 1);
+  if (bytes >= 0) name[bytes] = '\0';
+  const bool result = bytes >= 0 &&
+      std::strcmp(name, "/memfd:crystalhd-canvas (deleted)") == 0;
+  errno = saved;
+  return result;
+}
+static void Track(void *address, size_t size) {
+  if (address == MAP_FAILED) return;
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &mapping : mappings) if (mapping.address == nullptr) {
+    mapping = {address, size}; return;
+  }
+  std::abort();
+}
+static bool Untrack(void *address, size_t size) {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &mapping : mappings) if (mapping.address == address) {
+    if (mapping.size != size) std::abort();
+    mapping = {}; return true;
+  }
+  return false;
+}
+} // namespace cow_kernel_io
+
 extern "C" int __wrap_close(int fd) {
+  if (cow_kernel_io::File(fd)) return __real_close(fd);
   if (native_node_mock != nullptr)
     return native_node_mock->Close(fd);
   return fence_io_mock != nullptr ? fence_io_mock->Close(fd)
@@ -787,6 +824,11 @@ extern "C" int __wrap_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags
 }
 extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
                               int fd, off_t offset) {
+  if (cow_kernel_io::File(fd)) {
+    void *result = __real_mmap(address, size, prot, flags, fd, offset);
+    cow_kernel_io::Track(result, size);
+    return result;
+  }
   void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap(address, size, prot, flags, fd, offset);
@@ -795,6 +837,11 @@ extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
 }
 extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
                                 int fd, off64_t offset) {
+  if (cow_kernel_io::File(fd)) {
+    void *result = __real_mmap64(address, size, prot, flags, fd, offset);
+    cow_kernel_io::Track(result, size);
+    return result;
+  }
   void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap64(address, size, prot, flags, fd, offset);
@@ -802,6 +849,7 @@ extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
   return result;
 }
 extern "C" int __wrap_munmap(void *address, size_t size) {
+  if (cow_kernel_io::Untrack(address, size)) return __real_munmap(address, size);
   const int result = native_node_mock != nullptr
       ? native_node_mock->Unmap(address, size) : __real_munmap(address, size);
   if (import_io_probe != nullptr) import_io_probe->Unmap(address, size, result);
@@ -7489,6 +7537,23 @@ void ImageGeometryAndOddNv12Roundtrip() {
             "invalid or overflow image dimensions must fail before allocation");
 }
 
+static bool TestCowAvailable() {
+  static const bool available = [] {
+    auto canvas = crystalhd_cow_snapshot::Canvas::Create(4096);
+    if (canvas) return true;
+    const int error = errno;
+    if (error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP) return false;
+    throw std::runtime_error("COW capability operational failure errno=" + std::to_string(error));
+  }();
+  return available;
+}
+
+static uint32_t TestCowPrimaryCapacity(const Surface &surface) {
+  const auto &canvas = surface.cpu_primary_canvas ? surface.cpu_primary_canvas
+                                                   : surface.retired_cpu_primary_canvas;
+  return canvas ? static_cast<uint32_t>(canvas->Capacity()) : 0U;
+}
+
 std::vector<uint8_t> CpuPrimaryActiveBytes(const Surface &surface) {
   std::vector<uint8_t> bytes;
   for (unsigned plane = 0; plane != 2; ++plane)
@@ -7527,7 +7592,8 @@ std::shared_ptr<Surface> MakeCpuPrimaryTarget(Fixture *fixture, NativeNodeMock *
 }
 
 void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
-  const uint32_t baseline = cpu_primary_live_bytes.load();
+  if (!TestCowAvailable()) { std::puts("COW CPU-primary export NOT_EXERCISED: explicit unsupported capability"); return; }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
   NativeNodeMock mock; mock.real_prime_files = true;
   Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
   {
@@ -7560,7 +7626,7 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
                 CenteredReadbackSourceAllocation(*surface) && !surface->centered_readback.small.expired(),
             "real full CPU Compose establishes immutable-small provenance before export");
     const auto expected = CpuPrimaryActiveBytes(*surface);
-    const uint32_t charge = surface->cpu_primary_charge.bytes;
+    const uint32_t charge = TestCowPrimaryCapacity(*surface);
     const uint8_t *old_planes[2] = {surface->planes[0], surface->planes[1]};
     auto view = std::make_unique<VppPixelView>(); view->Capture(surface);
     ++surface->vpp_readers;
@@ -7570,9 +7636,9 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
                 prime.num_objects == 1 && !surface->cpu_primary &&
                 surface->cpu_primary_gpu_promoted && surface->centered_allocation_exposed &&
                 surface->planes[0] != old_planes[0] && surface->layout.valid &&
-                surface->retired_cpu_primary_storage.data() == old_planes[0] &&
-                surface->cpu_primary_charge.bytes == charge &&
-                cpu_primary_live_bytes.load() == baseline + charge &&
+                surface->retired_cpu_primary_canvas->Data() == old_planes[0] &&
+                TestCowPrimaryCapacity(*surface) == charge &&
+                crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
                 mock.write_starts == 1 && mock.write_ends == 1,
             "successful export commits a fully copied/registered DRM allocation while pinning charged old CPU bytes");
     Require(CpuPrimaryActiveBytes(*surface) == expected && CpuPrimaryActiveBytes(*view) == expected,
@@ -7615,18 +7681,19 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
             "remove the public ID after successful export");
     picture.reset();
     surface.reset();
-    Require(cpu_primary_live_bytes.load() == baseline + charge &&
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
                 CpuPrimaryActiveBytes(*view) == expected,
             "retired CPU storage stays charged and readable past the last VA ID");
     view.reset();
-    Require(cpu_primary_live_bytes.load() == baseline && mock.files.empty() &&
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
                 mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
             "last captured allocation releases CPU budget, mappings and real/fake DRM files exactly once");
   }
 }
 
 void CpuPrimaryExportFailuresAreTransactional() {
-  const uint32_t baseline = cpu_primary_live_bytes.load();
+  if (!TestCowAvailable()) { std::puts("COW CPU-primary export NOT_EXERCISED: explicit unsupported capability"); return; }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
   for (unsigned failure = 0; failure != 5; ++failure) {
     NativeNodeMock mock; mock.real_prime_files = true;
     Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
@@ -7635,7 +7702,7 @@ void CpuPrimaryExportFailuresAreTransactional() {
       auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
       const auto expected = CpuPrimaryActiveBytes(*surface);
       const uint8_t *plane = surface->planes[0];
-      const uint32_t charge = surface->cpu_primary_charge.bytes;
+      const uint32_t charge = TestCowPrimaryCapacity(*surface);
       VAImage writable{};
       if (failure == 0) fixture.driver.drm_fd = -1;
       if (failure == 1) mock.fail_write_end = true;
@@ -7655,9 +7722,9 @@ void CpuPrimaryExportFailuresAreTransactional() {
       Require(status != VA_STATUS_SUCCESS && memcmp(&prime, &unchanged, sizeof(prime)) == 0 &&
                   surface->cpu_primary && !surface->cpu_primary_gpu_promoted &&
                   surface->planes[0] == plane && surface->layout.valid == false &&
-                  surface->retired_cpu_primary_storage.empty() &&
-                  surface->cpu_primary_charge.bytes == charge &&
-                  cpu_primary_live_bytes.load() == baseline + charge &&
+                  !surface->retired_cpu_primary_canvas &&
+                  TestCowPrimaryCapacity(*surface) == charge &&
+                  crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
                   CpuPrimaryActiveBytes(*surface) == expected && fixture.driver.backing_owners.empty(),
               "missing DRM, failed END, registry OOM, cold writer or candidate OOM cannot publish or partially replace CPU backing");
       allocation_fault::fail_next = false; mock.on_write_end = {};
@@ -7669,7 +7736,7 @@ void CpuPrimaryExportFailuresAreTransactional() {
       Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
               "CPU fallback remains independently destroyable after failed export");
       surface.reset();
-      Require(cpu_primary_live_bytes.load() == baseline && mock.files.empty() &&
+      Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
                   mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
               "failed export leaves no descriptor, mapping, registry or budget owner behind");
     }
@@ -7677,11 +7744,13 @@ void CpuPrimaryExportFailuresAreTransactional() {
 }
 
 void CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess() {
-  const uint32_t baseline = cpu_primary_live_bytes.load();
+  const bool cpu_available = TestCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
   for (uint32_t access : {VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_READ_WRITE,
                           VA_EXPORT_SURFACE_WRITE_ONLY}) {
     std::array<VAStatus, 2> outcomes{};
     for (bool cpu_primary : {false, true}) {
+      if (cpu_primary && !cpu_available) continue; // Always retain the actual DUMB access-policy cases.
       NativeNodeMock mock; mock.real_prime_files = true;
       Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
       {
@@ -7715,13 +7784,14 @@ void CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess() {
         Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
                 "paired failed targets retain independent destruction semantics");
         surface.reset();
-        Require(cpu_primary_live_bytes.load() == baseline && mock.files.empty() &&
+        Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
                     mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
                 "paired access-policy controls retire every resource and actual CPU charge");
       }
     }
-    Require(outcomes[0] == outcomes[1],
-            "CPU-primary changes allocation only, not baseline access-policy status");
+    if (cpu_available)
+      Require(outcomes[0] == outcomes[1],
+              "CPU-primary changes allocation only, not baseline access-policy status");
   }
 }
 
@@ -8708,6 +8778,11 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 int VppFullTestEntry(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--cpu-primary") == 0) {
     try {
+      if (!TestCowAvailable()) {
+        CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+        puts("COW CPU-primary positive export NOT_EXERCISED: explicit unsupported capability; actual DUMB access policy PASS");
+        return 77;
+      }
       CpuPrimaryExportPreservesRetainedPixelsAndAliases();
       CpuPrimaryExportFailuresAreTransactional();
       CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();

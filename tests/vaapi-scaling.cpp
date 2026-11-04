@@ -3431,8 +3431,68 @@ void RecreateCenteredContext(CenteredFixture *f) {
   f->decode = f->driver.contexts.at(context);
 }
 
+static uint32_t TestCowPrimaryCapacity(const Surface &surface) {
+  const auto &canvas = surface.cpu_primary_canvas ? surface.cpu_primary_canvas
+                                                   : surface.retired_cpu_primary_canvas;
+  return canvas ? static_cast<uint32_t>(canvas->Capacity()) : 0U;
+}
+
+struct CowUnavailable {};
+static bool TestCowAvailable() {
+  static const bool available = [] {
+    auto canvas = crystalhd_cow_snapshot::Canvas::Create(4096);
+    if (canvas) return true;
+    const int error = errno;
+    if (error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP) return false;
+    throw std::runtime_error("COW capability operational failure errno=" + std::to_string(error));
+  }();
+  return available;
+}
+static void RequireCowAvailable() {
+  if (!TestCowAvailable()) throw CowUnavailable{};
+}
+
+void CenteredCowUnavailableKeepsDumb() {
+  if (TestCowAvailable()) return;
+  CenteredDumbScope io;
+  CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+  const auto surface = InstallCenteredDumb(&f, &io.state);
+  const auto initial = f.PrivatePixels(*surface);
+  RecreateCenteredContext(&f);
+  Require(!surface->cpu_primary && !surface->cpu_primary_canvas &&
+              surface->dumb_drm_fd >= 0 && f.PrivatePixels(*surface) == initial,
+          "unsupported real COW keeps the original complete DUMB target at Context admission");
+  f.Submit(); const auto packed = f.Packed(19); f.Complete(packed);
+  const auto expected = f.Canvas(packed);
+  VAImage image{};
+  Require(surface->ready && !surface->failed && f.Read(1) == expected &&
+              DeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+              !f.driver.buffers.at(image.buf).cow_snapshot,
+          "unsupported COW still decodes and exposes ordinary Get/independent-vector Derive pixels");
+  void *mapped = nullptr;
+  Require(MapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+          "fallback image retains legacy private writable mappings");
+  auto edited = expected; edited[0] ^= 0x45;
+  static_cast<uint8_t *>(mapped)[0] = edited[0];
+  const auto next = f.Packed(61);
+  f.Submit(1, false); f.Complete(next, false, 2 * kTimestampStep);
+  const auto current = f.Canvas(next);
+  Require(f.Read(1) == current && !memcmp(mapped, edited.data(), edited.size()) &&
+              UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS &&
+              DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+          "fallback source reuse preserves mapped image edits without a new BUSY restriction");
+  for (unsigned parity = 0; parity != 2; ++parity) {
+    f.QueueBob(parity, false, false);
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                f.Read(2) == f.BobOracle(current, parity) && f.Read(1) == current,
+            "unsupported COW preserves both real DUMB-backed Bob parities and source pixels");
+  }
+  std::puts("COW NOT_EXERCISED (explicit unsupported capability); actual DUMB decode/Get/Derive/reuse/Bob fallback PASS");
+}
+
 void CenteredCpuPrimaryFullMaterialization() {
-  const uint32_t baseline = cpu_primary_live_bytes.load();
+  RequireCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
   for (unsigned height : {1080U, 1088U}) for (bool full : {false, true}) {
     CenteredDumbScope io;
     CenteredFixture f(1920, 1088, 1080, 1280, 720, height, full, true);
@@ -3441,8 +3501,10 @@ void CenteredCpuPrimaryFullMaterialization() {
     const auto old = f.PrivatePixels(*surface);
     RecreateCenteredContext(&f);
     Require(CpuPrimaryStorageMatches(*surface) && f.PrivatePixels(*surface) == old &&
-                cpu_primary_live_bytes.load() == baseline + surface->storage.capacity(),
-            "actual Context selection preserves every initial public byte and charges actual full capacity");
+                surface->cpu_primary_canvas && surface->storage.empty() &&
+                surface->planes[0] == surface->cpu_primary_canvas->Data() &&
+                crystalhd_cow_snapshot::LiveBytes() == baseline + surface->cpu_primary_canvas->Capacity(),
+            "actual Context selection preserves every public byte in charged real memfd storage");
     f.Submit(); const auto packed = f.Packed(47); f.Complete(packed);
     const auto expected = f.Canvas(packed);
     Require(surface->ready && !surface->failed && f.PrivatePixels(*surface) == expected &&
@@ -3453,9 +3515,9 @@ void CenteredCpuPrimaryFullMaterialization() {
     const unsigned cpu_small_reads = centered_probe::cpu_small_readbacks;
     Require(f.Read(1) == expected && f.Read(1, true) == expected &&
                 centered_probe::cpu_readbacks == cpu_reads &&
-                centered_probe::cpu_small_readbacks == cpu_small_reads + 2 &&
-                centered_probe::readbacks == weak_reads + 2,
-            "Get/Derive use qualified immutable small pixels only after full CPU public materialization");
+                centered_probe::cpu_small_readbacks == cpu_small_reads + 1 &&
+                centered_probe::readbacks == weak_reads + 1,
+            "Get reconstructs and Derive privately aliases only an already materialized full CPU canvas");
     for (unsigned parity = 0; parity != 2; ++parity) {
       f.QueueBob(parity, false, full);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
@@ -3463,26 +3525,23 @@ void CenteredCpuPrimaryFullMaterialization() {
               "both existing Bob parities remain byte exact on a full CPU-primary original");
     }
   }
-  Require(cpu_primary_live_bytes.load() == baseline,
+  Require(crystalhd_cow_snapshot::LiveBytes() == baseline,
           "full CPU canvases release all capacity after their final fixture references");
 }
 
 void CenteredCpuPrimaryPressureAndLifetime() {
-  const uint32_t baseline = cpu_primary_live_bytes.load();
+  RequireCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
   for (unsigned obstruction = 0; obstruction != 4; ++obstruction) {
     CenteredDumbScope io;
     CenteredFixture f(1920, 1088, 1080, 1280, 720, 1088, false, true);
     const auto surface = InstallCenteredDumb(&f, &io.state);
-    Surface pressure;
+    std::shared_ptr<crystalhd_cow_snapshot::Canvas> pressure;
     if (obstruction == 0) {
-      Require(pressure.cpu_primary_charge.Acquire(kCpuPrimaryBytes - baseline),
-              "reserve the remaining actual live CPU capacity");
-      pressure.storage.resize(pressure.cpu_primary_charge.bytes);
-      Require(pressure.storage.capacity() == pressure.cpu_primary_charge.bytes,
-              "pressure fixture owns exactly its charged vector capacity");
+      pressure = crystalhd_cow_snapshot::Canvas::Create(crystalhd_cow_snapshot::BudgetLimit - baseline);
+      Require(pressure && pressure->Capacity() == crystalhd_cow_snapshot::BudgetLimit - baseline,
+              "pressure owns the remaining real page-rounded primary allocation");
     }
-    if (obstruction == 1) allocation_fault::fail_at_least =
-        size_t{Align(surface->width, 64)} * (surface->height + surface->height / 2U);
     if (obstruction == 2) ++surface->vpp_readers;
     VAImage writable{};
     if (obstruction == 3) {
@@ -3492,12 +3551,18 @@ void CenteredCpuPrimaryPressureAndLifetime() {
                   surface->image_write_locked,
               "hold a real cold-derived writer while creating the Context");
     }
-    RecreateCenteredContext(&f);
-    if (obstruction == 1)
-      Require(allocation_fault::fail_at_least == SIZE_MAX,
-              "the full-canvas CPU allocation actually consumed the selected OOM fault");
+    if (obstruction == 1) {
+      // Context admission is exercised by the positive/pressure cases. Arm
+      // this allocation failure at the representation boundary itself, so
+      // earlier context-container allocations cannot consume it instead.
+      allocation_fault::fail_next = true;
+      Require(!TryCpuPrimaryTarget(surface.get(), *f.decode) && !allocation_fault::fail_next,
+              "actual Canvas allocation OOM is consumed without changing the existing DUMB target");
+    } else {
+      RecreateCenteredContext(&f);
+    }
     Require(!surface->cpu_primary && surface->dumb_drm_fd >= 0 &&
-                surface->storage.empty() && surface->cpu_primary_charge.bytes == 0,
+                surface->storage.empty() && TestCowPrimaryCapacity(*surface) == 0,
             "budget/OOM/active-reader/cold-writer pressure preserves the original complete DUMB allocation");
     allocation_fault::fail_at_least = SIZE_MAX;
     if (obstruction == 2) --surface->vpp_readers;
@@ -3511,20 +3576,204 @@ void CenteredCpuPrimaryPressureAndLifetime() {
     CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
     auto surface = InstallCenteredDumb(&f, &io.state);
     RecreateCenteredContext(&f);
-    const uint32_t bytes = surface->cpu_primary_charge.bytes;
+    const uint32_t bytes = TestCowPrimaryCapacity(*surface);
     Require(bytes != 0, "a live CPU-primary canvas owns a capacity charge");
     auto retained = std::make_unique<VppPixelView>(); retained->Capture(surface);
     VASurfaceID id = 1;
     Require(DestroySurfaces(&f.context, &id, 1) == VA_STATUS_SUCCESS,
             "remove only the public VA ID while a real captured allocation remains");
     surface.reset();
-    Require(cpu_primary_live_bytes.load() == baseline + bytes,
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline + bytes,
             "VA ID destruction cannot release bytes still retained by a pixel view");
     retained.reset();
-    Require(cpu_primary_live_bytes.load() == baseline,
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline,
             "last retained storage owner releases capacity exactly once");
   }
-  Require(cpu_primary_live_bytes.load() == baseline, "all pressure and retained-owner charges retire");
+  Require(crystalhd_cow_snapshot::LiveBytes() == baseline, "all pressure and retained-owner charges retire");
+}
+
+static std::vector<uint8_t> TestCowImageBytes(VADriverContextP context, const VAImage &image) {
+  void *mapped = nullptr;
+  Require(MapBufferWithFlags(context, image.buf, &mapped, kImageMapRead) == VA_STATUS_SUCCESS,
+          "map the retained image through the public image callback");
+  const auto *begin = static_cast<const uint8_t *>(mapped);
+  std::vector<uint8_t> bytes(begin, begin + image.data_size);
+  Require(UnmapBuffer(context, image.buf) == VA_STATUS_SUCCESS, "release the retained image read");
+  return bytes;
+}
+
+void CenteredCowImagesPreserveMappedAndUnmappedBytes() {
+  RequireCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (unsigned mode = 0; mode != 4; ++mode) {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit(); const auto old_packed = f.Packed(17); f.Complete(old_packed);
+    auto image_bytes = f.Canvas(old_packed);
+    const auto source_bytes = image_bytes;
+    VAImage image{}, untouched{};
+    Require(DeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+                DeriveImage(&f.context, 1, &untouched) == VA_STATUS_SUCCESS &&
+                f.driver.buffers.at(image.buf).cow_snapshot &&
+                f.driver.buffers.at(image.buf).data.empty() &&
+                f.driver.buffers.at(untouched.buf).cow_snapshot,
+            "both real memfd images exercise lazy private COW rather than eager vector copies");
+    void *mapped = nullptr;
+    Require(MapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+            "legacy unflagged READ|WRITE mapping remains available");
+    if (mode & 2U) {
+      image_bytes[0] ^= 0x3f;
+      static_cast<uint8_t *>(mapped)[0] = image_bytes[0];
+    }
+    Require(f.PrivatePixels(*surface) == source_bytes,
+            "client-private mapped edits never modify the decoded primary");
+    const bool keep_mapped = (mode & 1U) != 0;
+    if (!keep_mapped)
+      Require(UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS,
+              "retain an unmapped private image across the next primary write");
+    const auto new_packed = f.Packed(91);
+    f.Submit(1, false);
+    f.Complete(new_packed, false, 2 * kTimestampStep);
+    Require(f.PrivatePixels(*surface) == f.Canvas(new_packed) &&
+                TestCowImageBytes(&f.context, image) == image_bytes &&
+                TestCowImageBytes(&f.context, untouched) == source_bytes,
+            "source reuse succeeds while every mapped, unmapped and privately edited image preserves all bytes");
+    if (keep_mapped) {
+      Require(!memcmp(mapped, image_bytes.data(), image_bytes.size()),
+              "the original live client pointer survives primary mutation unchanged");
+      Require(UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS, "release the original retained map");
+    }
+    void *rejected = nullptr;
+    Require(MapBufferWithFlags(&f.context, image.buf, &rejected, kImageMapWrite) ==
+                VA_STATUS_ERROR_OPERATION_FAILED &&
+                DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS &&
+                DestroyImage(&f.context, untouched.image_id) == VA_STATUS_SUCCESS,
+            "explicit decoded WRITE stays rejected and both independent images retire normally");
+  }
+  Require(crystalhd_cow_snapshot::LiveBytes() == baseline, "all mapped/unmapped COW owners retire");
+}
+
+void CenteredCowImageOutlivesContextAndSurfaceId() {
+  RequireCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit(); const auto packed = f.Packed(23); f.Complete(packed);
+    auto expected = f.Canvas(packed);
+    const uint32_t capacity = TestCowPrimaryCapacity(*surface);
+    VAImage image{};
+    Require(DeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+                f.driver.buffers.at(image.buf).cow_snapshot,
+            "retain a real private image before its decoder and VA surface retire");
+    void *mapped = nullptr;
+    Require(MapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+            "keep the ordinary writable private client mapping alive");
+    expected[0] ^= 0x55; static_cast<uint8_t *>(mapped)[0] = expected[0];
+    Require(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS,
+            "mapped private images add no new decoder-close BUSY restriction");
+    f.decode.reset();
+    VASurfaceID original = 1;
+    Require(DestroySurfaces(&f.context, &original, 1) == VA_STATUS_SUCCESS,
+            "a retained image does not prevent public VA ID destruction");
+    surface.reset();
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline + capacity,
+            "the live image VMA keeps the old primary charged after public owners disappear");
+    f.driver.next_surface = 1;
+    VASurfaceID replacement = VA_INVALID_SURFACE;
+    Require(CreateSurfaces2(&f.context, VA_RT_FORMAT_YUV420, 256, 32, &replacement, 1,
+                            nullptr, 0) == VA_STATUS_SUCCESS && replacement == 1,
+            "reuse the numeric VA ID with a genuinely different allocation");
+    VAImage upload{}; VAImageFormat format{}; format.fourcc = VA_FOURCC_NV12;
+    Require(CreateImage(&f.context, &format, 256, 32, &upload) == VA_STATUS_SUCCESS,
+            "create an ordinary image for the unrelated replacement surface");
+    std::fill(f.driver.buffers.at(upload.buf).data.begin(),
+              f.driver.buffers.at(upload.buf).data.end(), 0xb4);
+    Require(PutImage(&f.context, replacement, upload.image_id, 0, 0, 256, 32, 0, 0, 256, 32) ==
+                VA_STATUS_SUCCESS && !memcmp(mapped, expected.data(), expected.size()),
+            "new same-ID uploads cannot retarget or overwrite the retained old image");
+    Require(DestroyImage(&f.context, upload.image_id) == VA_STATUS_SUCCESS &&
+                UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS &&
+                DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS &&
+                crystalhd_cow_snapshot::LiveBytes() == baseline,
+            "the final image release retires the actual primary charge exactly once");
+  }
+}
+
+namespace cow_write_fault {
+unsigned calls = 0, fail_on = 0;
+int Advice(void *, size_t) {
+  if (++calls == fail_on) { errno = EIO; return -1; }
+  return 0; // The helper must still execute its real kernel advice.
+}
+struct Reset { ~Reset() { calls = fail_on = 0; } };
+}
+
+void CenteredCowPrepareFailurePreservesPixelsAndProvenance() {
+  RequireCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  {
+    cow_write_fault::Reset reset;
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit(); const auto packed = f.Packed(31); f.Complete(packed);
+    const auto expected = f.Canvas(packed);
+    auto replacement = crystalhd_cow_snapshot::Canvas::Create(expected.size(), cow_write_fault::Advice);
+    Require(bool(replacement), "allocate a real primary with a failure-only advice hook");
+    memcpy(replacement->Data(), expected.data(), expected.size());
+    surface->cpu_primary_canvas = replacement;
+    surface->planes[0] = replacement->Data();
+    surface->planes[1] = replacement->Data() + size_t{surface->pitch[0]} * surface->height;
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true),
+            "establish actual full pixels and provenance on the replacement test allocation");
+    VAImage images[2]{};
+    for (auto &image : images)
+      Require(DeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+                  f.driver.buffers.at(image.buf).cow_snapshot,
+              "create both surviving real COW VMAs before failing the second detachment");
+    void *mapped = nullptr;
+    Require(MapBuffer(&f.context, images[0].buf, &mapped) == VA_STATUS_SUCCESS,
+            "first alias remains mapped and privately writable during preparation");
+    auto edited = expected; edited[0] ^= 0x2a; static_cast<uint8_t *>(mapped)[0] = edited[0];
+    const auto saved = surface->centered_readback;
+    const uint64_t epoch = surface->centered_write_epoch;
+    cow_write_fault::calls = 0; cow_write_fault::fail_on = 2;
+    bool used = false;
+    Require(!surface->BeginDecodedCpuWrite(&used) && cow_write_fault::calls == 2 &&
+                f.PrivatePixels(*surface) == expected && surface->centered_write_epoch == epoch &&
+                surface->centered_readback.small.lock() == saved.small.lock() &&
+                surface->centered_readback.timestamp == saved.timestamp &&
+                surface->centered_readback.identity == saved.identity &&
+                surface->centered_readback.context == saved.context &&
+                surface->centered_readback.generation == saved.generation &&
+                surface->centered_readback.ordinal == saved.ordinal &&
+                surface->centered_readback.write_epoch == saved.write_epoch &&
+                surface->centered_readback.small_write_epoch == saved.small_write_epoch &&
+                SameCenteredGeometry(surface->centered_readback.geometry, saved.geometry),
+            "failed real detachment aborts before primary bytes, write epoch or readback provenance change");
+    Require(TestCowImageBytes(&f.context, images[0]) == edited &&
+                TestCowImageBytes(&f.context, images[1]) == expected,
+            "partial detachment failure preserves both privately edited and untouched image bytes");
+    cow_write_fault::fail_on = 0;
+    Require(surface->BeginCpuWrite(), "a later ordinary write prepares the remaining live alias");
+    memset(surface->planes[0], 0x6a, expected.size());
+    Require(surface->EndCpuWrite() && TestCowImageBytes(&f.context, images[0]) == edited &&
+                TestCowImageBytes(&f.context, images[1]) == expected,
+            "successful retry detaches the remaining VMA before any primary stores");
+    Require(UnmapBuffer(&f.context, images[0].buf) == VA_STATUS_SUCCESS,
+            "release the client's original mapping after failed/successful preparations");
+    for (const auto &image : images)
+      Require(DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+              "both image handles remain normally destroyable after preparation failure");
+  }
+  Require(crystalhd_cow_snapshot::LiveBytes() == baseline, "failed/retried COW preparation leaks no primary charge");
 }
 
 void CenteredImageReadbackBytesAndReadFailures() {
@@ -3568,6 +3817,7 @@ void CenteredImageReadbackBytesAndReadFailures() {
 
 void CenteredImageReadbackInvalidationAndFallback() {
   for (bool cpu_primary : {false, true}) for (unsigned mutation = 0; mutation != 14; ++mutation) {
+    if (cpu_primary && !TestCowAvailable()) continue; // Only the unavailable CPU lane; DUMB stays strict.
     CenteredDumbScope io;
     CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
     const auto surface = InstallCenteredDumb(&f, &io.state);
@@ -3620,6 +3870,7 @@ void CenteredImageReadbackInvalidationAndFallback() {
             "writes, expired provenance, foreign epochs/context/geometry and imports use actual public bytes");
   }
   for (bool cpu_primary : {false, true}) {
+    if (cpu_primary && !TestCowAvailable()) continue; // Existing DUMB retirement coverage remains.
     CenteredDumbScope io;
     CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
     const auto surface = InstallCenteredDumb(&f, &io.state);
@@ -3697,9 +3948,16 @@ void CenteredImageReadbackExportAndPartial() {
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--cpu-primary") == 0) {
     try {
+      CenteredCowUnavailableKeepsDumb();
       CenteredCpuPrimaryFullMaterialization(); CenteredCpuPrimaryPressureAndLifetime();
+      CenteredCowImagesPreserveMappedAndUnmappedBytes();
+      CenteredCowImageOutlivesContextAndSurfaceId();
+      CenteredCowPrepareFailurePreservesPixelsAndProvenance();
       std::printf("PASS centered full CPU-primary canvases: %u checks\n", checks);
       return 0;
+    } catch (const CowUnavailable &) {
+      std::puts("COW positive integration NOT_EXERCISED: unsupported capability (DUMB fallback checked)");
+      return 77;
     } catch (const std::exception &error) {
       std::fprintf(stderr, "FAIL centered full CPU-primary canvases: %s\n", error.what());
       return 1;
@@ -3710,8 +3968,15 @@ int main(int argc, char **argv) {
       CenteredImageReadbackBytesAndReadFailures();
       CenteredImageReadbackInvalidationAndFallback();
       CenteredImageReadbackExportAndPartial();
+      CenteredCowUnavailableKeepsDumb();
       CenteredCpuPrimaryFullMaterialization(); CenteredCpuPrimaryPressureAndLifetime();
+      CenteredCowImagesPreserveMappedAndUnmappedBytes();
+      CenteredCowImageOutlivesContextAndSurfaceId();
+      CenteredCowPrepareFailurePreservesPixelsAndProvenance();
       std::printf("PASS centered independent image readback: %u checks\n", checks);
+      return 0;
+    } catch (const CowUnavailable &) {
+      std::printf("PASS ordinary independent image readback: %u checks; COW NOT_EXERCISED (unsupported)\n", checks);
       return 0;
     } catch (const std::exception &error) {
       std::fprintf(stderr, "FAIL centered independent image readback: %s\n", error.what());
@@ -3747,7 +4012,7 @@ int main(int argc, char **argv) {
     }
   }
   if (argc != 1) return 2;
-  unsigned failures = 0;
+  unsigned failures = 0, unavailable = 0;
   const std::pair<const char *, void (*)()> groups[] = {
     {"centered context admission", CenteredContextAdmission},
     {"centered readable canvas and Bob", CenteredReadableCanvasAndBob},
@@ -3759,8 +4024,12 @@ int main(int argc, char **argv) {
     {"centered image reconstruction bytes and READ failures", CenteredImageReadbackBytesAndReadFailures},
     {"centered image provenance invalidation and fallback", CenteredImageReadbackInvalidationAndFallback},
     {"centered image export permanence and partial fallback", CenteredImageReadbackExportAndPartial},
+    {"unsupported COW preserves actual DUMB fallback", CenteredCowUnavailableKeepsDumb},
     {"centered full CPU-primary materialization", CenteredCpuPrimaryFullMaterialization},
     {"centered CPU capacity pressure and retained lifetime", CenteredCpuPrimaryPressureAndLifetime},
+    {"COW images retain mapped, unmapped and private-edited bytes", CenteredCowImagesPreserveMappedAndUnmappedBytes},
+    {"COW image lifetime crosses decoder close and VA ID reuse", CenteredCowImageOutlivesContextAndSurfaceId},
+    {"failed COW preparation preserves primary and provenance", CenteredCowPrepareFailurePreservesPixelsAndProvenance},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},
@@ -3792,10 +4061,17 @@ int main(int argc, char **argv) {
     {"direct backing reassigned during VPP", DirectBackingReassignedBetweenVppBeginAndEnd},
   };
   for (const auto &group : groups) {
-    try { group.second(); std::printf("PASS %s\n", group.first); }
+    try {
+      if (group.second == CenteredCowUnavailableKeepsDumb && TestCowAvailable()) {
+        std::printf("NOT_APPLICABLE %s: native COW supported\n", group.first);
+        continue;
+      }
+      group.second(); std::printf("PASS %s\n", group.first);
+    }
+    catch (const CowUnavailable &) { ++unavailable; std::printf("NOT_EXERCISED %s: explicit unsupported COW capability\n", group.first); }
     catch (const std::exception &error) { ++failures; std::fprintf(stderr, "FAIL %s: %s\n", group.first, error.what()); }
   }
-  std::printf("VA scaling lifecycle: %zu groups, %u checks, %u failures\n",
-              sizeof(groups) / sizeof(groups[0]), checks, failures);
+  std::printf("VA scaling lifecycle: %zu groups, %u checks, %u failures, %u COW groups NOT_EXERCISED\n",
+              sizeof(groups) / sizeof(groups[0]), checks, failures, unavailable);
   return failures ? 1 : 0;
 }

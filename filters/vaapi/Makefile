@@ -31,6 +31,7 @@ VC1_REPLAY_TEST := vaapi-vc1-replay-test
 VC1_SUBMIT_TEST := vaapi-vc1-submit-test
 SEEK_TEST := vaapi-seek-test
 TRACE_TEST := vaapi-trace-test
+COW_TEST := vaapi-cow-snapshot-test
 VA_LIBDIR := $(shell $(PKG_CONFIG) --variable=libdir libva)
 DRIVERDIR ?= $(if $(strip $(VA_LIBDIR)),$(VA_LIBDIR)/dri)
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
@@ -55,7 +56,7 @@ BACKEND_HEADERS := $(ROOTDIR)/include/crystalhd-config.h \
 	$(ROOTDIR)/include/crystalhd-config-schema.h \
 	 ../crystalhd-h264-output.h \
 	crystalhd-access-unit-limits.h crystalhd-decode-replay.h \
-	crystalhd-centered-output.h \
+	crystalhd-centered-output.h crystalhd-cow-snapshot.h \
 	crystalhd-h264.h \
 	crystalhd-private-backing.h \
 	crystalhd-vpp-bob.h \
@@ -188,6 +189,7 @@ clean: maintained-cost-observer-clean
 replay-disposition-observer: $(ROOTDIR)/tests/vaapi-replay-disposition-backend.cpp \
 		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-readback-observer.h \
+		$(ROOTDIR)/tests/vaapi-centered-cow-image-observer.h \
 		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
 	mkdir -p replay-disposition-observer
@@ -424,6 +426,10 @@ $(VC1_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-vc1-submit.cpp crystalhd_drv_video.cp
 $(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h $(ROOTDIR)/include/crystalhd-config.h $(ROOTDIR)/include/crystalhd-config-schema.h
 	$(CXX) -std=c++17 -Wall -Wextra -Werror $< -o $@ -pthread
 
+# Real regular-file VM/COW controls; no DIL, DRM device or FFmpeg dependency.
+$(COW_TEST): $(ROOTDIR)/tests/vaapi-cow-snapshot.cpp crystalhd-cow-snapshot.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ -pthread $(CRYSTALHD_CPU_FLAGS)
+
 # Optional hardware lifecycle probe; keep FFmpeg development dependencies out
 # of the normal driver build.
 seek-test: $(SEEK_TEST)
@@ -435,7 +441,7 @@ $(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp $(ROOTDIR)/tests/ffmpeg-profile-co
 
 # Unit fixtures exercise explicit native controls, independent of host INI files.
 check: export CRYSTALHD_CONFIG_DISABLE = 1
-check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY_CONTRACT_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST)
+check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY_CONTRACT_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(COW_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'
 	./$(H264_TEST)
@@ -450,6 +456,7 @@ check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY
 	./$(VC1_REPLAY_TEST)
 	./$(VC1_SUBMIT_TEST)
 	./$(TRACE_TEST) | $(PYTHON3) $(ROOTDIR)/tests/vaapi-trace.test.py
+	./$(COW_TEST) || test $$? -eq 77
 	./$(CACHE_TEST)
 	./$(PRIVATE_BACKING_TEST)
 	./$(CONVERSION_TEST)
@@ -481,12 +488,14 @@ uninstall:
 	rm -f -- "$(DESTDIR)$(DRIVERDIR)/$(DRIVER)"
 
 clean:
+	rm -f $(COW_TEST)
 	rm -f $(BOB_VPP_TEST) $(CENTERED_TEST)
 	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY_CONTRACT_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
 check: $(BOB_VPP_TEST) $(CENTERED_TEST)
 $(CENTERED_TEST): $(CRYSTALHD_BUILD_DEPS)
+$(COW_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(BOB_VPP_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(REPLAY_CONTRACT_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(PRIVATE_BACKING_TEST) $(CONVERSION_TEST) $(SCALING_TEST) $(BOB_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so

@@ -4,6 +4,10 @@
 #define CRYSTALHD_VAAPI_TEST_MAINTAINED_COST 1
 #define CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION 1
 #include "vaapi-centered-readback-observer.h"
+#include "vaapi-centered-cow-image-observer.h"
+#define CRYSTALHD_VAAPI_TEST_COW_DERIVED_IMAGE(surface, image, bytes) \
+  crystalhd_test_centered_cow_image::Capture( \
+      driver->trace.session(), TraceFields(nullptr, &(surface)), (image), (bytes))
 #define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) \
   crystalhd_test_centered_readback::Capture( \
       driver->trace.session(), TraceFields(nullptr, &(surface)), (image), (bytes), \

@@ -146,6 +146,9 @@ Each slot carries:
   Existing extra allocation metadata is allowed. `copy_source` must identify
   the composed storage view; on the direct route all three canvas descriptors
   describe the same view. Public and private canvas pitches/addresses can differ.
+  When present, `storage_bytes` is the current owned CPU logical extent,
+  including a memfd canvas; it excludes retired backing and page capacity.
+  Vector-backed historical values and captured-view metadata are unchanged.
 - `small_file`, `composed_file`, `public_file` basenames and respective
   `small_bytes`, `composed_bytes`, `public_bytes` lengths.
 
