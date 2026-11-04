@@ -1,7 +1,7 @@
 # Native companion support and distribution policy
 
 This policy covers the optional native V4L2 Kodi companion. Use the
-[delivery guide](NATIVE-RUNTIME-DELIVERY.md) for the matching RC2 package or RC3 candidate;
+[RC3 delivery instructions](NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use) for the published RC3 package;
 for ordinary playback, start with [everyday usage](USAGE.md).
 
 RC3 retains the same bounded optional distribution scope as published RC2.
@@ -46,8 +46,11 @@ scoped pause controls and bounded lifecycle evidence, with the recorded
 renderer/QoS loss disposition. Other seek/Stop evidence retains its actual
 frontend/module attribution; broader native controls are not inferred. RC3
 adds own token-bound source-range transitions and bounded progressive POC0/2
-multi-slice association, but its final combined candidate needs its own native
-acceptance and restoration result.
+multi-slice association. Its [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+binds frozen own core `36ef4c681f49` / module18 to the fresh 23-case native
+campaign, including pinned original Kodi720p/FHD EOS/reopen and restoration.
+File-only slot/preflight success remains separate from that media evidence;
+it does not qualify a changed native source, kernel, launcher or target.
 Same-DPB nonempty STOP→START remains unsupported. Independent
 booted OS, Atom/i386, BCM70012, broad codec coverage, physical presentation and
 general FHD50/60 remain unqualified. The #538 heap-abort follow-up is excluded

@@ -110,7 +110,7 @@ For a first install, run `sudo modprobe crystalhd`. For an update, use the
 [idle reload procedure](BRINGUP.md#reload-an-idle-device), or reboot. Then run:
 
 ```sh
-dkms status -m crystalhd -k "$kernel_release"
+dkms status -m crystalhd -k "$(uname -r)"
 crystalhd-check
 ```
 
@@ -131,7 +131,7 @@ and DKMS builds before removing anything. Keep the old direct source for
 rollback. From the source root, remove the direct file:
 
 ```sh
-sudo make uninstall-module KVER="$kernel_release"
+sudo make uninstall-module KVER="$(uname -r)"
 ```
 
 This removes only the configured direct module, preserves runtime files and
@@ -160,8 +160,14 @@ If reinstalling the **same revision from unchanged source**, inspect its
 registered location first:
 
 ```sh
-readlink -f -- "$dkms_source"
-dkms status -m crystalhd
+(
+    set -eu
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    : "${dkms_version:?Select the matching source directory first}"
+    dkms_source="/usr/src/crystalhd-$dkms_version"
+    readlink -f -- "$dkms_source"
+    dkms status -m crystalhd
+)
 ```
 
 For a legacy symlink, confirm its target is the intended retained source tree.
@@ -172,8 +178,10 @@ the device idle, rebuild the selected kernel explicitly:
 ```sh
 (
     set -eu
-    : "${dkms_version:?Complete source preparation first}"
-    : "${kernel_release:?Complete source preparation first}"
+    kernel_release=$(uname -r)
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    : "${dkms_version:?Select the matching source directory first}"
+    : "${kernel_release:?Could not identify the running kernel}"
     make -j2 library gstreamer vaapi
     sudo dkms build --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
     sudo dkms install --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
@@ -245,12 +253,13 @@ source until the problem has been diagnosed.
 
 Inspect `dkms status -m crystalhd` and confirm which revision you intend to
 remove. Close players and satisfy the idle preconditions first. From that
-revision's source root, use the `dkms_version` read in [prepare](#prepare-the-source):
+revision's source root, read and check its revision before removing it:
 
 ```sh
 (
     set -eu
-    : "${dkms_version:?Complete source preparation first}"
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    : "${dkms_version:?Select the matching source directory first}"
     if test -d /sys/module/crystalhd; then
         test "$(cat /sys/module/crystalhd/refcnt)" = 0
         sudo modprobe -r crystalhd

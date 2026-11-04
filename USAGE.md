@@ -152,7 +152,7 @@ lifecycle check.
 | Goal | Path | Current status |
 | --- | --- | --- |
 | Play a local file with audio, subtitles and controls | `crystalhd-play` | Recommended |
-| Play an HTTP(S) media URL | [HTTP(S) player input](#https-input) | Native loopback HTTP checked; HTTPS and physical playback pending |
+| Play an HTTP(S) media URL | [HTTP(S) player input](#https-input) | Selected loopback HTTP/private-CA HTTPS checked; broader network and physical playback remain unverified |
 | Build a media pipeline | GStreamer `crystalhddec` | Primary integration path |
 | Use an application that requires libva | CrystalHD VA-API driver | Experimental subset |
 | Keep a Broadcom-API application working | `libcrystalhd.so.3` | Compatibility API |
@@ -167,18 +167,19 @@ CrystalHD hardware decode session can be open at a time.
 
 ## HTTP(S) input
 
-HTTP(S) input is included in 1.1.0 and RC4/RC5; the earlier 1.0.0 and
-v1.1.0-rc.3 do not contain it. From the selected source checkout, use
-its wrapper (or the matching installed `crystalhd-play`). Replace the example URL
-with your direct media URL, and close other CrystalHD sessions first:
+HTTP(S) input is included in 1.1.0 and its RC4/RC5 candidates; the earlier
+1.0.0 and v1.1.0-rc.3 do not contain it. With the matching Player installed,
+replace the example URL with your direct media URL and close other CrystalHD
+sessions first:
 
 ```sh
-./scripts/crystalhd-play --hardware 'https://media.example.test/video.mp4'
-./scripts/crystalhd-play --software 'http://media.example.test/video.mp4'
+crystalhd-play --hardware 'https://media.example.test/video.mp4'
+crystalhd-play --software 'http://media.example.test/video.mp4'
 ```
 
-The source wrapper prefers the checkout's plugin/library when its built
-GStreamer plugin is present; it is not a check of the installed payload.
+For source-tree testing, run `./scripts/crystalhd-play` from that checkout's
+root. That wrapper prefers its built plugin/library when present; it is not
+a check of the installed payload.
 
 The URL is passed to GStreamer without rewriting its escaping or query string.
 HTTP transport needs `souphttpsrc` (Ubuntu: `gstreamer1.0-plugins-good`); HTTPS
@@ -199,11 +200,24 @@ Automated network coverage uses loopback HTTP and private-CA HTTPS with software
 video and fake audio/video sinks. HTTPS keeps strict verification enabled:
 the selected trusted CA permits playback/EOS, while an unrelated CA or a wrong
 hostname is rejected before decoded frames. These tests select trust through
-the transport API and do not change system trust. Native BCM70015 loopback HTTP playback also passed selected
-360p and 720p30 H.264 video, EOS and local-file reopen with fake sinks.
-Default-CA/Internet HTTPS, native HTTPS and network seeking, physical A/V and Internet
-recovery remain unverified. Inclusion in the source is not a release-gate PASS for
-those paths or a reason to replace a qualified installation without testing.
+the transport API and do not change system trust. BCM70015 GStreamer hardware
+loopback HTTP playback also passed selected 360p and 720p30 H.264 video, EOS and
+local-file reopen with fake sinks.
+
+The [post-RC3 current-host checks](https://github.com/ahnhy1324/crystalhd/pull/652)
+also passed private-CA HTTPS through the legacy GStreamer hardware decoder:
+two 180-picture/EOS plays on module13 with unchanged RC3 decoder/DIL artifacts,
+followed by untrusted-CA and wrong-hostname rejection with zero frames in
+separate fresh processes. This does not qualify the optional native
+V4L2/FFmpeg route. The original mixed-trust same-process attempt remains FAIL:
+a previously trusted TLS session resumed, so it was not a fresh certificate
+verification control. The tests do not establish changing custom trust policy
+inside a long-running embedding application.
+
+Default-CA/Internet HTTPS, hardware network seeking, physical A/V and Internet
+recovery remain unverified. These scoped checks do not replace the qualification
+of a particular published package or justify updating a working installation
+without testing.
 
 ## Interlaced video
 
@@ -524,7 +538,7 @@ hardware readback, not inside the card.
 
 ### Kodi
 
-Published RC.3 and the fresh installed RC4 confirmation passed stock Kodi 21.3
+The historical 1.1.0-rc.3 and fresh installed 1.1.0-rc.4 checks passed stock Kodi 21.3
 progressive H.264 hardware-video and application-lifecycle checks on the
 reference X11 host ([RC4 results](HARDWARE-2026-09-13.md#110-rc4-qualification--2026-10-18)). Kodi selected
 `ff-h264-vaapi` through the installed CrystalHD VA driver and played a
@@ -626,7 +640,7 @@ or GPUs. On the newer LTS host, VLC 3.0.23 selected CrystalHD VA/EGL and closed
 cleanly but logged late pictures; see the
 [dated LTS result](HARDWARE-2026-09-13.md#new-lts-qualification--2026-10-13).
 Neither progressive result establishes VLC interlaced/deinterlacing support.
-Fresh RC4 installation also passed two complete 12-second VLC 3.0.23
+The fresh 1.1.0-rc.4 installation also passed two complete 12-second VLC 3.0.23
 hardware plays with EOS, process reopen and clean teardown; this bounded
 lifecycle check does not certify cadence or physical A/V.
 

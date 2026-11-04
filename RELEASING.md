@@ -6,12 +6,88 @@ and the [DKMS guide](README.dkms); the current native companion has its own
 [delivery guide](NATIVE-RUNTIME-DELIVERY.md). See [TODO](TODO.md) for the live
 work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 
+- [Current 1.3 quality test procedure](#current-13-quality-test-procedure)
 - [RC3 complete scope and candidate preparation](#rc3-complete-scope-and-candidate-preparation)
 - [Frozen RC2 baseline](#frozen-rc2-baseline)
 - [Version identities and compatibility policy](#versions-and-compatibility)
 - [Completed v1.2 scope and campaign reference](#historical-v12-release-scope-and-publication)
 - [Branch and issue maintenance](#branch-and-issue-maintenance)
 - [Useful bug reports](#useful-bug-reports)
+
+## Current 1.3 quality test procedure
+
+Use this procedure to plan affected candidate checks and report their actual
+outcomes. The [published RC3 qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+and [claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
+identify the existing fresh/reused evidence. The [retained G2 definitions](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
+and owning issues [#91](https://github.com/ahnhy1324/crystalhd/issues/91) and
+[#510](https://github.com/ahnhy1324/crystalhd/issues/510) retain earlier failures
+and acceptance limits. This procedure is not a result or authorization to publish.
+
+1. **Freeze and build.** Identify the intended source and actual archive/runtime;
+   finish local compilation, offline regressions and private staging before media.
+   Run one card/display campaign at a time on the test host, with no parallel
+   compiler or soak. Independent hosted CI may run alongside it.
+   Preserve the known working module, runtime, source, options and user settings.
+2. **Reproduce installation and recovery.** Exercise first installation,
+   update/reinstall, rollback, removal/repeated removal and reinstall through
+   the applicable [direct](BRINGUP.md#direct-install-update-and-rollback) and
+   [DKMS](README.dkms) routes. Check the selected/loaded module and completed
+   runtime receipt separately, preserve user settings, and verify idle ownership,
+   pin/refcount, PM/AER/kernel and original-file restoration after recovery.
+   Never replace an immutable registered source with a moving checkout.
+3. **Check affected decoding and frontends.** Keep the existing source-picture,
+   PTS/pixel, ABI and ownership oracles, complete-file EOS and clean reopen.
+   Cover affected settings/UI and stock Kodi Auto/Off/progressive controls.
+   For changed Centered code, use the normal installed backend: counted NV12
+   readback/export/retained seek, short two-EOF controls and the selected
+   five-minute natural play. Independent ROI pixels remain a separate oracle.
+   Changed native producer/range/lifetime code needs its actual native module
+   and [pinned original Kodi/FFmpeg companion](NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use),
+   including selected 720p/FHD 180-picture EOS/reopen twice and normal retirement.
+   Private observers or modified clients cannot qualify stock compatibility.
+4. **Run affected application endurance.** The selected ordinary Player route
+   is continuous 30-minute TFF25 input, card width 1280, CPU LINEAR Bob at 50 fields/s,
+   Xv output and the actual Pulse audio clock: **45,000 source originals /
+   90,000 expected fields**. Preserve natural EOS, nonempty output, route/clock
+   observations, source-qualified no-drift logs and the resource checks below.
+   If the own Xv sink changes, run its explicit FIFO route separately from
+   ordinary output; do not substitute latest/drop mode or a headless sink.
+5. **Retain the distinct VA-Bob obligation.** The selected three-hour path is
+   **270,000 originals / 540,000 ordered full-NV12 Bob outputs**, with the
+   existing pixel/PTS oracle, natural EOS and resource windows; retain separate
+   reopen coverage. This headless oracle does not establish Xv/presentation.
+   The retained 1.3 campaign used actual module16: reuse covers only its unchanged
+   normal VA/DIL Bob implementation, not the whole core or kernel. Changed native,
+   kernel-boundary or application paths need their own affected checks.
+
+Keep the existing AC and **below 75°C** operating boundary; the selected
+30-minute Player run enters at **55°C or below**. Preserve the existing
+20-second startup/15-second Player stall bounds and the VA soak's 30-second
+no-progress bound. On a stop or failed retirement, preserve the evidence and
+live resources for handoff; do not force an unload or kill a surviving owner.
+
+The existing absolute resource bounds are RSS at most 1GiB, at most 256 file
+descriptors and 128 threads; Player also requires at least 1GiB MemAvailable.
+Keep the established first/last 60-sample trend windows: Player medians after
+its first minute allow 32MiB RSS growth, VA means after ten minutes allow 64MiB;
+both allow 8 descriptors and 4 threads. Record the actual samples and clocks,
+not just a terminal status.
+
+The 45,000 count describes the frozen input, not an assertion that sink renders
+or decoded-output notifications are source-picture identities. Record actual
+decoder, post-filter, rendered/dropped and QoS counts separately. Preserve
+accepted route-specific renderer/QoS losses and historical deficits; do not add
+a universal zero-loss gate or weaken a full-pixel/PTS oracle. Source-qualified
+logs without detected drift suffice for exact-route A/V; physical offset and
+scanout remain separate.
+
+Post-RC3 source `6004636a339e0f0ea79614a1855953596e886da4` changes Player/Xv.
+Its affected ordinary and own-FIFO 30-minute runs require fresh results with
+actual timing, clocks, resources and retirement outcomes. Reuse unchanged
+VA/DIL/other-path evidence only with explicit source and implementation scope.
+Frozen RC3 assets and results stay unchanged, and stable 1.3 promotion remains
+deferred. Record each failure and any bounded continuation separately.
 
 <a id="private-v13-candidate-preparation"></a>
 <a id="complete-rc2-and-future-candidate-preparation"></a>

@@ -10,7 +10,7 @@ Then use [everyday usage](USAGE.md) for playback, audio, subtitles and controls.
 | --- | --- |
 | Install and play your first file | [Quick start](README.md#quick-start), then [play a local file](USAGE.md#play-a-local-file) |
 | Change playback options, audio or subtitles | [Everyday usage](USAGE.md) |
-| Change shared defaults or use a settings UI | [Settings](README.md#settings); managed defaults, GTK and the Kodi add-on need the matching development/RC2 tools |
+| Change shared defaults or use a settings UI | [Settings](README.md#settings); managed defaults, GTK and the Kodi add-on need the matching 1.3 RC3 tools |
 | Fix missing hardware, wrong components or playback failures | [Troubleshooting](USAGE.md#troubleshooting-and-proof-of-hardware-use), then [bring-up diagnostics](BRINGUP.md) |
 | Use Kodi, VLC or a custom pipeline | [Application paths](USAGE.md#va-api-ffmpeg-kodi-and-vlc), [GStreamer](filters/gst/gst-plugin-1.0/README.md) |
 | Stream from Sunshine | [Moonlight setup](MOONLIGHT.md) |
@@ -32,9 +32,9 @@ research are listed afterward so they do not interrupt first-time setup.
 | Review native qualification and its boundaries | [Native acceptance](NATIVE-RUNTIME-ACCEPTANCE.md) |
 
 Released packages are identified by their tags and qualification receipts.
-The published complete 1.3 RC2 and its assets are frozen; newer master work does
-not replace that package or its registered module source. Stable promotion is
-a separate maintainer decision. Use the release entry points above rather than
+Published 1.3 RC3 and RC2 packages, assets and registered module sources remain
+frozen; newer master work has its own source and test scope. Stable 1.3
+promotion remains a separate maintainer decision. Use the release entry points above rather than
 commands copied from an old experiment.
 
 ## Component guides

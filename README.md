@@ -252,8 +252,8 @@ rules are listed under [Development and project records](#development-and-projec
 | [Complete 1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), module-DKMS `3.10.17` | Published prerelease: current-equipment qualification and companion delivery are complete; its tag and 13 assets are frozen, including the [core archive](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.2/crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz). **Stable 1.3 remains deferred.** |
 | Earlier 1.2 candidates | Immutable [RC1](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1) / `3.10.11` and [RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2) / `3.10.12`; RC2 completed bounded G0–G3 under [#473](https://github.com/ahnhy1324/crystalhd/issues/473). |
 
-Current master includes later research and is not a replacement for frozen RC2
-assets. See [current work and completed subsets](TODO.md#current-priorities).
+Current master includes later stabilization/research and is not a replacement
+for frozen RC3 or RC2 assets or their registered module sources. See [current work and completed subsets](TODO.md#current-priorities).
 For [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0) or the
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29),
 use the instructions shipped with that tag. Preserve 1.2.0-rc.2 and stable 1.1.0

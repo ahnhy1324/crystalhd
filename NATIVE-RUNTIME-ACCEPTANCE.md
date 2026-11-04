@@ -4,13 +4,19 @@ Current overview reviewed **2026-11-04**. Use the [documentation map](DOCUMENTAT
 for the distinction between current operator guides, tool contracts and dated
 preparation evidence.
 
-## RC3 candidate status
+<a id="rc3-candidate-status"></a>
+
+## Published RC3 and current operator flow
 
 Complete `1.3.0-rc.3` includes the own native V4L2 path and prebuilt
 unmodified FFmpeg DRM_PRIME companion, with distinct own-core module/DKMS
-`3.10.18`. Its separate receipts bind the actual candidate source, package and
-native result; this source document does not assert their PASS status. Earlier source/module13 diagnostics and RC2 final17 results retain
-their original attribution and do not qualify the new candidate automatically.
+`3.10.18`. The [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+and companion `evidence/rc3-native-qualification.json` bind frozen core
+`36ef4c681f49` / native srcversion `FEB8DC48436425D92497DA7` to the actual
+23-case native campaign and its restored boundary. Original pinned Kodi720p/FHD
+each returned180 pictures twice through the unchanged FFmpeg DRM_PRIME runtime.
+Earlier source/module13 diagnostics and RC2 final17 results retain their
+original attribution; they do not qualify changed native bytes automatically.
 
 | Candidate evidence | Scope and present status |
 | --- | --- |
@@ -20,7 +26,7 @@ their original attribution and do not qualify the new candidate automatically.
 | Existing unavailable targets | Independently booted OS, Atom/i386 and BCM70012 remain outside the declared current-equipment cohort. No broader mandatory gate is added. |
 
 See [complete RC3 scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation)
-and [candidate delivery](NATIVE-RUNTIME-DELIVERY.md#rc3-candidate-preparation).
+and the [current RC3 private-file, module and preflight commands](NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use).
 The next table and historical preparation sections retain their RC2/earlier
 results. Centered is separately included as a default-off ordinary-VA
 experiment; the private centered observers do not qualify this native route.
