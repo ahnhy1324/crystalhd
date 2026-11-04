@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Real VA submission and replay ownership, private CPU surfaces and deterministic
-// Dts calls only. Unexpected device/graphics/ioctl entry points abort.
+// Dts calls and explicitly armed file-backed DUMB lease scaffolds only.
+// Unexpected device/graphics/ioctl entry points abort.
 #define CRYSTALHD_VAAPI_TEST_FRAGMENT_INPUT 1
 // These fixtures model the legacy full-device restart contract. Explicit
 // same-device channel negotiation is exercised by vaapi-replay.cpp instead.
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 namespace centered_probe {
-unsigned calls = 0, width = 0, height = 0;
+unsigned calls = 0, width = 0, height = 0, readbacks = 0;
 bool compact = false;
 }
 #define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
   ++centered_probe::calls; centered_probe::width = (w); \
   centered_probe::height = (h); centered_probe::compact = (field); \
 } while (0)
+#define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) \
+  (++centered_probe::readbacks)
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
+#include <cstdarg>
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
@@ -251,7 +255,48 @@ extern "C" BC_STATUS DtsProcInputFragment(
 extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE, uint32_t, BC_DTS_PROC_OUT *) { abort(); }
 extern "C" BC_STATUS DtsReleaseOutputBuffs(HANDLE, PVOID, BOOL) { abort(); }
 extern "C" BC_STATUS DtsFlushInput(HANDLE, uint32_t) { abort(); }
-extern "C" int ioctl(int, unsigned long, ...) noexcept { abort(); }
+namespace centered_io {
+struct State {
+  int fd = -1, drm_fd = -1;
+  unsigned read_begin = 0, read_end = 0, writes = 0, domains = 0;
+  bool fail_read_begin = false, fail_read_end = false, fail_write_end = false;
+};
+State *active = nullptr;
+}
+extern "C" int ioctl(int fd, unsigned long request, ...) noexcept {
+  if (centered_io::active) {
+    auto &state = *centered_io::active;
+    va_list arguments; va_start(arguments, request);
+    void *argument = va_arg(arguments, void *); va_end(arguments);
+    struct stat original{}, candidate{};
+    const bool backing_fd = fd == state.fd ||
+        (request == DMA_BUF_IOCTL_SYNC && fstat(state.fd, &original) == 0 &&
+         fstat(fd, &candidate) == 0 && original.st_dev == candidate.st_dev &&
+         original.st_ino == candidate.st_ino);
+    if (backing_fd && request == DMA_BUF_IOCTL_SYNC) {
+      const auto flags = static_cast<dma_buf_sync *>(argument)->flags;
+      if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)) {
+        ++state.read_begin;
+        if (state.fail_read_begin) { errno = EIO; return -1; }
+      } else if (flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)) {
+        ++state.read_end;
+        if (state.fail_read_end) { errno = EIO; return -1; }
+      } else if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE) ||
+                 flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)) {
+        ++state.writes;
+        if (flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) && state.fail_write_end) {
+          errno = EIO; return -1;
+        }
+      } else abort();
+      return 0;
+    }
+    if (fd == state.drm_fd && request == DRM_IOCTL_MODE_DESTROY_DUMB) return 0;
+    if (fd == state.drm_fd && request == DRM_IOCTL_I915_GEM_SET_DOMAIN) {
+      ++state.domains; return 0;
+    }
+  }
+  abort();
+}
 extern "C" gbm_device *gbm_create_device(int) { abort(); }
 extern "C" void gbm_device_destroy(gbm_device *) { abort(); }
 extern "C" gbm_bo *gbm_bo_create(gbm_device *, uint32_t, uint32_t, uint32_t, uint32_t) { abort(); }
@@ -3319,9 +3364,225 @@ void CenteredFhdCodedAndVisibleCanvases() {
           }
         }
 }
+
+struct CenteredDumbScope {
+  centered_io::State state;
+  CenteredDumbScope() {
+    Require(centered_io::active == nullptr, "one private DUMB lease scaffold at a time");
+    centered_io::active = &state;
+  }
+  ~CenteredDumbScope() { centered_io::active = nullptr; }
+};
+
+std::shared_ptr<Surface> InstallCenteredDumb(CenteredFixture *f,
+                                            centered_io::State *io) {
+  // Private file-backed memory models DUMB layout/READ ownership only. This
+  // does not qualify DRM allocation, cache coherence or physical performance.
+  auto surface = std::make_shared<Surface>();
+  surface->id = 1;
+  surface->width = f->coded_width; surface->height = f->canvas_height;
+  surface->fourcc = VA_FOURCC_NV12;
+  surface->pitch[0] = surface->pitch[1] = Align(surface->width, 64);
+  const size_t bytes = size_t{surface->pitch[0]} * (surface->height + surface->height / 2U);
+  surface->object_maps.resize(1, MAP_FAILED);
+  surface->object_sizes.resize(1, bytes);
+  surface->object_fds.resize(1, -1);
+  FILE *file = tmpfile();
+  Require(file != nullptr, "create an unlinked private backing file");
+  surface->object_fds[0] = dup(fileno(file));
+  fclose(file);
+  Require(surface->object_fds[0] >= 0 && ftruncate(surface->object_fds[0], bytes) == 0,
+          "size the private backing without opening graphics hardware");
+  surface->object_maps[0] = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                                  MAP_SHARED, surface->object_fds[0], 0);
+  Require(surface->object_maps[0] != MAP_FAILED, "map private public-canvas bytes");
+  surface->dumb_drm_fd = dup(surface->object_fds[0]);
+  Require(surface->dumb_drm_fd >= 0, "retain an independently retired mock DUMB owner fd");
+  surface->dumb_handle = 7;
+  io->fd = surface->object_fds[0]; io->drm_fd = surface->dumb_drm_fd;
+  surface->planes[0] = static_cast<uint8_t *>(surface->object_maps[0]);
+  surface->planes[1] = surface->planes[0] + size_t{surface->pitch[0]} * surface->height;
+  surface->direct_decode_eligible = true; surface->ready = true;
+  f->driver.surfaces[1] = surface;
+  Require(CenteredReadbackAllocation(*surface), "actual candidate admits only the modeled canonical DUMB layout");
+  return surface;
+}
+
+void CenteredImageReadbackBytesAndReadFailures() {
+  for (unsigned height : {1080U, 1088U}) for (bool full : {false, true}) {
+    CenteredDumbScope io;
+    CenteredFixture f(1920, 1088, 1080, 1280, 720, height, full, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    f.Submit(); const auto packed = f.Packed(47); f.Complete(packed);
+    const auto expected = f.Canvas(packed);
+    const auto public_bytes = f.PrivatePixels(*surface);
+    Require(public_bytes == expected && !surface->centered_readback.small.expired(),
+            "successful real decoded Compose publishes exact full-canvas provenance only after both ENDs");
+    const unsigned before = centered_probe::readbacks;
+    const unsigned read_begin = io.state.read_begin, read_end = io.state.read_end;
+    Require(f.Read(1) == public_bytes && f.Read(1, true) == public_bytes &&
+                centered_probe::readbacks == before + 2 &&
+                io.state.read_begin == read_begin + 2 && io.state.read_end == read_end + 2 &&
+                f.PrivatePixels(*surface) == public_bytes,
+            "Get and Derive fast reads each retain public READ and match every captured public NV12 byte");
+    VAImage image{}; VAImageFormat format = ImageFormatFor(VA_FOURCC_NV12);
+    Require(CreateImage(&f.context, &format, f.coded_width, height, &image) == VA_STATUS_SUCCESS,
+            "create independent destination before injecting READ failures");
+    for (bool start : {true, false}) {
+      io.state.fail_read_begin = start; io.state.fail_read_end = !start;
+      const unsigned successful = centered_probe::readbacks;
+      Require(GetImage(&f.context, 1, 0, 0, f.coded_width, height, image.image_id) ==
+                  VA_STATUS_ERROR_OPERATION_FAILED && centered_probe::readbacks == successful,
+              "public READ START/END failure cannot publish successful reconstructed pixels");
+    }
+    io.state.fail_read_begin = io.state.fail_read_end = false;
+    Require(DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "failed-read destination remains independently retireable");
+    io.state.fail_write_end = true;
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    Require(!ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                surface->centered_readback.small.expired(),
+            "failed public Compose END never certifies reconstructed-image provenance");
+    io.state.fail_write_end = false;
+  }
+}
+
+void CenteredImageReadbackInvalidationAndFallback() {
+  for (unsigned mutation = 0; mutation != 12; ++mutation) {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    f.Submit(); const auto packed = f.Packed(11); f.Complete(packed);
+    auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    const auto small = picture->centered_pixels;
+    Require(!surface->centered_readback.small.expired(), "establish actual Compose provenance before a negative control");
+    // Distinguish fallback from reconstruction with an intentionally poisoned
+    // private border, after the specific invalidation/mismatch below.
+    if (mutation == 0) {
+      Require(surface->BeginCpuWrite(), "generic WRITE obtains original lease");
+      surface->planes[0][0] = 91;
+      Require(surface->EndCpuWrite(), "generic WRITE releases original lease");
+    } else if (mutation == 1) {
+      surface->owned_i915_dumb = surface->experimental_i915_wc = true;
+      bool used = false;
+      Require(surface->BeginDecodedCpuWrite(&used) && used, "WC WRITE really bypasses generic WRITE");
+      surface->planes[0][0] = 91;
+      Require(surface->EndDecodedCpuWrite(used) && io.state.domains == 2,
+              "WC WRITE retains its original domain transitions");
+    } else if (mutation == 2) {
+      RevokeDecodeOwner(&f.driver, surface.get());
+      VppPixelView view; view.Capture(surface);
+      Require(view.BeginCpuWrite(), "VPP view acquires the same allocation's WRITE lease");
+      view.planes[0][0] = 91;
+      Require(view.EndCpuWrite() && surface->centered_readback.small.expired(),
+              "canonical writer reservation invalidates before a separate VPP view writes");
+    } else {
+      if (mutation == 3) ++surface->trace_submission_ordinal;
+      if (mutation == 4) ++small->trace_generation;
+      if (mutation == 5) picture->centered_geometry.full_range = true;
+      if (mutation == 6) f.decode->centered_geometry.x += 2;
+      if (mutation == 7) f.driver.contexts.erase(1);
+      if (mutation == 8) ++f.decode->generation;
+      if (mutation == 9) {
+        Require(small->BeginCpuWrite() && small->EndCpuWrite(),
+                "a sidecar WRITE epoch is independently observable even with unchanged identity");
+      }
+      if (mutation == 10) surface->direct_decode_eligible = false;
+      if (mutation == 11) surface->centered_readback.small.reset();
+      surface->planes[0][0] = 91;
+    }
+    auto expected = f.Canvas(packed); expected[0] = 91;
+    const unsigned before = centered_probe::readbacks;
+    Require(f.Read(1) == expected && centered_probe::readbacks == before,
+            "writes, expired provenance, foreign epochs/context/geometry and imports use actual public bytes");
+  }
+  {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    f.Submit(); const auto packed = f.Packed(17); f.Complete(packed);
+    const std::weak_ptr<Surface> weak = surface->centered_readback.small;
+    f.decode->decoded_frames.clear();
+    Require(weak.expired(), "provenance retains neither small pixels nor their direct-backing picture");
+    surface->planes[0][0] = 92;
+    auto expected = f.Canvas(packed); expected[0] = 92;
+    const unsigned before = centered_probe::readbacks;
+    Require(f.Read(1) == expected && centered_probe::readbacks == before,
+            "genuine last-small-reference retirement falls back without granting a new lease");
+  }
+}
+
+void CenteredImageReadbackExportAndPartial() {
+  CenteredDumbScope io;
+  CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+  const auto surface = InstallCenteredDumb(&f, &io.state);
+  f.Submit(); const auto packed = f.Packed(31); f.Complete(packed);
+  const unsigned before = centered_probe::readbacks;
+  VAImage image{}; VAImageFormat format = ImageFormatFor(VA_FOURCC_NV12);
+  Require(CreateImage(&f.context, &format, 256, 32, &image) == VA_STATUS_SUCCESS &&
+              GetImage(&f.context, 1, 0, 0, 128, 16, image.image_id) == VA_STATUS_SUCCESS &&
+              centered_probe::readbacks == before,
+          "partial GetImage never enters full-canvas reconstruction");
+  const auto &partial = f.driver.buffers.at(image.buf).data;
+  Require(partial[0] == f.Canvas(packed)[0] && partial[128] == 0 &&
+              DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+          "partial GetImage preserves untouched generic-image zeros");
+  VADRMPRIMESurfaceDescriptor prime{};
+  Require(ExportSurfaceHandle(&f.context, 1, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                               VA_EXPORT_SURFACE_READ_ONLY, &prime) == VA_STATUS_SUCCESS &&
+              prime.num_objects == 1 && surface->centered_allocation_exposed &&
+              surface->centered_readback.small.expired(),
+          "successful READ_ONLY surface export permanently revokes pristine provenance");
+  const uint8_t changed = 93;
+  Require(pwrite(prime.objects[0].fd, &changed, 1, 0) == 1,
+          "the actual exported file descriptor can alter a formerly black border");
+  auto expected = f.Canvas(packed); expected[0] = changed;
+  Require(f.Read(1) == expected && centered_probe::readbacks == before,
+          "exported-fd edits remain visible rather than being replaced by cached black");
+  f.Submit(1, false);
+  const auto next = f.Packed(57); f.Complete(next, false, 2 * kTimestampStep);
+  Require(surface->centered_allocation_exposed && surface->centered_readback.small.expired(),
+          "a new successful Compose cannot recertify an allocation whose fd is still held");
+  Require(pwrite(prime.objects[0].fd, &changed, 1, 0) == 1,
+          "the old exported fd still targets the new picture's allocation");
+  expected = f.Canvas(next); expected[0] = changed;
+  Require(f.Read(1) == expected && centered_probe::readbacks == before,
+          "fresh Compose after export continues to read actual public pixels");
+  VASurfaceAttrib attributes[2]{};
+  attributes[0].type = VASurfaceAttribMemoryType;
+  attributes[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
+  attributes[0].value.type = VAGenericValueTypeInteger;
+  attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+  attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+  attributes[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
+  attributes[1].value.type = VAGenericValueTypePointer;
+  attributes[1].value.value.p = &prime;
+  f.driver.next_surface = 2;
+  VASurfaceID alias = VA_INVALID_SURFACE;
+  Require(CreateSurfaces2(&f.context, VA_RT_FORMAT_YUV420, 256, 32, &alias, 1,
+                          attributes, 2) == VA_STATUS_SUCCESS &&
+              f.driver.surfaces.at(alias)->backing_owner == 1 &&
+              f.Read(alias) == expected && centered_probe::readbacks == before,
+          "actual exported-backing import alias always uses public bytes, never weak sidecar provenance");
+  Require(DestroySurfaces(&f.context, &alias, 1) == VA_STATUS_SUCCESS,
+          "imported alias retires without revoking the canonical allocation's exposure latch");
+  for (unsigned i = 0; i < prime.num_objects; ++i) close(prime.objects[i].fd);
+}
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--centered-readback") == 0) {
+    try {
+      CenteredImageReadbackBytesAndReadFailures();
+      CenteredImageReadbackInvalidationAndFallback();
+      CenteredImageReadbackExportAndPartial();
+      std::printf("PASS centered independent image readback: %u checks\n", checks);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL centered independent image readback: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && (std::strcmp(argv[1], "--centered") == 0 ||
                     std::strcmp(argv[1], "--centered-pixels") == 0)) {
     try {
@@ -3330,6 +3591,9 @@ int main(int argc, char **argv) {
       CenteredCaptureAndPendingReuse(); CenteredFallbackCapturePromotes();
       CenteredRetirementAndConsumingClose();
       CenteredFhdCodedAndVisibleCanvases();
+      CenteredImageReadbackBytesAndReadFailures();
+      CenteredImageReadbackInvalidationAndFallback();
+      CenteredImageReadbackExportAndPartial();
       std::printf("PASS ordinary centered NV12 integration: %u checks\n", checks);
       return 0;
     } catch (const std::exception &error) {
@@ -3357,6 +3621,9 @@ int main(int argc, char **argv) {
     {"centered fallback capture promotes", CenteredFallbackCapturePromotes},
     {"centered obsolete retirement and consuming close", CenteredRetirementAndConsumingClose},
     {"centered coded1088 and visible1080 canvases", CenteredFhdCodedAndVisibleCanvases},
+    {"centered image reconstruction bytes and READ failures", CenteredImageReadbackBytesAndReadFailures},
+    {"centered image provenance invalidation and fallback", CenteredImageReadbackInvalidationAndFallback},
+    {"centered image export permanence and partial fallback", CenteredImageReadbackExportAndPartial},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},

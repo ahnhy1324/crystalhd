@@ -581,6 +581,16 @@ struct CompletedVppPicture {
   uint64_t timestamp = 0;
 };
 
+// A completed public Compose may be reconstructed from these immutable CPU
+// pixels. This is provenance, not ownership: expiration keeps the ordinary
+// canvas read available, and never pins a picture or its direct_backing.
+struct CenteredReadback {
+  std::weak_ptr<Surface> small;
+  crystalhd_centered_output::Geometry geometry;
+  uint64_t write_epoch = 0, small_write_epoch = 0;
+  uint64_t timestamp = 0, identity = 0, context = 0, generation = 0, ordinal = 0;
+};
+
 // ARGB is the historical storage alias. BGRA names its actual byte order
 // for new VA clients; retain the legacy path while making new metadata honest.
 static bool IsBgraStorageFormat(uint32_t fourcc) {
@@ -653,6 +663,16 @@ struct Surface {
   // this exact immutable decoded picture owns its small card-returned pixels.
   crystalhd_centered_output::Geometry centered_geometry;
   std::shared_ptr<Surface> centered_pixels;
+  mutable CenteredReadback centered_readback;
+  mutable uint64_t centered_write_epoch = 0;
+  // An exported fd may outlive every VA call, including READ_ONLY exports.
+  // No subsequent Compose may recertify this allocation as private/pristine.
+  bool centered_allocation_exposed = false;
+
+  void InvalidateCenteredReadback() const {
+    centered_readback = {};
+    if (++centered_write_epoch == 0) ++centered_write_epoch;
+  }
 
   // Selected H.264 pictures may initially use the public target's pixels while
   // keeping independent readiness/identity. Capture or backing reuse promotes
@@ -1028,6 +1048,8 @@ struct Surface {
   }
 
   bool BeginCpuAccess(uint64_t direction) const {
+    if ((direction & DMA_BUF_SYNC_WRITE) != 0)
+      InvalidateCenteredReadback();
     CH_COST_SCOPE_FLAGS(cost_scope, CpuAccessBegin,
         crystalhd_test_maintained_cost::SurfaceIdentity(this),
         ((direction & DMA_BUF_SYNC_READ) ? 32U : 0U) |
@@ -1096,6 +1118,8 @@ struct Surface {
   // writes. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
   // imported surfaces and VPP never inherit this i915-specific policy.
   bool BeginDecodedCpuWrite(bool *used_i915_wc) {
+    // The WC path bypasses BeginCpuAccess, including its invalidation.
+    InvalidateCenteredReadback();
     CH_COST_SCOPE_FLAGS(cost_scope, DecodedCpuBegin,
         crystalhd_test_maintained_cost::SurfaceIdentity(this), 64, 0);
     if (used_i915_wc == nullptr)
@@ -1466,6 +1490,47 @@ static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) 
       g.y <= g.canvas_height && g.capture_height <= g.canvas_height - g.y;
 }
 
+static bool SameCenteredGeometry(const crystalhd_centered_output::Geometry &a,
+                                 const crystalhd_centered_output::Geometry &b) {
+  return a.enabled == b.enabled && a.full_range == b.full_range &&
+      a.canvas_width == b.canvas_width && a.canvas_height == b.canvas_height &&
+      a.visible_width == b.visible_width && a.visible_height == b.visible_height &&
+      a.capture_width == b.capture_width && a.capture_height == b.capture_height &&
+      a.x == b.x && a.y == b.y;
+}
+
+static bool CenteredReadbackAllocation(const Surface &surface) {
+  return surface.id != VA_INVALID_SURFACE &&
+      surface.backing_owner == VA_INVALID_SURFACE &&
+      surface.direct_decode_eligible && !surface.centered_allocation_exposed &&
+      !surface.layout.valid && surface.bo == nullptr && surface.storage.empty() &&
+      surface.dumb_drm_fd >= 0 && surface.dumb_handle != 0 &&
+      surface.object_fds.size() == 1 && surface.object_fds[0] >= 0 &&
+      surface.object_maps.size() == 1 && surface.object_sizes.size() == 1 &&
+      surface.object_maps[0] != nullptr && surface.object_maps[0] != MAP_FAILED &&
+      surface.fourcc == VA_FOURCC_NV12 && surface.width != 0 &&
+      surface.width <= kMaxWidth && surface.height != 0 &&
+      surface.height <= kMaxHeight && (surface.width & 1U) == 0 &&
+      (surface.height & 3U) == 0 && surface.pitch[0] == surface.pitch[1] &&
+      ImportedPlaneFits(surface.object_sizes[0], 0, surface.pitch[0],
+                       surface.height + surface.height / 2U, surface.width) &&
+      surface.planes[0] == surface.object_maps[0] &&
+      surface.planes[1] == surface.planes[0] + size_t{surface.pitch[0]} * surface.height;
+}
+
+static bool CenteredReadbackCpuPixels(const Surface &small) {
+  return !small.centered_geometry.enabled && small.fourcc == VA_FOURCC_NV12 &&
+      small.width != 0 && small.width <= kMaxWidth && small.height != 0 &&
+      small.height <= kMaxHeight && (small.width & 1U) == 0 &&
+      (small.height & 3U) == 0 && small.bo == nullptr && small.dumb_drm_fd < 0 &&
+      small.object_fds.empty() && small.object_maps.empty() && !small.layout.valid &&
+      small.backing_owner == VA_INVALID_SURFACE && !small.direct_backing &&
+      small.pitch[0] == Align(small.width, 64) && small.pitch[1] == small.pitch[0] &&
+      small.storage.size() == size_t{small.pitch[0]} * (small.height + small.height / 2U) &&
+      small.planes[0] == small.storage.data() &&
+      small.planes[1] == small.planes[0] + size_t{small.pitch[0]} * small.height;
+}
+
 // Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
 // Compact storage is private to the already-existing first-field Bob route.
 static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
@@ -1554,6 +1619,31 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
   canvas->ready = true;
   canvas->failed = false;
   canvas->frame_timestamp = small->frame_timestamp;
+  if (decoded_public && !compact && CenteredReadbackAllocation(*canvas) &&
+      CenteredReadbackCpuPixels(*small) &&
+      picture.trace_decode_identity != 0 &&
+      picture.trace_decode_identity == picture.decode_identity &&
+      picture.trace_context != 0 && picture.trace_generation != 0 &&
+      picture.trace_submission_ordinal != 0 &&
+      canvas->trace_decode_identity == picture.trace_decode_identity &&
+      canvas->trace_context == picture.trace_context &&
+      canvas->trace_generation == picture.trace_generation &&
+      canvas->trace_submission_ordinal == picture.trace_submission_ordinal &&
+      small->trace_decode_identity == picture.trace_decode_identity &&
+      small->trace_context == picture.trace_context &&
+      small->trace_generation == picture.trace_generation &&
+      small->trace_submission_ordinal == picture.trace_submission_ordinal) {
+    auto &readback = canvas->centered_readback;
+    readback.small = small;
+    readback.geometry = g;
+    readback.write_epoch = canvas->centered_write_epoch;
+    readback.small_write_epoch = small->centered_write_epoch;
+    readback.timestamp = picture.expected_timestamp;
+    readback.identity = picture.decode_identity;
+    readback.context = picture.trace_context;
+    readback.generation = picture.trace_generation;
+    readback.ordinal = picture.trace_submission_ordinal;
+  }
   CH_COST_RETURN(cost_scope, true);
 }
 
@@ -3153,6 +3243,8 @@ static void ClearTraceIdentity(Surface *surface) {
 }
 
 static void EndTraceBinding(Driver *driver, Surface *surface) {
+  if (surface != nullptr)
+    surface->InvalidateCenteredReadback();
   if (surface == nullptr)
     return;
   if (driver->trace.enabled() && surface->trace_submission_ordinal != 0)
@@ -3452,6 +3544,7 @@ static uint64_t NextDecodeIdentity(Driver *driver) {
 static void RevokeDecodeOwner(Driver *driver, Surface *surface) {
   if (surface == nullptr)
     return;
+  surface->InvalidateCenteredReadback();
   ClearTraceReadExport(surface);
   surface->completed_decode_picture = {};
   surface->completed_vpp_picture = {};
@@ -3526,6 +3619,8 @@ static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
   if (surface == nullptr)
     return;
   if (!ready || failed)
+    surface->InvalidateCenteredReadback();
+  if (!ready || failed)
     surface->completed_vpp_picture = {};
   if (failed)
     RetireFailedExperimentalState(surface);
@@ -3533,6 +3628,8 @@ static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
   surface->failed = failed;
   Surface *owner = BackingOwner(driver, surface);
   if (owner != surface) {
+    if (!ready || failed)
+      owner->InvalidateCenteredReadback();
     if (!ready || failed)
       owner->completed_vpp_picture = {};
     if (failed)
@@ -8645,6 +8742,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
           return rollback(VA_STATUS_ERROR_OPERATION_FAILED);
         ClearTraceReadExport(owner->second.get());
         owner->second->direct_decode_eligible = false;
+        owner->second->centered_allocation_exposed = true;
+        owner->second->InvalidateCenteredReadback();
       }
     }
   } catch (const std::bad_alloc &) {
@@ -9788,6 +9887,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
         decode->second->next_submission_ordinal;
   }
   decode->second->target = target;
+  target_surface->second->InvalidateCenteredReadback();
   target_surface->second->picture_transaction = NextDecodeIdentity(driver);
   decode->second->transaction_target = target_surface->second;
   decode->second->target_transaction =
@@ -11193,6 +11293,57 @@ static bool ImageRectangleFits(const Surface &surface, const Image &image,
          height <= image.va.height;
 }
 
+static std::shared_ptr<Surface> CenteredImageReadback(
+    const Driver *driver, const Surface &surface, const Image &image,
+    unsigned int width, unsigned int height) {
+  if (!CenteredReadbackAllocation(surface) || !surface.ready || surface.failed ||
+      surface.destroyed || surface.vpp_writers != 0 || surface.image_write_locked ||
+      surface.export_waiters != 0 || width != surface.width || height != surface.height ||
+      image.va.width != width || image.va.height != height ||
+      image.va.format.fourcc != VA_FOURCC_NV12)
+    return {};
+  const auto &r = surface.centered_readback;
+  if (r.timestamp == 0 || r.identity == 0 || r.context == 0 || r.context > UINT32_MAX ||
+      r.generation == 0 || r.ordinal == 0 || r.write_epoch != surface.centered_write_epoch ||
+      surface.expected_timestamp != r.timestamp || surface.frame_timestamp != r.timestamp ||
+      surface.decode_identity != r.identity || surface.trace_decode_identity != r.identity ||
+      surface.trace_context != r.context || surface.trace_generation != r.generation ||
+      surface.trace_submission_ordinal != r.ordinal)
+    return {};
+  const auto decoder = driver->contexts.find(static_cast<VAContextID>(r.context));
+  if (decoder == driver->contexts.end() || decoder->second->video_process ||
+      decoder->second->decode_processing || decoder->second->retired ||
+      decoder->second->closing || decoder->second->destroy_prepared ||
+      decoder->second->generation != r.generation ||
+      TraceId(decoder->second->id, VA_INVALID_ID) != r.context ||
+      decoder->second->width != surface.width ||
+      decoder->second->centered_geometry.canvas_width != decoder->second->width ||
+      decoder->second->centered_geometry.canvas_height != decoder->second->height)
+    return {};
+  auto geometry = decoder->second->centered_geometry;
+  geometry.canvas_width = surface.width;
+  geometry.canvas_height = surface.height;
+  if (!geometry.enabled || !SameCenteredGeometry(geometry, r.geometry))
+    return {};
+  const auto picture = surface.decode_picture.lock();
+  const auto small = r.small.lock();
+  if (!picture || !small || picture->centered_pixels != small ||
+      !CenteredStorageMatches(*picture) || !SameCenteredGeometry(picture->centered_geometry, r.geometry) ||
+      !picture->ready || picture->failed || picture->destroyed ||
+      picture->expected_timestamp != r.timestamp || picture->frame_timestamp != r.timestamp ||
+      picture->decode_identity != r.identity || picture->trace_decode_identity != r.identity ||
+      picture->trace_context != r.context || picture->trace_generation != r.generation ||
+      picture->trace_submission_ordinal != r.ordinal ||
+      !CenteredReadbackCpuPixels(*small) || !small->ready || small->failed || small->destroyed ||
+      small->expected_timestamp != r.timestamp || small->frame_timestamp != r.timestamp ||
+      small->decode_identity != r.identity || small->trace_decode_identity != r.identity ||
+      small->trace_context != r.context || small->trace_generation != r.generation ||
+      small->trace_submission_ordinal != r.ordinal ||
+      small->centered_write_epoch != r.small_write_epoch)
+    return {};
+  return small;
+}
+
 static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
                                    Image *image, unsigned int width,
                                    unsigned int height) {
@@ -11219,8 +11370,46 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
   // Never wait under the driver lock on our own queued asynchronous fence.
   if (!owner->ready || owner->vpp_writers != 0)
     return VA_STATUS_ERROR_SURFACE_BUSY;
+  const auto centered = CenteredImageReadback(driver, *surface, *image, width, height);
   if (!surface->BeginCpuRead())
     return VA_STATUS_ERROR_OPERATION_FAILED;
+  if (centered) {
+    if (!centered->BeginCpuRead()) {
+      surface->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
+    // Exactly the bytes written by successful full decoded-public Compose:
+    // retain public READ ownership, but read immutable CPU pixels instead of
+    // rereading the DUMB canvas. The VAImage remains an independent snapshot.
+    const auto &g = surface->centered_readback.geometry;
+    for (unsigned plane = 0; plane != 2; ++plane) {
+      const unsigned rows = plane == 0 ? height : height / 2U;
+      const unsigned first = plane == 0 ? g.y : g.y / 2U;
+      const unsigned active = plane == 0 ? centered->height : centered->height / 2U;
+      const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
+      for (unsigned row = 0; row != rows; ++row) {
+        uint8_t *line = buffer->second.data.data() + image->va.offsets[plane] +
+            size_t{row} * image->va.pitches[plane];
+        if (row < first || row - first >= active) {
+          memset(line, black, width);
+        } else {
+          memset(line, black, g.x);
+          memcpy(line + g.x, centered->planes[plane] +
+                     size_t{row - first} * centered->pitch[plane], centered->width);
+          memset(line + g.x + centered->width, black, width - g.x - centered->width);
+        }
+      }
+    }
+    const bool released_small = centered->EndCpuRead();
+    const bool released_public = surface->EndCpuRead();
+    if (!released_small || !released_public)
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_READBACK)
+    // Test-only API-read evidence; never a materialization/source census.
+    CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(*surface, image->va, buffer->second.data.data());
+#endif
+    return VA_STATUS_SUCCESS;
+  }
   uint8_t *destination_y = buffer->second.data.data() + image->va.offsets[0];
   uint8_t *destination_uv = buffer->second.data.data() + image->va.offsets[1];
   for (unsigned int y = 0; y < height; ++y) {
@@ -11466,6 +11655,7 @@ static VAStatus PrepareDerivedWrite(Driver *driver, Buffer &buffer, bool refresh
       return status;
   }
   ++owner->vpp_writers;
+  owner->InvalidateCenteredReadback();
   owner->completed_decode_picture = {};
   owner->picture_transaction = NextDecodeIdentity(driver);
   owner->image_write_locked = true;
@@ -11725,6 +11915,8 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       if (exported != driver->surfaces.end() &&
           HasLiveBackingOwner(driver, exported->second.get())) {
         Surface *owner = BackingOwner(driver, exported->second.get());
+        owner->centered_allocation_exposed = true;
+        owner->InvalidateCenteredReadback();
         owner->external_accessed = true;
         if (!explicit_read_only) {
           owner->vpp_external_write_exposed = true;
