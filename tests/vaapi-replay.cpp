@@ -6181,6 +6181,85 @@ struct H264AdmissionFixture : TeardownFixture {
   }
 };
 
+static void H264FrontendReceiveBudgetPreservesWorkerDrain() {
+  // Real EndPicture/SubmitPicture and RunDecodeWorker with existing DIL mocks.
+  // Progressive output and both field orders must retain every deferred lease;
+  // no wall-time benchmark or manufactured completion stands for this oracle.
+  for (unsigned order : {0U, 1U, 2U}) {
+    H264AdmissionFixture fixture(8);
+    fixture.Fill(2);
+    fixture.Prepare(3);
+    const bool interlaced = order != 0;
+    if (interlaced) {
+      fixture.decoder->picture.seq_fields.bits.frame_mbs_only_flag = 0;
+      fixture.decoder->picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+    }
+    const auto queue_picture = [&](unsigned ordinal) {
+      const uint64_t token = ordinal * kTimestampStep;
+      fixture.io.outputs.push_back(token);
+      if (!interlaced)
+        return;
+      const uint32_t bottom_first = order == 2 ? VDEC_FLAG_BOTTOM_FIRST : 0;
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+          (order == 2 ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) | bottom_first);
+      fixture.io.outputs.push_back(token);
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+          (order == 2 ? VDEC_FLAG_TOPFIELD : VDEC_FLAG_BOTTOMFIELD) | bottom_first);
+    };
+    queue_picture(1);
+    queue_picture(2);
+    const size_t before = fixture.io.outputs.size();
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.io.inputs == std::vector<uint64_t>{kTimestampStep,
+                    2 * kTimestampStep, 3 * kTimestampStep} &&
+                fixture.io.released_outputs.load() == 1 &&
+                fixture.io.outputs.size() == before - 1 &&
+                !fixture.held[1]->ready && !fixture.held[2]->ready &&
+                !fixture.decoder->ReplayFailed() && !fixture.io.invalid,
+            "frontend accepts the new input after one actual released output, leaving the backlog owned");
+    Require(interlaced
+                ? fixture.decoder->h264_first_field.valid &&
+                      !fixture.held[0]->ready && fixture.decoder->replay.outstanding() == 3
+                : !fixture.decoder->h264_first_field.valid &&
+                      fixture.held[0]->ready && fixture.decoder->replay.outstanding() == 2,
+            "one field cannot publish a picture; one progressive output completes only its own picture");
+    queue_picture(3);
+    fixture.io.early_eos = true;  // Do not duplicate the already queued originals.
+    Require(SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+                fixture.decoder->ReplaySealed() && fixture.io.outputs.back() == 0,
+            "only explicit final drain appends the actual mocked EOS after all originals");
+    fixture.driver.StartDecodeWorker();
+    {
+      std::unique_lock<std::mutex> lock(fixture.driver.mutex);
+      Require(fixture.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+                return fixture.decoder->ReplayFailed() ||
+                    (fixture.io.outputs.empty() && fixture.decoder->replay.outstanding() == 0 &&
+                     !fixture.decoder->ReplaySealed());
+              }) && !fixture.decoder->ReplayFailed(),
+              "the unchanged autonomous worker drains deferred outputs and actual EOS without consumer Sync");
+    }
+    fixture.driver.StopWorkers();
+    fixture.driver.stopping = false;
+    Require(fixture.io.outputs.empty() && fixture.io.picture_flags.empty() &&
+                fixture.decoder->pending.empty() && fixture.decoder->replay.outstanding() == 0 &&
+                !fixture.decoder->h264_first_field.valid &&
+                fixture.io.accepted_inputs.load() == 3 &&
+                fixture.io.released_outputs.load() == (interlaced ? 7U : 4U) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "picture") ==
+                    (interlaced ? 6 : 3) &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                !fixture.io.invalid,
+            "every accepted original/field/EOS has exactly one release and no deferred output is lost");
+    for (unsigned picture = 0; picture != 3; ++picture)
+      fixture.CheckPicture(picture);
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.driver.contexts.empty() && fixture.decoder->device == nullptr &&
+                fixture.io.device_close_calls == 1 && !fixture.io.invalid,
+            "deferred work retains exact public pixels and retires the original device once");
+  }
+}
+
 static void H264AdmissionHarvestsBeforeRejecting() {
   // The byte boundary uses actual valid assembled input lengths, while the
   // independent oracle remains accepted-picture identity and transport count.
@@ -12727,6 +12806,7 @@ static void NeutralAuxiliaryContracts() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
+      H264FrontendReceiveBudgetPreservesWorkerDrain();
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
       H264AdmissionJoinsPublicLifecycleChanges();
@@ -12856,6 +12936,7 @@ int main(int argc, char **argv) {
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
     DefaultH264TransportIsBounded();
+    H264FrontendReceiveBudgetPreservesWorkerDrain();
     H264AdmissionHarvestsBeforeRejecting();
     H264AdmissionCancellationPreservesOtherOwners();
     H264AdmissionJoinsPublicLifecycleChanges();
