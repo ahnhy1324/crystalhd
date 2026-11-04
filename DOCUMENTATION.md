@@ -2,8 +2,10 @@
 
 ## Start here
 
-For ordinary local video playback, start with the recommended stable release
-and `crystalhd-play` in the [README quick start](README.md#quick-start).
+For ordinary local video playback, start with `crystalhd-play` in the
+[README quick start](README.md#quick-start). The guide targets final 1.3/module20;
+its official release entry and actual qualification receipt define availability
+and results. Use the immutable 1.2 fallback if that release is unavailable.
 Then use [everyday usage](USAGE.md) for playback, audio, subtitles and controls.
 
 | What do you want to do? | Read first |
@@ -32,14 +34,14 @@ research are listed afterward so they do not interrupt first-time setup.
 | Review native qualification and its boundaries | [Native acceptance](NATIVE-RUNTIME-ACCEPTANCE.md) |
 
 Released packages are identified by their tags and qualification receipts.
-Stable 1.2 remains the ordinary-playback recommendation. [RC4/module19 preparation](README.md#rc4-candidate-preparation)
-is **PREPARED_NOTQUALIFIED**, not a published download; candidate testers use
-its exact private core/settings/native binding. Published RC3/module18 and
-RC2/module17 assets and registered sources remain frozen. Conditional stable
-1.3 promotion follows candidate qualification and an explicit
-[GTK known-risk disposition](tests/fixtures/issue400/gtk-bounded-review-20261104.json);
-it has not occurred. Use the release entry points above rather than commands
-copied from an old experiment.
+The [final 1.3/module20 scope](README.md#13-release-scope) has a matching
+core/settings/native binding. Select the qualified core named in its official
+release entry; for prepublication evaluation use only an explicitly supplied
+exact private binding. Stable 1.2 is the retained fallback. Prior RC4/module19,
+published RC3/module18 and RC2/module17 artifacts and registered sources stay
+immutable. Qualification retains the explicit
+[GTK known-risk disposition](tests/fixtures/issue400/gtk-bounded-review-20261104.json).
+Use current release entry points rather than commands copied from an old experiment.
 
 ## Component guides
 

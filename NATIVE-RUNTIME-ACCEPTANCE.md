@@ -4,26 +4,40 @@ Current overview reviewed **2026-11-04**. Use the [documentation map](DOCUMENTAT
 for the distinction between current operator guides, tool contracts and dated
 preparation evidence.
 
-## RC4 candidate and native acceptance
+## Stable 1.3 native acceptance
 
-Bundle `1.3.0-rc.4` / module-DKMS `3.10.19` is in preparation. It preserves the
-complete core feature set and the optional unmodified FFmpeg DRM_PRIME companion.
-No new-module/native PASS or publication follows from preparation. The current
-[operator flow](NATIVE-RUNTIME-DELIVERY.md#rc4-companion-layout-and-use) selects
+Bundle `1.3.0` / module-DKMS `3.10.20` preserves the complete core feature set
+and the optional unmodified FFmpeg DRM_PRIME companion. Its [official release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
+and qualification receipt identify actual availability, fresh results and scoped
+reuse; the source version alone does not establish a PASS. The current
+[operator flow](NATIVE-RUNTIME-DELIVERY.md#stable-13-companion-layout-and-use) selects
 the exact own core through its binding receipt and reads the measured native
 srcversion from a passing actual receipt before temporary activation.
 
 | Candidate evidence | Required scope |
 | --- | --- |
-| Core/source binding | `evidence/rc4-core-binding.json` identifies the exact core archive/revision, module19 and packaged own tools/guides. |
-| Actual new-module boundary | `evidence/rc4-native-qualification.json` records the new module identity/API/ownership and selected original Kodi720p/FHD EOS/reopen/PTS/DRM lifetime checks, restoration and explicit unchanged-path reuse. No module18 result is relabeled19. |
+| Core/source binding | `evidence/stable-core-binding.json` identifies the exact core archive/revision, module20 and packaged own tools/guides. |
+| Actual new-module boundary | `evidence/stable-native-qualification.json` records the new module identity/API/ownership and selected original Kodi720p/FHD EOS/reopen/PTS/DRM lifetime checks, restoration and explicit unchanged-path reuse. No module18/19 result is relabeled20. |
 | Unchanged FFmpeg/provider materials | Reuse exact pinned runtime/source/two-build-proof bytes and notices; `evidence/reuse-scope.json` states their original attribution. This does not qualify a changed own native path. |
 | Existing unavailable targets | Independently booted OS, Atom/i386 and BCM70012 remain outside the current-equipment cohort; no broader gate is added. |
 
-See [RC4 complete scope](RELEASING.md#rc4-stabilization-candidate-preparation).
+See [Stable complete scope and qualification policy](RELEASING.md#stable-13-promotion-preparation).
 Centered stays default-off on the ordinary VA route; private centered observers
 do not qualify native decoding. Existing native controls, accepted renderer/QoS
 losses and exact-route no-drift-log policy retain their measured scope.
+
+<a id="rc4-candidate-and-native-acceptance"></a>
+
+### Frozen RC4 evidence
+
+The frozen RC4/source `1c8b0451c631` and its actual module19 receipt retain
+that candidate's measured identity and exact cohort. See the
+[RC4 reference](NATIVE-RUNTIME-DELIVERY.md#frozen-rc4-reference). Source preparation
+alone is not an outcome, and reused19 results do not become new20 measurements.
+The stable candidate needs its own source/module20 binding and actual checks;
+unchanged native behavior and FFmpeg/materials keep their explicit reuse scope.
+The optional GTK #623 crash remains unresolved and is retained in the release
+risk assessment; neither this native preparation nor clean tests claim repair.
 
 <a id="rc3-candidate-status"></a>
 
@@ -36,7 +50,7 @@ actual23-case campaign. Original pinned Kodi720p/FHD each returned180 pictures
 twice through the unchanged FFmpeg DRM_PRIME runtime and restored the original
 boundary. Earlier source/module13 and RC2/module17 observations retain their
 own attribution. See the [RC3 operator reference](NATIVE-RUNTIME-DELIVERY.md#published-rc3-reference).
-These results are scoped reuse inputs, not automatically fresh RC4 acceptance.
+These results are scoped reuse inputs, not automatically fresh stable acceptance.
 
 ## Retained RC2 completion
 

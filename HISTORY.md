@@ -6,14 +6,46 @@ statements under an older version describe that checkpoint; use
 [documentation index](DOCUMENTATION.md) for the evidence map. Published
 identities and historical failures retain their original qualification scope.
 
+## 1.3.0 — prepared stable promotion
+
+**PREPARED_NOTQUALIFIED:** bundle `1.3.0` / module-DKMS `3.10.20` is being
+prepared from frozen RC4 source `1c8b0451c631`. It is not a published stable
+release. RC4 has completed source19 qualification and protected integration
+through [#654](https://github.com/ahnhy1324/crystalhd/pull/654); its release entry
+records actual publication. Final20 archive, installed/native identity, companion
+delivery and current-base CI/review remain separate requirements; no candidate
+result is relabeled as final20 evidence.
+
+The final package retains all 17 integrated feature groups and opt-ins,
+including default-off Centered and native V4L2 with the unmodified FFmpeg
+DRM_PRIME companion. This promotion changes release identity and documentation;
+it adds no runtime feature or default change. The Player/Xv corrections and
+installation-flow repairs are described under RC4 below. Reuse the completed
+userspace600/kernel18 quality and unchanged RC4 implementation evidence only
+with their original identities; fresh final metadata/build/install/native
+bindings are still required, without repeating unaffected long soaks.
+
+The [bounded GTK review](tests/fixtures/issue400/gtk-bounded-review-20261104.json)
+is complete. The original optional-editor CSS assertion/SIGSEGV remains
+unreproduced and unfixed, with no demonstrated own-code cause; keep #623 open
+and this known risk explicit. The maintainer authorized RC4 then stable
+promotion if the agreed criteria are met. Stable remains 1.2 until the final
+qualification and publication actually complete. See
+[stable preparation](RELEASING.md#stable-13-promotion-preparation).
+
 <a id="unreleased-stabilization-after-130-rc3"></a>
 
-## 1.3.0-rc.4 — prepared stabilization candidate
+## 1.3.0-rc.4 — frozen stabilization candidate
 
-**PREPARED_NOTQUALIFIED:** bundle `1.3.0-rc.4` / module-DKMS `3.10.19` is
-being prepared from master `3689eda`. It has not been packaged, qualified or
-published. All 17 integrated RC3 feature groups, existing opt-ins and diagnostic
-coverage remain included; normal output, FIFO and default-off Centered retain
+Frozen source `1c8b0451c631`, bundle `1.3.0-rc.4` / module-DKMS `3.10.19`,
+was prepared from master `3689eda` and qualified through
+[#654](https://github.com/ahnhy1324/crystalhd/pull/654): exact archive/build/staging,
+native19 API/ownership and original-client playback, DKMS/direct recovery,
+two reproducible companion exports and 13 extracted file-tool operations pass.
+The current-base CI gate and final independent review pass. Its separate
+receipts and release entry retain the measured scope and actual publication;
+these outcomes do not qualify the final20 identity automatically. All 17 integrated RC3 feature groups, existing
+opt-ins and diagnostic coverage remain included; normal output, FIFO and default-off Centered retain
 their existing defaults. The native V4L2/unmodified FFmpeg DRM_PRIME companion
 remains part of the intended delivery.
 
@@ -33,15 +65,15 @@ remains part of the intended delivery.
 The affected Player/Xv quality campaign passed on userspace `6004636` with the
 separately frozen RC3 kernel18/source36ef: ordinary and own-FIFO 30-minute
 playback, documented DKMS/direct lifecycle and original-state restoration.
-These are scoped reuse inputs, not RC4/module19 results. Fresh exact-archive,
-installed/native identity and delivery checks remain required; the bounded
-GTK #623 investigation must retain the original unresolved crash disposition.
+These are scoped reuse inputs, not RC4/module19 results. Exact-archive,
+installed/native identity and delivery outcomes belong to the separate RC4
+qualification. The bounded GTK #623 review preserves the unresolved crash risk.
 See [RC4 preparation](RELEASING.md#rc4-stabilization-candidate-preparation).
 The maintainer has authorized the next RC and conditional stable promotion
 after candidate qualification and an explicit GTK known-risk disposition;
-RC4 qualification and stable promotion are not complete. Published tags/assets,
-registered source18 and earlier receipts
-remain unchanged.
+This authorization is conditional on actual qualification, not a result.
+Published tags/assets, registered source19/18 and earlier receipts remain
+unchanged; final20 requires its own identity and affected verification.
 
 <a id="development-after-the-frozen-rc2"></a>
 <a id="130-rc3--complete-integration-candidate"></a>
