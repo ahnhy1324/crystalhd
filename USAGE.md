@@ -195,10 +195,13 @@ startup and 15 seconds after decoded output stalls, including network buffering
 (a deliberate user pause is exempt). Errors exit nonzero; there is no automatic
 reconnect. Close and restart the player to reconnect.
 
-Automated network coverage uses loopback HTTP with software video and fake
-audio/video sinks. Native BCM70015 loopback HTTP playback also passed selected
+Automated network coverage uses loopback HTTP and private-CA HTTPS with software
+video and fake audio/video sinks. HTTPS keeps strict verification enabled:
+the selected trusted CA permits playback/EOS, while an unrelated CA or a wrong
+hostname is rejected before decoded frames. These tests select trust through
+the transport API and do not change system trust. Native BCM70015 loopback HTTP playback also passed selected
 360p and 720p30 H.264 video, EOS and local-file reopen with fake sinks.
-Real HTTPS/TLS, native network seeking, physical A/V and Internet
+Default-CA/Internet HTTPS, native HTTPS and network seeking, physical A/V and Internet
 recovery remain unverified. Inclusion in the source is not a release-gate PASS for
 those paths or a reason to replace a qualified installation without testing.
 

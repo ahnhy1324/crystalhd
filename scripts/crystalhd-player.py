@@ -328,7 +328,9 @@ class PlaybackHealth:
             self.active_frames = 0
         self.frames += 1
         self.active_frames += 1
-        self.anchor = now
+        # A frame's streaming-thread observation can reach the bus after a
+        # newer seek/resume. Do not undo that control's fresh timeout grace.
+        self.anchor = max(self.anchor, now)
         return changed
 
     def removed(self, token, now):

@@ -6,6 +6,21 @@ statements under an older version describe that checkpoint; use
 [documentation index](DOCUMENTATION.md) for the evidence map. Published
 identities and historical failures retain their original qualification scope.
 
+## Unreleased stabilization after 1.3.0-rc.3
+
+- Preserve the Player's seek/resume timeout grace when an older decoded-frame
+  observation arrives later through the bus. Frame counts, observation times
+  and the existing startup/stall limits remain unchanged.
+- Reject Xv replies and protocol errors observed after the original response
+  deadline; release their allocations and retire the failed context normally.
+  On-time replies and nonfatal invalid replacement targets retain their behavior.
+- Exercise strict HTTPS verification with a private loopback CA: normal
+  software playback/EOS, untrusted CA and wrong-hostname rejection. This is
+  controlled transport coverage, not Internet, default-CA or hardware acceptance.
+
+These changes are development work after the frozen RC3 release. Published
+tags, assets and their qualification receipts remain unchanged.
+
 <a id="development-after-the-frozen-rc2"></a>
 <a id="130-rc3--complete-integration-candidate"></a>
 
