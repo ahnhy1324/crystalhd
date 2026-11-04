@@ -1,17 +1,31 @@
-# OWN maintained-backend cost observer v1
+# OWN maintained-backend cost observer v2
 
 Private instrumentation only: no normal backend knob/state/clocks, external
 hooks, product fix, stock compatibility or release qualification. The explicit
 private backend also retains the centered payload observer. Set
-`CRYSTALHD_TEST_MAINTAINED_COST=v1` and absolute
+`CRYSTALHD_TEST_MAINTAINED_COST=v2` and absolute
 `CRYSTALHD_TEST_MAINTAINED_COST_PREFIX`. Output `PREFIX-PID.jsonl` is exclusive0600.
 
-Header: `type:"header",schema:"crystalhd-maintained-cost-v1",pid,
+Header: `type:"header",schema:"crystalhd-maintained-cost-v2",pid,
 fork_policy:"PARENT_PID_ONLY_CHILD_FORWARD_ONLY",
-scope:"OWN_MAINTAINED_BACKEND_ONLY",capacity:65536,
+scope:"OWN_MAINTAINED_BACKEND_ONLY",capacity:131072,
 clock_names:{wall:"CLOCK_MONOTONIC",cpu:"CLOCK_THREAD_CPUTIME_ID"},stages:[...],
 flags:{compact:1,decoded_public:2,direct_public:4,selected_capture:8,
 i915_wc:16,read:32,write:64}`. CPU controls may reduce capacity at compile time.
+
+Version2 only increases the fixed event capacity for additional first-field
+scope trees. It preserves every event, clock, identity, stage and completeness
+rule below. The current producer requires the v2 activation marker; a v1 marker
+does not enable it. Ordinary backends still contain no observer state.
+
+The offline reader also accepts retained `crystalhd-maintained-cost-v1` reports,
+whose declared capacity and event count remain bounded by65536. Version2 is
+bounded by131072; reduced CPU-control capacities remain explicit in the header.
+JSONL is limited to the selected version's event bound plus header/footer and
+128MiB. A v1 header cannot borrow the v2 quota. Overflow, dropped rows or any
+other incomplete gate still rejects either version. Historical v1 captures and
+their original PASS/FAIL dispositions are unchanged; extra diagnostic capacity
+does not qualify source900, product performance or release acceptance.
 
 Exact stage strings: `receive_one`, `dil_acquire`, `dil_release`, `process_output`,
 `first_field_stage`, `second_field_process`, `field_convert`,

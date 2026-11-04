@@ -446,7 +446,7 @@ def pending_replay_census(rows, interval, pid, expected_originals):
 
 def cost_options(observe_cost=False):
     require(type(observe_cost) is bool, 'maintained cost mode must be boolean')
-    return (['--setenv', 'CRYSTALHD_TEST_MAINTAINED_COST', 'v1',
+    return (['--setenv', 'CRYSTALHD_TEST_MAINTAINED_COST', 'v2',
              '--setenv', 'CRYSTALHD_TEST_MAINTAINED_COST_PREFIX', '/payload/maintained-cost']
             if observe_cost else [])
 

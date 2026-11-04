@@ -7629,6 +7629,16 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
     const uint32_t charge = TestCowPrimaryCapacity(*surface);
     const uint8_t *old_planes[2] = {surface->planes[0], surface->planes[1]};
     auto view = std::make_unique<VppPixelView>(); view->Capture(surface);
+    const uint64_t before_view_write = surface->cpu_primary_canvas->WriteEpoch();
+    Require(view->BeginCpuWrite(), "actual captured pixel view obtains its original CPU backing WRITE lease");
+    view->planes[0][0] ^= 0x5a;
+    Require(view->EndCpuWrite() && surface->cpu_primary_canvas->WriteEpoch() != before_view_write &&
+                surface->centered_border.epoch != surface->cpu_primary_canvas->WriteEpoch(),
+            "frozen VPP writer invalidates the same backing-local border proof before export");
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                CpuPrimaryActiveBytes(*surface) == expected &&
+                surface->centered_border.epoch == surface->cpu_primary_canvas->WriteEpoch(),
+            "full real Compose repairs the modified border and certifies only the completed current backing");
     ++surface->vpp_readers;
     VADRMPRIMESurfaceDescriptor prime{};
     Require(ExportSurfaceHandle(&fixture.context, 41, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
@@ -7643,9 +7653,13 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
             "successful export commits a fully copied/registered DRM allocation while pinning charged old CPU bytes");
     Require(CpuPrimaryActiveBytes(*surface) == expected && CpuPrimaryActiveBytes(*view) == expected,
             "the new exported planes and an already captured CPU view both keep every exact pixel");
+    const uint8_t changed_exported_border = 0xa9;
+    Require(pwrite(prime.objects[0].fd, &changed_exported_border, 1, 0) == 1,
+            "actual GPU-exported fd can modify the border independently of the retained CPU backing");
     Require(!CenteredReadbackSourceAllocation(*surface) && surface->centered_readback.small.expired() &&
                 ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
-                surface->centered_readback.small.expired(),
+                surface->centered_readback.small.expired() &&
+                !surface->cpu_primary_canvas && CpuPrimaryActiveBytes(*surface) == expected,
             "GPU export invalidates immutable-small provenance permanently even after another successful Compose");
     std::vector<uint8_t> exported(expected.size());
     Require(pread(prime.objects[0].fd, exported.data(), exported.size(), 0) ==

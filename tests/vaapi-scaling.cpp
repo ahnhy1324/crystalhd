@@ -6,9 +6,11 @@
 // These fixtures model the legacy full-device restart contract. Explicit
 // same-device channel negotiation is exercised by vaapi-replay.cpp instead.
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
+#include <cstdint>
 namespace centered_probe {
 unsigned calls = 0, width = 0, height = 0, readbacks = 0, cpu_readbacks = 0, cpu_small_readbacks = 0;
 bool compact = false;
+uint64_t clear_bytes = 0, border_reuses = 0, border_clears = 0;
 }
 #define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
   ++centered_probe::calls; centered_probe::width = (w); \
@@ -20,6 +22,12 @@ bool compact = false;
 } while (0)
 #define CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(surface, image, bytes) \
   (++centered_probe::cpu_readbacks)
+#define CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(bytes) \
+  (centered_probe::clear_bytes += (bytes))
+#define CRYSTALHD_VAAPI_TEST_COW_BORDER_COMPOSE(reused) do { \
+  if (reused) ++centered_probe::border_reuses; else ++centered_probe::border_clears; \
+} while (0)
+#define CRYSTALHD_TEST_COW_EPOCH 1
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdarg>
 #include <cstdlib>
@@ -3758,10 +3766,15 @@ void CenteredCowPrepareFailurePreservesPixelsAndProvenance() {
     auto edited = expected; edited[0] ^= 0x2a; static_cast<uint8_t *>(mapped)[0] = edited[0];
     const auto saved = surface->centered_readback;
     const uint64_t epoch = surface->centered_write_epoch;
+    const uint64_t backing_epoch = replacement->WriteEpoch();
+    const auto border = surface->centered_border;
     cow_write_fault::calls = 0; cow_write_fault::fail_on = 2;
     bool used = false;
     Require(!surface->BeginDecodedCpuWrite(&used) && cow_write_fault::calls == 2 &&
                 f.PrivatePixels(*surface) == expected && surface->centered_write_epoch == epoch &&
+                replacement->WriteEpoch() == backing_epoch &&
+                surface->centered_border.epoch == border.epoch &&
+                surface->centered_border.backing.lock() == border.backing.lock() &&
                 surface->centered_readback.small.lock() == saved.small.lock() &&
                 surface->centered_readback.timestamp == saved.timestamp &&
                 surface->centered_readback.identity == saved.identity &&
@@ -3788,6 +3801,191 @@ void CenteredCowPrepareFailurePreservesPixelsAndProvenance() {
               "both image handles remain normally destroyable after preparation failure");
   }
   Require(crystalhd_cow_snapshot::LiveBytes() == baseline, "failed/retried COW preparation leaks no primary charge");
+}
+
+static uint64_t TestBorderBytes(const CenteredFixture &f) {
+  return uint64_t{f.coded_width} * f.canvas_height * 3U / 2U -
+      uint64_t{f.capture_width} * f.capture_height * 3U / 2U;
+}
+
+static std::vector<uint8_t> TestCanvasForGeometry(
+    const CenteredFixture &f, const std::vector<uint8_t> &packed,
+    const crystalhd_centered_output::Geometry &geometry) {
+  // Keep the existing packed-input conversion oracle; independently relocate
+  // only its active rectangle into a freshly cleared reference canvas.
+  const auto original = f.Canvas(packed);
+  std::vector<uint8_t> expected(original.size(), 128);
+  std::fill_n(expected.data(), size_t{f.coded_width} * f.canvas_height,
+              geometry.full_range ? 0 : 16);
+  const unsigned old_x = (f.coded_width - f.capture_width) / 2U;
+  const unsigned old_y = ((f.visible_height - f.capture_height) / 2U) / 4U * 4U;
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const size_t base = plane ? size_t{f.coded_width} * f.canvas_height : 0;
+    const unsigned source_y = plane ? old_y / 2U : old_y;
+    const unsigned target_y = plane ? geometry.y / 2U : geometry.y;
+    for (unsigned row = 0; row != (plane ? f.capture_height / 2U : f.capture_height); ++row)
+      memcpy(expected.data() + base + size_t{target_y + row} * f.coded_width + geometry.x,
+             original.data() + base + size_t{source_y + row} * f.coded_width + old_x,
+             f.capture_width);
+  }
+  return expected;
+}
+
+void CenteredCowBorderReusePreservesPixelsAndPrivateImages() {
+  RequireCowAvailable();
+  for (bool full : {false, true}) {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, full, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    const auto first = f.Packed(17), next = f.Packed(91);
+    f.Submit();
+    const uint64_t clear0 = centered_probe::clear_bytes;
+    f.Complete(first);
+    Require(centered_probe::clear_bytes - clear0 == TestBorderBytes(f) &&
+                f.PrivatePixels(*surface) == f.Canvas(first) &&
+                surface->centered_border.backing.lock() == surface->cpu_primary_canvas &&
+                surface->centered_border.epoch == surface->cpu_primary_canvas->WriteEpoch(),
+            "first actual CPU Compose clears every border byte and certifies only complete real pixels");
+    VAImage image{}; void *mapped = nullptr;
+    Require(DeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+                f.driver.buffers.at(image.buf).cow_snapshot &&
+                MapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+            "retain an actual privately writable COW image before metadata rebind and ROI-only output");
+    auto old = f.Canvas(first); old[0] ^= 0x5a; static_cast<uint8_t *>(mapped)[0] = old[0];
+    const uint64_t epoch = surface->cpu_primary_canvas->WriteEpoch();
+    f.Submit(1, false);
+    Require(surface->cpu_primary_canvas->WriteEpoch() == epoch &&
+                surface->centered_border.epoch == epoch,
+            "actual BeginPicture/submission metadata rebind does not invent a backing pixel write");
+    const uint64_t clear1 = centered_probe::clear_bytes, reuse1 = centered_probe::border_reuses;
+    f.Complete(next, false, 2 * kTimestampStep);
+    Require(centered_probe::clear_bytes == clear1 && centered_probe::border_reuses == reuse1 + 1 &&
+                f.PrivatePixels(*surface) == f.Canvas(next) &&
+                TestCowImageBytes(&f.context, image) == old && !memcmp(mapped, old.data(), old.size()),
+            "same-geometry changed ROI really skips all border stores while full bytes and retained private edits remain exact");
+    Require(UnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS &&
+                DestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "ROI reuse adds no private-image lifetime or mapping restriction");
+  }
+}
+
+void CenteredCowBorderInvalidatesForRealWritersAndAllocations() {
+  RequireCowAvailable();
+  for (unsigned mode = 0; mode != 7; ++mode) {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit(); const auto packed = f.Packed(37); f.Complete(packed);
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    const auto original_backing = surface->cpu_primary_canvas;
+    const uint64_t old_epoch = original_backing->WriteEpoch();
+    if (mode == 0) {
+      Require(surface->BeginCpuWrite(), "generic CPU writer prepares its actual backing");
+      memset(surface->planes[0], 0xa1, original_backing->Size());
+      Require(surface->EndCpuWrite() && original_backing->WriteEpoch() != old_epoch,
+              "generic primary writes invalidate a previously certified black border");
+    } else if (mode == 1) {
+      VppPixelView view; view.Capture(surface);
+      Require(view.BeginCpuWrite(), "frozen pixel view prepares the captured Canvas allocation");
+      view.planes[0][0] = 0xa2;
+      Require(view.EndCpuWrite() && original_backing->WriteEpoch() != old_epoch,
+              "frozen-view writes advance the shared backing epoch even without public metadata rebind");
+    } else if (mode == 2) {
+      picture->centered_geometry.x += 2;
+      picture->centered_geometry.y += 4;
+    } else if (mode == 3) {
+      picture->centered_geometry.full_range = true;
+    } else if (mode == 4) {
+      auto replacement = crystalhd_cow_snapshot::Canvas::Create(original_backing->Size());
+      Require(bool(replacement), "allocate a genuinely different full primary backing");
+      replacement->TestSetWriteEpoch(old_epoch); // Deliberately equal scalar epoch, different allocation.
+      memset(replacement->Data(), 0xa3, replacement->Size());
+      surface->cpu_primary_canvas = replacement;
+      surface->planes[0] = replacement->Data();
+      surface->planes[1] = replacement->Data() + size_t{surface->pitch[0]} * surface->height;
+    } else if (mode == 5) {
+      surface->centered_allocation_exposed = true;
+    }
+    const bool decoded_public = mode != 6;
+    const uint64_t clear0 = centered_probe::clear_bytes, reuse0 = centered_probe::border_reuses;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, decoded_public) &&
+                centered_probe::clear_bytes - clear0 == TestBorderBytes(f) &&
+                centered_probe::border_reuses == reuse0 &&
+                f.PrivatePixels(*surface) == TestCanvasForGeometry(f, packed, picture->centered_geometry),
+            "real writes, ROI/range changes, foreign allocations, exposure and nondecoded Compose retain full-clear byte behavior");
+    const uint64_t clear1 = centered_probe::clear_bytes, reuse1 = centered_probe::border_reuses;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true),
+            "a valid following full decoded Compose remains successful");
+    if (mode == 5 || mode == 6) {
+      Require(centered_probe::clear_bytes - clear1 == TestBorderBytes(f) &&
+                  centered_probe::border_reuses == reuse1,
+              "exposure is permanent and a nondecoded write cannot certify a decoded border");
+    } else {
+      Require(centered_probe::clear_bytes == clear1 && centered_probe::border_reuses == reuse1 + 1,
+              "only a newly completed exact-geometry/backing proof enables subsequent ROI-only stores");
+    }
+  }
+}
+
+void CenteredCowBorderEndFailureAndEpochWrap() {
+  RequireCowAvailable();
+  {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit(); const auto packed = f.Packed(53); f.Complete(packed);
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    const auto small = picture->centered_pixels;
+    const uint64_t proof_epoch = surface->centered_border.epoch;
+    struct ReadEndFailure {
+      centered_io::State &state;
+      std::shared_ptr<Surface> small;
+      int previous, fd;
+      ReadEndFailure(centered_io::State &value, const std::shared_ptr<Surface> &source)
+          : state(value), small(source), previous(value.fd), fd(-1) {
+        FILE *file = tmpfile(); Require(file != nullptr, "create private READ-END failure descriptor");
+        fd = dup(fileno(file)); fclose(file);
+        Require(fd >= 0 && small->object_fds.empty(), "attach only an owned test READ lease");
+        small->object_fds.push_back(fd); state.fd = fd; state.fail_read_end = true;
+      }
+      ~ReadEndFailure() {
+        small->object_fds.clear(); state.fd = previous; state.fail_read_end = false; close(fd);
+      }
+    };
+    surface->ready = false; surface->frame_timestamp = 0;
+    const uint64_t reuse0 = centered_probe::border_reuses;
+    {
+      ReadEndFailure failure(io.state, small);
+      Require(!ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                  !surface->ready && surface->frame_timestamp == 0 &&
+                  surface->centered_border.epoch != surface->cpu_primary_canvas->WriteEpoch() &&
+                  surface->cpu_primary_canvas->WriteEpoch() != proof_epoch &&
+                  centered_probe::border_reuses == reuse0,
+              "actual small READ-END failure cannot certify a new border or publish a successful ready Compose");
+    }
+    const uint64_t clear0 = centered_probe::clear_bytes;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                centered_probe::clear_bytes - clear0 == TestBorderBytes(f) &&
+                f.PrivatePixels(*surface) == f.Canvas(packed),
+            "retry after failed END clears fully instead of reusing an uncommitted epoch");
+    surface->cpu_primary_canvas->TestSetWriteEpoch(UINT64_MAX - 1U);
+    surface->centered_border.epoch = UINT64_MAX - 1U;
+    const uint64_t clear1 = centered_probe::clear_bytes, reuse1 = centered_probe::border_reuses;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                surface->cpu_primary_canvas->WriteEpoch() == 0 &&
+                surface->centered_border.epoch == 0 && surface->centered_border.backing.expired() &&
+                centered_probe::clear_bytes - clear1 == TestBorderBytes(f) &&
+                centered_probe::border_reuses == reuse1 && f.PrivatePixels(*surface) == f.Canvas(packed),
+            "uint64 wrap disables reuse in that same Compose while preserving successful full pixels");
+    const uint64_t clear2 = centered_probe::clear_bytes;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                surface->cpu_primary_canvas->WriteEpoch() == 0 &&
+                centered_probe::clear_bytes - clear2 == TestBorderBytes(f),
+            "wrapped backing keeps writes successful but never resurrects border reuse");
+  }
 }
 
 void CenteredImageReadbackBytesAndReadFailures() {
@@ -3967,6 +4165,9 @@ int main(int argc, char **argv) {
       CenteredCowImagesPreserveMappedAndUnmappedBytes();
       CenteredCowImageOutlivesContextAndSurfaceId();
       CenteredCowPrepareFailurePreservesPixelsAndProvenance();
+      CenteredCowBorderReusePreservesPixelsAndPrivateImages();
+      CenteredCowBorderInvalidatesForRealWritersAndAllocations();
+      CenteredCowBorderEndFailureAndEpochWrap();
       std::printf("PASS centered full CPU-primary canvases: %u checks\n", checks);
       return 0;
     } catch (const CowUnavailable &) {
@@ -3987,6 +4188,9 @@ int main(int argc, char **argv) {
       CenteredCowImagesPreserveMappedAndUnmappedBytes();
       CenteredCowImageOutlivesContextAndSurfaceId();
       CenteredCowPrepareFailurePreservesPixelsAndProvenance();
+      CenteredCowBorderReusePreservesPixelsAndPrivateImages();
+      CenteredCowBorderInvalidatesForRealWritersAndAllocations();
+      CenteredCowBorderEndFailureAndEpochWrap();
       std::printf("PASS centered independent image readback: %u checks\n", checks);
       return 0;
     } catch (const CowUnavailable &) {
@@ -4044,6 +4248,9 @@ int main(int argc, char **argv) {
     {"COW images retain mapped, unmapped and private-edited bytes", CenteredCowImagesPreserveMappedAndUnmappedBytes},
     {"COW image lifetime crosses decoder close and VA ID reuse", CenteredCowImageOutlivesContextAndSurfaceId},
     {"failed COW preparation preserves primary and provenance", CenteredCowPrepareFailurePreservesPixelsAndProvenance},
+    {"COW border reuse preserves full bytes and private images", CenteredCowBorderReusePreservesPixelsAndPrivateImages},
+    {"COW border real-writer and allocation invalidation", CenteredCowBorderInvalidatesForRealWritersAndAllocations},
+    {"COW border END failure and uint64 wrap", CenteredCowBorderEndFailureAndEpochWrap},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},

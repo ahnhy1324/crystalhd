@@ -37,7 +37,7 @@ class State {
   std::mutex gate;
   std::atomic<bool> fork_seen{false};
   uint64_t calls = 0, valid_calls = 0, invalid = 0, clock_failures = 0;
-  uint64_t unbound = 0;
+  uint64_t unbound = 0, full_composes = 0, reused_composes = 0;
   unsigned captured = 0;
   pid_t pid = 0;
   bool enabled = false, publishing = false;
@@ -117,6 +117,16 @@ class State {
     ++captured;
     errno = saved;
   }
+  void Composed(bool reused) noexcept {
+    const int saved = errno;
+    if (!Active()) { errno = saved; return; }
+    std::lock_guard<std::mutex> lock(gate);
+    if (!publishing) {
+      auto& count = reused ? reused_composes : full_composes;
+      if (count == UINT64_MAX) ++invalid; else ++count;
+    }
+    errno = saved;
+  }
   static bool WriteAll(int fd, const char* data, size_t length) noexcept {
     while (length) {
       const ssize_t count = write(fd, data, length);
@@ -146,11 +156,11 @@ class State {
     const int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) { errno = saved; return; }
     int n = std::snprintf(line, sizeof(line),
-        "{\"type\":\"header\",\"schema\":\"crystalhd-centered-cow-image-v1\",\"pid\":%ld,"
+        "{\"type\":\"header\",\"schema\":\"crystalhd-centered-cow-image-v2\",\"pid\":%ld,"
         "\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"snapshot_capacity\":%u,\"max_snapshot_bytes\":%zu,"
         "\"selection\":\"FIRST_TWO_VALID_FULL_BINDING_COW_DERIVES_NOT_COMPOSE_SLOT_SELECTOR\","
         "\"capture_point\":\"AFTER_ALIAS_DESCRIPTOR_COMMIT_AND_PUBLIC_READ_END_BEFORE_DERIVE_RETURN\","
-        "\"count_kind\":\"SUCCESSFUL_COW_DERIVE_CREATIONS_NEVER_MAP_READS_SOURCE_OR_M\","
+        "\"count_kind\":\"COW_DERIVE_CREATIONS_AND_SUCCESSFUL_MEMFD_PUBLIC_COMPOSE_MODES_NEVER_SOURCE_OR_M\","
         "\"unbound_scope\":\"COUNTED_NOT_SELECTED_NOT_ORIGINAL_QUALIFICATION\","
         "\"publication_scope\":\"OWNER_DSO_OR_PROCESS_EXIT_INDEPENDENT_ARRAYS\","
         "\"driver_retirement_observed\":false,\"pixel_comparison\":\"REQUIRES_OFFLINE_EXACT_BINDING_JOIN\"}\n",
@@ -181,9 +191,10 @@ class State {
     n = std::snprintf(line, sizeof(line),
         "{\"type\":\"footer\",\"successful_cow_derives\":%" PRIu64 ","
         "\"valid_full_binding_derives\":%" PRIu64 ",\"unbound_derives\":%" PRIu64 ","
+        "\"full_memfd_public_composes\":%" PRIu64 ",\"reused_border_memfd_public_composes\":%" PRIu64 ","
         "\"snapshots\":%u,\"invalid_binding_or_layout\":%" PRIu64 ",\"clock_failures\":%" PRIu64 ",\"fork_seen\":%s,"
         "\"count_window\":\"BEFORE_OWNER_EXIT_CAPTURE_GATE_CLOSE\",\"complete\":%s}\n",
-        calls, valid_calls, unbound, captured, invalid,
+        calls, valid_calls, unbound, full_composes, reused_composes, captured, invalid,
         clock_failures, fork_seen ? "true" : "false", complete ? "true" : "false");
     stream_ok = stream_ok && n > 0 && static_cast<size_t>(n) < sizeof(line) && WriteAll(fd, line, static_cast<size_t>(n));
     const bool closed = close(fd) == 0;
@@ -196,6 +207,7 @@ class State {
 };
 // Bind ownership at private DSO load, not at a child's first inherited hook.
 inline State state;
+inline void Composed(bool reused) noexcept { state.Composed(reused); }
 template<typename Fields>
 inline void Capture(uint64_t driver, const Fields& fields, const VAImage& image,
                     const uint8_t* bytes) noexcept {

@@ -501,6 +501,7 @@ class MaintainedCostModeTests(unittest.TestCase):
     def test_cost_environment_adds_no_client_or_preload_override(self):
         self.assertEqual(STOCK.cost_options(), [])
         args = STOCK.cost_options(True)
+        self.assertEqual(args[:3], ['--setenv', 'CRYSTALHD_TEST_MAINTAINED_COST', 'v2'])
         self.assertNotIn('LD_PRELOAD', args)
         self.assertNotIn('skip_frame', args)
         self.assertNotIn('--dev-bind', args)

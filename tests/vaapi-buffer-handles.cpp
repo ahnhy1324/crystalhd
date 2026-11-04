@@ -341,6 +341,8 @@ static void CowDerivedHandleAndResizeMaterialization() {
   {
     Fixture f;
     auto surface = CowPicture(f);
+    const uint64_t backing_epoch = surface->cpu_primary_canvas->WriteEpoch();
+    const uint64_t border_epoch = surface->centered_border.epoch;
     const std::vector<uint8_t> source(surface->planes[0],
         surface->planes[0] + surface->cpu_primary_canvas->Size());
     const auto derive = [&]() {
@@ -406,8 +408,10 @@ static void CowDerivedHandleAndResizeMaterialization() {
     const uint8_t replacement = 0xa7;
     Require(pwrite(fd, &replacement, 1, 2) == 1 && f.Release(image.buf) == VA_STATUS_SUCCESS &&
                 export_buffer.data[2] == replacement &&
+                surface->cpu_primary_canvas->WriteEpoch() == backing_epoch &&
+                surface->centered_border.epoch == border_epoch &&
                 std::equal(source.begin(), source.end(), surface->planes[0]),
-            "handle edits return only to the independent image and leave primary pixels unchanged");
+            "private-image edits/materialization/handle copyback leave primary pixels and backing border epoch unchanged");
     Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
             "handle-backed former COW image retires normally");
     // Break the fixture's explicit picture/backing cycle before Terminate.

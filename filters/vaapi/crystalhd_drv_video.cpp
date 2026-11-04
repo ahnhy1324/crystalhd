@@ -624,6 +624,16 @@ struct CenteredReadback {
   uint64_t timestamp = 0, identity = 0, context = 0, generation = 0, ordinal = 0;
 };
 
+// Pixel provenance belongs to the actual allocation, independently of the
+// public decode binding. Metadata-only BeginPicture invalidation cannot change
+// these black pixels. Weak ownership neither pins storage nor permits address
+// reuse to certify a different Canvas allocation.
+struct CenteredBorder {
+  std::weak_ptr<crystalhd_cow_snapshot::Canvas> backing;
+  crystalhd_centered_output::Geometry geometry;
+  uint64_t epoch = 0;
+};
+
 // Published CPU-primary storage, including bytes retained by a promoted
 // Surface, has one process-wide budget. Use native 32-bit atomics on i686.
 static constexpr uint32_t kCpuPrimaryBytes = 64U * 1024U * 1024U;
@@ -729,6 +739,7 @@ struct Surface {
   crystalhd_centered_output::Geometry centered_geometry;
   std::shared_ptr<Surface> centered_pixels;
   mutable CenteredReadback centered_readback;
+  CenteredBorder centered_border;
   mutable uint64_t centered_write_epoch = 0;
   // An exported fd may outlive every VA call, including READ_ONLY exports.
   // No subsequent Compose may recertify this allocation as private/pristine.
@@ -1657,6 +1668,22 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
         canvas->pitch[plane] < canvas->width || small->pitch[plane] < small->width)
       CH_COST_RETURN(cost_scope, false);
   }
+  // Only an internal, unexposed full CPU-primary decode target may reuse its
+  // previously committed border. Every real writer, including a frozen VPP
+  // view, advances this SAME backing's epoch before storing any pixels.
+  const auto border_backing = decoded_public && !compact &&
+      canvas->direct_decode_eligible && !canvas->destroyed && !canvas->failed &&
+      canvas->vpp_writers == 0 && canvas->vpp_readers == 0 &&
+      !canvas->image_write_locked && canvas->export_waiters == 0 &&
+      CpuPrimaryStorageMatches(*canvas) ? canvas->cpu_primary_canvas : nullptr;
+  const uint64_t before_epoch = border_backing ? border_backing->WriteEpoch() : 0;
+  const auto previous_backing = canvas->centered_border.backing.lock();
+  bool reused_border = before_epoch != 0 && previous_backing &&
+      previous_backing.get() == border_backing.get() &&
+      !previous_backing.owner_before(border_backing) &&
+      !border_backing.owner_before(previous_backing) &&
+      canvas->centered_border.epoch == before_epoch &&
+      SameCenteredGeometry(canvas->centered_border.geometry, g);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   auto *centered_observer = crystalhd_test_centered_payload::active;
   auto *centered_slot = centered_observer
@@ -1672,6 +1699,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     small->EndCpuRead();
     CH_COST_RETURN(cost_scope, false);
   }
+  // BeginDecodedCpuWrite may prepare twice; do not assume one increment per
+  // frame. Existing driver/writer reservations serialize the entire window.
+  const uint64_t acquired_epoch = border_backing ? border_backing->WriteEpoch() : 0;
+  if (acquired_epoch == 0)
+    reused_border = false;
   CH_COST_SCOPE_FLAGS(cost_pixels, CanvasPixels, crystalhd_test_maintained_cost::SurfaceIdentity(&picture),
                       (compact ? 1U : 0U) | (decoded_public ? 2U : 0U), 0);
   const unsigned top = g.y / (compact ? 2U : 1U);
@@ -1680,17 +1712,33 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     const unsigned first = plane == 0 ? top : top / 2U;
     const unsigned active_rows = plane == 0 ? small->height : small->height / 2U;
     const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
+    if (reused_border) {
+      for (unsigned row = 0; row != active_rows; ++row) {
+        memcpy(canvas->planes[plane] + size_t{row + first} * canvas->pitch[plane] + g.x,
+               small->planes[plane] + size_t{row} * small->pitch[plane], small->width);
+      }
+      continue;
+    }
     for (unsigned row = 0; row < rows; ++row) {
       uint8_t *line = canvas->planes[plane] + size_t{row} * canvas->pitch[plane];
       if (row < first || row - first >= active_rows) {
         memset(line, black, canvas->width);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES)
+        CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(canvas->width);
+#endif
       } else {
         memset(line, black, g.x);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES)
+        CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(g.x);
+#endif
         memcpy(line + g.x,
                small->planes[plane] + size_t{row - first} * small->pitch[plane],
                small->width);
         memset(line + g.x + small->width, black,
                canvas->width - g.x - small->width);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES)
+        CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(canvas->width - g.x - small->width);
+#endif
       }
     }
   }
@@ -1715,6 +1763,22 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
 #endif
   if (!committed || !released)
     CH_COST_RETURN(cost_scope, false);
+  // END failure never certifies a new border. An intervening real write or
+  // any backing/exposure change also prevents publishing this proof.
+  const uint64_t completed_epoch = border_backing ? border_backing->WriteEpoch() : 0;
+  if (border_backing && completed_epoch != 0 && completed_epoch == acquired_epoch &&
+      canvas->cpu_primary_canvas == border_backing && CpuPrimaryStorageMatches(*canvas)) {
+    canvas->centered_border.backing = border_backing;
+    canvas->centered_border.geometry = g;
+    canvas->centered_border.epoch = completed_epoch;
+  } else if (border_backing) {
+    canvas->centered_border = {};
+  }
+#if defined(CRYSTALHD_VAAPI_TEST_COW_BORDER_COMPOSE)
+  // Private/unit evidence only: a successful Compose count is NOT an M/source
+  // count. Ordinary builds add no callback, per-row lock, allocation or I/O.
+  CRYSTALHD_VAAPI_TEST_COW_BORDER_COMPOSE(reused_border);
+#endif
   canvas->ready = true;
   canvas->failed = false;
   canvas->frame_timestamp = small->frame_timestamp;

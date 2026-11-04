@@ -94,6 +94,19 @@ class Canvas final : public std::enable_shared_from_this<Canvas> {
   }
   std::shared_ptr<Snapshot> CreateSnapshot() noexcept;
   bool PrepareWrite() noexcept;
+  // Backing writes, not logical surface rebinding. The caller still owns the
+  // complete write-window reservation; this lock protects the64-bit counter
+  // without requiring atomic64 instructions on older i686 processors.
+  uint64_t WriteEpoch() const noexcept {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return write_epoch_;
+  }
+#if defined(CRYSTALHD_TEST_COW_EPOCH)
+  void TestSetWriteEpoch(uint64_t epoch) noexcept {
+    std::lock_guard<std::mutex> guard(mutex_);
+    write_epoch_ = epoch;
+  }
+#endif
 
  private:
   friend class Snapshot;
@@ -114,7 +127,8 @@ class Canvas final : public std::enable_shared_from_this<Canvas> {
   void *mapping_ = MAP_FAILED;
   size_t bytes_ = 0, capacity_ = 0;
   AdviceHook hook_ = nullptr;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
+  uint64_t write_epoch_ = 1;
   std::vector<std::weak_ptr<Snapshot>> views_;
 };
 
@@ -256,6 +270,10 @@ inline bool Canvas::PrepareWrite() noexcept {
     }
     ++i;
   }
+  // Zero is permanently invalid after wrap. Never reject an otherwise valid
+  // write merely because diagnostic/proof sequencing is exhausted.
+  if (write_epoch_ != 0)
+    ++write_epoch_;
   errno = saved;
   return true;
 }
