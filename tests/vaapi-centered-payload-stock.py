@@ -31,7 +31,15 @@ BASE = ROOT / 'stock-gray-checkpoints.py'
 BASE_SHA = 'dfec342196ca33fe27e57b9b74451c5378500bb34acb4dc2f17bb20596e1f260'
 READER = Path(__file__).with_name('vaapi-centered-payload-reader.py')
 PROTOCOL = Path(__file__).with_name('vaapi-centered-payload-protocol.md')
+POSTFILTER_READER = Path(__file__).with_name('vaapi-postfilter-reader.py')
+POSTFILTER_IMAGE = Path('filters/vaapi/postfilter-observer/postfilter-probe.so')
+POSTFILTER_MOUNT = '/own-observer/postfilter-probe.so'
+POSTFILTER_REFERENCE = Path('filters/vaapi/postfilter-observer/postfilter-reference')
+POSTFILTER_REFERENCE_WRAPPER = Path(__file__).with_name('vaapi-postfilter-reference.py')
 FIXTURE = Path('/home/mache/.cache/crystalhd-single-field-20261015.boremY/kodi-h264-1080i25-30s.mkv')
+BWDIF_FIXTURE = Path('/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts')
+BWDIF_FIXTURE_SHA = '2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905'
+CPU_COPY_PROVIDER = Path('lib/kodi/system/libsse4-x86_64-linux.so')
 CENTERED = '1280x720@1920x1080:limited'
 SOURCE_REF = 'https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/'
 SCOPE = ('Unchanged Kodi22RC1/App FFmpeg, method0 and actual hardware deinterlace none; '
@@ -39,6 +47,18 @@ SCOPE = ('Unchanged Kodi22RC1/App FFmpeg, method0 and actual hardware deinterlac
          'Actual media PTS-to-binding, GPU-reader return, scanout and release qualification NOT_OBSERVED.')
 POLL_KEYS = ('module', 'srcversion', 'ref', 'pin_net', 'force', 'session', 'power', 'aer', 'links', 'video_nodes')
 BINDING = ('driver_instance', 'context', 'generation', 'token', 'decode_identity', 'submission_ordinal')
+BWDIF_SCOPE = ('Original Kodi22RC1/App FFmpeg, method7/actual bwdif, explicit OWN centered and post-filter observers; '
+               'same-PID natural EOF/reopen and measured input/output metadata with selected same-input pixel reference. '
+               'No stock/release, full-source scaler, physical cadence or GPU-return qualification.')
+
+
+def scenario(name):
+    require(type(name) is str and name in ('off750', 'bwdif2997'), 'unknown frozen centered scenario')
+    bwdif = name == 'bwdif2997'
+    return {'name': name, 'fixture': str(BWDIF_FIXTURE if bwdif else FIXTURE),
+            'pictures': 900 if bwdif else 750, 'rate': '30000/1001' if bwdif else '25',
+            'method': 7 if bwdif else 0, 'deintmethod': 'bwdif' if bwdif else 'none',
+            'prefer_vaapi_renderer': not bwdif, 'scope': BWDIF_SCOPE if bwdif else SCOPE}
 
 
 def require(ok, message):
@@ -68,14 +88,16 @@ def fault(error):
             'traceback': ''.join(traceback.format_exception(type(error), error, error.__traceback__))}
 
 
-def source_metadata(document, media):
+def source_metadata(document, media, scenario_name='off750'):
     """Independent source census only; no ordinal/token or physical-parity join."""
+    selected = scenario(scenario_name)
+    count, rate = selected['pictures'], Fraction(selected['rate'])
     streams = document.get('streams', [])
     require(len(streams) == 1, 'probe must select one video stream')
     s = streams[0]
     require((s.get('codec_type'), s.get('codec_name'), s.get('width'), s.get('height'), s.get('pix_fmt')) ==
             ('video', 'h264', 1920, 1080, 'yuv420p'), 'source codec/geometry differs')
-    require(Fraction(s['r_frame_rate']) == 25, 'source nominal rate differs')
+    require(Fraction(s['r_frame_rate']) == rate, 'source nominal rate differs')
     if 'packets_and_frames' in document:
         both = document['packets_and_frames']
         packets = [row for row in both if row.get('type') == 'packet']
@@ -83,21 +105,28 @@ def source_metadata(document, media):
         require(len(both) == len(packets) + len(frames), 'unknown probe object')
     else:
         packets, frames = document.get('packets', []), document.get('frames', [])
-    require(len(packets) == len(frames) == 750, 'source requires 750 packets and decoded pictures')
+    require(len(packets) == len(frames) == count, 'source packet/decoded-picture population differs')
     base = Fraction(s['time_base']); pts = [int(frame['pts']) for frame in frames]
-    require(base > 0 and len(set(pts)) == 750 and pts == sorted(pts), 'source PTS unavailable/ambiguous')
-    require(all(Fraction(b - a) * base == Fraction(1, 25) for a, b in zip(pts, pts[1:])), 'source PTS grid differs')
+    require(base > 0 and len(set(pts)) == count and pts == sorted(pts), 'source PTS unavailable/ambiguous')
+    require(all(Fraction(b - a) * base == 1 / rate for a, b in zip(pts, pts[1:])), 'source PTS grid differs')
     require(sorted(int(packet['pts']) for packet in packets) == pts, 'packet/frame PTS sets differ')
     association = document.get('format', {})
     require(Path(association['filename']).resolve() == media.resolve() and
             int(association['size']) == media.stat().st_size, 'probe filename/extent association differs')
     flags = Counter((f.get('interlaced_frame'), f.get('top_field_first')) for f in frames)
-    return {'codec': 'h264', 'visible': [1920, 1080], 'packets': 750, 'pictures': 750,
+    if scenario_name == 'bwdif2997':
+        require(base == Fraction(1, 90000) and pts[0] == 6006 and pts[-1] == 2705703 and
+                s.get('coded_width') == 1920 and s.get('coded_height') == 1088 and
+                flags == Counter({(1, 1): count}) and all(f.get('repeat_pict') == 0 for f in frames),
+                'reviewed short TFF source metadata differs')
+    return {'codec': 'h264', 'visible': [1920, 1080], 'packets': count, 'pictures': count,
             'source_time_base': str(base), 'source_PTS_ticks': pts, 'nominal_picture_duration': '1/25',
-            'nominal_duration_seconds': 30, 'stream_field_order': s.get('field_order'),
+            'nominal_duration_seconds': str(Fraction(count, 1) / rate) if scenario_name == 'bwdif2997' else 30,
+            'stream_field_order': s.get('field_order'),
             'decoded_field_flag_counts': [{'interlaced_frame': k[0], 'top_field_first': k[1], 'count': n}
                                           for k, n in sorted(flags.items(), key=lambda item: str(item[0]))],
-            'uniform_physical_parity_claimed': False, 'actual_source_PTS_to_VA_binding': 'NOT_OBSERVED'}
+            'uniform_physical_parity_claimed': False, 'actual_source_PTS_to_VA_binding': 'NOT_OBSERVED',
+            **({'nominal_picture_duration': str(1 / rate), 'coded': [1920, 1088]} if scenario_name == 'bwdif2997' else {})}
 
 
 def lean_snapshot():
@@ -191,8 +220,10 @@ try:
         wait(lambda:rpc('Player.GetProperties',{'playerid':playerid,'properties':['speed']})['speed']==0,2,'identity pause missing')
         def selected():
             labels=info()
-            return labels if labels.get('Player.Process(videodecoder)')=='ff-h264-vaapi' and labels.get('Player.Process(deintmethod)')=='none' else None
-        labels=wait(selected,4,'actual original-stock VA decoder/deinterlace none absent')
+            return labels if labels.get('Player.Process(videodecoder)')=='ff-h264-vaapi' and labels.get('Player.Process(deintmethod)')=='__DEINT__' else None
+        labels=wait(selected,4,'actual original-stock VA decoder/deinterlace __DEINT__ absent')
+        settings=rpc('Settings.GetSettingValue',{'setting':'videoplayer.prefervaapirender'})
+        labels['actual_prefer_vaapi_renderer']=settings['value']
         gate('identity-'+suffix,'await-identity-'+suffix,cycle=cycle,source=source,info=labels,initial_pause_for_identity=True)
         rpc('Player.PlayPause',{'playerid':playerid,'play':True})
         wait(lambda:rpc('Player.GetProperties',{'playerid':playerid,'properties':['speed']})['speed']==1,2,'normal-speed resume missing')
@@ -226,8 +257,9 @@ def parse_rows(raw, reader):
     return list(zip(offsets, rows))
 
 
-def operation_census(rows, interval, pid):
-    """Pinned MBAFF input: 750 originals, exactly two dequeue records each."""
+def operation_census(rows, interval, pid, expected_originals=750):
+    """Pinned MBAFF inputs: exact source census, two dequeue records each."""
+    require(type(expected_originals) is int and expected_originals in (750, 900), 'unsupported original population')
     selected = [row for offset, row in rows if interval['begin'] <= offset < interval['end']]
     require(all(row['pid'] == pid for row in selected), 'foreign PID in source interval')
     fields = BINDING + ('surface', 'owner')
@@ -242,7 +274,7 @@ def operation_census(rows, interval, pid):
         for row in entries:grouped[tuple(row[k] for k in fields)].append(row)
         stages[stage] = dict(grouped)
     originals = set(stages['submit_bind'])
-    if len(originals) != 750:errors.append('require exactly750 distinct original bindings')
+    if len(originals) != expected_originals:errors.append('require exactly' + str(expected_originals) + ' distinct original bindings')
     if len({key[:len(BINDING)] for key in originals}) != len(originals):
         errors.append('source binding duplicated through different public surface/owner')
     for index, field in enumerate(BINDING[3:], 3):
@@ -274,11 +306,118 @@ def operation_census(rows, interval, pid):
             'binding_multiplicity_histograms': {stage: dict(sorted(Counter(len(v) for v in groups.values()).items()))
                                                for stage, groups in stages.items()},
             'all_stage_binding_sets_equal': all(set(value) == originals for value in stages.values()),
-            'source_metadata_pictures': 750, 'observed_submit_bindings': len(originals),
+            'source_metadata_pictures': expected_originals, 'observed_submit_bindings': len(originals),
             'expected_output_dequeues_per_original': 2,
             'output_record_scope': 'Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.',
             'actual_media_PTS_to_binding': 'NOT_OBSERVED',
-            'scope': 'Exact750 original submit/input bindings and1500 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts.'}
+            'scope': 'Exact' + str(expected_originals) + ' original submit/input bindings and' + str(2 * expected_originals) +
+                     ' output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts.'}
+
+
+def postfilter_files(source, app):
+    return [source / POSTFILTER_IMAGE, source / POSTFILTER_REFERENCE, POSTFILTER_READER,
+            POSTFILTER_REFERENCE_WRAPPER, source / 'tests/vaapi-postfilter-reference.c',
+            source / 'tests/vaapi-postfilter-probe.c', source / 'tests/vaapi-postfilter-probe.map',
+            source / 'tests/vaapi-postfilter-protocol.md', app / CPU_COPY_PROVIDER,
+            app / 'lib/libavfilter.so.12.1.102']
+
+
+def mapped_image(pid, mount, original, pins):
+    """Verify a selected image at the held owned-identity gate."""
+    proc = Path('/proc', str(pid)); found = set()
+    for line in (proc / 'maps').read_text().splitlines():
+        parts = line.split(None, 5)
+        if len(parts) == 6 and parts[5] == mount:found.add((parts[3], int(parts[4])))
+    require(len(found) == 1, 'required selected image mapping missing or ambiguous: ' + mount)
+    device, inode = next(iter(found)); target = proc / 'root' / mount.lstrip('/'); item = target.stat()
+    require(item.st_ino == inode and tuple(int(p, 16) for p in device.split(':')) ==
+            (os.major(item.st_dev), os.minor(item.st_dev)) and digest(target) == pins[str(original)],
+            'selected mapped image differs: ' + mount)
+    return {'path': mount, 'device': device, 'inode': inode, 'sha256': pins[str(original)]}
+
+
+def reference_namespace(app, platform, gl, payload, executable):
+    """CPU-only original-library namespace, without card/GPU/desktop mounts."""
+    return ['bwrap', '--unshare-uts', '--clearenv', '--ro-bind', str(platform), '/usr',
+            '--ro-bind', str(platform / 'etc'), '/etc', '--ro-bind', str(app), '/app',
+            '--ro-bind', str(gl), '/gl', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+            '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib',
+            '--symlink', 'usr/lib64', '/lib64', '--bind', str(payload), '/payload',
+            '--ro-bind', str(executable), '/reference', '--chdir', '/payload',
+            '--setenv', 'LD_LIBRARY_PATH',
+            '/app/lib:/app/lib/samba:/app/lib/samba/private:/usr/lib/x86_64-linux-gnu:/usr/lib:/gl/lib',
+            '--']
+
+
+def audit_postfilter_case(source, app, platform, gl, case, report):
+    """Read retired original-client observations, then replay bounded CPU prefixes."""
+    pid = report['owned_app']['pid']; payload = case / 'payload'
+    report_path = payload / ('postfilter-' + str(pid) + '.jsonl')
+    reader = load('original_postfilter_case_reader', POSTFILTER_READER)
+    expected = {'filter': '/app/lib/libavfilter.so.12.1.102',
+                'util': '/app/lib/libavutil.so.61.1.102'}
+    validated = reader.read_report(report_path, expected_pid=pid, expected_providers=expected)
+    summary = reader.audit_report(report_path, expected_pid=pid, expected_providers=expected)
+    require(summary.get('status') == 'PASS_SCOPED_POSTFILTER_OBSERVATION',
+            'post-filter observation is incomplete: ' + json.dumps(summary))
+    source_apis = {'av_buffersrc_add_frame', 'av_buffersrc_add_frame_flags'}
+    sink_apis = {'av_buffersink_get_frame', 'av_buffersink_get_frame_flags'}
+    by_play = {key: {'graphs': [], 'accepted_filter_inputs': 0, 'filter_outputs': 0,
+                     'source_null_calls': 0, 'source_close_calls': 0, 'prefix_references': []}
+               for key in report['intervals']}
+    wrapper = load('original_postfilter_prefix_reference', POSTFILTER_REFERENCE_WRAPPER)
+    prefix = reference_namespace(app, platform, gl, payload, source / POSTFILTER_REFERENCE)
+    for graph in validated['graphs']:
+        events = graph['events']
+        inputs = [e for e in events if e['api'] in source_apis and not e['input_null'] and e['ret'] >= 0]
+        outputs = [e for e in events if e['api'] in sink_apis and e['ret'] >= 0]
+        if not inputs:
+            require(not outputs, 'post-filter output has no accepted input lifetime')
+            continue
+        cycles = [key for key, interval in report['intervals'].items()
+                  if all(interval['begin_ns'] <= e['begin_ns'] <= interval['end_ns'] for e in inputs)]
+        require(len(cycles) == 1, 'post-filter input lifetime crosses or misses natural plays')
+        play = by_play[cycles[0]]
+        play['graphs'].append(graph['graph_id'])
+        play['accepted_filter_inputs'] += len(inputs); play['filter_outputs'] += len(outputs)
+        play['source_null_calls'] += sum(e['api'] in source_apis and e['input_null'] for e in events)
+        play['source_close_calls'] += sum(e['api'] == 'av_buffersrc_close' for e in events)
+        if len(inputs) < 3 or len(outputs) < 4:continue
+        manifest = reader.reference_prefix(validated, graph['graph_id'])
+        name = 'reference-input-graph-' + str(graph['graph_id']) + '.json'
+        manifest_path = payload / name; save(manifest_path, manifest)
+        reference_dir = payload / ('reference-graph-' + str(graph['graph_id']))
+        try:
+            result = wrapper.run_reference(manifest, '/reference', reference_dir,
+                command_prefix=prefix, path_map=((str(payload), '/payload'),))
+        except BaseException:
+            handoff = reference_dir / 'HANDOFF_REQUIRED.json'
+            if handoff.exists():
+                report['live_resource_handoff'] = {
+                    'status': 'HANDOFF_REQUIRED_REFERENCE_NAMESPACE',
+                    'reference_output_directory': str(reference_dir),
+                    'detail': json.loads(handoff.read_text()),
+                    'required_action': 'Preserve reference process/namespace/output; no forced kill or further media/module action.'}
+            raise
+        save(case / ('graph-' + str(graph['graph_id']) + '.reference.json'), result)
+        require(result.get('status') == 'PASS',
+                'same-input post-filter prefix differs: ' + json.dumps(result))
+        joined = reader.join_reference(validated, graph['graph_id'], result)
+        require(joined.get('status') == 'PASS_SAME_INPUT_PREFIX',
+                'reference is not bound to the observed graph prefix: ' + json.dumps(joined))
+        play['prefix_references'].append({'graph_id': graph['graph_id'], 'reference': result, 'join': joined})
+    require(len(by_play) == 2 and all(p['accepted_filter_inputs'] > 0 and p['filter_outputs'] > 0
+            and p['prefix_references'] for p in by_play.values()),
+            'each natural play needs actual inputs/outputs and a compared captured prefix')
+    for key, play in by_play.items():
+        play['driver_source_originals'] = report['source_census'][key]['observed_submit_bindings']
+        play['nominal_two_outputs_per_accepted_input'] = 2 * play['accepted_filter_inputs']
+        play['output_minus_nominal'] = play['filter_outputs'] - play['nominal_two_outputs_per_accepted_input']
+        play['full_output_cadence'] = 'NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE'
+    return {'status': 'PASS_SCOPED_POSTFILTER_OBSERVATION', 'report': str(report_path),
+            'observer': summary, 'natural_plays': by_play,
+            'reference_scope': 'Same captured NV12 inputs/pinned App BWDIF prefix only; not independent codec/scaler correctness or a full-tail golden.',
+            'clock_scope': 'Raw stream/frame/graph/sink clocks remain separate; no source-seconds or physical-cadence inference.'}
 
 
 def main():
@@ -290,11 +429,13 @@ def main():
     p.add_argument('--case-root', type=Path, default=ROOT)
     p.add_argument('--own-source', type=Path); p.add_argument('--own-revision'); p.add_argument('--source-probe', type=Path)
     p.add_argument('--cycles', type=int, choices=(1, 2))
+    p.add_argument('--scenario', choices=('off750', 'bwdif2997'))
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
-    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles)):
-        p.error('source/revision/probe/cycles belong only to --prepare-plan')
+    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario)):
+        p.error('source/revision/probe/cycles/scenario belong only to --prepare-plan')
     case = a.case_root.resolve() / a.case
+    config = scenario(a.scenario or 'off750') if a.prepare_plan else None
     if a.prepare_plan:
         if a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '') or a.source_probe is None:
             p.error('prepare needs own source/full revision and independent packet/frame probe JSON')
@@ -310,11 +451,12 @@ def main():
               'stock_compatibility': 'NOT_QUALIFIED_BY_PRIVATE_OBSERVER'}
     G = P = boundary = None; before = before_lean = None
     kodi = kid = pidfd = weston = runtime = endpoint = udp = None
-    files = []; audited_contexts = set(); due = 0
+    files = []; audited_contexts = set(); due = 0; stop = []; previous_handlers = {}
     since = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
 
     def health():
         nonlocal due
+        require(not stop, 'owned controller stop requested; perform normal media shutdown')
         if time.monotonic() < due:return
         temps = [int(f.read_text()) for f in Path('/sys/class/thermal').glob('thermal_zone*/temp')]
         mains = [f for f in Path('/sys/class/power_supply').glob('*')
@@ -362,29 +504,34 @@ def main():
                     'own source HEAD differs from requested revision')
             require(not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain', '--untracked-files=all'], text=True),
                     'freeze needs a committed clean own source tree')
-            probe = a.source_probe.resolve(strict=True); metadata = source_metadata(json.loads(probe.read_text()), FIXTURE)
+            probe = a.source_probe.resolve(strict=True); metadata = source_metadata(json.loads(probe.read_text()), Path(config['fixture']), config['name'])
             selected = [Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY,
                         source / 'filters/vaapi/centered-observer/crystalhd_drv_video.so',
                         source / 'tests/vaapi-centered-payload-backend.cpp', source / 'tests/vaapi-centered-payload-observer.h',
                         source / 'filters/vaapi/crystalhd_drv_video.cpp', source / 'filters/vaapi/crystalhd-trace.h',
                         source / 'filters/vaapi/crystalhd-centered-output.h', source / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6',
-                        source / 'tests/kernel-log-check.sh', FIXTURE, probe, G.WESTON / 'bin/weston',
+                        source / 'tests/kernel-log-check.sh', Path(config['fixture']), probe, G.WESTON / 'bin/weston',
                         G.WESTON / 'lib/x86_64-linux-gnu/libweston-14/gl-renderer.so',
                         G.WESTON / 'lib/x86_64-linux-gnu/libweston-14/headless-backend.so',
                         G.WESTON / 'lib/x86_64-linux-gnu/weston/kiosk-shell.so', Path('/usr/bin/kodi-send'),
                         platform / 'lib/x86_64-linux-gnu/libswscale.so.9.5.103', platform / 'lib/x86_64-linux-gnu/libavutil.so.60.26.103']
+            if config['name'] == 'bwdif2997':
+                require(a.cycles in (None, 2), 'bwdif2997 requires same-process two natural plays')
+                selected += postfilter_files(source, Path(route['client']['app_directory']))
             pins = {str(f): digest(f) for f in selected}
+            if config['name'] == 'bwdif2997':require(pins[config['fixture']] == BWDIF_FIXTURE_SHA, 'original short input changed')
             for path, expected in route['client']['pins'].items():
                 require(digest(path) == expected, 'original client artifact changed: ' + path); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_SOURCE_PLAN', 'source_directory': str(source), 'revision': a.own_revision,
-                          'case_directory': str(case), 'case': a.case, 'cycles': a.cycles or 1,
+                          'case_directory': str(case), 'case': a.case, 'cycles': (2 if config['name'] == 'bwdif2997' else a.cycles or 1),
+                          'scenario': config,
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'pins': pins,
-                          'source_probe': str(probe), 'fixture': str(FIXTURE), 'source_metadata': metadata,
-                          'explicit_interlace_method': 0, 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': 'none',
-                          'prefer_vaapi_renderer': True, 'centered_environment': CENTERED, 'slots_per_context': 2,
+                          'source_probe': str(probe), 'fixture': config['fixture'], 'source_metadata': metadata,
+                          'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': config['deintmethod'],
+                          'prefer_vaapi_renderer': config['prefer_vaapi_renderer'], 'centered_environment': CENTERED, 'slots_per_context': 2,
                           'maximum_decoder_contexts': 2, 'publication': 'selected-decoder-context-retirement',
                           'source_refs': [SOURCE_REF + 'xbmc/cores/VideoSettings.h', SOURCE_REF + 'xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp'],
-                          'scope': SCOPE, 'scheduling': 'ordinary inherited scheduling; no priority changes',
+                          'scope': config['scope'], 'scheduling': 'ordinary inherited scheduling; no priority changes',
                           'initial_pause': 'Identity gate only, then normal-speed natural EOF',
                           'cleanup': 'Application.Quit15s; verified pidfd TERM15s; surviving media preserves runtime/profile/compositor'})
             print('FROZEN_FILES_AND_SOURCE_CENSUS ' + str(a.plan)); return 0
@@ -392,11 +539,14 @@ def main():
         require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'owned shutdown requires pidfds')
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         plan = json.loads(a.plan.read_text())
+        config = scenario(plan.get('scenario', {}).get('name', 'off750'))
+        require(plan.get('scenario', config) == config, 'frozen scenario differs')
+        fixture = Path(config['fixture'])
         require(plan['schema'] == 1 and plan['status'] == 'FROZEN_SOURCE_PLAN' and plan['case'] == a.case and
                 plan['case_directory'] == str(case), 'frozen case association differs')
-        require(plan['cycles'] in (1, 2) and plan['explicit_interlace_method'] == 0 and
-                plan['expected_videodecoder'] == 'ff-h264-vaapi' and plan['expected_deintmethod'] == 'none' and
-                plan['prefer_vaapi_renderer'] is True and plan['centered_environment'] == CENTERED and
+        require(plan['cycles'] in (1, 2) and plan['explicit_interlace_method'] == config['method'] and
+                plan['expected_videodecoder'] == 'ff-h264-vaapi' and plan['expected_deintmethod'] == config['deintmethod'] and
+                plan['prefer_vaapi_renderer'] is config['prefer_vaapi_renderer'] and plan['centered_environment'] == CENTERED and
                 plan['slots_per_context'] == plan['maximum_decoder_contexts'] == 2 and
                 plan['publication'] == 'selected-decoder-context-retirement', 'frozen protocol differs')
         for path, expected in plan['pins'].items():require(digest(path) == expected, 'frozen artifact changed: ' + path)
@@ -406,9 +556,12 @@ def main():
         require(Path(__file__).resolve() == G.SOURCE / 'tests/vaapi-centered-payload-stock.py',
                 'executed runner outside frozen own checkout')
         required = (Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY, G.VA, G.DIL,
-                    FIXTURE, Path(plan['source_probe']), G.SOURCE / 'filters/vaapi/crystalhd_drv_video.cpp',
+                    fixture, Path(plan['source_probe']), G.SOURCE / 'filters/vaapi/crystalhd_drv_video.cpp',
                     G.SOURCE / 'tests/vaapi-centered-payload-backend.cpp', G.SOURCE / 'tests/vaapi-centered-payload-observer.h',
                     G.SOURCE / 'tests/kernel-log-check.sh')
+        if config['name'] == 'bwdif2997':
+            require(plan['cycles'] == 2 and plan['pins'][str(fixture)] == BWDIF_FIXTURE_SHA, 'frozen short two-play case differs')
+            required += tuple(postfilter_files(G.SOURCE, Path(route['client']['app_directory'])))
         require(all(str(path) in plan['pins'] for path in required), 'required frozen artifact pin missing')
         require(all(plan['pins'].get(path) == expected for path, expected in route['client']['pins'].items()),
                 'original App/FFmpeg provenance pin differs')
@@ -416,12 +569,16 @@ def main():
                 'frozen own source revision changed')
         require(not subprocess.check_output(['git', '-C', str(G.SOURCE), 'status', '--porcelain', '--untracked-files=all'], text=True),
                 'execution requires committed clean own source')
-        require(str(platform) == plan['platform_directory'] and str(gl) == plan['gl_directory'] and plan['fixture'] == str(FIXTURE),
+        require(str(platform) == plan['platform_directory'] and str(gl) == plan['gl_directory'] and plan['fixture'] == str(fixture),
                 'frozen runtime/source path differs')
-        require(source_metadata(json.loads(Path(plan['source_probe']).read_text()), FIXTURE) == plan['source_metadata'],
+        require(source_metadata(json.loads(Path(plan['source_probe']).read_text()), fixture, config['name']) == plan['source_metadata'],
                 'independent source census changed')
         report.update(revision=G.REVISION, source_directory=str(G.SOURCE), plan=str(a.plan.resolve()), pins=plan['pins'],
-                      source_metadata=plan['source_metadata'], cycles=plan['cycles'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
+                      source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config, scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
+        if config['name'] == 'bwdif2997':
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, lambda received, _frame: stop.append(received))
         boundary = load('centered_initial_boundary', G.BOUNDARY); before = boundary.guard(); report['before'] = before
         require(before['debug_rows'] == 85 and before['debug_sha256'] ==
                 '4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4', 'initial dynamic-debug policy differs')
@@ -431,18 +588,18 @@ def main():
         health()
         profile, run, payload = case / 'profile', case / 'run', case / 'payload'
         profile.mkdir(); run.mkdir(); payload.mkdir(mode=0o700); (run / 'deps').mkdir()
-        (run / 'controls.py').write_text(SCRIPT.replace('__CYCLES__', str(plan['cycles'])))
+        (run / 'controls.py').write_text(SCRIPT.replace('__CYCLES__', str(plan['cycles'])).replace('__DEINT__', config['deintmethod']))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reserve:
             reserve.bind(('127.0.0.1', 0)); udp = reserve.getsockname()[1]
         settings = {'services.webserver': 'false', 'services.esenabled': 'true', 'services.esport': str(udp),
                     'services.esportrange': '1', 'services.esallinterfaces': 'false', 'addons.unknownsources': 'true',
                     'addons.updatemode': '2', 'screensaver.mode': '', 'weather.addon': '', 'lookandfeel.soundskin': '',
-                    'videoplayer.usevaapi': 'true', 'videoplayer.usevaapih264': 'true', 'videoplayer.prefervaapirender': 'true',
+                    'videoplayer.usevaapi': 'true', 'videoplayer.usevaapih264': 'true', 'videoplayer.prefervaapirender': str(config['prefer_vaapi_renderer']).lower(),
                     'videoplayer.useprimedecoder': 'false', 'videoplayer.useprimedecoderforhw': 'false'}
         userdata = profile / 'userdata'; userdata.mkdir()
         xml = '<settings version="2">' + ''.join('<setting id="' + escape(k) + '">' + escape(v) + '</setting>'
                                                  for k, v in settings.items())
-        xml += '<defaultvideosettings><interlacemethod>0</interlacemethod><scalingmethod>0</scalingmethod><viewmode>0</viewmode><zoomamount>1</zoomamount><pixelratio>1</pixelratio><verticalshift>0</verticalshift></defaultvideosettings></settings>'
+        xml += '<defaultvideosettings><interlacemethod>' + str(config['method']) + '</interlacemethod><scalingmethod>0</scalingmethod><viewmode>0</viewmode><zoomamount>1</zoomamount><pixelratio>1</pixelratio><verticalshift>0</verticalshift></defaultvideosettings></settings>'
         (userdata / 'guisettings.xml').write_text(xml)
         (userdata / 'advancedsettings.xml').write_text('<advancedsettings><loglevel>1</loglevel></advancedsettings>')
         runtime = Path(tempfile.mkdtemp(prefix='ch-centered-', dir='/run/user/' + str(os.getuid())))
@@ -459,10 +616,15 @@ def main():
                                    '--log=' + str(case / 'weston.log')], env=compositor_env, stdin=subprocess.DEVNULL,
                                   stdout=log, stderr=subprocess.STDOUT)
         wait(lambda: (runtime / sock).exists() if weston.poll() is None else False, 8, 'owned Weston readiness')
-        command = G.namespace(Path(route['client']['app_directory']), platform, gl, case, runtime, sock, FIXTURE)
+        command = G.namespace(Path(route['client']['app_directory']), platform, gl, case, runtime, sock, fixture)
         at = command.index('--')
         command[at:at] = ['--bind', str(payload), '/payload', '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload',
                          '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', CENTERED]
+        if config['name'] == 'bwdif2997':
+            command[at:at] = ['--ro-bind', str(G.SOURCE / POSTFILTER_IMAGE), POSTFILTER_MOUNT,
+                             '--setenv', 'LD_PRELOAD', POSTFILTER_MOUNT,
+                             '--setenv', 'CRYSTALHD_TEST_POSTFILTER', 'v1',
+                             '--setenv', 'CRYSTALHD_TEST_POSTFILTER_PREFIX', '/payload/postfilter']
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff')
         save(case / 'command.json', command); log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -532,8 +694,8 @@ def main():
             require(result.get('status') == 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD',
                     'independent retired-context payload audit failed: ' + json.dumps(result))
             audited_contexts.add(key)
-            census = operation_census(rows, interval, kid['pid']); report['source_census'][str(cycle)] = census
-            require(census['status'] == 'PASS', 'exact 750 source input/output binding census failed')
+            census = operation_census(rows, interval, kid['pid'], config['pictures']); report['source_census'][str(cycle)] = census
+            require(census['status'] == 'PASS', 'exact source input/output binding census failed')
 
         handled = set(); deadline = time.monotonic() + 65 + plan['cycles'] * 100
         while time.monotonic() < deadline:
@@ -553,10 +715,18 @@ def main():
                 elif phase == 'await-identity-' + suffix:
                     labels = value['info']
                     require(labels['Player.Process(videodecoder)'] == 'ff-h264-vaapi' and
-                            labels['Player.Process(deintmethod)'] == 'none' and value['source'] == '/fixture.mp4', 'actual stock VA Off route differs')
+                            labels['Player.Process(deintmethod)'] == config['deintmethod'] and value['source'] == '/fixture.mp4', 'actual stock VA deinterlace route differs')
                     fds = G.owned_fds(kid['pid']); require(any(f['target'] == '/dev/crystalhd' for f in fds), 'hardware decoder FD absent')
                     check = {'cycle': cycle, 'info': labels, 'owned_fds': fds, 'same_app': same()}
+                    require(type(labels.get('actual_prefer_vaapi_renderer')) is bool and
+                            labels['actual_prefer_vaapi_renderer'] is config['prefer_vaapi_renderer'], 'actual renderer preference differs')
                     if not report['identity_checks']:check['mapped_images'] = G.mappings(kid['pid'], plan['pins'], dependencies)
+                    if config['name'] == 'bwdif2997':
+                        app = Path(route['client']['app_directory'])
+                        check['postfilter_images'] = [mapped_image(kid['pid'], mount, original, plan['pins'])
+                            for mount, original in ((POSTFILTER_MOUNT, G.SOURCE / POSTFILTER_IMAGE),
+                                ('/app/' + str(CPU_COPY_PROVIDER), app / CPU_COPY_PROVIDER),
+                                ('/app/lib/libavfilter.so.12.1.102', app / 'lib/libavfilter.so.12.1.102'))]
                     report['identity_checks'].append(check); gate('identity-' + suffix)
                 elif phase == 'await-retirement-' + suffix:
                     require(value['active_players'] == [], 'EOF left active player')
@@ -650,6 +820,15 @@ def main():
                                     require(sum(v['begin'] <= offset < v['end'] for v in intervals) == 1,
                                             'source work outside frozen natural-play intervals')
                     except BaseException as error:report['errors'].append({'step': 'final-observation', 'error': fault(error)})
+                if (config is not None and config['name'] == 'bwdif2997' and kid is not None and
+                        report['application_exit'] == 0 and report['controls_status'] == 'PASS' and
+                        not report['errors'] and report['live_resource_handoff'] is None):
+                    try:
+                        health()
+                        report['postfilter_audit'] = audit_postfilter_case(G.SOURCE,
+                            Path(route['client']['app_directory']), platform, gl, case, report)
+                        health()
+                    except BaseException as error:report['errors'].append({'step': 'postfilter-observation/reference', 'error': fault(error)})
             except BaseException as error:
                 report['errors'].append({'step': 'cleanup', 'error': fault(error)})
                 # An unexpected cleanup error never authorizes runtime removal.
@@ -663,10 +842,14 @@ def main():
                 payload_pass = bool(report['payload_audits']) and all(
                     row['audit'].get('status') == 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD' for row in report['payload_audits'])
                 census_pass = bool(report['source_census']) and all(v['status'] == 'PASS' for v in report['source_census'].values())
+                postfilter_pass = (config is None or config['name'] != 'bwdif2997' or
+                    report.get('postfilter_audit', {}).get('status') == 'PASS_SCOPED_POSTFILTER_OBSERVATION')
                 report['status'] = 'PASS' if (payload_pass and census_pass and report['controls_status'] == 'PASS' and
+                    postfilter_pass and
                     report['application_exit'] == 0 and report.get('boundary_equal') and report.get('kernel_exit') == 0 and
                     not report['errors'] and report['live_resource_handoff'] is None) else 'FAIL'
                 save(case / 'result.json', report)
+    for signum, handler in previous_handlers.items():signal.signal(signum, handler)
     print(a.case + ': ' + report['status'] + '; scoped OWN centered NV12 payload observation')
     return 0 if report['status'] == 'PASS' else 1
 
