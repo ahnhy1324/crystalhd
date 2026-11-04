@@ -3202,12 +3202,23 @@ void CenteredFirstFieldAndQueuedBob() {
       const auto packed = f.Packed(31);
       const auto canvas = f.Canvas(packed);
       f.Field(packed, bottom_first, bottom_first);
+      const auto &first = f.decode->h264_first_field;
+      const auto small = first.nv12_small.lock();
+      Require(first.valid && first.nv12_staged && first.pixels.empty() && small &&
+                  small == first.picture->centered_pixels && !small->ready &&
+                  small->frame_timestamp == 0 && first.nv12_write_epoch == small->centered_write_epoch,
+              "first parity converts into tagged private NV12 without packed staging or false readiness");
       Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
               "one physical field never completes the public full decoded canvas");
       const unsigned before = centered_probe::calls;
       f.QueueBob(bottom_first, bottom_first, false);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
               "pending ordinary Bob retains exact source and target ownership");
+      std::shared_ptr<Surface> compact;
+      Require(PrepareFirstFieldBob(f.driver.pending_vpp.front(), &compact) == VA_STATUS_SUCCESS &&
+                  compact && compact->centered_pixels && compact->centered_pixels != small,
+              "early Bob owns a separate compact snapshot rather than aliasing unfinished parity storage");
+      const auto compact_pixels = compact->centered_pixels->storage;
       f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
       const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
       f.driver.StopWorkers(); f.driver.stopping = false;
@@ -3219,6 +3230,9 @@ void CenteredFirstFieldAndQueuedBob() {
       f.Field(packed, !bottom_first, bottom_first);
       Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS && f.Read(1) == canvas,
               "matching second field completes the real public canvas exactly once");
+      Require(compact->centered_pixels->storage == compact_pixels &&
+                  !f.decode->h264_first_field.valid && !f.decode->h264_first_field.nv12_staged,
+              "complement conversion cannot mutate an owned compact Bob or retain a staged first identity");
       f.QueueBob(!bottom_first, bottom_first, false);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
                   f.Read(2) == f.BobOracle(canvas, !bottom_first),

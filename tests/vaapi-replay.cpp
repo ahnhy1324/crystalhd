@@ -2292,6 +2292,112 @@ static void H264FieldPartialStateClearsAtTeardownAndEos() {
   }
 }
 
+static void CenteredNv12FirstFieldReceiveOwnership() {
+  for (bool direct : {false, true})
+    for (bool bottom_first : {false, true})
+      for (unsigned fault = 0; fault != 4; ++fault) {
+        DecodeIoMock io;
+        H264FieldFixture fixture(direct, false, VA_FOURCC_NV12, 128);
+        auto &d = fixture.decoder;
+        d.width = 256; d.height = 64;
+        crystalhd_centered_output::Config config;
+        config.enabled = true; config.capture_width = 128; config.capture_height = 32;
+        config.visible_width = 256; config.visible_height = 64;
+        Require(crystalhd_centered_output::BuildGeometry(config, 256, 64, 4,
+                                                        &d.centered_geometry),
+                "prepare exact Centered field/canvas geometry");
+        Require(fixture.public_frame->AllocateCpuNv12(256, 64),
+                "allocate the real public test canvas");
+        if (!direct)
+          Require(fixture.private_frame->AllocateCpuNv12(256, 64),
+                  "allocate the independent private test canvas");
+        else {
+          fixture.private_frame->width = 256;
+          fixture.private_frame->height = 64;
+        }
+        fixture.private_frame->centered_geometry = d.centered_geometry;
+        fixture.private_frame->centered_pixels = std::make_shared<Surface>();
+        const auto small = fixture.private_frame->centered_pixels;
+        Require(small->AllocateCpuNv12(128, 32), "allocate private small NV12 storage");
+        auto first = fixture.Output(bottom_first, bottom_first,
+                                     bottom_first ? &fixture.bottom : &fixture.top);
+        auto second = fixture.Output(!bottom_first, bottom_first,
+                                      bottom_first ? &fixture.top : &fixture.bottom);
+        first.PicInfo.width = second.PicInfo.width = 128;
+        io.override_output = true;
+        io.overridden_output = first;
+        io.events.reserve(8);
+        MockDecodeScope scope(io);
+        d.device = io.handle();
+        if (fault == 1) io.output_release_status = BC_STS_ERROR;
+        bool activity = false;
+        const auto first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+        Require(activity && io.released_outputs == 1 && !io.invalid,
+                "first actual output lease returns exactly once");
+        if (fault == 1) {
+          Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      !d.h264_first_field.valid && !fixture.public_frame->ready &&
+                      fixture.public_frame->failed && fixture.private_frame->failed,
+                  "failed first release cannot publish an unfinished staged field or leave a Bob latch");
+          continue;
+        }
+        const auto &held = d.h264_first_field;
+        Require(first_status == VA_STATUS_SUCCESS && held.valid && held.nv12_staged &&
+                    held.pixels.empty() && held.nv12_small.lock() == small &&
+                    held.nv12_write_epoch == small->centered_write_epoch &&
+                    !small->ready && small->frame_timestamp == 0 &&
+                    !fixture.public_frame->ready && !fixture.private_frame->ready &&
+                    d.replay.outstanding() == 1,
+                "released first parity occupies only private NV12 and does not retire or publish its original");
+        if (fault == 2) io.output_release_status = BC_STS_ERROR;
+        if (fault == 3) small->InvalidateCenteredReadback();
+        io.overridden_output = second;
+        activity = false;
+        const auto second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+        Require(activity && io.released_outputs == 2 && !io.invalid &&
+                    !d.h264_first_field.valid,
+                "complement output releases once and clears the first-field identity");
+        if (fault == 2) {
+          Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      fixture.public_frame->ready && fixture.private_frame->ready,
+                  "failed second release retains the existing completed pixels but fails the decoder and clears its latch");
+          continue;
+        }
+        if (fault == 3) {
+          Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      fixture.public_frame->failed && fixture.private_frame->failed,
+                  "an intervening small write fails closed without accepting a stale pair");
+          continue;
+        }
+        Require(second_status == VA_STATUS_SUCCESS && fixture.public_frame->ready &&
+                    fixture.private_frame->ready && small->ready &&
+                    small->frame_timestamp == 1 && fixture.public_frame->frame_timestamp == 1 &&
+                    d.replay.outstanding() == 0 && d.pending.empty(),
+                "only the validated pair produces real complete public NV12 after two released leases");
+        // Independent row oracle covers both parity orders, all active Y/UV
+        // bytes, and the full real canvas including every range-correct border.
+        for (unsigned plane = 0; plane != 2; ++plane) {
+          const unsigned rows = plane ? 32 : 64;
+          const unsigned top = plane ? 8 : 16;
+          const unsigned active_rows = plane ? 16 : 32;
+          for (unsigned row = 0; row < rows; ++row)
+            for (unsigned x = 0; x < 256; ++x) {
+              uint8_t expected = plane ? 128 : 16;
+              if (row >= top && row < top + active_rows && x >= 64 && x < 192) {
+                const unsigned y = row - top;
+                expected = plane
+                    ? uint8_t(((y & 1U) ? ((x & 1U) ? 160 : 140)
+                                        : ((x & 1U) ? 60 : 40)) + (y & ~1U) + 1U)
+                    : uint8_t(((y & 1U) ? 100 : 20) + y / 2U);
+              }
+              Require(fixture.public_frame->planes[plane][size_t{row} *
+                          fixture.public_frame->pitch[plane] + x] == expected,
+                      "split conversion and Compose preserve exact full-canvas Y and same-field UV bytes");
+            }
+        }
+      }
+}
+
 static void H264FirstFieldAllocationFailureReleasesOutput() {
   DecodeIoMock io;
   H264FieldFixture fixture;
@@ -12726,6 +12832,11 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--centered-firstfield") == 0) {
+      CenteredNv12FirstFieldReceiveOwnership();
+      std::puts("VA-API centered NV12 first-field staging: exact bytes, release and stale-write ownership PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
@@ -12810,7 +12921,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -12842,6 +12953,7 @@ int main(int argc, char **argv) {
     H264FieldPairRejectsPartialOrMismatchedOutput();
     H264FieldPartialStateClearsAtTeardownAndEos();
     H264FirstFieldAllocationFailureReleasesOutput();
+    CenteredNv12FirstFieldReceiveOwnership();
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();

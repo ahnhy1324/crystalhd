@@ -2354,6 +2354,11 @@ struct H264FirstField {
   unsigned int width = 0;
   unsigned int height = 0;
   unsigned int source_pitch = 0;
+  // Only a New BCM70015 Centered NV12 field uses the existing private small
+  // allocation. Its unselected parity is not a complete/publishable picture.
+  bool nv12_staged = false;
+  std::weak_ptr<Surface> nv12_small;
+  uint64_t nv12_write_epoch = 0;
   std::shared_ptr<Surface> picture;
   std::vector<uint8_t> pixels;
 };
@@ -4098,17 +4103,21 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
 static bool CopyH264InterlacedToSurface(
     Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
     unsigned int source_height, size_t field_pitch, uint64_t timestamp,
-    unsigned int field_mask = 3, bool compact_field = false) {
+    unsigned int field_mask = 3, bool compact_field = false,
+    bool publish_complete = true) {
   CH_COST_SCOPE_FLAGS(cost_scope, FieldConvert,
       crystalhd_test_maintained_cost::SurfaceIdentity(surface),
       (compact_field ? 1U : 0U), field_mask);
-  // A single parity is used only by the operation-private Bob view below.
-  // Public decode surfaces always use both fields and complete as before.
+  // Single-parity conversion is private: either a compact Bob view or an
+  // explicitly unfinished small Centered allocation. Public readiness still
+  // requires a validated complete pair.
   if (surface == nullptr || field_mask == 0 || field_mask > 3 ||
       ((field_mask & 1U) && fields[0] == nullptr) ||
       ((field_mask & 2U) && fields[1] == nullptr) ||
       (field_mask != 3 && surface->fourcc != VA_FOURCC_NV12) ||
       (compact_field && (field_mask == 3 || surface->fourcc != VA_FOURCC_NV12)) ||
+      (!publish_complete && (compact_field || field_mask == 3 || surface->ready ||
+                             surface->fourcc != VA_FOURCC_NV12)) ||
       source_width == 0 || (source_width & 1U) != 0 || source_height == 0 ||
       source_height % 4U != 0 || field_pitch < source_width * 2U)
     CH_COST_RETURN(cost_scope, false);
@@ -4344,9 +4353,22 @@ static bool CopyH264InterlacedToSurface(
   CH_COST_FINISH(cost_pixels);
   if (!surface->EndDecodedCpuWrite(used_i915_wc))
     CH_COST_RETURN(cost_scope, false);
-  surface->ready = true;
-  surface->frame_timestamp = timestamp;
+  surface->ready = publish_complete;
+  surface->frame_timestamp = publish_complete ? timestamp : 0;
   CH_COST_RETURN(cost_scope, true);
+}
+
+static std::shared_ptr<Surface> StagedFirstFieldNv12(const H264FirstField &first) {
+  const auto small = first.nv12_small.lock();
+  if (!first.nv12_staged || !small || !CenteredReadbackCpuPixels(*small) ||
+      small->width != first.width || small->height != first.height ||
+      small->ready || small->failed || small->destroyed || small->image_write_locked ||
+      small->vpp_writers != 0 || small->centered_write_epoch != first.nv12_write_epoch ||
+      small->expected_timestamp != first.timestamp || small->frame_timestamp != 0 ||
+      small->decode_identity != first.decode_identity ||
+      small->trace_generation != first.generation)
+    return nullptr;
+  return small;
 }
 
 static bool CopyH264FieldPairToSurface(
@@ -4354,11 +4376,22 @@ static bool CopyH264FieldPairToSurface(
     const BC_DTS_PROC_OUT &second) {
   if (!first.valid || second.Ybuff == nullptr ||
       first.width != second.PicInfo.width ||
-      first.height != second.PicInfo.height ||
-      first.pixels.size() != static_cast<size_t>(first.source_pitch) *
-                                 (first.height / 2U))
+      first.height != second.PicInfo.height)
     return false;
   const uint8_t *fields[2] = {};
+  if (first.nv12_staged) {
+    const auto small = StagedFirstFieldNv12(first);
+    if (!small || small.get() != surface)
+      return false;
+    // The first parity already has exactly the same within-field chroma
+    // rounding. Convert only the complement, then publish the private pair.
+    fields[first.bottom ? 0 : 1] = second.Ybuff;
+    return CopyH264InterlacedToSurface(surface, fields, first.width, first.height,
+        first.source_pitch, first.timestamp, first.bottom ? 1U : 2U);
+  }
+  if (first.pixels.size() != static_cast<size_t>(first.source_pitch) *
+                                  (first.height / 2U))
+    return false;
   fields[first.bottom ? 1 : 0] = first.pixels.data();
   fields[first.bottom ? 0 : 1] = second.Ybuff;
   return CopyH264InterlacedToSurface(surface, fields, first.width, first.height,
@@ -5199,14 +5232,36 @@ static VAStatus ProcessDecodedOutputImpl(
 
     if (!decode->h264_first_field.valid) {
       std::vector<uint8_t> pixels;
+      std::shared_ptr<Surface> staged_small;
       // Reference replay retires a duplicate only after its validated pair;
       // neither field's pixels may replace an already completed picture.
       if (!replay_duplicate) {
         CH_COST_SCOPE(cost_stage, FirstFieldStage,
                       CostOutput(driver, decode, output.PicInfo.timeStamp));
-        pixels.swap(decode->h264_first_field.pixels);
-        pixels.assign(output.Ybuff,
-                      output.Ybuff + static_cast<size_t>(field_bytes));
+        const auto &picture = decoded->second;
+        const auto &small = picture->centered_pixels;
+        if (!decode->is_70012 && IsH264Profile(decode->profile) &&
+            decode->centered_geometry.enabled && CenteredStorageMatches(*picture) &&
+            small && CenteredReadbackCpuPixels(*small) && !small->ready &&
+            !small->failed && !small->destroyed && !small->image_write_locked &&
+            small->vpp_readers == 0 && small->vpp_writers == 0) {
+          small->expected_timestamp = picture->expected_timestamp;
+          small->decode_identity = picture->decode_identity;
+          InheritTraceIdentity(small.get(), *picture);
+          const uint8_t *fields[2] = {};
+          fields[bottom ? 1 : 0] = output.Ybuff;
+          if (!CopyH264InterlacedToSurface(small.get(), fields, width, height,
+                  padded_width * 2U, output.PicInfo.timeStamp,
+                  bottom ? 2U : 1U, false, false)) {
+            small->failed = true;
+            return FailDecode(driver, decode, "first-field NV12 staging failed");
+          }
+          staged_small = small;
+        } else {
+          pixels.swap(decode->h264_first_field.pixels);
+          pixels.assign(output.Ybuff,
+                        output.Ybuff + static_cast<size_t>(field_bytes));
+        }
         CH_COST_RESULT(cost_stage, true);
       }
       H264FirstField &first = decode->h264_first_field;
@@ -5224,6 +5279,9 @@ static VAStatus ProcessDecodedOutputImpl(
       first.width = width;
       first.height = height;
       first.source_pitch = padded_width * 2U;
+      first.nv12_staged = bool(staged_small);
+      first.nv12_small = staged_small;
+      first.nv12_write_epoch = staged_small ? staged_small->centered_write_epoch : 0;
       first.picture = replay_duplicate ? nullptr : decoded->second;
       first.pixels = std::move(pixels);
       first.valid = true;
@@ -7494,6 +7552,38 @@ static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
 // The compact private result is valid ONLY for this operation's selected first
 // temporal parity. It never enters a public surface/map or changes readiness.
 // The caller holds Driver::mutex, including the successful RX-release boundary.
+// Produce an independent compact snapshot; never expose the mutable unfinished
+// small allocation to a queued Bob owner. Its rows already contain the exact
+// same-field NV12 rounding used by the packed conversion path.
+static bool CopyStagedFirstFieldBob(const H264FirstField &first, Surface *target) {
+  const auto small = StagedFirstFieldNv12(first);
+  if (!small || target == nullptr || target->fourcc != VA_FOURCC_NV12 ||
+      target->width != first.width || target->height != first.height / 2U)
+    return false;
+  if (!small->BeginCpuRead())
+    return false;
+  bool used_i915_wc = false;
+  if (!target->BeginDecodedCpuWrite(&used_i915_wc)) {
+    small->EndCpuRead();
+    return false;
+  }
+  const unsigned parity = first.bottom ? 1U : 0U;
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const unsigned rows = plane ? target->height / 2U : target->height;
+    for (unsigned row = 0; row < rows; ++row)
+      memcpy(target->planes[plane] + size_t{row} * target->pitch[plane],
+             small->planes[plane] + size_t{row * 2U + parity} * small->pitch[plane],
+             target->width);
+  }
+  const bool written = target->EndDecodedCpuWrite(used_i915_wc);
+  const bool read = small->EndCpuRead();
+  if (!written || !read)
+    return false;
+  target->ready = true;
+  target->frame_timestamp = first.timestamp;
+  return true;
+}
+
 static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
                                     std::shared_ptr<Surface> *view) {
   if (view == nullptr)
@@ -7522,7 +7612,8 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       !decoder->replay.IsOutstanding(operation.source_timestamp))
     return VA_STATUS_SUCCESS;
   if (first.source_pitch == 0 || first.height == 0 ||
-      first.height / 2U > first.pixels.size() / first.source_pitch)
+      (first.nv12_staged ? !StagedFirstFieldNv12(first) :
+       first.height / 2U > first.pixels.size() / first.source_pitch))
     return VA_STATUS_ERROR_DECODING_ERROR;
   try {
     auto prepared = std::make_shared<Surface>();
@@ -7547,7 +7638,8 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       field_target->decode_identity = source->decode_identity;
       InheritTraceIdentity(field_target, *source);
     }
-    if (!CopyH264InterlacedToSurface(field_target, fields, first.width,
+    if (first.nv12_staged ? !CopyStagedFirstFieldBob(first, field_target) :
+        !CopyH264InterlacedToSurface(field_target, fields, first.width,
                                     first.height, first.source_pitch,
                                     operation.source_timestamp,
                                     bottom ? 2U : 1U, true))
