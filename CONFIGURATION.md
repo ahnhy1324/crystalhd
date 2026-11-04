@@ -5,7 +5,9 @@ production driver, library, VA-API backend, launchers, GStreamer element and
 `crystalhd-play`. Unset controls retain the existing behavior.
 
 Managed saving, profiles and the optional editors require matching 1.3 tools
-and readers; follow [RC3 settings installation](README.md#install-rc3-for-managed-settings).
+and readers; follow [matching 1.3 settings installation](README.md#install-matching-13-tools).
+Published RC3 uses core `36ef4c681f49` / module `3.10.18`; prepared RC4 /
+`3.10.19` needs its own exact core/settings binding and is not yet published.
 Stable 1.2's configuration utility is a read-only inspector; these save/editor
 commands are not available there.
 
@@ -184,7 +186,11 @@ On Ubuntu, building and installing the translated frontend needs `gettext`
 (`msgfmt`), and the window needs `python3-gi` and `gir1.2-gtk-3.0`; the optional
 tray additionally uses `gir1.2-ayatanaappindicator3-0.1` and a desktop StatusNotifier
 host. The command-line utility and native decoders have no GTK/tray dependency.
-Install the desktop frontend separately from the runtime:
+The intermittent Ubuntu24 GTK assertion/SIGSEGV remains an
+[unresolved known risk](https://github.com/ahnhy1324/crystalhd/issues/623), with
+[bounded investigation evidence](tests/fixtures/issue400/gtk-bounded-review-20261104.json);
+no cause or repair is claimed. Install the desktop frontend separately from
+the runtime, from the same matching 1.3 source directory:
 
 ```sh
 sudo apt install gettext python3-gi gir1.2-gtk-3.0

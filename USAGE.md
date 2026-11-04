@@ -2,8 +2,10 @@
 
 For ordinary local playback, use the latest stable **1.2.0** installation and
 `crystalhd-play`. Leave tuning options at their defaults for the first run.
-This guide starts with that route; optional 1.3 RC3 features are marked
-separately and retain their existing opt-in defaults.
+This guide starts with that route; optional 1.3 features are marked separately
+and retain their existing opt-in defaults. Published RC3 uses module `3.10.18`;
+[RC4/module19](README.md#rc4-candidate-preparation) is being prepared and is not
+yet a published download.
 
 1. [Install and verify the stack](#verify-the-installed-stack).
 2. [Play a local file](#play-a-local-file), then use the [controls](#player-controls)
@@ -102,8 +104,11 @@ The same option works with explicit `--hardware` or `--software` playback.
 ## Saved settings (1.3 tools)
 
 Stable 1.2.0 does not include the new configuration editors. With matching
-1.3.0-rc.3 tools and updated components installed, use the optional desktop
-window or inspect defaults from the terminal:
+1.3 tools and updated components installed, use the optional desktop window
+or inspect defaults from the terminal. Use the published RC3 set, or the exact
+prepared RC4 core/module19 and settings artifacts identified by its private
+binding manifest; [matching installation](README.md#install-matching-13-tools)
+keeps those versions separate:
 
 ```sh
 crystalhd-settings
@@ -121,8 +126,11 @@ After saving there, restart Kodi and keep its own VA-API decoder selection
 enabled. These editors change shared CrystalHD defaults; a saved setting alone
 does not establish active hardware decoding. See [configuration](CONFIGURATION.md)
 for profiles, reset and exact precedence. Follow
-[RC3 settings installation](README.md#install-rc3-for-managed-settings) when
-installing matching 1.3 components.
+[matching settings installation](README.md#install-matching-13-tools) when
+installing 1.3 components. The optional GTK editor's intermittent Ubuntu24
+assertion/SIGSEGV remains [unresolved](https://github.com/ahnhy1324/crystalhd/issues/623);
+clean tests and diagnostic capture do not establish a repair. The terminal
+editor does not require GTK.
 
 ## Troubleshooting and proof of hardware use
 
@@ -601,12 +609,12 @@ per-player choices, not settings applied by `crystalhd-config`.
 
 The v1.1 RC includes selected interlaced Weave playback, not general
 deinterlacing or full-rate FHD support. The earlier `f4d99d5` Kodi stalls are
-preserved in the hardware report. During RC3 preparation, the later finite
+preserved in the hardware report. During 1.1.0-rc.3 preparation, the later finite
 MBAFF input/tail fix completed all 750 decoder-oracle pictures with verified
 pixels/PTS and EOS, and passed live input-gap/explicit-close/reopen checks.
 Kodi traversed the selected full file but could discard pictures or resync
 under load; some FHD runs retained timing/render warnings and a bounded
-post-EOS empty-output wait. These are historical results, not fresh RC4
+post-EOS empty-output wait. These are historical results, not fresh 1.3 RC4
 qualification. No incomplete surface is returned to hide a wait.
 For an explicit HW/SW Weave selection use the
 [player commands above](#explicit-weave-playback). Kodi's VA-API acceleration
@@ -615,13 +623,13 @@ separate setting. Published 1.1.0 advertises no VA driver
 deinterlacing capability; deinterlacing and sync tuning remain
 tracked in [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
 
-During RC3 preparation (recorded in `a3fd609`), a selected 30-second 720i25 dialogue clip had
+During 1.1.0-rc.3 preparation (recorded in `a3fd609`), a selected 30-second 720i25 dialogue clip had
 subjectively aligned speech/lip motion in both no-deinterlace and explicit
 `Deinterlace` (BWDIF) comparisons; BWDIF reduced the visible shaking. Both
 ended normally. This is a useful playback check, not measured millisecond
 sync, a complete displayed-frame census or FHD support qualification.
 The CPU/no-deinterlace control showed similar shaking without using CrystalHD.
-These observations are not new RC4 playback or physical-sync measurements.
+These observations are not new 1.3 RC4 playback or physical-sync measurements.
 
 ### VLC
 
@@ -733,8 +741,8 @@ physical maximum, and the separate 8 MiB software allocation bound does not
 establish 8 MiB hardware decoding. Units above 512 KiB require a matching
 libcrystalhd with `DtsProcInputFragment`.
 
-RC5 includes the [bounded admission changes](https://github.com/ahnhy1324/crystalhd/pull/459),
-not present in published RC4. Development controls qualified **3,014,656 bytes**
+Historical 1.1.0-rc.5 includes the [bounded admission changes](https://github.com/ahnhy1324/crystalhd/pull/459),
+not present in published 1.1.0-rc.4. Development controls qualified **3,014,656 bytes**
 for identified BCM70015/DIL 3.22.0 progressive frame-coded input. Unknown/BCM70012/interlaced
 paths retain 2 MiB. With the identified older Flea PES library, complete AUs up
 to **768 KiB** can use a fully reserved legacy call; larger units still need
@@ -841,11 +849,12 @@ global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 ## Experimental outputs and diagnostics (1.3)
 
 These are optional source-build features. Ordinary stable 1.2.0 playback uses
-the earlier commands without these output selectors. The complete 1.3.0-rc.3
-source includes the original optional outputs and later additions below.
-Frozen RC2 retains only its original implementation; later master updates do
-not replace frozen candidate payloads. Actual RC3 qualification is recorded
-separately from earlier component receipts.
+the earlier commands without these output selectors. Published 1.3.0-rc.3
+includes the optional outputs and additions below; prepared RC4/module19
+retains them and adds Player/Xv stability fixes. RC4 remains
+**PREPARED_NOTQUALIFIED** until its own candidate checks and publication.
+Frozen RC3 and RC2 payloads are not replaced by later source changes. Actual
+RC3 qualification and later affected checks retain their separate attribution.
 
 ### Experimental Xv output and packed enlargement
 
@@ -883,8 +892,9 @@ omit `--weave` and use `--software-output-size native` to clear any saved
 software resize; either conflicting request is rejected before playback.
 
 <a id="current-master-additions"></a>
+<a id="rc3-additions"></a>
 
-#### RC3 additions
+#### Field-output additions included in RC3
 
 Direct raw-video input additionally accepts explicitly declared limited-range
 NV12 within its [plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).

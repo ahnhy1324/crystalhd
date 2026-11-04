@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-04",
+  "issue": "https://github.com/ahnhy1324/crystalhd/issues/623",
+  "status": "UNRESOLVED_ORIGINAL_NATIVE_CRASH_NO_DEMONSTRATED_OWN_FAULT",
+  "reviewed_source": "3689eda2d08d863439b40f4756ccba99dfd8b916",
+  "purpose": "One bounded review of retained incident evidence and maintained GTK callback, worker, destroy and retirement boundaries. This is a risk disposition, not reproduction, repair, containment or release acceptance.",
+  "original_failure": {
+    "signature": "17 completed tests, _gtk_css_rgba_value_get_rgba assertion 'rgba->class == &GTK_CSS_VALUE_RGBA' failed, then SIGSEGV",
+    "latest_recorded_hosted_run": "https://github.com/ahnhy1324/crystalhd/actions/runs/41384822456",
+    "latest_recorded_hosted_job": 125083261154,
+    "earlier_raw_log": "/home/mache/.cache/crystalhd-v13-complete-userspace24-failed.log",
+    "earlier_raw_log_lines": [
+      1902,
+      1903,
+      1904
+    ],
+    "earlier_observation": "The same signature was retained before the Xv port work. The GTK settings suite does not load the Xv plugin.",
+    "available_at_failure": [
+      "CSS assertion text",
+      "SIGSEGV and core-dumped notice",
+      "17 completed-case dots"
+    ],
+    "not_available_at_failure": [
+      "Failing native backtrace",
+      "Python thread stacks",
+      "Exact failing test name",
+      "Retained core dump"
+    ],
+    "interpretation": "Dots identify completed cases only. They do not establish which test, asynchronous callback, redraw or teardown executed the unsafe native operation. The core-dumped message does not provide a retained core artifact."
+  },
+  "retained_evidence": [
+    "tests/fixtures/issue400/gtk-ci-investigation-20261102.json",
+    "tests/fixtures/issue400/gtk-native-capture-20261103.json",
+    "/home/mache/.cache/crystalhd-integration-20261102/gtk24/",
+    "/home/mache/.cache/crystalhd-issue623-native-capture-run-20261103/"
+  ],
+  "existing_observations_not_repeated": {
+    "python_proxy_gc": "Forced worker collection retired Python wrappers off-main. This alone did not identify native GTK finalization or the original crash.",
+    "native_lifetime": "Original Ubuntu24 and corrected Ubuntu26 native GObject weak-finalizer observations recorded zero off-main finalizers. This does not prove all lifetime operations safe or causally explain the failure.",
+    "main_thread_test_retirement": "Existing teardown destroys windows, waits for its owned worker, clears retained test cases, drains the main loop and collects cycles on the GTK thread. This is test retirement, not a demonstrated native-crash fix.",
+    "clean_runs": "Prior ordinary and GDB runs, focused neighboring tests and subsequent CI were clean. A clean rerun is not causal repair evidence. GDB changes scheduling.",
+    "capture_controls": "The existing one-execution Ubuntu24 GDB CI wrapper captures native and best-effort Python stacks, passes the original fatal signal and keeps failure status. Fatal and handled-signal controls were previously tested; none reproduce the original CSS failure."
+  },
+  "maintained_boundaries_reviewed": [
+    {
+      "path": "scripts/crystalhd-settings.py",
+      "areas": [
+        "SettingsWindow.start_installation/poll_installation/cancel_installation",
+        "SettingsWindow.start_freshness/poll_freshness/cancel_freshness"
+      ],
+      "observation": "Worker closures retain core functions, immutable receipt inputs and a queue, rather than the SettingsWindow or widget callbacks. GTK status/preview changes occur in main-loop polling. Destroy closes the poller, increments its generation and removes its GLib source; late results remain queue data. No new off-main GTK operation was demonstrated.",
+      "limit": "Reading this ownership structure and the earlier native observations cannot exclude an unknown native lifetime or scheduling fault."
+    },
+    {
+      "path": "scripts/crystalhd-settings.py",
+      "areas": [
+        "validation_entry",
+        "SettingsWindow.update_preview",
+        "SettingsWindow.confirm/prompt_profile_name",
+        "SettingsWindow.quit/tray_connection_changed"
+      ],
+      "observation": "The accessible type is configured before the first entry instance, uses GTK-owned EntryAccessible lifetime and returns DEFUNCT after its widget is gone. Normal quit marks quitting before unsubscribing tray signals, deactivating its indicator and destroying the window. Modal confirmation uses a nested main loop; freshness is rechecked after confirmation before persistence. No retained incident stack ties these operations to the CSS failure.",
+      "limit": "No claim that an unobserved reentrant callback, native accessible or CSS redraw path has been exhaustively proven safe."
+    },
+    {
+      "path": "tests/crystalhd-settings-gtk.test.py",
+      "areas": [
+        "GtkSettingsTests.tearDown",
+        "test_destroy_during_inspection_does_not_wait_or_publish_to_dead_widgets",
+        "validation description and destroyed-accessible tests"
+      ],
+      "observation": "Existing tests distinguish late worker completion from publishing to destroyed widgets, preserve UI response assertions and retire test-owned references on the GTK thread. They do not reproduce the original CSS assertion."
+    },
+    {
+      "path": "tests/gtk-native-backtrace.gdb",
+      "areas": [
+        "Single original execution",
+        "Native and best-effort Python fatal capture",
+        "Original-signal delivery and nonzero fatal result",
+        "Bounded unexpected-stop retirement"
+      ],
+      "observation": "No retry, test-order change, fatal-warning suppression or successful-exit rewrite was introduced in this review. Controlled capture signals remain distinct from the original incident."
+    }
+  ],
+  "bounded_pass": {
+    "new_ui_or_suite_executions": 0,
+    "new_diagnostics": 0,
+    "product_changes": 0,
+    "external_code_changes": 0,
+    "reason_no_speculative_change": "The original unsafe operation is not identified and no new reproducible own fault distinguished a proposed fix. Repeating clean suites or adding speculative teardown, scheduling, CSS or lifetime workarounds would not resolve that gap.",
+    "tool_policy_block": "No actual cybersecurity-filter or tool-policy block was observed in this pass."
+  },
+  "disposition": {
+    "issue_state": "Keep #623 open as an intermittent, unreproduced GTK settings crash risk.",
+    "affected_scope": "Observed in the optional GTK settings tests on hosted Ubuntu24; the original native failure is not attributed to a particular own or external component.",
+    "scope_not_inferred": [
+      "A CrystalHD product fix",
+      "A confirmed GTK external defect",
+      "Stock runtime stability established by clean CI",
+      "Failure of the stdlib CLI configuration editor",
+      "Failure of unrelated playback, native V4L2 or Xv execution"
+    ],
+    "next_decisive_input": "A recurrence with the existing native/Python capture and exact test name, or a discriminating reproducer that demonstrates an own unsafe callback, thread or lifetime operation.",
+    "continuation": "Stop this bounded pass after retained evidence is exhausted. Continue other authorized release work with this unresolved risk explicit; do not wait indefinitely for a recurrence or label diagnostic capture as containment.",
+    "release_decision": "This record neither grants nor blocks promotion by itself; apply the maintainer-authorized release criteria and preserve the unresolved GTK risk in the release assessment.",
+    "new_mandatory_reproduction_gate": false,
+    "existing_unchanged_settings_scope": "The already-recorded installed 31-case GTK, two private-bus tray cases and documented settings user flows remain scoped unchanged-component evidence; this review does not repeat or broaden them.",
+    "release_known_issue": "An intermittent Ubuntu24 GTK settings CSS assertion/SIGSEGV remains unreproduced and unfixed. No failing native/Python stack or demonstrated own-code cause is available. Existing capture is diagnostic, not a repair, and no external GTK defect is established. No new unknown-reproduction gate is added; keep this optional-editor risk explicit under the authorized release criteria."
+  }
+}

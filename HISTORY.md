@@ -6,7 +6,16 @@ statements under an older version describe that checkpoint; use
 [documentation index](DOCUMENTATION.md) for the evidence map. Published
 identities and historical failures retain their original qualification scope.
 
-## Unreleased stabilization after 1.3.0-rc.3
+<a id="unreleased-stabilization-after-130-rc3"></a>
+
+## 1.3.0-rc.4 — prepared stabilization candidate
+
+**PREPARED_NOTQUALIFIED:** bundle `1.3.0-rc.4` / module-DKMS `3.10.19` is
+being prepared from master `3689eda`. It has not been packaged, qualified or
+published. All 17 integrated RC3 feature groups, existing opt-ins and diagnostic
+coverage remain included; normal output, FIFO and default-off Centered retain
+their existing defaults. The native V4L2/unmodified FFmpeg DRM_PRIME companion
+remains part of the intended delivery.
 
 - Preserve the Player's seek/resume timeout grace when an older decoded-frame
   observation arrives later through the bus. Frame counts, observation times
@@ -17,9 +26,22 @@ identities and historical failures retain their original qualification scope.
 - Exercise strict HTTPS verification with a private loopback CA: normal
   software playback/EOS, untrusted CA and wrong-hostname rejection. This is
   controlled transport coverage, not Internet, default-CA or hardware acceptance.
+- Repair the documented DKMS variable scope, RC3 native paths and fail-fast
+  preparation/activation commands; put current 1.3 quality requirements before
+  historical campaigns.
 
-These changes are development work after the frozen RC3 release. Published
-tags, assets and their qualification receipts remain unchanged.
+The affected Player/Xv quality campaign passed on userspace `6004636` with the
+separately frozen RC3 kernel18/source36ef: ordinary and own-FIFO 30-minute
+playback, documented DKMS/direct lifecycle and original-state restoration.
+These are scoped reuse inputs, not RC4/module19 results. Fresh exact-archive,
+installed/native identity and delivery checks remain required; the bounded
+GTK #623 investigation must retain the original unresolved crash disposition.
+See [RC4 preparation](RELEASING.md#rc4-stabilization-candidate-preparation).
+The maintainer has authorized the next RC and conditional stable promotion
+after candidate qualification and an explicit GTK known-risk disposition;
+RC4 qualification and stable promotion are not complete. Published tags/assets,
+registered source18 and earlier receipts
+remain unchanged.
 
 <a id="development-after-the-frozen-rc2"></a>
 <a id="130-rc3--complete-integration-candidate"></a>

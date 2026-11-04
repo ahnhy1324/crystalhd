@@ -1,169 +1,182 @@
 # Experimental native runtime delivery for 1.3
 
 Use this optional companion to evaluate the **native V4L2 route in Kodi** with
-the matching 1.3 candidate and the exact target below. For ordinary local-file playback,
+its matching candidate and exact target. For ordinary local-file playback,
 start with [installation](README.md#quick-start) and [everyday usage](USAGE.md).
-The companion provides prebuilt minimal FFmpeg libraries; using them does not
-require compiling FFmpeg. To reproduce those libraries, use the
-[build recipe](NATIVE-RUNTIME-BUILDING.md).
+The companion supplies prebuilt, unmodified minimal FFmpeg DRM_PRIME libraries;
+using them does not require compiling FFmpeg. Rebuild instructions are separate
+in [BUILDING](NATIVE-RUNTIME-BUILDING.md).
 
-**Published RC3:** [`1.3.0-rc.3`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
-combines the complete own native V4L2
-producer with prebuilt, unmodified FFmpeg DRM_PRIME libraries. Its separate
-core-binding and native-qualification receipts identify the actual candidate
-source/module18 and runtime results. Existing runtime/source/build proofs do
-not by themselves qualify changed own-core bytes; the release entry supplies
-public availability and qualification status.
+**RC4 preparation, not qualification or publication:** bundle `1.3.0-rc.4` /
+module-DKMS `3.10.19` retains the complete core, shared settings, default-off
+Centered and every integrated opt-in with their current defaults. The
+[release scope](RELEASING.md#rc4-stabilization-candidate-preparation) separates
+fresh candidate/archive/native/install checks from unchanged-component reuse.
+The commands below describe the planned RC4 companion. Do not treat a prepared
+archive, source version or files-only PASS as native playback acceptance.
 
-The published [v1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
-remains frozen with 13 assets, core `940cf357` and module-DKMS `3.10.17`.
-Stable 1.3 promotion remains deferred. The ordinary source bundle supplies the
-driver, GStreamer, VA, Player, settings, default-off Centered and experimental
-outputs. The companion adds the separately licensed FFmpeg binaries and their
-complete source/build materials; no external product patch is applied.
+For an available candidate, use [published RC3](#published-rc3-reference).
+Stable `1.2.0` remains the fallback. Stable 1.3 promotion follows candidate
+qualification and the maintainer's separate decision. No external product
+patch is applied, and selecting this companion does not change other defaults.
 
-<a id="rc3-candidate-preparation"></a>
+## RC4 companion layout and use
 
-## RC3 companion layout and use
+The planned outer archive is `crystalhd-native-runtime-1.3.0-rc.4.tar.gz`.
+Select its own frozen core through `evidence/rc4-core-binding.json`; do not
+substitute an older core or moving master checkout. Module19's actual native
+srcversion belongs to its measured qualification receipt, not a guessed value.
 
-The outer archive is
-`crystalhd-native-runtime-1.3.0-rc.3.tar.gz`. Its own core must be selected from
-`materials/crystalhd-core-1.3.0-rc.3-source.tar.gz`, not RC2's source940 or a
-moving master checkout. The native module identity is `3.10.18`.
-
-| Item | RC3 candidate binding |
+| Item | RC4 binding and evidence |
 | --- | --- |
-| Own core and native module | `evidence/rc3-core-binding.json` identifies the actual final core archive/revision, module identity and packaged own tools/guides. |
-| Native candidate acceptance | `evidence/rc3-native-qualification.json` records the actual changed-source candidate playback, PTS/picture/EOS/reopen/lifetime and restoration results. They are not inherited from module13 observations or RC2. |
-| Reused unchanged runtime | `runtime/runtime-private.tar` and its exact provider/metadata pins remain unchanged; `evidence/build-proof.json` retains the two reproduced builds. `evidence/reuse-scope.json` distinguishes this reuse from new core qualification. |
-| Original RC2 costs and native evidence | Explicitly named `evidence/rc2-first-user-cost.json`, `rc2-first-user-evidence.tar`, `rc2-native-qualification.json` and `rc2-native-evidence.tar`; their dates, old module identities and original outcomes remain intact. |
-| External source and notices | The complete FFmpeg/dependency/SDK materials and offline Git companion keep their original bytes, revisions and licenses. Historical inner `PUBLIC_NOT_READY` metadata is not rewritten. |
+| Own core and tools | `evidence/rc4-core-binding.json` identifies the exact core archive/revision, module19 and packaged own tools/guides. |
+| Actual native acceptance | `evidence/rc4-native-qualification.json` must bind that source and measured native module to the actual candidate checks and restoration. Before those checks finish, this is explicitly NOT_RUN. |
+| Unchanged runtime | `runtime/runtime-private.tar`, original provider/metadata pins and two-build `evidence/build-proof.json` remain unchanged. `evidence/reuse-scope.json` names the limits of reuse. |
+| Historical results | Explicit RC3 and RC2 evidence retains its source/module, original failures and dates; it is not relabeled module19. |
+| Source and notices | Complete FFmpeg/dependency/SDK materials and offline Git metadata retain their original bytes, revisions and licenses. Inner historical `PUBLIC_NOT_READY` metadata remains intact. |
 
-Use the RC3 commands below. The later frozen RC2 section preserves its old
-module17 commands; do not adapt those for RC3. The exact App/Platform/GL
-[acquisition commands and target pins](#acquire-the-exact-target) are shared
-unchanged. Install those pinned deployments before selecting private files.
+Install the exact pinned App/Platform/GL deployments using the shared
+[acquisition commands and target pins](#acquire-the-exact-target) before selecting
+private files. The later Frozen RC2 reference retains module17's commands;
+use the current procedure below for RC4.
 
-### Verify and select the RC3 private files
+### Verify and select private files
 
-Start in a new extraction of `crystalhd-native-runtime-1.3.0-rc.3.tar.gz`.
-Verify its archive against the release `SHA256SUMS`, then run the included
-`sha256sum -c SHA256SUMS`. Inspect `delivery-manifest.json`,
-`evidence/rc3-core-binding.json` and `evidence/reuse-scope.json`. The own core
-is frozen source `36ef4c681f49f960ad2dc7615ec3478ca0ec5a7b`; the inner runtime
-and the following three metadata pins are unchanged from RC2.
-
+Start in a new extraction of the RC4 companion. Verify the archive against its
+release `SHA256SUMS`, then run the included `sha256sum -c SHA256SUMS`. Inspect the
+core binding, native qualification and reuse-scope receipts before activation.
+The unchanged inner runtime has the same three metadata pins as RC2/RC3.
 Choose a new absolute store whose parent exists and the pinned Platform's
 `files` directory. These commands copy and inspect private files only:
 
 ```sh
 delivery_root=$(pwd -P)
-slot_store=/absolute/private/rc3-native-slots
+slot_store=/absolute/private/rc4-native-slots
 platform_files=/absolute/pinned/Platform/files
-python3 -B tools/native-runtime-slots.py --store "$slot_store" install \
-  --archive "$delivery_root/runtime/runtime-private.tar" \
-  --archive-sha256 dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020 \
-  --rootfs "$platform_files" --platform-relative . \
-  --rootfs-identity 'Platform e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491' \
-  --files-sha256 aee1eba5bc5d54bf54b6499ad3ffdb94ee8bd89015953c800804ce44e889c11d \
-  --dependencies-sha256 dfbff250c9cd61dfc83beba99bffab30e2d7c2a3af0e3785d021d964feed6b02 \
-  --provenance-sha256 7ffd06ad3b22fbf19ae5c4088f5c3d6418ed8dcaca1365957d4cd369d4ea781f
-python3 -B tools/native-runtime-slots.py --store "$slot_store" status
-```
-
-Use the returned `active_prefix`; its `lib` directory is the selected FFmpeg
-library set. A files-only PASS does not activate native decoding or qualify
-playback. Do not change/remove the active slot while a consumer still uses it.
-
-### Build and temporarily activate the frozen RC3 native module
-
-The ordinary legacy module does not expose the native video node. Build from
-the supplied frozen core in a new private directory. Do not build inside
-`/usr/src` or a registered DKMS source tree, run `dkms add/install` for this
-variant, or overwrite the installed/cached legacy module18 payload.
-Install the normal [build prerequisites](README.md#quick-start), including
-`build-essential` and headers matching the running kernel
-(`linux-headers-$(uname -r)` on the documented Ubuntu route), before building.
-
-```sh
-native_build=/absolute/new/rc3-native-build
-native_source="$native_build/crystalhd-1.3.0-rc.3-36ef4c681f49"
 (
   set -eu
+  python3 -B tools/native-runtime-slots.py --store "$slot_store" install \
+    --archive "$delivery_root/runtime/runtime-private.tar" \
+    --archive-sha256 dc3d88bdeac5dc45a4f52800e1c653dcb35fcd73c14c158460974083f872c020 \
+    --rootfs "$platform_files" --platform-relative . \
+    --rootfs-identity 'Platform e7f7b0fb20662fe92e4eac65d58a57019cefae45a39559c4b50440a88acc0491' \
+    --files-sha256 aee1eba5bc5d54bf54b6499ad3ffdb94ee8bd89015953c800804ce44e889c11d \
+    --dependencies-sha256 dfbff250c9cd61dfc83beba99bffab30e2d7c2a3af0e3785d021d964feed6b02 \
+    --provenance-sha256 7ffd06ad3b22fbf19ae5c4088f5c3d6418ed8dcaca1365957d4cd369d4ea781f
+  python3 -B tools/native-runtime-slots.py --store "$slot_store" status
+)
+```
+
+Stop if a block fails. Use the returned `active_prefix`; its `lib` directory
+is the selected FFmpeg library set. Files-only PASS does not activate native
+decoding or qualify playback. Do not change/remove a slot while a consumer
+still uses it.
+
+### Build and temporarily activate the frozen native module
+
+The ordinary legacy module does not expose the native video node. Build the
+supplied frozen core in a new private directory, separate from `/usr/src`,
+registered DKMS source and the installed/cached legacy module19. Do not register
+this optional build under the legacy package number. Install the normal
+[build prerequisites](README.md#quick-start), including `build-essential` and
+headers matching the running kernel (`linux-headers-$(uname -r)` on Ubuntu).
+The commands also use Python3, GNU tar, kmod and udev from that environment.
+
+```sh
+native_build=/absolute/new/rc4-native-build
+native_source=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); t=d["core_archive_top_level"]; assert t.startswith("crystalhd-1.3.0-rc.4-") and "/" not in t and t not in (".",".."); print(sys.argv[2]+"/"+t)' "$delivery_root/evidence/rc4-core-binding.json" "$native_build") &&
+(
+  set -eu
+  core_member=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["bundle_version"]=="1.3.0-rc.4" and d["module_version"]=="3.10.19"; print(d["core_archive"]["member"])' "$delivery_root/evidence/rc4-core-binding.json")
   mkdir "$native_build"
-  tar -xzf "$delivery_root/materials/crystalhd-core-1.3.0-rc.3-source.tar.gz" \
-    -C "$native_build"
+  tar -xzf "$delivery_root/$core_member" -C "$native_build"
+  python3 -c 'import json,pathlib,sys; d=json.load(open(sys.argv[1])); p=pathlib.Path(sys.argv[2]); assert (p/"VERSION").read_text().strip()==d["bundle_version"]; assert (p/"SOURCE_REVISION").read_text().strip()==d["core_source"]' "$delivery_root/evidence/rc4-core-binding.json" "$native_source"
   make -C "$native_source" driver CRYSTALHD_V4L2=1 KVER="$(uname -r)"
-  modinfo -F version "$native_source/driver/linux/crystalhd.ko"
+  test "$(modinfo -F version "$native_source/driver/linux/crystalhd.ko")" = 3.10.19
   modinfo -F srcversion "$native_source/driver/linux/crystalhd.ko"
 )
 ```
 
-Stop if this block fails. In particular, an existing build directory must not
-be reused or extracted over. The two path variables remain in the parent shell
-for the later activation command.
+An existing build directory must not be reused or extracted over. The two
+path variables remain available in the parent shell for activation. A
+different kernel/build is a separately identified artifact; the measured native
+srcversion below must match before unloading the working module. A legacy
+build of the same package has a different srcversion. Module strings alone
+do not establish ABI or media acceptance.
 
-For the measured RC3 kernel/cohort, the native file is module `3.10.18` /
-srcversion `FEB8DC48436425D92497DA7`. The legacy build of the same package has
-a different srcversion. Module strings alone are not ABI authentication; the
-core binding, actual native receipt and target pins remain required. A
-different kernel/build is a separately identified artifact.
-
-Before activation, preserve the installed module's selection and its actual
-options. Follow the [idle transition rules](BRINGUP.md#reload-an-idle-device):
-AC, temperature below75C, no legacy/video owners, refcount and pin balance zero.
-The following temporary load uses the recorded `force_l0s_off=1` /
-`session_l0s_off=0` workaround; preserve any distinct prior options for rollback.
+Before activation, preserve the installed module's selection and actual options.
+Follow the [idle transition rules](BRINGUP.md#reload-an-idle-device): AC,
+temperature below75C, no legacy/video owners, refcount and pin balance zero.
+This temporary load uses recorded `force_l0s_off=1` / `session_l0s_off=0`;
+preserve any distinct prior options for rollback. This block deliberately stops
+before unloading if the candidate lacks a passing actual native receipt.
 
 ```sh
 (
   set -eu
+  native_srcversion=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); assert r["status"].startswith("PASS") and r["core_source"]==b["core_source"] and r["module_version"]=="3.10.19" and r["restored"] is True; print(r["module_srcversion"])' "$delivery_root/evidence/rc4-native-qualification.json" "$delivery_root/evidence/rc4-core-binding.json")
+  test "$(modinfo -F version "$native_source/driver/linux/crystalhd.ko")" = 3.10.19
+  test "$(modinfo -F srcversion "$native_source/driver/linux/crystalhd.ko")" = "$native_srcversion"
   if test -d /sys/module/crystalhd; then sudo modprobe -r crystalhd; fi
   sudo modprobe -a v4l2_mem2mem videobuf2_dma_sg
   sudo insmod "$native_source/driver/linux/crystalhd.ko" \
     force_l0s_off=1 session_l0s_off=0
   sudo udevadm settle --timeout=10
   python3 -B "$delivery_root/tools/native-runtime-host-preflight.py" \
-    --expected-module-version 3.10.18 \
-    --expected-module-srcversion FEB8DC48436425D92497DA7
+    --expected-module-version 3.10.19 \
+    --expected-module-srcversion "$native_srcversion"
 )
 ```
 
 The driver must create a genuine CrystalHD video node with matching PCI/sysfs
-identity; never manufacture a node. The host preflight reads metadata and
-returns `PREREQUISITES_PRESENT_UNVERIFIED` when those checks pass. It does not
-open the device or establish media/ABI/display acceptance. The installed
-legacy module remains selected on disk during this temporary `insmod`.
+identity; never manufacture a node. Host preflight reads metadata and returns
+`PREREQUISITES_PRESENT_UNVERIFIED` when those checks pass; it does not open the
+device or establish media/ABI/display acceptance. The preserved legacy module
+remains selected on disk during temporary `insmod`.
 
 ### Native playback scope and recovery
 
-The qualified route uses the selected slot's `lib` mounted at `/native-ffmpeg`
-with the pinned App/Platform/GL, firmware and graphics/audio inputs. Its search
-path is `/native-ffmpeg:/app/lib:/app/lib/samba:/app/lib/samba/private:/usr/lib/x86_64-linux-gnu:/usr/lib:/gl/lib`.
-The included `evidence/rc3-native-qualification.json` records the fresh RC3
-720p/FHD EOS/reopen results. The retained observer/namespace recipe is in
-`evidence/rc2-native-evidence.tar`, under `harness/`; it is historical
-qualification scaffolding, not a general desktop launcher. RC3 has no
-`evidence/fresh-target-evidence.tar` member. Selecting private files and passing
-host preflight alone do not run this route or qualify a different launcher.
+The measured route mounts the selected slot's `lib` at `/native-ffmpeg` with
+the pinned App/Platform/GL, firmware and graphics/audio inputs. Its search path
+is `/native-ffmpeg:/app/lib:/app/lib/samba:/app/lib/samba/private:/usr/lib/x86_64-linux-gnu:/usr/lib:/gl/lib`.
+The RC4 native receipt must identify actual new-module EOS/reopen/PTS/lifetime
+checks separately from reused native-path evidence. The retained observer and
+namespace recipe in `evidence/rc2-native-evidence.tar`, under `harness/`, remains
+historical qualification scaffolding, not a general desktop launcher. Files-only
+selection and host preflight do not run that route or qualify another launcher.
 
 After normal Quit and idle retirement, unload the temporary module and reload
-the preserved installed legacy module using its saved options, as described
-in [BRINGUP](BRINGUP.md#reload-an-idle-device). Do not force an unload or kill a
-surviving owner to recover; preserve its runtime and state for handoff.
-The file-only removal below leaves module selection and user configuration
-alone and may be repeated. `rollback` requires a previously installed update;
-the unchanged RC3 inner runtime does not create a second slot by itself.
+the preserved installed legacy module with its saved options, following
+[BRINGUP](BRINGUP.md#reload-an-idle-device). Do not force an unload or kill a
+surviving owner to recover; preserve runtime and state for handoff. After all
+consumers retire, the file-only removal may be repeated:
 
 ```sh
-python3 -B "$delivery_root/tools/native-runtime-slots.py" --store "$slot_store" status
-python3 -B "$delivery_root/tools/native-runtime-slots.py" --store "$slot_store" remove
+(
+  set -eu
+  python3 -B "$delivery_root/tools/native-runtime-slots.py" --store "$slot_store" status
+  python3 -B "$delivery_root/tools/native-runtime-slots.py" --store "$slot_store" remove
+)
 ```
 
-No external Kodi/FFmpeg replacement patch is required. The native route stays
-optional; broader nonempty STOP→START, controls, equipment and physical-display
-limits remain in [SUPPORT](NATIVE-RUNTIME-SUPPORT.md). Centered is separately
-available through the ordinary VA route and does not require this companion.
+`rollback` needs a previously installed update. Reusing the same RC3/RC4 inner
+runtime does not create a second slot. The route stays optional, with broader
+nonempty STOP→START, controls, equipment and physical-display limits in
+[SUPPORT](NATIVE-RUNTIME-SUPPORT.md). Centered uses the ordinary VA route and
+does not require this companion.
+
+<a id="rc3-candidate-preparation"></a>
+<a id="rc3-companion-layout-and-use"></a>
+
+## Published RC3 reference
+
+Published [RC3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
+remains immutable: frozen core `36ef4c681f49`, module18/native srcversion
+`FEB8DC48436425D92497DA7`, unchanged FFmpeg and 23-case native qualification.
+Its complete [original operator guide](https://github.com/ahnhy1324/crystalhd/blob/v1.3.0-rc.3/NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use)
+and `evidence/rc3-core-binding.json` / `rc3-native-qualification.json` belong to
+that package. For RC4 preparation, return to the [current procedure](#rc4-companion-layout-and-use).
+Published RC2's original recipe follows without alteration.
 
 ## Frozen RC2 operator reference
 

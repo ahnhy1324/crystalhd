@@ -18,10 +18,13 @@ Work from the root of the source version you want to install. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
 CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
 revision's cached DKMS build for the running kernel as well. Read the DKMS
-revision from this source. The complete `1.3.0-rc.3` candidate uses module/DKMS
-`3.10.18`; obtain its exact source from the candidate manifest/qualification
-receipt. Once qualified or registered, that source/payload is immutable. Do
-not register a moving master checkout or changed payload under the same
+revision from this source. Prepared `1.3.0-rc.4` uses module/DKMS `3.10.19`
+and is **PREPARED_NOTQUALIFIED**, not a published download. Candidate testers
+must use its exact private core archive and binding manifest; see
+[RC4 preparation](RELEASING.md#rc4-stabilization-candidate-preparation).
+The published `1.3.0-rc.3` core `36ef4c681f49` uses `3.10.18` and retains its
+own qualification receipt. Once qualified or registered, that source/payload
+is immutable. Do not register a moving master checkout or changed payload under the same
 identity; a changed candidate needs a distinct revision and affected checks.
 Published `1.3.0-rc.2` remains frozen at core `940cf357` / `3.10.17`; preserve
 that source and registration for rollback. See [RELEASING.md](RELEASING.md).
