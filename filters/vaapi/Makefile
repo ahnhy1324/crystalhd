@@ -187,6 +187,7 @@ clean: maintained-cost-observer-clean
 .PHONY: replay-disposition-observer check-replay-disposition-observer replay-disposition-observer-clean
 replay-disposition-observer: $(ROOTDIR)/tests/vaapi-replay-disposition-backend.cpp \
 		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
+		$(ROOTDIR)/tests/vaapi-centered-readback-observer.h \
 		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
 	mkdir -p replay-disposition-observer
