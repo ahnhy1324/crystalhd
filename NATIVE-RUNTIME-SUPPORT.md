@@ -1,12 +1,15 @@
 # Native companion support and distribution policy
 
 This policy covers the optional native V4L2 Kodi companion. Use the
-[RC3 delivery instructions](NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use) for the published RC3 package;
+[current RC4 preparation instructions](NATIVE-RUNTIME-DELIVERY.md#rc4-companion-layout-and-use);
+use the [published RC3 reference](NATIVE-RUNTIME-DELIVERY.md#published-rc3-reference)
+for the available RC3 package;
 for ordinary playback, start with [everyday usage](USAGE.md).
 
-RC3 retains the same bounded optional distribution scope as published RC2.
-Its separate receipts identify the new own-core/module18 and outer-package
-qualification; a reused runtime build receipt does not supply those results. The
+RC4 preparation retains the bounded optional scope of published RC2/RC3 and
+all integrated core features/defaults. New own-core/module19 and outer-package
+qualification remain required; a reused runtime build receipt does not supply
+those results. Preparation is not qualification or publication. The
 measured x86_64 Core2 T8100 / BCM70015 / Intel965 cohort and the exact
 Kodi22RC1, Platform26.08 and GL commits in the delivery guide remain the target.
 Native FFmpeg was configured `--cpu=core2`
@@ -18,7 +21,8 @@ not bundle or replace their binaries.
 
 The neutral runtime, reproduced twice from unchanged pinned source, and its
 complete FFmpeg/dependency/SDK source and notice companions form the frozen
-published RC2 delivery and are reused unchanged in RC3. A deterministic packager status is
+published RC2 delivery, reused unchanged in RC3 and RC4 preparation. A deterministic
+packager status is
 only an assembly result. Public release/tag and stable promotion follow the
 main repository's release authorization; no arbitrary machine, clean-OS,
 physical presentation, full FFmpeg or security-certification claim follows.
@@ -49,7 +53,10 @@ adds own token-bound source-range transitions and bounded progressive POC0/2
 multi-slice association. Its [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
 binds frozen own core `36ef4c681f49` / module18 to the fresh 23-case native
 campaign, including pinned original Kodi720p/FHD EOS/reopen and restoration.
-File-only slot/preflight success remains separate from that media evidence;
+Those RC3 results retain their original source/module scope. RC4 must bind
+its exact frozen core, measured native module19 and actual integration checks
+in `evidence/rc4-native-qualification.json`, with unchanged-path reuse named
+separately. File-only slot/preflight success remains separate from media evidence;
 it does not qualify a changed native source, kernel, launcher or target.
 Same-DPB nonempty STOP→START remains unsupported. Independent
 booted OS, Atom/i386, BCM70012, broad codec coverage, physical presentation and

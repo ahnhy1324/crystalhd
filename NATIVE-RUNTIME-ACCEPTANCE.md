@@ -4,32 +4,39 @@ Current overview reviewed **2026-11-04**. Use the [documentation map](DOCUMENTAT
 for the distinction between current operator guides, tool contracts and dated
 preparation evidence.
 
+## RC4 candidate and native acceptance
+
+Bundle `1.3.0-rc.4` / module-DKMS `3.10.19` is in preparation. It preserves the
+complete core feature set and the optional unmodified FFmpeg DRM_PRIME companion.
+No new-module/native PASS or publication follows from preparation. The current
+[operator flow](NATIVE-RUNTIME-DELIVERY.md#rc4-companion-layout-and-use) selects
+the exact own core through its binding receipt and reads the measured native
+srcversion from a passing actual receipt before temporary activation.
+
+| Candidate evidence | Required scope |
+| --- | --- |
+| Core/source binding | `evidence/rc4-core-binding.json` identifies the exact core archive/revision, module19 and packaged own tools/guides. |
+| Actual new-module boundary | `evidence/rc4-native-qualification.json` records the new module identity/API/ownership and selected original Kodi720p/FHD EOS/reopen/PTS/DRM lifetime checks, restoration and explicit unchanged-path reuse. No module18 result is relabeled19. |
+| Unchanged FFmpeg/provider materials | Reuse exact pinned runtime/source/two-build-proof bytes and notices; `evidence/reuse-scope.json` states their original attribution. This does not qualify a changed own native path. |
+| Existing unavailable targets | Independently booted OS, Atom/i386 and BCM70012 remain outside the current-equipment cohort; no broader gate is added. |
+
+See [RC4 complete scope](RELEASING.md#rc4-stabilization-candidate-preparation).
+Centered stays default-off on the ordinary VA route; private centered observers
+do not qualify native decoding. Existing native controls, accepted renderer/QoS
+losses and exact-route no-drift-log policy retain their measured scope.
+
 <a id="rc3-candidate-status"></a>
 
-## Published RC3 and current operator flow
+### Published RC3 evidence
 
-Complete `1.3.0-rc.3` includes the own native V4L2 path and prebuilt
-unmodified FFmpeg DRM_PRIME companion, with distinct own-core module/DKMS
-`3.10.18`. The [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+The immutable [RC3 qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
 and companion `evidence/rc3-native-qualification.json` bind frozen core
-`36ef4c681f49` / native srcversion `FEB8DC48436425D92497DA7` to the actual
-23-case native campaign and its restored boundary. Original pinned Kodi720p/FHD
-each returned180 pictures twice through the unchanged FFmpeg DRM_PRIME runtime.
-Earlier source/module13 diagnostics and RC2 final17 results retain their
-original attribution; they do not qualify changed native bytes automatically.
-
-| Candidate evidence | Scope and present status |
-| --- | --- |
-| Core/source binding | `evidence/rc3-core-binding.json` in the new companion identifies the final candidate core, module and packaged tools/guides. |
-| Changed own native path | `evidence/rc3-native-qualification.json` records the actual candidate range/picture/PTS, EOS/reopen, lifecycle and restoration result. |
-| Unchanged FFmpeg/provider materials | Reuse the exact pinned runtime/source/build-proof bytes with original notices and historical inner metadata; declare boundaries in `evidence/reuse-scope.json`. This does not qualify changed own native code. |
-| Existing unavailable targets | Independently booted OS, Atom/i386 and BCM70012 remain outside the declared current-equipment cohort. No broader mandatory gate is added. |
-
-See [complete RC3 scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation)
-and the [current RC3 private-file, module and preflight commands](NATIVE-RUNTIME-DELIVERY.md#rc3-companion-layout-and-use).
-The next table and historical preparation sections retain their RC2/earlier
-results. Centered is separately included as a default-off ordinary-VA
-experiment; the private centered observers do not qualify this native route.
+`36ef4c681f49` / module18/native srcversion `FEB8DC48436425D92497DA7` to its
+actual23-case campaign. Original pinned Kodi720p/FHD each returned180 pictures
+twice through the unchanged FFmpeg DRM_PRIME runtime and restored the original
+boundary. Earlier source/module13 and RC2/module17 observations retain their
+own attribution. See the [RC3 operator reference](NATIVE-RUNTIME-DELIVERY.md#published-rc3-reference).
+These results are scoped reuse inputs, not automatically fresh RC4 acceptance.
 
 ## Retained RC2 completion
 

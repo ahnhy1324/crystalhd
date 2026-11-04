@@ -1,15 +1,16 @@
 # Rebuild the unchanged native FFmpeg runtime
 
 Use this recipe to reproduce the unchanged FFmpeg libraries from their pinned
-inputs and measured toolchain. They are supplied by frozen RC2 and retained
-in the RC3 companion without external source modifications. To use the prebuilt
+inputs and measured toolchain. They are supplied by frozen RC2, retained in published RC3 and reused in
+RC4 preparation without external source modifications. To use the prebuilt
 libraries, follow the [delivery guide](NATIVE-RUNTIME-DELIVERY.md). For ordinary
 local-file playback, start with [everyday usage](USAGE.md).
 
-Reusing these reproduced external ELF bytes does not qualify the changed RC3
-own core/module18; its binding and actual native result belong in the separate
-RC3 candidate receipts. The
-original two-build result below retains its 2026-11-02 attribution.
+Reusing these reproduced external ELF bytes does not qualify the RC4 own
+core/module19. Its source binding and actual native result belong in separate
+RC4 candidate receipts; preparation is not a PASS or publication. The original
+two-build result below retains its 2026-11-02 attribution. No new FFmpeg build
+is required when reusing those exact unchanged materials.
 
 Start from the extracted native companion, which supplies the `materials/`
 and `tools/` directories used below. Preserve its pinned sources; current
