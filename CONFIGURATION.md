@@ -4,6 +4,11 @@ This is the complete inventory of configuration surfaces read by the current
 production driver, library, VA-API backend, launchers, GStreamer element and
 `crystalhd-play`. Unset controls retain the existing behavior.
 
+Managed saving, profiles and the optional editors require matching 1.3 tools
+and readers; follow [RC3 settings installation](README.md#install-rc3-for-managed-settings).
+Stable 1.2's configuration utility is a read-only inspector; these save/editor
+commands are not available there.
+
 The `crystalhd-config` utility validates and explains the
 strict schema defined in [CONFIGURATION-SCHEMA.md](CONFIGURATION-SCHEMA.md).
 Updated VA/DIL components read their supported defaults directly when an
