@@ -14,15 +14,21 @@ Install the [Quick start dependencies](README.md#quick-start), plus DKMS:
 sudo apt install dkms "linux-headers-$(uname -r)"
 ```
 
-Work from the root of the source version you want to install. A source archive
+Use published `1.3.0`, frozen source `24a5182b988b` / module `3.10.20`, for a
+normal installation or update. Select the [released core](README.md#quick-start)
+and install its matching runtime as well as its kernel module. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
 CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
 revision's cached DKMS build for the running kernel as well. Read the DKMS
-revision from this source. Final `1.3.0` uses module/DKMS `3.10.20`.
-Select the exact released core from its official release entry and qualification
-receipt, or the explicitly supplied private binding for prepublication evaluation;
-see [source selection](README.md#quick-start). The version label alone does not
-establish availability or qualification.
+revision from this source. Source, selected/loaded module and runtime must
+match; a newer module loaded over an older installed stack is a temporary
+comparison rather than a completed update. After a successful update, retain
+that matched current stable installation as the normal baseline. Older cached
+modules remain available for an explicitly selected rollback or comparison.
+
+<details>
+<summary>Earlier immutable release and module identities</summary>
+
 RC4's frozen source uses `3.10.19`; retain its separate payload and receipts.
 The published `1.3.0-rc.3` core `36ef4c681f49` uses `3.10.18` and retains its
 own qualification receipt. Once qualified or registered, that source/payload
@@ -43,8 +49,14 @@ earlier frozen, unpublished `1.1.0-rc.2` uses `3.10.5`. Preserve previous
 registered source/builds for rollback.
 Stable `1.0.0` uses `3.10.3`, and the published
 `v1.0.0-rc.1` retains `3.10.2`. A checkout identity does not mean an RC was
-published. Neither a retained source nor an existing registered source tree
-should be overwritten:
+published.
+
+</details>
+
+Neither a retained source nor an existing registered source tree should be
+overwritten. In particular, preserve an existing exact `24a5182b988b`
+`/usr/src/crystalhd-3.10.20` tree and use the unchanged-revision procedure below;
+never copy a later development or experimental build into it:
 
 ```sh
 kernel_release=$(uname -r)
@@ -152,14 +164,14 @@ do not delete arbitrary candidates listed by the check.
 
 For a new DKMS revision, follow [prepare](#prepare-the-source) and [install](#install-a-new-revision)
 from the new source. Keep the old revision/source until the new playback test
-passes. The published stable `1.2.0` source uses module/DKMS revision `3.10.13`,
-upgrading `1.2.0-rc.2`'s `3.10.12` or stable 1.1.0's `3.10.9` without changing the
-`libcrystalhd.so.3` ABI.
+passes. Published stable `1.3.0` uses module/DKMS revision `3.10.20` and matching
+source `24a5182b988b`, upgrading older installations while preserving the
+`libcrystalhd.so.3` ABI. Install its runtime together with the module and check
+the selected and loaded identities before treating the update as complete.
 Use `dkms.conf` from the chosen source; a corrected RC
 payload must use a new revision rather than replacing a registered source
-tree. Keep the stable, development and RC source trees unchanged when adding
-`/usr/src/crystalhd-3.10.13`; in particular retain `1.2.0-rc.2`'s
-`/usr/src/crystalhd-3.10.12` for rollback.
+tree. Keep older registered sources, including stable `1.2.0`'s
+`/usr/src/crystalhd-3.10.13`, unchanged for intentional comparison or rollback.
 
 If reinstalling the **same revision from unchanged source**, inspect its
 registered location first:

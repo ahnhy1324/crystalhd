@@ -178,8 +178,21 @@ and its ordinary OWN library dependency. Neither target installs components.
 `vaapi-centered-payload-stock.py` reuses the existing pinned original Kodi22
 RC1 namespace/shutdown helper on the current host. Prepare a fresh plan from a
 reviewed, committed clean OWN checkout with `--prepare-plan`, `--own-source`,
-`--own-revision` and an independent `--source-probe` packet/frame JSON. Execute
-that plan explicitly with `--execute`. Both modes require `--plan` and matching
+`--own-revision`, an independent `--source-probe` packet/frame JSON and
+`--runtime-baseline` pointing to the approved absolute regular baseline JSON.
+The current schema1 baseline has status
+`PASS_VERIFIED_OFFICIAL_STABLE_BASELINE`, bundle1.3.0/source24a, module20,
+the full idle host snapshot and the matching installed runtime receipt.
+The current host's verified file is
+`/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/official-stable-baseline.json`;
+the convenience discovery symlink is not accepted. Preparation freezes the
+file and its DATA; execution rejects missing or changed baseline data and
+does not allow a baseline override. The current guard verifies the full
+approved host boundary and installed component cohort before and after media;
+it does not invoke the older helper's fixed13 guard or reinstall an old stack.
+Historical module13/runtime36 results below retain their original baselines.
+
+Execute the prepared plan explicitly with `--execute`. Both modes require `--plan` and matching
 fresh `--case`/`--case-root`; `--cycles 2` at preparation selects same-process
 natural EOF/reopen. The original 30-second H264 fixture has 750 source pictures.
 That EOF runner does not request a seek or Stop.
@@ -259,6 +272,7 @@ python3 -B tests/vaapi-centered-payload-stock.py --prepare-plan \
   --scenario bwdif2997 --cycles 2 \
   --own-source "$PWD" --own-revision "$(git rev-parse HEAD)" \
   --source-probe /absolute/reviewed-short-packets-frames.json \
+  --runtime-baseline /absolute/verified-official-stable-baseline.json \
   --plan /absolute/new-bwdif2997.plan.json \
   --case-root /absolute/existing-case-parent --case bwdif2997-new
 python3 -B tests/vaapi-centered-payload-stock.py --execute \
