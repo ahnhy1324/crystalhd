@@ -32,9 +32,9 @@ PID = 321
 FIELDS = STOCK.BINDING + ('surface', 'owner')
 
 
-def fixture():
+def fixture(count=750):
     rows = []
-    for ordinal in range(1, 751):
+    for ordinal in range(1, count + 1):
         identity = dict(driver_instance=7, context=3, generation=1, token=ordinal * 100000,
                         decode_identity=ordinal * 2, submission_ordinal=ordinal,
                         surface=ordinal, owner=ordinal)
@@ -157,6 +157,84 @@ class CensusTests(unittest.TestCase):
         outside = copy.deepcopy(self.rows[2][1]); outside['pid'] = PID + 1
         result = self.audit([(-1, outside)] + self.rows + [(3750, outside)])
         self.assertEqual(result['status'], 'PASS', result)
+
+
+
+class BwdifScenarioTests(unittest.TestCase):
+    def test_balanced_measured_subset_never_passes_complete_source_population(self):
+        rows = fixture(695)
+        result = STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID, 900)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['ledger_status'], 'PASS')
+        self.assertFalse(result['source_population_qualified'])
+        self.assertEqual(result['observed_submit_bindings'], 695)
+        self.assertEqual(result['source_metadata_pictures'], 900)
+        del rows[3]
+        self.assertEqual(STOCK.operation_census(rows, {'begin': 0, 'end': 4000}, PID, 900)['ledger_status'], 'FAIL')
+
+    def test_nine_hundred_originals_keep_two_distinct_native_dequeues(self):
+        rows = fixture(900)
+        result = STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID, 900)
+        self.assertEqual(result['status'], 'PASS')
+        self.assertEqual(result['event_counts']['output_dequeued'], 1800)
+        self.assertEqual(result['observed_submit_bindings'], 900)
+        self.assertEqual(result['actual_media_PTS_to_binding'], 'NOT_OBSERVED')
+        self.assertEqual(STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID)['status'], 'FAIL')
+
+    def test_balanced_native_total_cannot_hide_one_and_three_fields(self):
+        rows = fixture(900)
+        for field in FIELDS:rows[3][1][field] = rows[8][1][field]
+        self.assertEqual(len([r for _, r in rows if r['event'] == 'output_dequeued']), 1800)
+        self.assertEqual(STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID, 900)['status'], 'FAIL')
+
+    def metadata(self, media):
+        frames = [dict(pts=6006 + i*3003, interlaced_frame=1, top_field_first=1, repeat_pict=0,
+                       width=1920, height=1080, pix_fmt='yuv420p') for i in range(900)]
+        return dict(streams=[dict(codec_type='video', codec_name='h264', width=1920, height=1080,
+                    coded_width=1920, coded_height=1088, pix_fmt='yuv420p', r_frame_rate='30000/1001',
+                    time_base='1/90000', field_order='tt')], frames=frames,
+                    packets=[dict(pts=f['pts']) for f in reversed(frames)],
+                    format=dict(filename=str(media), size=media.stat().st_size))
+
+    def test_short_metadata_accepts_packet_reordering_without_inventing_clock(self):
+        with tempfile.TemporaryDirectory() as name:
+            media=Path(name)/'short.ts';media.write_bytes(b'owned metadata control')
+            result=STOCK.source_metadata(self.metadata(media),media,'bwdif2997')
+            self.assertEqual(result['pictures'],900)
+            self.assertEqual(result['coded'],[1920,1088])
+            self.assertEqual(result['source_time_base'],'1/90000')
+            self.assertEqual(result['nominal_picture_duration'],'1001/30000')
+            self.assertEqual(result['actual_source_PTS_to_VA_binding'],'NOT_OBSERVED')
+
+    def test_short_metadata_rejects_long_or_packet_only_substitution(self):
+        with tempfile.TemporaryDirectory() as name:
+            media=Path(name)/'short.ts';media.write_bytes(b'owned metadata control')
+            for mode in ('long','packet-only','shifted-clock','wrong-coded','wrong-flags'):
+                with self.subTest(mode=mode):
+                    doc=self.metadata(media)
+                    if mode=='long':doc['frames']*=10;doc['packets']*=10
+                    elif mode=='packet-only':doc['frames']=[]
+                    elif mode=='shifted-clock':
+                        for row in doc['frames']+doc['packets']:row['pts']+=1
+                    elif mode=='wrong-coded':doc['streams'][0]['coded_height']=1080
+                    else:doc['frames'][-1]['repeat_pict']=1
+                    with self.assertRaises(ValueError):STOCK.source_metadata(doc,media,'bwdif2997')
+
+    def test_reference_namespace_has_no_media_device_or_preload(self):
+        prefix=STOCK.reference_namespace(Path('/app-source'),Path('/platform'),Path('/gl-source'),Path('/payload-source'),Path('/own-reference'))
+        self.assertNotIn('--dev-bind',prefix)
+        self.assertNotIn('--die-with-parent',prefix)
+        self.assertNotIn('LD_PRELOAD',prefix)
+        self.assertNotIn('/dev/crystalhd',prefix)
+        self.assertEqual(prefix[-1],'--')
+
+    def test_bwdif_preset_is_explicit_and_old_default_remains_off(self):
+        self.assertEqual(STOCK.scenario('off750')['method'],0)
+        self.assertTrue(STOCK.scenario('off750')['prefer_vaapi_renderer'])
+        self.assertEqual(STOCK.scenario('bwdif2997')['method'],7)
+        self.assertEqual(STOCK.scenario('bwdif2997')['deintmethod'],'bwdif')
+        self.assertFalse(STOCK.scenario('bwdif2997')['prefer_vaapi_renderer'])
+        with self.assertRaises(ValueError):STOCK.scenario('automatic-unqualified')
 
 
 class AbortTests(unittest.TestCase):

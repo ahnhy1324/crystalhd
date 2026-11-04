@@ -15,6 +15,8 @@ and [progressive Off CPU-copy route](#progressive-off-cpu-copy-route) add
 diagnostic observations; they do not expand the base payload protocol into
 post-copy pixel, BWDIF or GPU/scanout qualification. Current receipts are
 indexed by the [frontend acceptance targets](../FRONTEND-ACCEPTANCE.md).
+The separate [method7/BWDIF case](#method7bwdif-post-filter-observation)
+adds measured post-copy/filter metadata and a bounded same-input pixel replay.
 
 ## Observation and publication
 
@@ -221,6 +223,105 @@ before field validation, so its default outcome alone is not proof of a valid
 field pair. Matching later public materializations are recorded separately,
 and the payload reader requires successful materialization for its selected
 bindings. These records do not independently measure physical field parity.
+
+## Method7/BWDIF post-filter observation
+
+Select `--scenario bwdif2997` only while preparing a fresh
+`vaapi-centered-payload-stock.py` plan. The default remains `off750`.
+This separate case freezes the original short `uniform-18.ts`, its reviewed
+900-packet/900-software-frame metadata, original App/Platform providers,
+method7, CPU-copy preference and the isolated post-filter artifacts. Execution
+requires actual `ff-h264-vaapi`/`bwdif`, saved renderer preference false,
+original SSE4/filter mappings and two same-PID natural EOFs with decoder
+retirement. Its native census requires900 original bindings and1800 field
+records per play. Those are distinct from measured post-filter inputs/outputs.
+A balanced measured subset keeps the complete-source criterion FAIL. The
+BWDIF scenario may finish both diagnostic plays without lowering that count;
+it reports `OBSERVED_SOURCE_QUALIFICATION_FAIL` and exits nonzero rather than
+promoting a subset into a whole-source PASS. Native ownership/field structure
+must still pass before the second play can begin.
+
+Build only the explicit diagnostic targets using the original unchanged
+filter12.1.102/util61.1.102 public headers:
+
+```sh
+make -C filters/vaapi centered-observer postfilter-observer FFMPEG63_INCLUDE=/absolute/original/include
+make -C filters/vaapi check-postfilter-observer
+```
+
+On the retained original-App/Platform cohort with the pinned namespace helpers
+available, run from the committed clean OWN source checkout. Use new plan/case
+paths and the reviewed **short** packet/frame JSON; execution reads its scenario
+from the frozen plan, so `--scenario` belongs only to preparation:
+
+```sh
+python3 -B tests/vaapi-centered-payload-stock.py --prepare-plan \
+  --scenario bwdif2997 --cycles 2 \
+  --own-source "$PWD" --own-revision "$(git rev-parse HEAD)" \
+  --source-probe /absolute/reviewed-short-packets-frames.json \
+  --plan /absolute/new-bwdif2997.plan.json \
+  --case-root /absolute/existing-case-parent --case bwdif2997-new
+python3 -B tests/vaapi-centered-payload-stock.py --execute \
+  --plan /absolute/new-bwdif2997.plan.json \
+  --case-root /absolute/existing-case-parent --case bwdif2997-new
+```
+
+The ordinary build/install/package does not include these artifacts. The
+[observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded
+per-PID graph lifetime/API ledger and first3-input/first4-output active NV12
+snapshots. Original source arguments and `bwdif` parsing are observed; the
+NV12 sink constraint is qualified by pinned original source and actual NV12
+returns, not by an intercepted option-setting call. Old receive-frame and
+progressive Off observers keep their formats and evidence scopes.
+
+After original media and compositor retirement, the controller reads the
+complete observer report and replays each selected temporal prefix through
+an OWN client using the original App filter/util in a CPU-only Platform
+namespace. It compares the four active NV12 outputs and captured raw
+properties. Prefix replay preserves the original API order and supplies no
+source EOF. An explicitly requested `flushed-reference` run is a separate
+reference-only control; it never repairs or drains Kodi. The reference namespace
+has no card/GPU bind, and an unresolved owned reference process retains its
+HANDOFF record and output directory.
+
+Source90k ticks, numeric Kodi microseconds, AVFrame clocks, declared graph1/1
+and observed sink clocks remain separate. Missing client EOF or a short output
+tail remains an observation. Neither a nominal900-to1800 expectation nor a
+successful same-input prefix establishes whole-tail cadence, independent
+codec/scaler correctness, physical presentation, normal-backend compatibility
+or release qualification. The system codec62/filter11 input census and native
+field-weave reference cannot substitute for this original-App filter12 replay.
+
+The [2026-11-04 receipt](fixtures/issue477/bwdif-postfilter-20261104.json)
+records the actual distinction:
+
+| Measured stage | First natural play | Reopen natural play |
+| --- | --- | --- |
+| Short source packets/software-decoded originals | 900 | 900 |
+| Submitted/input/materialized originals and accepted BWDIF inputs | 687 | 690 |
+| Native field dequeue records | 1,374 | 1,380 |
+| Successful filter outputs before graph free | 1,372 | 1,378 |
+| Source NULL/close; sink EOF | 0; 0 | 0; 0 |
+
+The native subset ledgers are balanced, but the complete-source criterion is
+**FAIL**: case02 ends `OBSERVED_SOURCE_QUALIFICATION_FAIL` with nonzero exit.
+Two same-PID natural EOFs and the first four outputs per play were observed;
+the eight outputs match the original-App same-input reference in all 24,883,200
+active NV12 bytes and captured raw properties. A separate explicit flush of the
+three captured inputs yields six reference outputs rather than four, with EOF
+injected only into that reference. It does not change the original client's
+two-output shortfall or explain the 213/210 source originals absent before
+VA submission. Existing decoder-drop log rows are approximate, not that exact
+packet/skip-state attribution. This original-App EOF-boundary diagnostic is a
+scoped known limitation, not a general stock compatibility or release result.
+
+The initial case01 FAIL remains unchanged: the first-play strict900 census
+aborted reopening, and its legacy observer footer rejected a parent fork.
+The corrected observer explicitly records only its owner PID, with child
+forwarding excluded; it does not rewrite that old capture. Case02 exits the
+application normally, retains the original module13/runtime boundary and has
+no kernel-check error. Those cleanup results do not upgrade source population,
+whole-tail cadence or unselected pixels to PASS.
 
 ## Actual returned AVFrame PTS (isolated observation)
 

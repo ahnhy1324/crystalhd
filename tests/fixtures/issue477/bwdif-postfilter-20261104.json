@@ -1,0 +1,636 @@
+{
+  "schema": "crystalhd-bwdif-postfilter-observation-v1",
+  "date": "2026-11-04",
+  "owner_issues": [
+    477,
+    436
+  ],
+  "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+  "complete_source_population_qualification": "FAIL",
+  "controller_exit": 1,
+  "diagnostic_observation": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+  "summary": "OWN transparent API observation, same-input reference and two original-App natural EOF/reopen cycles are implemented and observed. Selected prefixes match, but strict900 source qualification fails. No external product fix, stock compatibility or release qualification.",
+  "runtime_source_revision": "6d318e13ac02bfe21c3661279037e5f9af4e0e6f",
+  "initial_source_revision": "e848adc5f2a4c65326bb44668948f6261b57f485",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "os": "Ubuntu26.04",
+    "kernel": "7.0.0-38",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "client": "Unchanged Kodi22RC1/App FFmpeg",
+    "upstream_kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "backend": "Isolated OWN centered observer and transparent postfilter observer",
+    "method": 7,
+    "actual_deintmethod": "bwdif",
+    "actual_decoder": "ff-h264-vaapi",
+    "prefer_vaapi_renderer": false,
+    "effective_LOGVIDEO": {
+      "debug.extralogging": true,
+      "debug.setextraloglevel": [
+        32768
+      ]
+    },
+    "same_pid": 2114028,
+    "natural_EOFs": 2,
+    "application_exit": 0,
+    "scheduling": "ordinary inherited scheduling; no priority changes",
+    "provider_header": {
+      "type": "header",
+      "schema": "crystalhd-postfilter-v1",
+      "pid": 2114028,
+      "fork_policy": "PARENT_PID_ONLY_CHILD_FORWARD_ONLY",
+      "capacity": 16384,
+      "snapshot_capacity": 16,
+      "max_width": 1920,
+      "max_height": 1088,
+      "nv12_format": 23,
+      "sink_constraint_basis": "PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT",
+      "filter_provider": "/app/lib/libavfilter.so.12.1.102",
+      "util_provider": "/app/lib/libavutil.so.61.1.102",
+      "filter_version": 786790,
+      "util_version": 3998054,
+      "provider_ok": true
+    },
+    "header_provenance": {
+      "status": "PASS_UNCHANGED_MATCHING_PUBLIC_HEADER_CLOSURE",
+      "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "include": "/home/mache/.cache/crystalhd-v13-distribution-20261102/prefix-a/include",
+      "unchanged_headers": [
+        "libavfilter/avfilter.h",
+        "libavfilter/buffersink.h",
+        "libavfilter/buffersrc.h",
+        "libavfilter/version.h",
+        "libavfilter/version_major.h",
+        "libavutil/attributes.h",
+        "libavutil/avutil.h",
+        "libavutil/buffer.h",
+        "libavutil/channel_layout.h",
+        "libavutil/common.h",
+        "libavutil/dict.h",
+        "libavutil/error.h",
+        "libavutil/frame.h",
+        "libavutil/intfloat.h",
+        "libavutil/log.h",
+        "libavutil/macros.h",
+        "libavutil/mathematics.h",
+        "libavutil/mem.h",
+        "libavutil/opt.h",
+        "libavutil/pixfmt.h",
+        "libavutil/rational.h",
+        "libavutil/samplefmt.h",
+        "libavutil/version.h"
+      ],
+      "generated_configuration_headers": [
+        "libavutil/avconfig.h"
+      ]
+    },
+    "reference_namespace": "Original App and Platform26.08 unchanged libraries; minimal bwrap CPU-only namespace, no physical device access. Native candidate FFmpeg has BWDIF disabled and is not used as this reference."
+  },
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts",
+    "bytes": 49960248,
+    "sha256": "2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905",
+    "metadata": {
+      "codec": "h264",
+      "visible": [
+        1920,
+        1080
+      ],
+      "packets": 900,
+      "pictures": 900,
+      "source_time_base": "1/90000",
+      "source_PTS_ticks": {
+        "count": 900,
+        "first": 6006,
+        "last": 2705703,
+        "all_intervals_3003": true,
+        "full_vector": "/home/mache/.cache/crystalhd-bwdif-short-preparation-20261104/raw-packets-frames.json"
+      },
+      "nominal_picture_duration": "1001/30000",
+      "nominal_duration_seconds": "3003/100",
+      "stream_field_order": "tt",
+      "decoded_field_flag_counts": [
+        {
+          "interlaced_frame": 1,
+          "top_field_first": 1,
+          "count": 900
+        }
+      ],
+      "uniform_physical_parity_claimed": false,
+      "actual_source_PTS_to_VA_binding": "NOT_OBSERVED",
+      "coded": [
+        1920,
+        1088
+      ]
+    },
+    "provenance": "Retained original18x50-picture TFF seed retimed to30000/1001; short uniform-18.ts. Original generator/seed/concat and software packet/frame vectors retained. This is not uniform-180.ts/9000-picture metadata.",
+    "software_census_scope": "System ffprobe8.0.1/codec62/filter11:900 packets and900 TFF/no-repeat decoded frames. Input preparation only, not originalApp filter12 or postfilter reference."
+  },
+  "checks": {
+    "probe_controls": 23,
+    "strict_reader_controls": 42,
+    "reference_wrapper_controls": 14,
+    "controller_controls": 26,
+    "controller_existing_optional_retained_trace_skip": 1,
+    "existing_centered_controls": 64,
+    "private_original_header_build": "PASS",
+    "originalApp_reference_provider_query": "PASS; BWDIF available",
+    "independent_source_reviews": "Observer/reference/reader/controller cross-reviewed by separate authors; existing provider/ownership/pixel/lifecycle/stop gates retained.",
+    "independent_actual_evidence_review": "PASS_BOUNDED_POSTFILTER_ACTUAL_EVIDENCE_REVIEW",
+    "independent_docs_review": "PASS; TODO and centered-payload protocol checked against actual case and build/CLI source"
+  },
+  "actual_case": {
+    "case": "bwdif2997-02",
+    "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+    "controls_status": "PASS",
+    "controller_errors": [],
+    "qualification_failures": [
+      {
+        "cycle": 1,
+        "criterion": "complete_source_population",
+        "expected_originals": 900,
+        "observed_originals": 687,
+        "status": "FAIL",
+        "disposition": "Retain full-source failure while completing diagnostic observation; no lower acceptance count."
+      },
+      {
+        "cycle": 2,
+        "criterion": "complete_source_population",
+        "expected_originals": 900,
+        "observed_originals": 690,
+        "status": "FAIL",
+        "disposition": "Retain full-source failure while completing diagnostic observation; no lower acceptance count."
+      }
+    ],
+    "plays": [
+      {
+        "play": 1,
+        "source_expected_originals": 900,
+        "source_qualification": "FAIL",
+        "native_subset_ledger": "PASS",
+        "missing_before_observed_VA_submission": 213,
+        "native_census": {
+          "status": "FAIL",
+          "ledger_status": "PASS",
+          "source_population_qualified": false,
+          "errors": [
+            "require exactly900 distinct original bindings"
+          ],
+          "event_counts": {
+            "sync_enter": 695,
+            "sync_exit": 695,
+            "context_destroy": 2,
+            "surface_destroy": 18,
+            "submit_bind": 687,
+            "input_sent": 687,
+            "prefeed_sent": 687,
+            "output_dequeued": 1374,
+            "materialized": 687,
+            "binding_end": 687
+          },
+          "distinct_binding_stage_counts": {
+            "submit_bind": 687,
+            "input_sent": 687,
+            "output_dequeued": 687,
+            "materialized": 687
+          },
+          "binding_multiplicity_histograms": {
+            "submit_bind": {
+              "1": 687
+            },
+            "input_sent": {
+              "1": 687
+            },
+            "output_dequeued": {
+              "2": 687
+            },
+            "materialized": {
+              "1": 687
+            }
+          },
+          "all_stage_binding_sets_equal": true,
+          "source_metadata_pictures": 900,
+          "observed_submit_bindings": 687,
+          "expected_output_dequeues_per_original": 2,
+          "output_record_scope": "Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.",
+          "actual_media_PTS_to_binding": "NOT_OBSERVED",
+          "scope": "Exact900 original submit/input bindings and1800 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts."
+        },
+        "filter_graph": {
+          "graph_id": 1,
+          "graph": "0x7709a4017840",
+          "scope": "BWDIF_NV12",
+          "counts": {
+            "source_attempts": 687,
+            "source_accepted": 687,
+            "source_failures": 0,
+            "sink_successes": 1372,
+            "sink_eagain": 687,
+            "sink_eof": 0,
+            "source_null_attempts": 0,
+            "source_close_attempts": 0,
+            "source_eof_successes": 0
+          },
+          "buffer_args": "video_size=1920x1080:pix_fmt=23:time_base=1/1:pixel_aspect=1/1",
+          "filter_args": "bwdif=1:-1",
+          "positive_input_interval_ns": [
+            763757715665324,
+            763788609361151
+          ],
+          "free_interval_ns": [
+            763789058781670,
+            763789061325003
+          ],
+          "findings": [
+            "NO_SUCCESSFUL_ORIGINAL_SOURCE_NULL_OR_CLOSE_OBSERVED",
+            "NO_ORIGINAL_SINK_EOF_OBSERVED"
+          ],
+          "prefix_available": true
+        },
+        "selected_same_input_prefix": {
+          "inputs": 3,
+          "outputs": 4,
+          "input_raw_PTS": [
+            66734,
+            100101,
+            133467
+          ],
+          "output_raw_PTS": [
+            133468,
+            166835,
+            200202,
+            233568
+          ],
+          "input_frame_time_base": [
+            0,
+            1
+          ],
+          "output_frame_time_base": [
+            0,
+            1
+          ],
+          "sink_time_base": [
+            1,
+            2
+          ],
+          "sink_frame_rate": [
+            0,
+            1
+          ],
+          "reference_mode": "prefix",
+          "reference_status": "PASS",
+          "reference_exit": 0,
+          "reference_source_eof_injected": false,
+          "independent_reader_join": "PASS_SAME_INPUT_PREFIX",
+          "comparisons": [
+            {
+              "output_index": 1,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 2,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 3,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 4,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            }
+          ]
+        },
+        "nominal_two_outputs_per_accepted_input": 1374,
+        "output_minus_nominal": -2,
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      },
+      {
+        "play": 2,
+        "source_expected_originals": 900,
+        "source_qualification": "FAIL",
+        "native_subset_ledger": "PASS",
+        "missing_before_observed_VA_submission": 210,
+        "native_census": {
+          "status": "FAIL",
+          "ledger_status": "PASS",
+          "source_population_qualified": false,
+          "errors": [
+            "require exactly900 distinct original bindings"
+          ],
+          "event_counts": {
+            "sync_enter": 698,
+            "sync_exit": 698,
+            "context_destroy": 2,
+            "surface_destroy": 18,
+            "submit_bind": 690,
+            "input_sent": 690,
+            "prefeed_sent": 690,
+            "output_dequeued": 1380,
+            "materialized": 690,
+            "binding_end": 690
+          },
+          "distinct_binding_stage_counts": {
+            "submit_bind": 690,
+            "input_sent": 690,
+            "output_dequeued": 690,
+            "materialized": 690
+          },
+          "binding_multiplicity_histograms": {
+            "submit_bind": {
+              "1": 690
+            },
+            "input_sent": {
+              "1": 690
+            },
+            "output_dequeued": {
+              "2": 690
+            },
+            "materialized": {
+              "1": 690
+            }
+          },
+          "all_stage_binding_sets_equal": true,
+          "source_metadata_pictures": 900,
+          "observed_submit_bindings": 690,
+          "expected_output_dequeues_per_original": 2,
+          "output_record_scope": "Exactly two outcome0 dequeue events for this pinned MBAFF input; these precede field validation. Matching later materialized separately records completed public output; no parity or unique-field-content claim.",
+          "actual_media_PTS_to_binding": "NOT_OBSERVED",
+          "scope": "Exact900 original submit/input bindings and1800 output dequeue records; public materialization checked when present. Synthetic tokens are not source PTS or renderer frame counts."
+        },
+        "filter_graph": {
+          "graph_id": 4,
+          "graph": "0x77098c04a180",
+          "scope": "BWDIF_NV12",
+          "counts": {
+            "source_attempts": 690,
+            "source_accepted": 690,
+            "source_failures": 0,
+            "sink_successes": 1378,
+            "sink_eagain": 690,
+            "sink_eof": 0,
+            "source_null_attempts": 0,
+            "source_close_attempts": 0,
+            "source_eof_successes": 0
+          },
+          "buffer_args": "video_size=1920x1080:pix_fmt=23:time_base=1/1:pixel_aspect=1/1",
+          "filter_args": "bwdif=1:-1",
+          "positive_input_interval_ns": [
+            763791939341314,
+            763822554152338
+          ],
+          "free_interval_ns": [
+            763825035708357,
+            763825038090003
+          ],
+          "findings": [
+            "NO_SUCCESSFUL_ORIGINAL_SOURCE_NULL_OR_CLOSE_OBSERVED",
+            "NO_ORIGINAL_SINK_EOF_OBSERVED"
+          ],
+          "prefix_available": true
+        },
+        "selected_same_input_prefix": {
+          "inputs": 3,
+          "outputs": 4,
+          "input_raw_PTS": [
+            66734,
+            100101,
+            133467
+          ],
+          "output_raw_PTS": [
+            133468,
+            166835,
+            200202,
+            233568
+          ],
+          "input_frame_time_base": [
+            0,
+            1
+          ],
+          "output_frame_time_base": [
+            0,
+            1
+          ],
+          "sink_time_base": [
+            1,
+            2
+          ],
+          "sink_frame_rate": [
+            0,
+            1
+          ],
+          "reference_mode": "prefix",
+          "reference_status": "PASS",
+          "reference_exit": 0,
+          "reference_source_eof_injected": false,
+          "independent_reader_join": "PASS_SAME_INPUT_PREFIX",
+          "comparisons": [
+            {
+              "output_index": 1,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 2,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 3,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            },
+            {
+              "output_index": 4,
+              "active_bytes": 3110400,
+              "active_pixels_equal": true,
+              "captured_metadata_equal": true
+            }
+          ]
+        },
+        "nominal_two_outputs_per_accepted_input": 1380,
+        "output_minus_nominal": -2,
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      }
+    ],
+    "observer_footer": {
+      "type": "footer",
+      "events": 5522,
+      "attempted_events": 5522,
+      "dropped": 0,
+      "snapshots": 14,
+      "snapshot_failures": 0,
+      "lifecycle_failures": 0,
+      "string_truncations": 0,
+      "clock_failure": false,
+      "fork_seen": true,
+      "inflight": 0,
+      "unpublished": 0,
+      "open_graphs": 0,
+      "complete": true
+    },
+    "empty_init_flush_graphs": [
+      2,
+      3,
+      5,
+      6
+    ],
+    "selected_active_NV12_bytes": 24883200,
+    "selected_output_frames": 8,
+    "actual_media_PTS_to_VA_binding": "NOT_OBSERVED",
+    "source_clock_comparison": false,
+    "stock_compatibility": "NOT_QUALIFIED_BY_PRIVATE_OBSERVER"
+  },
+  "EOF_boundary": {
+    "original_source_NULL_calls": 0,
+    "original_source_close_calls": 0,
+    "original_sink_EOF_returns": 0,
+    "measured_output_shortfall_per_graph": 2,
+    "finding": "Original App graphs are freed without observed source EOF; outputs are2*N-2 for accepted inputs. This is a scoped original-App EOF boundary, not a general FFmpeg defect or lossless-tail qualification.",
+    "separate_reference_only_control": {
+      "status": "PASS",
+      "mode": "flushed-reference",
+      "graph_id": 1,
+      "captured_inputs": 3,
+      "unflushed_prefix_outputs": 4,
+      "flushed_reference_outputs": 6,
+      "source_eof_injected": true,
+      "original_client_eof_claim": false,
+      "reference_exit": 0,
+      "scope": "The first4 outputs match; the extra2 belong only to this explicitly flushed reference. No NULL/close is injected into Kodi and no external binary/source is modified."
+    }
+  },
+  "pre_VA_population_boundary": {
+    "status": "UNRESOLVED_EXACT_ATTRIBUTION",
+    "deficits": [
+      213,
+      210
+    ],
+    "observed": "Original LOGVIDEO contains CalcDropRequirement hurry and dropped-in-decoder feedback in both natural-play windows. Every submitted original balances through native dequeue/materialization and filter input.",
+    "per_play_log_rows": [
+      {
+        "play": 1,
+        "log_lines": [
+          983,
+          1887
+        ],
+        "hurry_rows": 251,
+        "hurry_0_rows": 209,
+        "hurry_1_rows": 42,
+        "decoder_drop_rows": 191
+      },
+      {
+        "play": 2,
+        "log_lines": [
+          1969,
+          2860
+        ],
+        "hurry_rows": 276,
+        "hurry_0_rows": 213,
+        "hurry_1_rows": 63,
+        "decoder_drop_rows": 182
+      }
+    ],
+    "counter_scope": "All decoder-drop feedback values are2, from source-defined gap/interlace accounting. They are not summed and do not prove the exact213/210 missing pictures. Packet admission and per-packet decoder skip state are not captured.",
+    "causal_limit": "No underlying external-code fault is asserted. Maintained VA/Centered composition and other pipeline work may contribute to latency; API/log observations alone do not identify the cause.",
+    "original_source_paths": [
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp",
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp",
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp"
+    ],
+    "independent_log_review": "PASS_READ_ONLY_SCOPED_LOG_ATTRIBUTION_REVIEW"
+  },
+  "preserved_failures": [
+    {
+      "case": "initial-probe-controls",
+      "status": "FAIL",
+      "failure": "OWN probe counted one rejected selected snapshot again at publication. Initial failures retained; slot-state correction separately exercised by fresh controls.",
+      "evidence": "initial-probe-controls.json"
+    },
+    {
+      "case": "bwdif2997-01",
+      "source": "e848adc5f2a4c65326bb44668948f6261b57f485",
+      "status": "FAIL",
+      "natural_plays_completed": 1,
+      "source_expected": 900,
+      "source_observed": 695,
+      "native_dequeue_records": 1390,
+      "filter_inputs": 695,
+      "filter_outputs": 1388,
+      "observer_complete": false,
+      "observer_fork_seen": true,
+      "reason": "Strict900 census aborted reopening. Legacy observer treated helper fork as incomplete without an explicit owner-PID-only policy. Original result/footer/snapshots remain unchanged and rejected by strict reader.",
+      "new_OWN_behavior": "Explicit PARENT_PID_ONLY_CHILD_FORWARD_ONLY permits a complete owner-PID ledger while excluding child-before-exec behavior. Fork+exec starts a separate PID report. New diagnostic continuation keeps whole-source FAIL/nonzero and runs the second natural play only when native subset structure/identity/ownership is valid. It does not lower900."
+    }
+  ],
+  "retirement": {
+    "application_exit": 0,
+    "kernel_check_exit": 0,
+    "live_resource_handoff": null,
+    "shutdown_errors": [],
+    "full_boundary_receipt": "final-boundary.json",
+    "full_before_after_equal": true,
+    "runtime_leaves_verified": 36,
+    "module_changes": 0,
+    "installed_changes": 0,
+    "module": "3.10.13",
+    "refcount": 0,
+    "pin_net": 0,
+    "all_recorded_AC_present": true,
+    "max_temperature_mC": 67000,
+    "full_equality_scope": "Separate final full guard before==after==initial; mixed case before-full/after-lean dictionaries are not claimed literally equal."
+  },
+  "remaining": [
+    "Attribute the213/210 missing originals at packet admission/decoder skip and pre-VA boundary using separate bounded OWN diagnostics; do not blame external code from approximate logs.",
+    "Whole900-input/1800-nominal-output population, actual tail, all postfilter pixels and chronological cadence remain unqualified.",
+    "Same-input prefix does not independently establish codec/scaler/colour correctness, broader geometry/streams/lifetime, GPU-reader return, scanout, stock compatibility or release quality."
+  ],
+  "evidence": {
+    "host_root": "/home/mache/.cache/crystalhd-bwdif-postfilter-run-20261104",
+    "storage_scope": "Portable summary in repository; raw reports, original snapshots/references, plans/logs, failures, exact provider identities and independent reviews remain current-host cache evidence, not new release artifacts.",
+    "files": [
+      "bwdif2997-01.plan.json",
+      "bwdif2997-01/result.json",
+      "bwdif2997-01/payload/postfilter-2112427.jsonl",
+      "bwdif2997-02.plan.json",
+      "bwdif2997-02/result.json",
+      "bwdif2997-02/profile/temp/kodi.log",
+      "bwdif2997-02/payload/postfilter-2114028.jsonl",
+      "bwdif2997-02/graph-1.reference.json",
+      "bwdif2997-02/graph-4.reference.json",
+      "bwdif2997-02/reference-only-flushed-graph-1.json",
+      "initial-probe-controls.json",
+      "fork-probe-controls.log",
+      "fork-reader-controls.log",
+      "population-controller-controls.log",
+      "header-provenance.json",
+      "reference-query.jsonl",
+      "final-boundary.json",
+      "final-runtime-verification.log",
+      "decoder-drop-log-review.json",
+      "independent-review.json"
+    ]
+  },
+  "exclusions": {
+    "external_product_edits": 0,
+    "normal_install_package_changes": 0,
+    "release_artifact_changes": 0,
+    "heap538": "Original heap subtask excluded; ordinary process exit only retained.",
+    "security_filter": "No actual denial occurred in this work; no filter-block claim."
+  }
+}

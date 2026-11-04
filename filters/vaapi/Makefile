@@ -109,6 +109,29 @@ frame-pts-observer-clean:
 	@rmdir frame-pts-observer 2>/dev/null || true
 clean: frame-pts-observer-clean
 
+# Isolated post-filter diagnostics only; never part of ordinary install/package.
+.PHONY: postfilter-observer check-postfilter-observer postfilter-observer-clean
+postfilter-observer: $(ROOTDIR)/tests/vaapi-postfilter-probe.c \
+		$(ROOTDIR)/tests/vaapi-postfilter-probe.map $(ROOTDIR)/tests/vaapi-postfilter-reference.c
+	@test -n "$(FFMPEG63_INCLUDE)" || { echo 'Set FFMPEG63_INCLUDE to unchanged filter12/util61 headers' >&2; exit 1; }
+	mkdir -p postfilter-observer
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
+		-I"$(FFMPEG63_INCLUDE)" $(ROOTDIR)/tests/vaapi-postfilter-probe.c \
+		-o postfilter-observer/postfilter-probe.so \
+		-Wl,--version-script=$(ROOTDIR)/tests/vaapi-postfilter-probe.map -ldl -pthread
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -I"$(FFMPEG63_INCLUDE)" \
+		$(ROOTDIR)/tests/vaapi-postfilter-reference.c -o postfilter-observer/postfilter-reference -ldl
+
+check-postfilter-observer:
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-postfilter-probe.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-postfilter-reader.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-postfilter-reference.test.py
+
+postfilter-observer-clean:
+	rm -f postfilter-observer/postfilter-probe.so postfilter-observer/postfilter-reference
+	@rmdir postfilter-observer 2>/dev/null || true
+clean: postfilter-observer-clean
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.
