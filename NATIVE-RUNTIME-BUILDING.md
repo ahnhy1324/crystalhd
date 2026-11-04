@@ -2,13 +2,13 @@
 
 Use this recipe to reproduce the unchanged FFmpeg libraries from their pinned
 inputs and measured toolchain. They are supplied by frozen RC2, retained in published RC3 and reused in
-RC4 preparation without external source modifications. To use the prebuilt
+RC4 and the matching 1.3 companion without external source modifications. To use the prebuilt
 libraries, follow the [delivery guide](NATIVE-RUNTIME-DELIVERY.md). For ordinary
 local-file playback, start with [everyday usage](USAGE.md).
 
-Reusing these reproduced external ELF bytes does not qualify the RC4 own
-core/module19. Its source binding and actual native result belong in separate
-RC4 candidate receipts; preparation is not a PASS or publication. The original
+Reusing these reproduced external ELF bytes does not qualify the stable 1.3 own
+core/module20. Its source binding and actual native result belong in separate
+stable qualification receipts; source version alone is not a PASS or publication. The original
 two-build result below retains its 2026-11-02 attribution. No new FFmpeg build
 is required when reusing those exact unchanged materials.
 

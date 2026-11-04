@@ -1,9 +1,14 @@
 # Broadcom Crystal HD for current Linux systems
 
-Use **[stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0)
-with `crystalhd-play`** for local video playback. Start with a BCM70015 card
-and a progressive H.264 file at 720p30 or below. The player handles audio,
-subtitles and playback controls; the card decodes video.
+Use **1.3.0 with `crystalhd-play`** for local video playback once its
+[official release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
+provides the qualified release. This guide targets bundle `1.3.0` / module
+`3.10.20`; select its exact released core and qualification receipt. A version
+string alone does not announce publication. If that release is unavailable,
+use the immutable [1.2.0 fallback](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0).
+
+Start with a BCM70015 card and a progressive H.264 file at 720p30 or below.
+The player handles audio, subtitles and playback controls; the card decodes video.
 
 This fork maintains the BCM70012/BCM70015 kernel driver, firmware and legacy
 `libcrystalhd.so.3` API for Linux 5.15 and newer. Selected codec and hardware
@@ -19,10 +24,10 @@ limits are in [Compatibility](#compatibility).
 | Contribute or investigate the source | [Development and project records](#development-and-project-records) |
 
 **Need the settings window, Kodi settings add-on or experimental native Kodi
-route?** Use the published [1.3 RC3 components](#install-matching-13-tools)
-and their matching release receipt. The next [RC4 candidate](#rc4-candidate-preparation)
-uses module `3.10.19` and is being prepared; it is not a published download.
-Stable 1.2 remains the recommended ordinary-playback release.
+route?** Install the [matching 1.3 core and tools](#install-matching-13-tools).
+The ordinary playback stack needs no native companion; that optional Kodi route
+has its own [exact-runtime instructions](NATIVE-RUNTIME-DELIVERY.md). Release
+availability and qualification come from the official release entry and receipts.
 
 ## Quick start
 
@@ -31,13 +36,28 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-For a fresh stable 1.2.0 checkout on Ubuntu:
+First choose the exact core source in a new directory and retain the previous
+source for rollback. **After 1.3.0 is published**, download the core archive named
+in its [release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
+and qualification receipt, extract it and enter its directory. Its bundle and
+module versions must be `1.3.0` / `3.10.20`; a companion/tools archive is not
+the core. The archive name and exact source identity come from that receipt.
+Alternatively, only after the official release is published:
 
 ```sh
 sudo apt install git
-git clone --branch v1.2.0 https://github.com/ahnhy1324/crystalhd.git
-cd crystalhd
+git clone --branch v1.3.0 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd-1.3.0
+cd crystalhd-1.3.0
+```
 
+During preparation, testers use the exact private final-candidate archive and
+binding manifest. For the available stable fallback, follow the
+[frozen 1.2.0 quick start](https://github.com/ahnhy1324/crystalhd/blob/v1.2.0/README.md#quick-start);
+keep its module13 and source unchanged. Do not use a moving checkout in place
+of either version. From the selected core directory on Ubuntu:
+
+```sh
 sudo apt install build-essential pkg-config gettext linux-headers-$(uname -r) \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
@@ -117,11 +137,8 @@ It is an optional choice for suitable BCM70015 links.
 
 ## Settings
 
-For stable 1.2, use the Player's [command-line options](#common-use) and leave
-tuning variables unset for the first run. Stable 1.2's `crystalhd-config` is a
-read-only inspector; it does not save or apply managed defaults.
-
-**1.3 candidates** provide managed defaults and optional settings UIs:
+Version 1.3 provides managed defaults and optional settings UIs. Start with
+built-in defaults; add saved settings when you need them:
 
 - [Install matching 1.3 components](#install-matching-13-tools) before
   adding either editor.
@@ -140,48 +157,37 @@ The optional GTK window has an unresolved intermittent Ubuntu24 crash
 ([#623](https://github.com/ahnhy1324/crystalhd/issues/623));
 [the bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json)
 does not claim a repair. The command-line editor has no GTK dependency.
+Stable 1.2's configuration utility remains a read-only inspector; use its
+Player command-line options rather than these new editors.
 
 <a id="install-rc2-for-managed-settings"></a>
 <a id="install-rc3-for-managed-settings"></a>
 
 ### Install matching 1.3 tools
 
-**Available now:** the published RC3 core / module `3.10.18`. RC4 /
-`3.10.19` is **PREPARED_NOTQUALIFIED**; use its exact private candidate archive
-and binding manifest only when evaluating the prepared candidate. Do not
-substitute moving master for a released or registered source. RC4 tag/download
-instructions will apply only after publication; see [candidate preparation](#rc4-candidate-preparation).
+Use the `1.3.0` core / module `3.10.20` identified by its official release
+entry and qualification receipt **after publication**. During final preparation,
+use only the exact private candidate archive and binding manifest; preparation
+alone is not qualification or a download announcement. The [quick start](#quick-start)
+shows source selection without guessing an archive name or source hash.
 
-Keep your stable source directory for rollback. Select the published RC3 core identified
-by its release receipt in a **new directory**. From the directory where you
-keep source checkouts:
-
-```sh
-sudo apt install git
-git clone --branch v1.3.0-rc.3 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd-1.3.0-rc.3
-cd crystalhd-1.3.0-rc.3
-```
-
-Alternatively, download the core source archive named in the
-[RC3 release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
-and qualification receipt, extract it into a new directory and enter it.
-It must be the `1.3.0-rc.3` core / module `3.10.18`; the separately identified
-native companion tool source is not a replacement core installation. The
-release receipt supplies the exact source/archive identity. RC2's source
-`940cf357` / module17 remains frozen for its own package and rollback.
+Keep the previous source and cached module for rollback. Published RC3
+core `36ef4c681f49` / module18 and RC2 core `940cf357` / module17 retain their
+own immutable artifacts and instructions. RC4 source/module19 also has a separate
+[candidate snapshot](https://github.com/ahnhy1324/crystalhd/blob/1c8b0451c631bd93e3f0395dd3e528875b8ecfe9/README.md#rc4-candidate-preparation);
+none is a replacement source for final module20.
 
 Install the [quick-start dependencies](#quick-start), then use the existing
 [direct install/update procedure](BRINGUP.md#direct-install-update-and-rollback)
 or [DKMS update procedure](README.dkms#update-an-existing-installation), according
 to how your current module is managed. A fresh DKMS installation uses
 [Install a new revision](README.dkms#install-a-new-revision). Follow that route
-from this RC3 source directory so the driver, library, GStreamer, VA and
+from the matching 1.3.0 source directory so the driver, library, GStreamer, VA and
 configuration tools match. Close players before updating and verify with
 `crystalhd-check` afterward. Installing only an editor over stable 1.2 does not
 update its readers.
 
-For the optional desktop window, stay in the RC3 directory and run:
+For the optional desktop window, stay in that matching core directory and run:
 
 ```sh
 sudo apt install gettext python3-gi gir1.2-gtk-3.0
@@ -224,8 +230,8 @@ does not establish Moonlight support at that rate.
 | --- | --- |
 | BCM70015 local files | Recommended: `crystalhd-play` / GStreamer with audio, subtitles and controls. 720p30 is well tested; native 1080p30 works on the reference host with its qualified PCIe workaround. |
 | H.264, MPEG-2, MPEG-4 Part 2, VC-1 / WMV3 | Selected profiles work; see the [codec boundaries](USAGE.md#codec-boundaries). HEVC, VP8, VP9 and AV1 are unsupported. |
-| Optional development/RC2 MPEG-1 experiment | Experimental MPEG-1 decoding via the MPEG-2 algorithm-1 path, natural-content hardware qualified on BCM70015 at progressive 352x288/25. Select the separately built rank-NONE `crystalhdmpeg1experimentaldec` explicitly. This is outside stable 1.2 and distinct from official/vendor support, generalized conformance and the ordinary decoder. See [setup and limitations](filters/gst/gst-plugin-1.0/MPEG1-EXPERIMENTAL.md). |
-| Centered card output (1.3 experiment) | Already included in RC2 and retained in RC3, default off. Selected BCM70015 H.264 paths return a smaller picture inside a full readable NV12 canvas; Kodi zoom can enlarge it for display. Follow the [explicit geometry/range setup and limits](filters/vaapi/README.md#development-experiment-centered-card-output). It is separate from the private diagnostic observers and does not add hardware deinterlacing or native Full-HD detail. |
+| Optional 1.3 MPEG-1 experiment | Experimental MPEG-1 decoding via the MPEG-2 algorithm-1 path, natural-content hardware qualified on BCM70015 at progressive 352x288/25. Select the separately built rank-NONE `crystalhdmpeg1experimentaldec` explicitly. This is outside stable 1.2 and distinct from official/vendor support, generalized conformance and the ordinary decoder. See [setup and limitations](filters/gst/gst-plugin-1.0/MPEG1-EXPERIMENTAL.md). |
+| Centered card output (1.3 experiment) | Included since RC2 and retained in final 1.3, default off. Selected BCM70015 H.264 paths return a smaller picture inside a full readable NV12 canvas; Kodi zoom can enlarge it for display. Follow the [explicit geometry/range setup and limits](filters/vaapi/README.md#development-experiment-centered-card-output). It is separate from the private diagnostic observers and does not add hardware deinterlacing or native Full-HD detail. |
 | Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s with the qualified L0s workaround active; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
 | Sunshine / Moonlight | Default frame-matching mode works at 720p30; with V-sync/pacing off, an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. These are measured rates, not a matched speedup over default matching. Physical streaming A/V offset and forced-loss recovery remain unverified. |
 | BCM70012 / older CPUs | Legacy BCM70012 compatibility and x86-64/i686 builds are retained. Recent BCM70012 and physical no-SSE hardware tests remain outstanding. |
@@ -259,16 +265,16 @@ rules are listed under [Development and project records](#development-and-projec
 
 | Release | Status |
 | --- | --- |
-| [Stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module-DKMS `3.10.13` | Recommended for the quick start above. [Final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23) and [change summary](HISTORY.md#120). |
-| Prepared `1.3.0-rc.4`, module-DKMS `3.10.19` | **PREPARED_NOTQUALIFIED**, not published. Retains all integrated features plus the Player seek/resume-grace and Xv response-deadline fixes. Qualification and conditional stable promotion follow the [existing criteria](RELEASING.md#rc4-stabilization-candidate-preparation), including an explicit unresolved GTK risk. |
+| Target `1.3.0`, module-DKMS `3.10.20` | Ordinary playback, settings and all 17 feature groups with their existing defaults. Its [official release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0) and qualification receipts define actual availability, exact core and results; use the immutable 1.2 fallback if unavailable. |
+| [Stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module-DKMS `3.10.13` | Immutable fallback and retained rollback source. [Final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23) and [change summary](HISTORY.md#120). |
+| Frozen `1.3.0-rc.4` candidate, module-DKMS `3.10.19` | Source `1c8b0451c631` retains every integrated feature plus the Player seek/resume-grace and Xv response-deadline fixes. Its separate qualification receipts and [release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4) define actual outcomes and availability; those results are not relabeled as final20. |
 | [Complete 1.3.0-rc.3 candidate](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), module-DKMS `3.10.18` | Published prerelease with 12 assets; current-equipment qualification is complete. Retains every RC2 feature plus integrated native range/multi-slice, Xv and field-output changes. Centered stays included and default off. See the [actual qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json). |
 | [Complete 1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), module-DKMS `3.10.17` | Published prerelease: current-equipment qualification and companion delivery are complete; its tag and 13 assets are frozen, including the [core archive](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.2/crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz). Frozen RC2 does not qualify RC4 or stable promotion. |
 | Earlier 1.2 candidates | Immutable [RC1](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1) / `3.10.11` and [RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2) / `3.10.12`; RC2 completed bounded G0–G3 under [#473](https://github.com/ahnhy1324/crystalhd/issues/473). |
 
-RC4 preparation includes the later stabilization; it does not replace frozen
-RC3 or RC2 assets or their registered module sources. Stable 1.3 promotion is
-authorized after the candidate meets the agreed criteria and GTK risk is
-explicitly assessed; it has not occurred. See [current work and completed subsets](TODO.md#current-priorities).
+Final 1.3 retains RC4's stabilization and every integrated feature; it does
+not replace prior RC artifacts or registered sources. Actual qualification and
+publication follow the release entry, including the explicit GTK risk assessment. See [current work and completed subsets](TODO.md#current-priorities).
 For [v1.1.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.1.0) or the
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29),
 use the instructions shipped with that tag. Preserve 1.2.0-rc.2 and stable 1.1.0
@@ -286,41 +292,42 @@ and use the guide shipped with that version.
 The [native runtime companion](NATIVE-RUNTIME-DELIVERY.md) is an optional,
 experimental Kodi route for the measured Core2 T8100 / BCM70015 / Intel965
 cohort. Published RC2 uses frozen core `940cf357` / module17; published RC3
-uses core `36ef4c681f49` / module18. RC4 must bind its own exact core/module19
-and native result separately.
+uses core `36ef4c681f49` / module18. RC4/module19 and final 1.3/module20 each
+need their own exact core and measured native binding.
 Use the matching package and prerequisites. The stable quick start above uses
 the ordinary GStreamer/VA stack and does not install that companion.
 
 <a id="rc3-candidate-instructions"></a>
+<a id="rc4-candidate-preparation"></a>
 
-### RC4 candidate preparation
+<a id="13-release-preparation"></a>
 
-RC4 `1.3.0-rc.4` / module `3.10.19` retains the complete RC3 stack, settings
-UIs, Centered, MPEG-1 and all integrated output/native features. It is
-**PREPARED_NOTQUALIFIED**, not a published tag or download. Qualification,
-protected integration and publication are still required; see
-[release preparation](RELEASING.md#rc4-stabilization-candidate-preparation).
+### 1.3 release scope
 
-Candidate testers must use the exact core source archive identified by the
-private candidate binding manifest, in a new directory with the previous source
-and runtime retained for rollback. Its `VERSION` and `dkms.conf` must identify
-`1.3.0-rc.4` and `3.10.19`. Follow the existing
-[direct update](BRINGUP.md#direct-install-update-and-rollback) or
-[DKMS route](README.dkms), with the [quick-start dependencies](#quick-start),
-then install any optional GTK frontend from that same source. Use the matching
-candidate settings ZIP; a companion/tool-source archive is not the core.
-Never register it under RC3/module18 or RC2/module17. No `git clone` of an
-unpublished RC4 tag is an installation step.
+Bundle `1.3.0` / module `3.10.20` uses its own exact core, qualification receipt
+and official release entry. RC4/source/module19 evidence and unchanged-component
+reuse retain their original identities and do not become fresh module20 results.
+Maintainers follow the [release requirements](RELEASING.md#stable-13-promotion-preparation).
+
+All 17 existing feature groups remain included: ordinary playback and settings,
+VA and native V4L2, Centered, MPEG-1, packed scaling, RX/Moonlight integrations,
+Xv/field output, source/delivery tools and isolated diagnostics. Normal output,
+FIFO and default-off Centered keep their existing defaults. Use the
+[matching core/settings installation](#install-matching-13-tools) and retain the
+previous source/runtime for rollback; never register final source under module19,
+18 or 17.
 
 For optional [Centered](filters/vaapi/README.md#development-experiment-centered-card-output),
 select its explicit geometry/range environment value; it remains off otherwise.
-The separate [RC4 native companion instructions](NATIVE-RUNTIME-DELIVERY.md#rc4-companion-layout-and-use)
-require the matching core/module19 binding and original runtime providers.
-That route uses unmodified FFmpeg and Kodi; broader BWDIF, GPU-return and
-performance research keep their existing limits.
+The [native companion guide](NATIVE-RUNTIME-DELIVERY.md#stable-13-companion-layout-and-use) binds the final core and
+native module20 to unchanged original Kodi/FFmpeg providers. No external
+product patch is included. Broader BWDIF, GPU-return, performance and physical
+presentation research keep their existing limits.
 
-For an available prerelease now, use the [published RC3 settings route](#install-matching-13-tools)
-or [instructions frozen with RC3](https://github.com/ahnhy1324/crystalhd/blob/v1.3.0-rc.3/README.md#rc3-candidate-instructions).
+Prior candidate instructions remain in the immutable
+[RC4 source snapshot](https://github.com/ahnhy1324/crystalhd/blob/1c8b0451c631bd93e3f0395dd3e528875b8ecfe9/README.md#rc4-candidate-preparation)
+and [published RC3 tag](https://github.com/ahnhy1324/crystalhd/blob/v1.3.0-rc.3/README.md#rc3-candidate-instructions).
+Use their own versioned receipts when reproducing those packages.
 
 ## Development and project records
 

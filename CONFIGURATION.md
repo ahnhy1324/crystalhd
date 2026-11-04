@@ -6,8 +6,11 @@ production driver, library, VA-API backend, launchers, GStreamer element and
 
 Managed saving, profiles and the optional editors require matching 1.3 tools
 and readers; follow [matching 1.3 settings installation](README.md#install-matching-13-tools).
-Published RC3 uses core `36ef4c681f49` / module `3.10.18`; prepared RC4 /
-`3.10.19` needs its own exact core/settings binding and is not yet published.
+This guide targets final `1.3.0` / module `3.10.20`. Use its matching released
+core/settings and actual qualification receipt, or an explicitly supplied exact
+private binding for prepublication evaluation. Availability follows the official
+release entry, not the source version label. RC4/module19, published RC3/core
+`36ef4c681f49`/module18 and RC2/module17 retain their own frozen artifacts.
 Stable 1.2's configuration utility is a read-only inspector; these save/editor
 commands are not available there.
 

@@ -1,11 +1,14 @@
 # Everyday CrystalHD usage
 
-For ordinary local playback, use the latest stable **1.2.0** installation and
-`crystalhd-play`. Leave tuning options at their defaults for the first run.
-This guide starts with that route; optional 1.3 features are marked separately
-and retain their existing opt-in defaults. Published RC3 uses module `3.10.18`;
-[RC4/module19](README.md#rc4-candidate-preparation) is being prepared and is not
-yet a published download.
+For ordinary local playback, use **1.3.0 with `crystalhd-play` after its official
+release is qualified and published**. This guide targets final 1.3/module20;
+select the exact released core and actual qualification receipt using
+[source selection](README.md#quick-start). A source version is not a publication
+announcement; use the immutable 1.2/module13 fallback if the release is unavailable.
+Leave tuning options at their defaults for the first run.
+
+Optional features below retain their existing opt-in defaults. Prior RC4/module19,
+published RC3/module18 and RC2/module17 keep separate frozen artifacts/results.
 
 1. [Install and verify the stack](#verify-the-installed-stack).
 2. [Play a local file](#play-a-local-file), then use the [controls](#player-controls)
@@ -105,10 +108,10 @@ The same option works with explicit `--hardware` or `--software` playback.
 
 Stable 1.2.0 does not include the new configuration editors. With matching
 1.3 tools and updated components installed, use the optional desktop window
-or inspect defaults from the terminal. Use the published RC3 set, or the exact
-prepared RC4 core/module19 and settings artifacts identified by its private
-binding manifest; [matching installation](README.md#install-matching-13-tools)
-keeps those versions separate:
+or inspect defaults from the terminal. For final 1.3/module20 use the matching
+release core/settings artifacts after publication, or its exact private binding
+manifest during preparation. [Matching installation](README.md#install-matching-13-tools)
+keeps final and previous candidate versions separate:
 
 ```sh
 crystalhd-settings
@@ -850,11 +853,11 @@ global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 
 These are optional source-build features. Ordinary stable 1.2.0 playback uses
 the earlier commands without these output selectors. Published 1.3.0-rc.3
-includes the optional outputs and additions below; prepared RC4/module19
-retains them and adds Player/Xv stability fixes. RC4 remains
-**PREPARED_NOTQUALIFIED** until its own candidate checks and publication.
-Frozen RC3 and RC2 payloads are not replaced by later source changes. Actual
-RC3 qualification and later affected checks retain their separate attribution.
+includes the optional outputs and additions below. Final1.3/module20 retains
+them and RC4's Player/Xv stability fixes, with unchanged opt-in defaults. Use
+the final release's own qualification receipt for actual results. Prior RC4/module19
+and frozen RC3/RC2 payloads are not replaced by later source changes; their actual
+qualification and later affected checks retain separate attribution.
 
 ### Experimental Xv output and packed enlargement
 
