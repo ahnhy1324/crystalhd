@@ -235,6 +235,11 @@ requires actual `ff-h264-vaapi`/`bwdif`, saved renderer preference false,
 original SSE4/filter mappings and two same-PID natural EOFs with decoder
 retirement. Its native census requires900 original bindings and1800 field
 records per play. Those are distinct from measured post-filter inputs/outputs.
+A balanced measured subset keeps the complete-source criterion FAIL. The
+BWDIF scenario may finish both diagnostic plays without lowering that count;
+it reports `OBSERVED_SOURCE_QUALIFICATION_FAIL` and exits nonzero rather than
+promoting a subset into a whole-source PASS. Native ownership/field structure
+must still pass before the second play can begin.
 
 Build only the explicit diagnostic targets using the original unchanged
 filter12.1.102/util61.1.102 public headers:

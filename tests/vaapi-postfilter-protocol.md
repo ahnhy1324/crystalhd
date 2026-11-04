@@ -8,7 +8,7 @@ optionally absolute `CRYSTALHD_TEST_POSTFILTER_FILTER_PROVIDER` and
 and `/app/lib/libavutil.so.61.1.102`). Output is `PREFIX-PID.jsonl`, exclusive0600.
 
 The first JSONL record has `type:"header"`, `schema:"crystalhd-postfilter-v1"`,
-`pid`, `capacity:16384`, `snapshot_capacity:16`, `max_width:1920`,
+`pid`, `fork_policy:"PARENT_PID_ONLY_CHILD_FORWARD_ONLY"`, `capacity:16384`, `snapshot_capacity:16`, `max_width:1920`,
 `max_height:1088`, `nv12_format` (the compile-header enum),
 `sink_constraint_basis:"PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT"`,
 `filter_provider`, `util_provider`, `filter_version:786790`,
@@ -53,9 +53,14 @@ evidence. No references or pointers are retained for delayed frame copying.
 Last record: `type:"footer", events, attempted_events, dropped, snapshots,
 snapshot_failures, lifecycle_failures, string_truncations, clock_failure,
 fork_seen, inflight, unpublished, open_graphs, complete`.
-`complete` requires exact provider, no dropped/unpublished/inflight/fork/clock/
+`complete` requires exact provider, no dropped/unpublished/inflight/clock/
 lifecycle/truncation/snapshot failure and all observed graph lifetimes freed.
-`fork_seen` makes a parent's report incomplete when a fork occurs; the child only forwards and never publishes inherited data.
+For the explicit fork policy, `fork_seen` is descriptive: the ledger and its
+completeness cover only the header PID and exclude descendants. A pre-exec child
+only forwards and never records or publishes inherited data. Exec starts a fresh
+owner PID, with its own independent report; it cannot append to the parent.
+Old reports without the explicit policy retain their original strict fork gate;
+no existing footer or captured failure is rewritten or upgraded.
 `snapshot_failures` counts failed selected attempts once (including failed
 publication), rather than counting a rejected copy again at shutdown.
 Snapshot files are exclusive0600; write/publication failure leaves incomplete

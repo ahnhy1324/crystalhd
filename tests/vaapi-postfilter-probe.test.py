@@ -189,9 +189,17 @@ int main(int argc,char **argv) {
    errno=77;checked(av_buffersrc_add_frame(source,0),0);
    errno=77;checked(av_buffersrc_close(source,999,7),0);
   }
-  if(!strcmp(mode,"fork-copy")) {
+  if(!strcmp(mode,"fork-copy") || !strcmp(mode,"fork-exec")) {
    child=fork();if(child<0)return 32;
-   if(!child) {add(source,"normal",0);exit(0);}
+   if(!child) {
+    /* Prove forwarding before either exit or exec leaves no inherited report. */
+    add(source,"normal",0);
+    if(!strcmp(mode,"fork-exec")) {
+     if(!freopen("/dev/null","w",stdout))_exit(38);
+     execl("/proc/self/exe","own-postfilter-app","normal",(char *)0);_exit(39);
+    }
+    exit(0);
+   }
    int status;if(waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status))return 33;
   }
   if(strcmp(mode,"open")) {errno=77;avfilter_graph_free(&g);if(g || errno!=88) ++failures;}
@@ -454,11 +462,36 @@ class PostfilterControls(unittest.TestCase):
 
     def test_preexec_fork_child_forwards_but_never_publishes_inherited_ledger(self):
         directory, _, records, application = self.run_probe('fork-copy')
-        self.assertFalse(records[-1]['complete'])
+        self.assert_complete(records)
+        self.assertEqual(records[0]['fork_policy'], 'PARENT_PID_ONLY_CHILD_FORWARD_ONLY')
         self.assertTrue(records[-1]['fork_seen'])
         child = application['child_pid']
         self.assertFalse((directory/f'observed-{child}.jsonl').exists())
         self.assertEqual(records[-1]['events'], 5)
+
+    def test_fork_exec_creates_separate_pid_owned_ledger_without_parent_records(self):
+        directory, path, parent, application = self.run_probe('fork-exec')
+        self.assert_complete(parent)
+        self.assertTrue(parent[-1]['fork_seen'])
+        self.assertEqual(parent[-1]['events'], 5)
+        child_pid = application['child_pid']
+        self.assertNotEqual(child_pid, application['pid'])
+        child_path = directory/f'observed-{child_pid}.jsonl'
+        self.assertNotEqual(child_path, path)
+        child = [json.loads(line) for line in child_path.read_text().splitlines()]
+        self.assert_complete(child)
+        self.assertFalse(child[-1]['fork_seen'])
+        self.assertEqual(child[-1]['events'], 5)
+        self.assertEqual(child[0]['pid'], child_pid)
+        self.assertTrue(all(e['pid'] == child_pid for e in child[1:-1]))
+        self.assertTrue(all(e['pid'] == application['pid'] for e in parent[1:-1]))
+        self.assertEqual({e['graph_id'] for e in child[1:-1]}, {1})
+        self.assertEqual(child[3]['input_index'], 1)
+        self.assertEqual(child[4]['output_index'], 1)
+        for record in child[1:-1]:
+            if record['frame'] and record['frame']['snapshot']:
+                self.assertIn('-'+str(child_pid)+'-s', record['frame']['snapshot']['file'])
+                self.assertNotIn('-'+str(application['pid'])+'-s', record['frame']['snapshot']['file'])
 
     def test_inflight_call_at_normal_exit_is_explicitly_incomplete(self):
         _, _, records, _ = self.run_probe('inflight')

@@ -21,6 +21,7 @@ def fixture():
     header = dict(type="header", schema=R.SCHEMA, pid=PID, capacity=16384,
                   snapshot_capacity=16, max_width=1920, max_height=1088,
                   nv12_format=NV12, sink_constraint_basis=R.BASIS,
+                  fork_policy=R.FORK_POLICY,
                   filter_provider=R.PROVIDERS["filter"], util_provider=R.PROVIDERS["util"],
                   filter_version=R.VERSIONS["filter"], util_version=R.VERSIONS["util"], provider_ok=True)
     events, blobs = [], {}
@@ -156,12 +157,60 @@ class ReaderTests(unittest.TestCase):
 
     def test_every_incomplete_publication_state_rejects(self):
         for key in ("dropped", "snapshot_failures", "lifecycle_failures", "string_truncations",
-                    "inflight", "unpublished", "open_graphs", "fork_seen", "clock_failure", "complete"):
+                    "inflight", "unpublished", "open_graphs", "clock_failure", "complete"):
             with self.subTest(key=key):
                 old = self.rows[-1][key]
                 self.rows[-1][key] = not old if type(old) is bool else 1
                 self.invalid()
                 self.rows[-1][key] = old
+
+    def test_explicit_parent_only_policy_keeps_fork_descriptive(self):
+        self.rows[-1]["fork_seen"] = True
+        valid = self.valid()
+        self.assertTrue(valid["process_scope"]["fork_seen"])
+        self.assertFalse(valid["process_scope"]["children_observed"])
+        self.assertEqual(valid["process_scope"]["pid"], PID)
+        self.assertEqual(R.reference_prefix(valid, 1)["mode"], "prefix")
+
+    def test_parent_only_fork_does_not_hide_other_incomplete_states(self):
+        self.rows[-1]["fork_seen"] = True
+        for key in ("dropped", "snapshot_failures", "lifecycle_failures", "string_truncations",
+                    "inflight", "unpublished", "open_graphs", "clock_failure", "complete"):
+            with self.subTest(key=key):
+                old = self.rows[-1][key]
+                self.rows[-1][key] = not old if type(old) is bool else 1
+                self.invalid()
+                self.rows[-1][key] = old
+
+    def test_legacy_fork_failure_cannot_be_silently_upgraded(self):
+        del self.rows[0]["fork_policy"]
+        self.rows[-1].update(fork_seen=True, complete=False)
+        self.invalid("legacy report")
+        # Even changing complete in a legacy footer cannot remove its fork boundary.
+        self.rows[-1]["complete"] = True
+        self.invalid("legacy report")
+        self.rows[-1]["fork_seen"] = False
+        self.assertEqual(self.valid()["process_scope"]["fork_policy"], "LEGACY_NO_FORK")
+
+    def test_false_complete_still_rejects_explicit_parent_only_fork(self):
+        self.rows[-1].update(fork_seen=True, complete=False)
+        self.invalid("incomplete")
+
+    def test_unknown_or_malformed_fork_policy_rejected(self):
+        for value in (None, False, "ALL_CHILDREN_QUALIFIED"):
+            with self.subTest(value=value):
+                self.rows[0]["fork_policy"] = value
+                self.invalid("fork observation policy")
+        self.rows[0]["fork_policy"] = R.FORK_POLICY
+        for value in (0, 1, None, "false"):
+            with self.subTest(value=value):
+                self.rows[-1]["fork_seen"] = value
+                self.invalid("boolean")
+
+    def test_parent_only_policy_still_rejects_a_fork_child_event(self):
+        self.rows[-1]["fork_seen"] = True
+        self.rows[3]["pid"] = PID+1
+        self.invalid("foreign event PID")
 
     def test_capacity_overflow_rejected_without_dropped_counter(self):
         self.rows[0]["capacity"] = 4

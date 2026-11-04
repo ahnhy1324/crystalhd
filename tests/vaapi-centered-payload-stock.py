@@ -224,6 +224,9 @@ try:
         labels=wait(selected,4,'actual original-stock VA decoder/deinterlace __DEINT__ absent')
         settings=rpc('Settings.GetSettingValue',{'setting':'videoplayer.prefervaapirender'})
         labels['actual_prefer_vaapi_renderer']=settings['value']
+        if '__DEINT__'=='bwdif':
+            labels['actual_video_logging']={key:rpc('Settings.GetSettingValue',{'setting':key})['value']
+                for key in ('debug.extralogging','debug.setextraloglevel')}
         gate('identity-'+suffix,'await-identity-'+suffix,cycle=cycle,source=source,info=labels,initial_pause_for_identity=True)
         rpc('Player.PlayPause',{'playerid':playerid,'play':True})
         wait(lambda:rpc('Player.GetProperties',{'playerid':playerid,'properties':['speed']})['speed']==1,2,'normal-speed resume missing')
@@ -263,7 +266,7 @@ def operation_census(rows, interval, pid, expected_originals=750):
     selected = [row for offset, row in rows if interval['begin'] <= offset < interval['end']]
     require(all(row['pid'] == pid for row in selected), 'foreign PID in source interval')
     fields = BINDING + ('surface', 'owner')
-    stages, errors = {}, []
+    stages, errors, population_errors = {}, [], []
     for stage in ('submit_bind', 'input_sent', 'output_dequeued', 'materialized'):
         entries = [row for row in selected if row['event'] == stage]
         require(all(all(type(row[k]) is int and row[k] > 0 for k in fields + ('seq',))
@@ -274,7 +277,7 @@ def operation_census(rows, interval, pid, expected_originals=750):
         for row in entries:grouped[tuple(row[k] for k in fields)].append(row)
         stages[stage] = dict(grouped)
     originals = set(stages['submit_bind'])
-    if len(originals) != expected_originals:errors.append('require exactly' + str(expected_originals) + ' distinct original bindings')
+    if len(originals) != expected_originals:population_errors.append('require exactly' + str(expected_originals) + ' distinct original bindings')
     if len({key[:len(BINDING)] for key in originals}) != len(originals):
         errors.append('source binding duplicated through different public surface/owner')
     for index, field in enumerate(BINDING[3:], 3):
@@ -300,7 +303,10 @@ def operation_census(rows, interval, pid, expected_originals=750):
         materialized = stages['materialized'].get(key, [])
         if materialized and not all(ordered_outputs[1] < row['seq'] for row in materialized):
             errors.append('materialized precedes both output dequeue records'); break
-    return {'status': 'PASS' if not errors else 'FAIL', 'errors': errors,
+    return {'status': 'PASS' if not errors and not population_errors else 'FAIL',
+            'ledger_status': 'PASS' if not errors else 'FAIL',
+            'source_population_qualified': not population_errors,
+            'errors': population_errors + errors,
             'event_counts': dict(Counter(row['event'] for row in selected)),
             'distinct_binding_stage_counts': {key: len(value) for key, value in stages.items()},
             'binding_multiplicity_histograms': {stage: dict(sorted(Counter(len(v) for v in groups.values()).items()))
@@ -447,6 +453,7 @@ def main():
               'errors': [], 'controls_status': 'NOT_RUN', 'identity_checks': [], 'retirements': [],
               'intervals': {}, 'source_census': {}, 'payload_audits': [], 'payload_status_receipts': [],
               'thermal_observations': [], 'application_exit': None, 'live_resource_handoff': None,
+              'qualification_failures': [],
               'actual_media_PTS_to_binding': 'NOT_OBSERVED', 'gpu_reader_return': 'NOT_OBSERVED',
               'stock_compatibility': 'NOT_QUALIFIED_BY_PRIVATE_OBSERVER'}
     G = P = boundary = None; before = before_lean = None
@@ -596,6 +603,8 @@ def main():
                     'addons.updatemode': '2', 'screensaver.mode': '', 'weather.addon': '', 'lookandfeel.soundskin': '',
                     'videoplayer.usevaapi': 'true', 'videoplayer.usevaapih264': 'true', 'videoplayer.prefervaapirender': str(config['prefer_vaapi_renderer']).lower(),
                     'videoplayer.useprimedecoder': 'false', 'videoplayer.useprimedecoderforhw': 'false'}
+        if config['name'] == 'bwdif2997':
+            settings.update({'debug.extralogging': 'true', 'debug.setextraloglevel': '32768'})
         userdata = profile / 'userdata'; userdata.mkdir()
         xml = '<settings version="2">' + ''.join('<setting id="' + escape(k) + '">' + escape(v) + '</setting>'
                                                  for k, v in settings.items())
@@ -695,7 +704,13 @@ def main():
                     'independent retired-context payload audit failed: ' + json.dumps(result))
             audited_contexts.add(key)
             census = operation_census(rows, interval, kid['pid'], config['pictures']); report['source_census'][str(cycle)] = census
-            require(census['status'] == 'PASS', 'exact source input/output binding census failed')
+            if config['name'] == 'bwdif2997':
+                require(census['ledger_status'] == 'PASS', 'observed native ownership/field ledger failed')
+                if not census['source_population_qualified']:
+                    report['qualification_failures'].append({'cycle': cycle, 'criterion': 'complete_source_population',
+                        'expected_originals': config['pictures'], 'observed_originals': census['observed_submit_bindings'],
+                        'status': 'FAIL', 'disposition': 'Retain full-source failure while completing diagnostic observation; no lower acceptance count.'})
+            else:require(census['status'] == 'PASS', 'exact source input/output binding census failed')
 
         handled = set(); deadline = time.monotonic() + 65 + plan['cycles'] * 100
         while time.monotonic() < deadline:
@@ -722,6 +737,9 @@ def main():
                             labels['actual_prefer_vaapi_renderer'] is config['prefer_vaapi_renderer'], 'actual renderer preference differs')
                     if not report['identity_checks']:check['mapped_images'] = G.mappings(kid['pid'], plan['pins'], dependencies)
                     if config['name'] == 'bwdif2997':
+                        require(labels.get('actual_video_logging') ==
+                            {'debug.extralogging': True, 'debug.setextraloglevel': [32768]},
+                            'original video-component diagnostics not enabled as frozen')
                         app = Path(route['client']['app_directory'])
                         check['postfilter_images'] = [mapped_image(kid['pid'], mount, original, plan['pins'])
                             for mount, original in ((POSTFILTER_MOUNT, G.SOURCE / POSTFILTER_IMAGE),
@@ -844,10 +862,15 @@ def main():
                 census_pass = bool(report['source_census']) and all(v['status'] == 'PASS' for v in report['source_census'].values())
                 postfilter_pass = (config is None or config['name'] != 'bwdif2997' or
                     report.get('postfilter_audit', {}).get('status') == 'PASS_SCOPED_POSTFILTER_OBSERVATION')
-                report['status'] = 'PASS' if (payload_pass and census_pass and report['controls_status'] == 'PASS' and
-                    postfilter_pass and
+                complete_observation = (payload_pass and report['controls_status'] == 'PASS' and postfilter_pass and
                     report['application_exit'] == 0 and report.get('boundary_equal') and report.get('kernel_exit') == 0 and
-                    not report['errors'] and report['live_resource_handoff'] is None) else 'FAIL'
+                    not report['errors'] and report['live_resource_handoff'] is None)
+                report['status'] = 'PASS' if complete_observation and census_pass else 'FAIL'
+                if (config is not None and config['name'] == 'bwdif2997' and complete_observation and
+                        report['source_census'] and all(v['ledger_status'] == 'PASS' for v in report['source_census'].values())):
+                    report['diagnostic_observation'] = 'PASS_SCOPED_POSTFILTER_OBSERVATION'
+                    report['complete_source_population_qualification'] = 'PASS' if census_pass else 'FAIL'
+                    if not census_pass:report['status'] = 'OBSERVED_SOURCE_QUALIFICATION_FAIL'
                 save(case / 'result.json', report)
     for signum, handler in previous_handlers.items():signal.signal(signum, handler)
     print(a.case + ': ' + report['status'] + '; scoped OWN centered NV12 payload observation')

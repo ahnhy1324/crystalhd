@@ -161,6 +161,17 @@ class CensusTests(unittest.TestCase):
 
 
 class BwdifScenarioTests(unittest.TestCase):
+    def test_balanced_measured_subset_never_passes_complete_source_population(self):
+        rows = fixture(695)
+        result = STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID, 900)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['ledger_status'], 'PASS')
+        self.assertFalse(result['source_population_qualified'])
+        self.assertEqual(result['observed_submit_bindings'], 695)
+        self.assertEqual(result['source_metadata_pictures'], 900)
+        del rows[3]
+        self.assertEqual(STOCK.operation_census(rows, {'begin': 0, 'end': 4000}, PID, 900)['ledger_status'], 'FAIL')
+
     def test_nine_hundred_originals_keep_two_distinct_native_dequeues(self):
         rows = fixture(900)
         result = STOCK.operation_census(rows, {'begin': 0, 'end': len(rows)}, PID, 900)

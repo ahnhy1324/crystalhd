@@ -121,6 +121,8 @@ static bool expected(const char *actual, const char *variable, const char *fallb
     if (!path) path = fallback;
     return path[0] == '/' && realpath(path, canonical) && !strcmp(actual, canonical);
 }
+/* Descriptive only: the ledger belongs solely to owner_pid. Inherited child
+ * calls are forwarded without observation/publication; exec starts anew. */
 static void fork_prepare(void)
 {
     if (active && owner_pid == getpid()) atomic_store_explicit(&fork_seen, true, memory_order_relaxed);
@@ -432,13 +434,13 @@ __attribute__((destructor)) static void finish_observer(void)
     if (m <= 0 || (size_t)m >= sizeof(path)) { errno = saved; return; }
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) { errno = saved; return; }
-    bool ok = dprintf(fd, "{\"type\":\"header\",\"schema\":\"crystalhd-postfilter-v1\",\"pid\":%ld,\"capacity\":%d,\"snapshot_capacity\":%d,\"max_width\":%d,\"max_height\":%d,\"nv12_format\":%d,\"sink_constraint_basis\":\"PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT\",\"filter_provider\":", (long)owner_pid, POSTFILTER_CAPACITY, POSTFILTER_SNAPSHOTS, MAX_WIDTH, MAX_HEIGHT, AV_PIX_FMT_NV12) >= 0 && json_string(fd, filter_path) && dprintf(fd, ",\"util_provider\":") >= 0 && json_string(fd, util_path) && dprintf(fd, ",\"filter_version\":%u,\"util_version\":%u,\"provider_ok\":%s}\n", filter_version, util_version, provider_ok ? "true" : "false") >= 0;
+    bool ok = dprintf(fd, "{\"type\":\"header\",\"schema\":\"crystalhd-postfilter-v1\",\"pid\":%ld,\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"capacity\":%d,\"snapshot_capacity\":%d,\"max_width\":%d,\"max_height\":%d,\"nv12_format\":%d,\"sink_constraint_basis\":\"PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT\",\"filter_provider\":", (long)owner_pid, POSTFILTER_CAPACITY, POSTFILTER_SNAPSHOTS, MAX_WIDTH, MAX_HEIGHT, AV_PIX_FMT_NV12) >= 0 && json_string(fd, filter_path) && dprintf(fd, ",\"util_provider\":") >= 0 && json_string(fd, util_path) && dprintf(fd, ",\"filter_version\":%u,\"util_version\":%u,\"provider_ok\":%s}\n", filter_version, util_version, provider_ok ? "true" : "false") >= 0;
     unsigned published = 0;
     for (unsigned i = 0; ok && i < n; ++i) if (atomic_load_explicit(&events[i].ready, memory_order_acquire)) { ok = print_event(fd, i, &events[i]); ++published; }
     unsigned lost = atomic_load(&dropped), failures = atomic_load(&snapshot_failures);
     unsigned lifecycle = atomic_load(&lifecycle_failures), truncated = atomic_load(&string_truncations);
     bool clock = atomic_load(&clock_failure), forked = atomic_load(&fork_seen);
-    bool complete = ok && provider_ok && !lost && !failures && !lifecycle && !truncated && !clock && !forked && !busy && !unpublished && !open_graphs;
+    bool complete = ok && provider_ok && !lost && !failures && !lifecycle && !truncated && !clock && !busy && !unpublished && !open_graphs;
     if (ok) (void)dprintf(fd, "{\"type\":\"footer\",\"events\":%u,\"attempted_events\":%u,\"dropped\":%u,\"snapshots\":%u,\"snapshot_failures\":%u,\"lifecycle_failures\":%u,\"string_truncations\":%u,\"clock_failure\":%s,\"fork_seen\":%s,\"inflight\":%u,\"unpublished\":%u,\"open_graphs\":%u,\"complete\":%s}\n", published, total, lost, snaps, failures, lifecycle, truncated, clock ? "true" : "false", forked ? "true" : "false", busy, unpublished, open_graphs, complete ? "true" : "false");
     close(fd); errno = saved;
 }

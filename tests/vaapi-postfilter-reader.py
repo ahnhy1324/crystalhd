@@ -22,6 +22,7 @@ _spec.loader.exec_module(P)
 require, read_regular, strict_object = P.require, P.read_regular, P.strict_object
 SCHEMA = "crystalhd-postfilter-v1"
 BASIS = "PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT"
+FORK_POLICY = "PARENT_PID_ONLY_CHILD_FORWARD_ONLY"
 PROVIDERS = {"filter": "/app/lib/libavfilter.so.12.1.102",
              "util": "/app/lib/libavutil.so.61.1.102"}
 VERSIONS = {"filter": 786790, "util": 3998054}
@@ -40,6 +41,7 @@ FRAME_KEYS = ("pts", "best_effort_timestamp", "duration", "time_base", "format",
               "chroma_location", "crop")
 LIMITS = [
     "OWN observation/reference only; no stock compatibility or release claim.",
+    "A parent-PID ledger excludes forked child behaviour; fork_seen is descriptive only under the explicit parent-only policy.",
     "Frame raw clocks, source stream clock, graph arguments and measured sink clocks remain distinct.",
     "Successful calls are measured returns, not an inferred 900-input/1800-output or scanout proof.",
     "Selected active NV12 bytes do not independently qualify the source decoder, scaler or colour conversion.",
@@ -144,6 +146,11 @@ def check_document(rows, snapshot_blobs, expected_pid, expected_providers=None,
                 header[key + "_version"] == VERSIONS[key], "foreign provider/version: " + key)
     require(header.get("provider_ok") is True and header.get("sink_constraint_basis") == BASIS,
             "provider or pinned-source NV12 constraint check failed")
+    fork_policy = header.get("fork_policy")
+    require("fork_policy" not in header or fork_policy == FORK_POLICY, "unknown fork observation policy")
+    require(type(footer.get("fork_seen")) is bool, "fork_seen must remain a descriptive boolean")
+    require(fork_policy == FORK_POLICY or footer["fork_seen"] is False,
+            "legacy report is incomplete after fork without explicit parent-only policy")
     cap = integer(header.get("capacity"), "capacity", 1, 16384)
     snapcap = integer(header.get("snapshot_capacity"), "snapshot capacity", 1, 16)
     integer(header.get("nv12_format"), "NV12 enum", 0, 255)
@@ -159,8 +166,8 @@ def check_document(rows, snapshot_blobs, expected_pid, expected_providers=None,
             footer["snapshots"] <= snapcap, "footer counts disagree")
     require(all(footer[k] == 0 for k in ("dropped", "snapshot_failures", "lifecycle_failures",
                 "string_truncations", "inflight", "unpublished", "open_graphs")) and
-            all(footer.get(k) is False for k in ("clock_failure", "fork_seen")) and
-            footer.get("complete") is True, "incomplete/forked/overflowed observation")
+            footer.get("clock_failure") is False and footer.get("complete") is True,
+            "incomplete/overflowed observation")
     require(type(snapshot_blobs) is dict, "snapshot blobs must be a mapping")
     path = Path(report_path or ("postfilter-" + str(expected_pid) + ".jsonl")).absolute()
     require(path.suffix == ".jsonl" and path.stem.endswith("-" + str(expected_pid)),
@@ -312,7 +319,9 @@ def check_document(rows, snapshot_blobs, expected_pid, expected_providers=None,
             require(lifetimes_disjoint or not contexts.intersection(other_contexts),
                     "foreign context shared by overlapping graph lifetimes")
     return dict(header=header, footer=footer, events=events, graphs=summaries,
-                report_path=str(path), providers=expected, source_clock_comparison=False)
+                report_path=str(path), providers=expected, source_clock_comparison=False,
+                process_scope=dict(pid=expected_pid, fork_policy=fork_policy or "LEGACY_NO_FORK",
+                                   fork_seen=footer["fork_seen"], children_observed=False))
 
 
 def read_report(report_path, expected_pid, expected_providers=None):
@@ -434,7 +443,7 @@ def audit_report(report_path, expected_pid, expected_providers=None, reference=N
             summaries.append(summary)
         result = dict(status="PASS_SCOPED_POSTFILTER_OBSERVATION", report_path=valid["report_path"],
                       header=valid["header"], graphs=summaries, source_clock_comparison=False,
-                      original_client_eof_claim=False, limits=LIMITS)
+                      process_scope=valid["process_scope"], original_client_eof_claim=False, limits=LIMITS)
         if reference is not None:
             result["reference"] = join_reference(valid, graph_id, reference)
         return result
