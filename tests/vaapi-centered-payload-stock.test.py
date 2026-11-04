@@ -302,6 +302,103 @@ class PacketAdmissionModeTests(unittest.TestCase):
                     self.audit_with(status)
 
 
+class MaintainedCostModeTests(unittest.TestCase):
+    def correlation_fixture(self):
+        def event(identifier, parent, token, stage, kind='full'):
+            return dict(id=identifier, parent_id=parent, stage=stage, binding_kind=kind,
+                        wall_begin_ns=100+identifier, wall_end_ns=190-identifier,
+                        driver_instance=1, context=2, generation=1, token=token,
+                        decode_identity=token*2 if token else 0,
+                        submission_ordinal=token, surface=token, owner=token)
+        # Requested A contains separately resolved B and B's partial pixel work.
+        events = [event(1,0,1,'sync_body'), event(2,1,2,'process_output'),
+                  event(3,2,0,'field_convert_pixels','surface'),
+                  event(4,2,0,'canvas_pixels','surface')]
+        native = dict(pid=123, event='materialized', driver_instance=1, context=2,
+                      generation=1, token=2, decode_identity=4, submission_ordinal=2)
+        valid = dict(events=events, by_id={e['id']: e for e in events})
+        return valid, [(10,native)], {'1': dict(begin=0,end=20,begin_ns=100,end_ns=200)}
+
+    def test_partial_pixel_work_uses_actual_harvest_parent_not_requested_picture(self):
+        valid, rows, windows = self.correlation_fixture()
+        result = STOCK.correlate_cost_native(valid, rows, windows, 123)
+        self.assertEqual(result['status'], 'PASS_SCOPED_NATIVE_COST_CORRELATION')
+        play = result['plays']['1']
+        self.assertEqual(play['required_pixel_stage_coverage'], {'field_convert_pixels':1,'canvas_pixels':1})
+        self.assertEqual(play['direct_full_events'],1)
+        self.assertEqual(play['actual_parent_lineage_events'],2)
+        self.assertEqual(play['unjoined_events'],1)
+
+    def test_explicit_different_full_child_never_falls_back_to_requested_ancestor(self):
+        valid, rows, windows = self.correlation_fixture()
+        for e in valid['events'][1:]:
+            if e['binding_kind']=='full':
+                e.update(token=3,decode_identity=6,submission_ordinal=3,surface=3,owner=3)
+        rows[0][1].update(token=1,decode_identity=2,submission_ordinal=1)
+        # A is a valid native key, but cannot replace separately known picture3.
+        result = STOCK.correlate_cost_native(valid,rows,windows,123)
+        self.assertEqual(result['status'],'NOT_QUALIFIED_NATIVE_COST_CORRELATION')
+        self.assertEqual(result['plays']['1']['matched_events'],1)
+
+    def test_conflicting_partial_source_scalar_remains_unjoined(self):
+        valid,rows,windows = self.correlation_fixture()
+        valid['events'][2]['token']=99
+        result=STOCK.correlate_cost_native(valid,rows,windows,123)
+        self.assertEqual(result['status'],'NOT_QUALIFIED_NATIVE_COST_CORRELATION')
+        self.assertEqual(result['plays']['1']['required_pixel_stage_coverage']['field_convert_pixels'],0)
+
+    def test_unknown_child_cannot_cross_conflicting_partial_ancestor(self):
+        valid,rows,windows = self.correlation_fixture()
+        parent = valid['events'][1]
+        parent['binding_kind'] = 'surface'
+        rows[0][1].update(token=1,decode_identity=2,submission_ordinal=1)
+        result = STOCK.correlate_cost_native(valid,rows,windows,123)
+        self.assertEqual(result['status'],'NOT_QUALIFIED_NATIVE_COST_CORRELATION')
+        self.assertEqual(result['plays']['1']['matched_events'],1)
+        self.assertEqual(result['plays']['1']['required_pixel_stage_coverage']['canvas_pixels'],0)
+
+    def test_cost_mode_requires_explicit_packet_bwdif_and_boolean(self):
+        self.assertFalse(STOCK.cost_mode(False, 'off750', False))
+        self.assertTrue(STOCK.cost_mode(True, 'bwdif2997', True))
+        for value, scenario, packets in ((True, 'off750', True), (True, 'bwdif2997', False),
+                                         (True, 'bwdif2997', 1), (1, 'bwdif2997', True)):
+            with self.subTest(value=value, scenario=scenario, packets=packets):
+                with self.assertRaises(ValueError):STOCK.cost_mode(value, scenario, packets)
+
+    def test_backend_selection_and_pins_are_explicit(self):
+        self.assertEqual(STOCK.backend_image(), Path('filters/vaapi/centered-observer/crystalhd_drv_video.so'))
+        self.assertEqual(STOCK.backend_image(True), STOCK.COST_IMAGE)
+        files = STOCK.cost_files(Path('/own'))
+        self.assertIn(Path('/own') / STOCK.COST_IMAGE, files)
+        self.assertIn(Path('/own/tests/vaapi-maintained-cost-observer.h'), files)
+        self.assertIn(Path('/own/tests/vaapi-maintained-cost-backend.cpp'), files)
+        self.assertIn(STOCK.COST_READER, files)
+        with self.assertRaises(ValueError):STOCK.backend_image(1)
+
+    def test_cost_environment_adds_no_client_or_preload_override(self):
+        self.assertEqual(STOCK.cost_options(), [])
+        args = STOCK.cost_options(True)
+        self.assertNotIn('LD_PRELOAD', args)
+        self.assertNotIn('skip_frame', args)
+        self.assertNotIn('--dev-bind', args)
+        self.assertEqual(args[-1], '/payload/maintained-cost')
+
+    def test_cost_observation_cannot_turn_native_subset_into_full_source_pass(self):
+        report = {'owned_app': {'pid': 123}, 'intervals': {'1': {'begin_ns': 10, 'end_ns': 20}},
+                  'source_census': {'1': {'observed_submit_bindings': 677, 'status': 'FAIL'}}}
+        reader = SimpleNamespace(read_report=lambda path, **kw: {'pid': kw['expected_pid']},
+            audit_report=lambda *a, **kw: {'status': 'PASS_SCOPED_MAINTAINED_COST_OBSERVATION'},
+            census_case=lambda *a: {'status': 'PASS_SCOPED_MAINTAINED_COST_CENSUS'})
+        with patch.object(STOCK, 'load', return_value=reader):
+            result = STOCK.audit_cost_case(Path('/retired-case'), report)
+        self.assertEqual(result['native_originals_by_play'], {'1': 677})
+        self.assertEqual(report['source_census']['1']['status'], 'FAIL')
+        reader.census_case = lambda *a: {'status': 'NOT_QUALIFIED'}
+        with patch.object(STOCK, 'load', return_value=reader):
+            with self.assertRaisesRegex(ValueError, 'play selection'):
+                STOCK.audit_cost_case(Path('/retired-case'), report)
+
+
 class AbortTests(unittest.TestCase):
     def test_controller_abort_interrupts_waiting_application_gate(self):
         # Run only OWN pump/wait definitions with fake published Kodi objects.

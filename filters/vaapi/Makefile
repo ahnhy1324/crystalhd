@@ -151,6 +151,38 @@ packet-admission-observer-clean:
 	@rmdir packet-admission-observer 2>/dev/null || true
 clean: packet-admission-observer-clean
 
+# OWN CPU/wall diagnosis retains payload checks in a separate private backend.
+.PHONY: maintained-cost-observer check-maintained-cost-observer maintained-cost-observer-clean
+maintained-cost-observer: $(ROOTDIR)/tests/vaapi-maintained-cost-backend.cpp \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
+	mkdir -p maintained-cost-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o maintained-cost-observer/crystalhd_drv_video.so \
+		-shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+check-maintained-cost-observer: $(ROOTDIR)/tests/vaapi-maintained-cost.cpp \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-pixels.py \
+		$(ROOTDIR)/tests/vaapi-centered-payload.cpp \
+		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-vpp-payload-observer.h \
+		$(ROOTDIR)/tests/vaapi-bob-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
+	mkdir -p maintained-cost-observer
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o maintained-cost-observer/cost-cpu-test -pthread $(CRYSTALHD_CPU_FLAGS)
+	maintained-cost-observer/cost-cpu-test
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-maintained-cost-reader.test.py
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_VAAPI_TEST_MAINTAINED_COST=1 -fno-tree-slp-vectorize \
+		-ffunction-sections -fdata-sections $(ROOTDIR)/tests/vaapi-centered-payload.cpp \
+		-o maintained-cost-observer/cost-pixel-test \
+		-Wl,--gc-sections,--wrap=ioctl,--wrap=sws_scale \
+		$(shell $(PKG_CONFIG) --libs gbm libdrm libswscale libavutil) -pthread $(CRYSTALHD_CPU_FLAGS)
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-maintained-cost-pixels.py maintained-cost-observer/cost-pixel-test
+
+maintained-cost-observer-clean:
+	rm -f maintained-cost-observer/crystalhd_drv_video.so maintained-cost-observer/cost-cpu-test maintained-cost-observer/cost-pixel-test
+	@rmdir maintained-cost-observer 2>/dev/null || true
+clean: maintained-cost-observer-clean
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.
