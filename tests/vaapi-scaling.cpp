@@ -7,7 +7,7 @@
 // same-device channel negotiation is exercised by vaapi-replay.cpp instead.
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 namespace centered_probe {
-unsigned calls = 0, width = 0, height = 0, readbacks = 0;
+unsigned calls = 0, width = 0, height = 0, readbacks = 0, cpu_readbacks = 0;
 bool compact = false;
 }
 #define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
@@ -16,6 +16,8 @@ bool compact = false;
 } while (0)
 #define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) \
   (++centered_probe::readbacks)
+#define CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(surface, image, bytes) \
+  (++centered_probe::cpu_readbacks)
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 #include <cstdarg>
 #include <cstdlib>
@@ -3409,6 +3411,118 @@ std::shared_ptr<Surface> InstallCenteredDumb(CenteredFixture *f,
   return surface;
 }
 
+void RecreateCenteredContext(CenteredFixture *f) {
+  // The original constructor's context has submitted nothing. Recreate its
+  // private test ID with the actual DUMB target in place, exercising the real
+  // success-path target loop rather than calling the policy helper directly.
+  Require(DestroyContext(&f->context, 1) == VA_STATUS_SUCCESS,
+          "retire an unused private context before testing target selection");
+  f->driver.next_context = 1;
+  const std::string policy = std::to_string(f->capture_width) + "x" +
+      std::to_string(f->capture_height) + "@" + std::to_string(f->coded_width) +
+      "x" + std::to_string(f->visible_height) + (f->full ? ":full" : ":limited");
+  CenteredEnvironment selection("CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12", policy.c_str());
+  VASurfaceID target = 1; VAContextID context = VA_INVALID_ID;
+  Require(CreateContext(&f->context, 1, f->coded_width, f->coded_height, VA_PROGRESSIVE,
+                         &target, 1, &context) == VA_STATUS_SUCCESS && context == 1,
+          "CPU pressure or optional conversion never adds a Context failure");
+  f->decode = f->driver.contexts.at(context);
+}
+
+void CenteredCpuPrimaryFullMaterialization() {
+  const uint32_t baseline = cpu_primary_live_bytes.load();
+  for (unsigned height : {1080U, 1088U}) for (bool full : {false, true}) {
+    CenteredDumbScope io;
+    CenteredFixture f(1920, 1088, 1080, 1280, 720, height, full, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    memset(surface->planes[0], 73, surface->object_sizes[0]);
+    const auto old = f.PrivatePixels(*surface);
+    RecreateCenteredContext(&f);
+    Require(CpuPrimaryStorageMatches(*surface) && f.PrivatePixels(*surface) == old &&
+                cpu_primary_live_bytes.load() == baseline + surface->storage.capacity(),
+            "actual Context selection preserves every initial public byte and charges actual full capacity");
+    f.Submit(); const auto packed = f.Packed(47); f.Complete(packed);
+    const auto expected = f.Canvas(packed);
+    Require(surface->ready && !surface->failed && f.PrivatePixels(*surface) == expected &&
+                surface->frame_timestamp == kTimestampStep,
+            "real full CPU canvas exists with exact identity before public READY/readback");
+    const unsigned weak_reads = centered_probe::readbacks;
+    const unsigned cpu_reads = centered_probe::cpu_readbacks;
+    Require(f.Read(1) == expected && f.Read(1, true) == expected &&
+                centered_probe::cpu_readbacks == cpu_reads + 2 &&
+                centered_probe::readbacks == weak_reads,
+            "Get/Derive read the actual independently copied CPU public canvas, not weak-small reconstruction");
+    for (unsigned parity = 0; parity != 2; ++parity) {
+      f.QueueBob(parity, false, full);
+      Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                  f.Read(2) == f.BobOracle(expected, parity) && f.Read(1) == expected,
+              "both existing Bob parities remain byte exact on a full CPU-primary original");
+    }
+  }
+  Require(cpu_primary_live_bytes.load() == baseline,
+          "full CPU canvases release all capacity after their final fixture references");
+}
+
+void CenteredCpuPrimaryPressureAndLifetime() {
+  const uint32_t baseline = cpu_primary_live_bytes.load();
+  for (unsigned obstruction = 0; obstruction != 4; ++obstruction) {
+    CenteredDumbScope io;
+    CenteredFixture f(1920, 1088, 1080, 1280, 720, 1088, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    Surface pressure;
+    if (obstruction == 0) {
+      Require(pressure.cpu_primary_charge.Acquire(kCpuPrimaryBytes - baseline),
+              "reserve the remaining actual live CPU capacity");
+      pressure.storage.resize(pressure.cpu_primary_charge.bytes);
+      Require(pressure.storage.capacity() == pressure.cpu_primary_charge.bytes,
+              "pressure fixture owns exactly its charged vector capacity");
+    }
+    if (obstruction == 1) allocation_fault::fail_at_least =
+        size_t{Align(surface->width, 64)} * (surface->height + surface->height / 2U);
+    if (obstruction == 2) ++surface->vpp_readers;
+    VAImage writable{};
+    if (obstruction == 3) {
+      void *data = nullptr;
+      Require(DeriveImage(&f.context, 1, &writable) == VA_STATUS_SUCCESS &&
+                  MapBufferWithFlags(&f.context, writable.buf, &data, kImageMapWrite) == VA_STATUS_SUCCESS &&
+                  surface->image_write_locked,
+              "hold a real cold-derived writer while creating the Context");
+    }
+    RecreateCenteredContext(&f);
+    if (obstruction == 1)
+      Require(allocation_fault::fail_at_least == SIZE_MAX,
+              "the full-canvas CPU allocation actually consumed the selected OOM fault");
+    Require(!surface->cpu_primary && surface->dumb_drm_fd >= 0 &&
+                surface->storage.empty() && surface->cpu_primary_charge.bytes == 0,
+            "budget/OOM/active-reader/cold-writer pressure preserves the original complete DUMB allocation");
+    allocation_fault::fail_at_least = SIZE_MAX;
+    if (obstruction == 2) --surface->vpp_readers;
+    if (obstruction == 3)
+      Require(UnmapBuffer(&f.context, writable.buf) == VA_STATUS_SUCCESS &&
+                  DestroyImage(&f.context, writable.image_id) == VA_STATUS_SUCCESS,
+              "fallback preserves the original cold-derived writeback lifetime");
+  }
+  {
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    const uint32_t bytes = surface->cpu_primary_charge.bytes;
+    Require(bytes != 0, "a live CPU-primary canvas owns a capacity charge");
+    auto retained = std::make_unique<VppPixelView>(); retained->Capture(surface);
+    VASurfaceID id = 1;
+    Require(DestroySurfaces(&f.context, &id, 1) == VA_STATUS_SUCCESS,
+            "remove only the public VA ID while a real captured allocation remains");
+    surface.reset();
+    Require(cpu_primary_live_bytes.load() == baseline + bytes,
+            "VA ID destruction cannot release bytes still retained by a pixel view");
+    retained.reset();
+    Require(cpu_primary_live_bytes.load() == baseline,
+            "last retained storage owner releases capacity exactly once");
+  }
+  Require(cpu_primary_live_bytes.load() == baseline, "all pressure and retained-owner charges retire");
+}
+
 void CenteredImageReadbackBytesAndReadFailures() {
   for (unsigned height : {1080U, 1088U}) for (bool full : {false, true}) {
     CenteredDumbScope io;
@@ -3572,11 +3686,22 @@ void CenteredImageReadbackExportAndPartial() {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--cpu-primary") == 0) {
+    try {
+      CenteredCpuPrimaryFullMaterialization(); CenteredCpuPrimaryPressureAndLifetime();
+      std::printf("PASS centered full CPU-primary canvases: %u checks\n", checks);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL centered full CPU-primary canvases: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && std::strcmp(argv[1], "--centered-readback") == 0) {
     try {
       CenteredImageReadbackBytesAndReadFailures();
       CenteredImageReadbackInvalidationAndFallback();
       CenteredImageReadbackExportAndPartial();
+      CenteredCpuPrimaryFullMaterialization(); CenteredCpuPrimaryPressureAndLifetime();
       std::printf("PASS centered independent image readback: %u checks\n", checks);
       return 0;
     } catch (const std::exception &error) {
@@ -3625,6 +3750,8 @@ int main(int argc, char **argv) {
     {"centered image reconstruction bytes and READ failures", CenteredImageReadbackBytesAndReadFailures},
     {"centered image provenance invalidation and fallback", CenteredImageReadbackInvalidationAndFallback},
     {"centered image export permanence and partial fallback", CenteredImageReadbackExportAndPartial},
+    {"centered full CPU-primary materialization", CenteredCpuPrimaryFullMaterialization},
+    {"centered CPU capacity pressure and retained lifetime", CenteredCpuPrimaryPressureAndLifetime},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <climits>
@@ -592,6 +593,34 @@ struct CenteredReadback {
   uint64_t timestamp = 0, identity = 0, context = 0, generation = 0, ordinal = 0;
 };
 
+// Published CPU-primary storage, including bytes retained by a promoted
+// Surface, has one process-wide budget. Use native 32-bit atomics on i686.
+static constexpr uint32_t kCpuPrimaryBytes = 64U * 1024U * 1024U;
+static std::atomic<uint32_t> cpu_primary_live_bytes{0};
+struct CpuPrimaryCharge {
+  uint32_t bytes = 0;
+  CpuPrimaryCharge() = default;
+  CpuPrimaryCharge(const CpuPrimaryCharge &) = delete;
+  CpuPrimaryCharge &operator=(const CpuPrimaryCharge &) = delete;
+  ~CpuPrimaryCharge() {
+    if (bytes != 0) cpu_primary_live_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+  }
+  bool Acquire(size_t capacity) {
+    if (bytes != 0 || capacity == 0 || capacity > kCpuPrimaryBytes) return false;
+    const uint32_t wanted = static_cast<uint32_t>(capacity);
+    uint32_t live = cpu_primary_live_bytes.load(std::memory_order_relaxed);
+    while (live <= kCpuPrimaryBytes - wanted) {
+      if (cpu_primary_live_bytes.compare_exchange_weak(
+              live, live + wanted, std::memory_order_relaxed)) {
+        bytes = wanted;
+        return true;
+      }
+    }
+    return false;
+  }
+  void Swap(CpuPrimaryCharge &other) noexcept { std::swap(bytes, other.bytes); }
+};
+
 // ARGB is the historical storage alias. BGRA names its actual byte order
 // for new VA clients; retain the legacy path while making new metadata honest.
 static bool IsBgraStorageFormat(uint32_t fourcc) {
@@ -689,7 +718,13 @@ struct Surface {
   bool vpp_external_write_exposed = false;
   bool direct_picture = false;
 
+  // Declared before both vectors: its charge is released only AFTER their
+  // actual allocations die, including Surface references retained past a VA ID.
+  CpuPrimaryCharge cpu_primary_charge;
   std::vector<uint8_t> storage;
+  std::vector<uint8_t> retired_cpu_primary_storage;
+  bool cpu_primary = false;
+  bool cpu_primary_gpu_promoted = false;
   std::weak_ptr<CrystalHDPrivateBackingPool> private_backing_pool;
   gbm_bo *bo = nullptr;
   void *map_data[2] = {};
@@ -721,7 +756,8 @@ struct Surface {
       ioctl(dumb_drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
       close(dumb_drm_fd);
     }
-    if (bo == nullptr && dumb_drm_fd < 0 && object_fds.empty() &&
+    if (!cpu_primary && cpu_primary_charge.bytes == 0 &&
+        bo == nullptr && dumb_drm_fd < 0 && object_fds.empty() &&
         object_maps.empty() && !layout.valid && !direct_picture && !direct_backing) {
       if (auto pool = private_backing_pool.lock())
         pool->Recycle(std::move(storage));
@@ -758,7 +794,8 @@ struct Surface {
                         unsigned int requested_height,
                         uint32_t requested_fourcc,
                         bool allow_experimental_i915_wc = false,
-                        PrimaryDrmNodeCache *primary_node_cache = nullptr) {
+                        PrimaryDrmNodeCache *primary_node_cache = nullptr,
+                        bool allow_cpu_fallback = true) {
     width = requested_width;
     height = requested_height;
     fourcc = requested_fourcc;
@@ -888,7 +925,7 @@ struct Surface {
       close(dumb_drm_fd);
       dumb_drm_fd = -1;
     }
-    return AllocateCpuNv12(width, height);
+    return allow_cpu_fallback && AllocateCpuNv12(width, height);
   }
 
   bool ImportPrime(gbm_device *gbm, const VADRMPRIMESurfaceDescriptor &desc) {
@@ -4363,6 +4400,82 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination,
   destination->failed = false;
   destination->frame_timestamp = source.frame_timestamp;
   return true;
+}
+
+// Keep the VA object, logical ownership and existing captures unchanged. Only
+// allocation state moves; callers finish every fallible operation beforehand.
+static void SwapSurfaceStorage(Surface &a, Surface &b) noexcept {
+  a.storage.swap(b.storage);
+  a.private_backing_pool.swap(b.private_backing_pool);
+  std::swap(a.bo, b.bo);
+  a.object_maps.swap(b.object_maps);
+  a.object_sizes.swap(b.object_sizes);
+  a.object_fds.swap(b.object_fds);
+  std::swap(a.dumb_drm_fd, b.dumb_drm_fd);
+  std::swap(a.dumb_handle, b.dumb_handle);
+  std::swap(a.owned_i915_dumb, b.owned_i915_dumb);
+  std::swap(a.experimental_i915_wc, b.experimental_i915_wc);
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    std::swap(a.pitch[plane], b.pitch[plane]);
+    std::swap(a.planes[plane], b.planes[plane]);
+    std::swap(a.map_data[plane], b.map_data[plane]);
+  }
+  CRYSTALHD_TEST_STORAGE_INSTALLED(&a);
+  CRYSTALHD_TEST_STORAGE_INSTALLED(&b);
+}
+
+static bool CpuPrimaryStorageMatches(const Surface &surface) {
+  return surface.cpu_primary && !surface.cpu_primary_gpu_promoted &&
+      !surface.centered_allocation_exposed &&
+      surface.id != VA_INVALID_SURFACE && surface.backing_owner == VA_INVALID_SURFACE &&
+      !surface.layout.valid && surface.bo == nullptr && surface.dumb_drm_fd < 0 &&
+      surface.object_fds.empty() && surface.object_maps.empty() &&
+      surface.retired_cpu_primary_storage.empty() &&
+      surface.fourcc == VA_FOURCC_NV12 && surface.width != 0 &&
+      surface.width <= kMaxWidth && surface.height != 0 && surface.height <= kMaxHeight &&
+      (surface.width & 1U) == 0 && (surface.height & 3U) == 0 &&
+      surface.pitch[0] == Align(surface.width, 64) && surface.pitch[1] == surface.pitch[0] &&
+      surface.storage.size() == size_t{surface.pitch[0]} * (surface.height + surface.height / 2U) &&
+      surface.storage.capacity() == surface.cpu_primary_charge.bytes &&
+      surface.planes[0] == surface.storage.data() &&
+      surface.planes[1] == surface.planes[0] + size_t{surface.pitch[0]} * surface.height;
+}
+
+static bool TryCpuPrimaryTarget(Surface *surface, const DecodeContext &decode) {
+  // Context creation knows the actual immutable Centered policy; surface
+  // creation does not distinguish decoder/VPP pools in the original client.
+  if (!surface || !decode.centered_geometry.enabled || decode.video_process ||
+      decode.decode_processing || !CenteredReadbackAllocation(*surface) ||
+      surface->cpu_primary || surface->cpu_primary_gpu_promoted ||
+      surface->cpu_primary_charge.bytes != 0 || !surface->retired_cpu_primary_storage.empty() ||
+      !surface->ready || surface->failed || surface->destroyed ||
+      surface->expected_timestamp != 0 || surface->frame_timestamp != 0 ||
+      surface->vpp_readers != 0 || surface->vpp_writers != 0 ||
+      surface->image_write_locked || surface->export_waiters != 0 ||
+      !surface->decode_picture.expired() || surface->completed_decode_picture.picture ||
+      surface->direct_backing || !surface->private_backing_pool.expired() ||
+      surface->width != decode.width || surface->height > decode.height ||
+      surface->height < decode.centered_geometry.visible_height)
+    return false;
+  try {
+    Surface candidate;
+    const size_t bytes = size_t{Align(surface->width, 64)} *
+        (surface->height + surface->height / 2U);
+    if (!candidate.cpu_primary_charge.Acquire(bytes) ||
+        !candidate.AllocateCpuNv12(surface->width, surface->height) ||
+        candidate.storage.capacity() != candidate.cpu_primary_charge.bytes ||
+        !CopyNv12Surface(*surface, &candidate))
+      return false;
+    SwapSurfaceStorage(*surface, candidate);
+    surface->cpu_primary_charge.Swap(candidate.cpu_primary_charge);
+    surface->cpu_primary = true;
+    surface->InvalidateCenteredReadback();
+    return true;
+  } catch (const std::bad_alloc &) {
+    // An optional representation choice never adds a context failure or
+    // discards the existing complete DUMB allocation/pixels.
+    return false;
+  }
 }
 
 static void RetainCompletedVppPicture(Surface *owner) {
@@ -9460,6 +9573,12 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
     // reset retain their existing full-device close/reopen workaround.
     decode->device_preopened = true;
   }
+  if (decode->centered_geometry.enabled)
+    for (int index = 0; index != target_count; ++index) {
+      const auto target = driver->surfaces.find(targets[index]);
+      if (target != driver->surfaces.end())
+        TryCpuPrimaryTarget(target->second.get(), *decode);
+    }
   ++driver->next_context;
   *context_id = created;
   return VA_STATUS_SUCCESS;
@@ -11448,8 +11567,14 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
            surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1],
            Align(width, 2));
   }
-  return surface->EndCpuRead() ? VA_STATUS_SUCCESS
-                               : VA_STATUS_ERROR_OPERATION_FAILED;
+  if (!surface->EndCpuRead())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+#if defined(CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK)
+  if (CpuPrimaryStorageMatches(*surface) && width == surface->width &&
+      height == surface->height && image->va.width == width && image->va.height == height)
+    CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(*surface, image->va, buffer->second.data.data());
+#endif
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
@@ -11897,6 +12022,37 @@ static VAStatus ReleaseBufferHandle(VADriverContextP context,
   return FinishDerivedWrite(driver, buffer, true);
 }
 
+static VAStatus PrepareCpuPrimaryExport(Driver *driver, Surface *source,
+                                        bool overwrite_only,
+                                        std::unique_ptr<Surface> *prepared) {
+  if (!CpuPrimaryStorageMatches(*source))
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
+  // WRITE_ONLY deliberately skips the public read-sync contract: preserve
+  // baseline overwrite access to failed/cold targets without clearing state.
+  if (!overwrite_only && source->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  if ((!overwrite_only && !source->ready) || source->vpp_writers != 0 || source->image_write_locked ||
+      source->export_waiters != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  try {
+    auto candidate = std::make_unique<Surface>();
+    // Export must acquire real DRM storage, never the allocator's ordinary
+    // CPU fallback. Keep the complete live CPU canvas untouched on failure.
+    if (!candidate->AllocateInternal(driver->gbm, driver->drm_fd,
+                                     source->width, source->height, VA_FOURCC_NV12,
+                                     driver->experimental_i915_wc,
+                                     &driver->primary_node_cache, false) ||
+        (candidate->bo == nullptr && candidate->object_fds.empty()))
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    if (!CopyNv12Surface(*source, candidate.get()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    *prepared = std::move(candidate);
+    return VA_STATUS_SUCCESS;
+  } catch (const std::bad_alloc &) {
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+}
+
 static VAStatus ExportSurfaceHandle(VADriverContextP context,
                                     VASurfaceID surface_id, uint32_t memory_type,
                                     uint32_t flags, void *descriptor) {
@@ -12015,7 +12171,8 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
     return finish(VA_STATUS_ERROR_INVALID_SURFACE);
-  if (surface->second->bo == nullptr && surface->second->object_fds.empty())
+  if (!surface->second->cpu_primary &&
+      surface->second->bo == nullptr && surface->second->object_fds.empty())
     return finish(VA_STATUS_ERROR_UNIMPLEMENTED);
   Surface *owner = BackingOwner(driver, surface->second.get());
   // SynchronizeExportRead may release the mutex while waiting and may commit
@@ -12046,6 +12203,15 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     }
   }
 
+  std::unique_ptr<Surface> cpu_promotion;
+  if (surface->second->cpu_primary) {
+    const VAStatus prepared = PrepareCpuPrimaryExport(
+        driver, surface->second.get(), access == VA_EXPORT_SURFACE_WRITE_ONLY, &cpu_promotion);
+    if (prepared != VA_STATUS_SUCCESS)
+      return finish(prepared);
+  }
+  Surface *pixels = cpu_promotion ? cpu_promotion.get() : surface->second.get();
+
   struct PendingExport {
     VADRMPRIMESurfaceDescriptor value = {};
     PendingExport() {
@@ -12058,6 +12224,17 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   } pending;
   auto *prime = &pending.value;
   const auto publish = [&] {
+    if (cpu_promotion) {
+      // RegisterExportedLayout has completed and no fallible work remains.
+      // Existing read-only views keep their exact old plane addresses alive;
+      // these charged CPU bytes retire only with the LAST Surface reference.
+      surface->second->retired_cpu_primary_storage.swap(surface->second->storage);
+      SwapSurfaceStorage(*surface->second, *cpu_promotion);
+      surface->second->cpu_primary = false;
+      surface->second->cpu_primary_gpu_promoted = true;
+      surface->second->centered_allocation_exposed = true;
+      surface->second->InvalidateCenteredReadback();
+    }
     *static_cast<VADRMPRIMESurfaceDescriptor *>(descriptor) = *prime;
     for (auto &object : prime->objects) object.fd = -1;
     return finish(VA_STATUS_SUCCESS);
@@ -12075,19 +12252,19 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
   };
-  prime->fourcc = surface->second->fourcc;
-  prime->width = surface->second->width;
-  prime->height = surface->second->height;
-  if (surface->second->bo == nullptr && surface->second->layout.valid) {
+  prime->fourcc = pixels->fourcc;
+  prime->width = pixels->width;
+  prime->height = pixels->height;
+  if (pixels->bo == nullptr && pixels->layout.valid) {
     // A mapped import can have separate Y/UV objects, plane offsets or padded
     // strides. Re-export that exact registered view, not the internal DUMB
     // allocation's assumed Y-at-zero/contiguous-UV layout.
-    const SurfaceLayout &imported_layout = surface->second->layout;
+    const SurfaceLayout &imported_layout = pixels->layout;
     const unsigned expected_planes = prime->fourcc == VA_FOURCC_NV12 ? 2 : 1;
     if ((prime->fourcc != VA_FOURCC_NV12 && !IsBgraStorageFormat(prime->fourcc)) ||
         imported_layout.num_planes != expected_planes ||
         imported_layout.objects.empty() || imported_layout.objects.size() > 4 ||
-        surface->second->object_fds.size() != surface->second->object_sizes.size())
+        pixels->object_fds.size() != pixels->object_sizes.size())
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     prime->num_objects = imported_layout.objects.size();
     const auto failed_export = [&] {
@@ -12101,15 +12278,15 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     };
     for (unsigned object = 0; object < prime->num_objects; ++object) {
       bool found = false;
-      for (size_t stored = 0; stored < surface->second->object_fds.size(); ++stored) {
+      for (size_t stored = 0; stored < pixels->object_fds.size(); ++stored) {
         BackingIdentity identity;
-        if (!GetBackingIdentity(surface->second->object_fds[stored], &identity) ||
+        if (!GetBackingIdentity(pixels->object_fds[stored], &identity) ||
             !(identity == imported_layout.objects[object]))
           continue;
-        const size_t bytes = surface->second->object_sizes[stored];
+        const size_t bytes = pixels->object_sizes[stored];
         if (bytes == 0 || bytes > UINT32_MAX)
           return failed_export();
-        const int fd = fcntl(surface->second->object_fds[stored], F_DUPFD_CLOEXEC, 0);
+        const int fd = fcntl(pixels->object_fds[stored], F_DUPFD_CLOEXEC, 0);
         if (fd < 0)
           return failed_export();
         prime->objects[object].fd = fd;
@@ -12153,30 +12330,30 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       ArmTraceReadExport(driver, surface->second.get(), owner, trace_fields.operation);
     return publish();
   }
-  if (IsBgraStorageFormat(surface->second->fourcc)) {
-    const int fd = surface->second->bo != nullptr
-                       ? gbm_bo_get_fd_for_plane(surface->second->bo, 0)
-                       : dup(surface->second->object_fds[0]);
+  if (IsBgraStorageFormat(pixels->fourcc)) {
+    const int fd = pixels->bo != nullptr
+                       ? gbm_bo_get_fd_for_plane(pixels->bo, 0)
+                       : dup(pixels->object_fds[0]);
     if (fd < 0)
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     prime->num_objects = 1;
     prime->num_layers = 1;
     prime->objects[0].fd = fd;
-    prime->objects[0].size = surface->second->bo != nullptr
-                                 ? surface->second->pitch[0] *
-                                       surface->second->height
-                                 : surface->second->object_sizes[0];
+    prime->objects[0].size = pixels->bo != nullptr
+                                 ? pixels->pitch[0] *
+                                       pixels->height
+                                 : pixels->object_sizes[0];
     prime->objects[0].drm_format_modifier =
-        surface->second->bo != nullptr
-            ? gbm_bo_get_modifier(surface->second->bo)
+        pixels->bo != nullptr
+            ? gbm_bo_get_modifier(pixels->bo)
             : DRM_FORMAT_MOD_LINEAR;
     prime->layers[0].drm_format = DRM_FORMAT_ARGB8888;
     prime->layers[0].num_planes = 1;
     prime->layers[0].object_index[0] = 0;
-    prime->layers[0].offset[0] = surface->second->bo != nullptr
-                                     ? gbm_bo_get_offset(surface->second->bo, 0)
+    prime->layers[0].offset[0] = pixels->bo != nullptr
+                                     ? gbm_bo_get_offset(pixels->bo, 0)
                                      : 0;
-    prime->layers[0].pitch[0] = surface->second->pitch[0];
+    prime->layers[0].pitch[0] = pixels->pitch[0];
     const VAStatus registered = register_layout();
     if (registered != VA_STATUS_SUCCESS)
       return finish(registered);
@@ -12187,27 +12364,27 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     }
     return publish();
   }
-  if (surface->second->fourcc != VA_FOURCC_NV12)
+  if (pixels->fourcc != VA_FOURCC_NV12)
     return finish(VA_STATUS_ERROR_UNIMPLEMENTED);
-  const bool gbm_backed = surface->second->bo != nullptr;
+  const bool gbm_backed = pixels->bo != nullptr;
   prime->num_objects = gbm_backed ? 2 : 1;
   for (unsigned int object = 0; object < prime->num_objects; ++object) {
     prime->objects[object].fd =
-        gbm_backed ? gbm_bo_get_fd_for_plane(surface->second->bo, object)
-                   : dup(surface->second->object_fds[0]);
+        gbm_backed ? gbm_bo_get_fd_for_plane(pixels->bo, object)
+                   : dup(pixels->object_fds[0]);
     if (prime->objects[object].fd < 0) {
       prime->num_objects = 0;
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     }
     prime->objects[object].size =
         gbm_backed
-            ? gbm_bo_get_offset(surface->second->bo, object) +
-                  surface->second->pitch[object] *
-                      (object == 0 ? surface->second->height
-                                   : (surface->second->height + 1) / 2)
-            : surface->second->object_sizes[0];
+            ? gbm_bo_get_offset(pixels->bo, object) +
+                  pixels->pitch[object] *
+                      (object == 0 ? pixels->height
+                                   : (pixels->height + 1) / 2)
+            : pixels->object_sizes[0];
     prime->objects[object].drm_format_modifier =
-        gbm_backed ? gbm_bo_get_modifier(surface->second->bo)
+        gbm_backed ? gbm_bo_get_modifier(pixels->bo)
                    : DRM_FORMAT_MOD_LINEAR;
   }
   if ((flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) == 0) {
@@ -12218,10 +12395,10 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       prime->layers[plane].num_planes = 1;
       prime->layers[plane].object_index[0] = gbm_backed ? plane : 0;
       prime->layers[plane].offset[0] = gbm_backed
-          ? gbm_bo_get_offset(surface->second->bo, plane)
-          : (plane == 0 ? 0 : surface->second->pitch[0] *
-                                  surface->second->height);
-      prime->layers[plane].pitch[0] = surface->second->pitch[plane];
+          ? gbm_bo_get_offset(pixels->bo, plane)
+          : (plane == 0 ? 0 : pixels->pitch[0] *
+                                  pixels->height);
+      prime->layers[plane].pitch[0] = pixels->pitch[plane];
     }
   } else {
     prime->num_layers = 1;
@@ -12230,10 +12407,10 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     for (unsigned int plane = 0; plane < 2; ++plane) {
       prime->layers[0].object_index[plane] = gbm_backed ? plane : 0;
       prime->layers[0].offset[plane] = gbm_backed
-          ? gbm_bo_get_offset(surface->second->bo, plane)
-          : (plane == 0 ? 0 : surface->second->pitch[0] *
-                                  surface->second->height);
-      prime->layers[0].pitch[plane] = surface->second->pitch[plane];
+          ? gbm_bo_get_offset(pixels->bo, plane)
+          : (plane == 0 ? 0 : pixels->pitch[0] *
+                                  pixels->height);
+      prime->layers[0].pitch[plane] = pixels->pitch[plane];
     }
   }
   const VAStatus registered = register_layout();
