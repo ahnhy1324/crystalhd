@@ -183,6 +183,55 @@ maintained-cost-observer-clean:
 	@rmdir maintained-cost-observer 2>/dev/null || true
 clean: maintained-cost-observer-clean
 
+# Exact replay/history diagnostics, separate from ordinary build/install.
+.PHONY: replay-disposition-observer check-replay-disposition-observer replay-disposition-observer-clean
+replay-disposition-observer: $(ROOTDIR)/tests/vaapi-replay-disposition-backend.cpp \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
+	mkdir -p replay-disposition-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o replay-disposition-observer/crystalhd_drv_video.so \
+		-shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+replay-disposition-observer/collector-test: $(ROOTDIR)/tests/vaapi-replay-disposition.cpp \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h
+	mkdir -p replay-disposition-observer
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o replay-disposition-observer/collector-test -pthread $(CRYSTALHD_CPU_FLAGS)
+
+replay-disposition-observer/path-test: $(ROOTDIR)/tests/vaapi-replay-disposition-path.cpp \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
+	mkdir -p replay-disposition-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(ROOTDIR)/tests/vaapi-replay-disposition-path.cpp \
+		-o replay-disposition-observer/path-test \
+		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
+		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read,--wrap=__read_chk \
+		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
+		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDupOutputPollFd \
+		-Wl,--wrap=DtsOpenDecoder,--wrap=DtsSetColorSpace \
+		-Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture \
+		-Wl,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
+		-Wl,--wrap=DtsCloseDecoder,--wrap=DtsCrystalHDVersion,--wrap=DtsSetInputFormat \
+		-Wl,--wrap=DtsSetScaleParams \
+		-Wl,--wrap=DtsGetDriverStatus,--wrap=DtsTxFreeSize \
+		-Wl,--wrap=DtsIsEndOfStream \
+		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \
+		-Wl,--wrap=DtsReleaseOutputBuffs $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+check-replay-disposition-observer: replay-disposition-observer/collector-test replay-disposition-observer/path-test \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-paths.py \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-reader.test.py
+	replay-disposition-observer/collector-test
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-replay-disposition-reader.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-replay-disposition-paths.py replay-disposition-observer/path-test \
+		--library-directory $(abspath $(ROOTDIR)/linux_lib/libcrystalhd)
+
+replay-disposition-observer-clean:
+	rm -f replay-disposition-observer/crystalhd_drv_video.so replay-disposition-observer/collector-test replay-disposition-observer/path-test
+	@rmdir replay-disposition-observer 2>/dev/null || true
+clean: replay-disposition-observer-clean
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.

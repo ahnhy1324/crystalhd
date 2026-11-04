@@ -98,6 +98,13 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #include "../../tests/vaapi-centered-payload-observer.h"
 #endif
 
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+#include "../../tests/vaapi-replay-disposition-observer.h"
+#define CH_REPLAY_ONLY(...) __VA_ARGS__
+#else
+#define CH_REPLAY_ONLY(...) do {} while (false)
+#endif
+
 #if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST)
 #include "../../tests/vaapi-maintained-cost-observer.h"
 #define CH_COST_SCOPE(name, stage, identity) \
@@ -2141,6 +2148,9 @@ struct OutputPollLease {
 // The historical name also identifies H.264-only early Bob/auxiliary users;
 // those policies are not enabled for MPEG-2 by sharing the pair storage.
 struct H264FirstField {
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+  uint64_t replay_receive_id = 0;
+#endif
   bool valid = false;
   bool replay_duplicate = false;
   bool bottom = false;
@@ -2368,6 +2378,9 @@ struct DecodeContext {
   bool destroy_prepared = false;
   VAStatus destroy_status = VA_STATUS_SUCCESS;
   uint64_t generation = 1;
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+  uint64_t replay_restart_ordinal = 0;
+#endif
   uint64_t next_submission_ordinal = 1;
   uint64_t transport_progress = 0;
   // Aggregate only time actually spent waiting in VA sync calls. Wall-clock
@@ -2720,6 +2733,7 @@ struct DecodeContext {
   BC_STATUS Reset(uint64_t timeout_ns = kDecodeTimeoutNs) {
     retirement_candidates.clear();
     ++generation;
+    CH_REPLAY_ONLY(replay_restart_ordinal = 0);
     return Close(timeout_ns);
   }
 
@@ -4779,9 +4793,18 @@ static VAStatus ProcessDecodedOutputImpl(
   }
   CH_COST_BIND(cost_process, CostOutput(driver, decode, output.PicInfo.timeStamp), Output);
   if (driver->trace.enabled()) {
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+    const auto replay_fields = TraceDecodeTokenFields(driver, decode,
+                                                       output.PicInfo.timeStamp);
+    const uint64_t replay_sequence = driver->trace.Emit(
+        crystalhd_vaapi_trace::Event::OutputDequeued, replay_fields);
+    crystalhd_test_replay_disposition::Output(replay_sequence, replay_fields,
+                                              output.PicInfo);
+#else
     driver->trace.Emit(crystalhd_vaapi_trace::Event::OutputDequeued,
                        TraceDecodeTokenFields(driver, decode,
                                               output.PicInfo.timeStamp));
+#endif
   }
   if (decode->prefed_timestamp != 0 &&
       output.PicInfo.timeStamp == decode->prefed_timestamp)
@@ -4835,6 +4858,12 @@ static VAStatus ProcessDecodedOutputImpl(
              : decode->replay.IsOutstanding(output.PicInfo.timeStamp));
     const bool new_picture =
         inspection == CrystalHDDecodeReplay::Output::New;
+    CH_REPLAY_ONLY(crystalhd_test_replay_disposition::Inspect(
+        inspection == CrystalHDDecodeReplay::Output::New ? "new" :
+        inspection == CrystalHDDecodeReplay::Output::Duplicate ? "duplicate" :
+        inspection == CrystalHDDecodeReplay::Output::Unknown ? "unknown" : "invalid",
+        replay_duplicate, !decode->h264_first_field.valid,
+        decode->h264_first_field.replay_receive_id));
     if (decode->is_70012 && output.PicInfo.timeStamp == 0 &&
         !decode->h264_first_field.valid)
       return FailDecode(driver, decode,
@@ -4875,6 +4904,7 @@ static VAStatus ProcessDecodedOutputImpl(
         // reinterpret an ambiguous whole-picture transfer as its first half.
         (!mpeg2_interlaced ||
          static_cast<uint64_t>(output.YBuffDoneSz) * 4U < field_bytes * 2U);
+    CH_REPLAY_ONLY(crystalhd_test_replay_disposition::Field(valid_field));
     if (!valid_field)
       return FailDecode(driver, decode,
                         "invalid interlaced field geometry/data or ownership");
@@ -4909,6 +4939,7 @@ static VAStatus ProcessDecodedOutputImpl(
       first.picture = replay_duplicate ? nullptr : decoded->second;
       first.pixels = std::move(pixels);
       first.valid = true;
+      CH_REPLAY_ONLY(first.replay_receive_id = crystalhd_test_replay_disposition::ReceiveId());
       return VA_STATUS_SUCCESS;
     }
 
@@ -4931,6 +4962,7 @@ static VAStatus ProcessDecodedOutputImpl(
         first.bottom_first != bottom_first)
       return FailDecode(driver, decode,
                         "fields have mismatched identity, parity, order or geometry");
+    CH_REPLAY_ONLY(crystalhd_test_replay_disposition::Pair());
     paired_first_field = std::move(decode->h264_first_field);
     decode->h264_first_field = H264FirstField();
     // Identity has already been checked against decoded_frames. Do not let
@@ -4973,6 +5005,10 @@ static VAStatus ProcessDecodedOutputImpl(
   const auto disposition = decode->WithReplay([&](auto &replay) {
     return replay.Observe(output.PicInfo.timeStamp);
   });
+  CH_REPLAY_ONLY(crystalhd_test_replay_disposition::Observe(
+      disposition == CrystalHDDecodeReplay::Output::New ? "new" :
+      disposition == CrystalHDDecodeReplay::Output::Duplicate ? "duplicate" :
+      disposition == CrystalHDDecodeReplay::Output::Unknown ? "unknown" : "invalid"));
   if (disposition == CrystalHDDecodeReplay::Output::Invalid)
     return FailDecode(driver, decode, decode->ReplayFailure());
   if (ordered_mpeg4_simple && expected_mpeg4_simple &&
@@ -5317,6 +5353,10 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   Mpeg2Auxiliary::Output next_mpeg2_auxiliary;
   const bool unknown_mpeg2 = decode->IsMpeg2() && decode->mpeg2_auxiliary.ever &&
       !mpeg2_auxiliary && !decode->mpeg2_replay.Find(output.PicInfo.timeStamp);
+  CH_REPLAY_ONLY(crystalhd_test_replay_disposition::Receive replay_receive(
+      crystalhd_test_replay_disposition::Base(driver->trace.session(),
+          decode->id, decode->generation, decode->replay_restart_ordinal),
+      !mpeg2_auxiliary && !unknown_mpeg2 && !auxiliary));
   const VAStatus result = mpeg2_auxiliary
       ? ValidateMpeg2AuxiliaryOutput(driver, decode, output, *mpeg2_auxiliary,
                                     &next_mpeg2_auxiliary)
@@ -5325,9 +5365,11 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
       : auxiliary
       ? ValidateH264AuxiliaryOutput(driver, decode, output)
       : ProcessDecodedOutput(driver, decode, output);
+  CH_REPLAY_ONLY(replay_receive.Disposition(result));
   status = CH_COST_CALL(DilRelease,
           CostOutput(driver, decode, output.PicInfo.timeStamp), 0, 0,
           DtsReleaseOutputBuffs(decode->device, nullptr, FALSE));
+  CH_REPLAY_ONLY(replay_receive.Release(status));
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
   if (mpeg2_auxiliary && result == VA_STATUS_SUCCESS) {
@@ -5626,11 +5668,35 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       // Immutable frames, client generation and actual replay input stay owned.
       Debug("restart sealed decoder; replay %zu cached access units",
             replay.cached_pictures());
+      CH_REPLAY_ONLY(auto replay_restart = crystalhd_test_replay_disposition::Base(
+          driver->trace.session(), decode->id, decode->generation,
+          decode->replay_restart_ordinal);
+        replay_restart.type = crystalhd_test_replay_disposition::Type::Restart;
+        replay_restart.cached_units = replay.cached_pictures();
+        replay_restart.has_result = true);
       const BC_STATUS status = decode->CloseHardwareForH264Replay();
+      CH_REPLAY_ONLY(replay_restart.restart_phase = "close";replay_restart.result = status;
+        crystalhd_test_replay_disposition::Record(replay_restart));
       if (status != BC_STS_SUCCESS)
         return FailDecode(driver, decode, "hardware close for replay failed");
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+      const VAStatus replay_open_status = OpenDecoder(decode);
+      replay_restart.restart_phase = "open";replay_restart.result = replay_open_status;
+      crystalhd_test_replay_disposition::Record(replay_restart);
+      if (replay_open_status != VA_STATUS_SUCCESS)
+        return FailDecode(driver, decode, "hardware reopen for replay failed");
+      const bool replay_transition = replay.Restarted();
+      replay_restart.restart_phase = "transition";replay_restart.result = replay_transition;
+      crystalhd_test_replay_disposition::Record(replay_restart);
+      if (!replay_transition)
+        return FailDecode(driver, decode, "hardware reopen for replay failed");
+      replay_restart.restart_phase = "committed";
+      replay_restart.restart_ordinal = ++decode->replay_restart_ordinal;
+      crystalhd_test_replay_disposition::Record(replay_restart);
+#else
       if (OpenDecoder(decode) != VA_STATUS_SUCCESS || !replay.Restarted())
         return FailDecode(driver, decode, "hardware reopen for replay failed");
+#endif
       if (decode->IsMpeg2())
         // Keep the unqualified post-replay channel on its existing finite-EOS
         // fallback. A logical reset/new context starts a fresh eligibility epoch.
@@ -5701,6 +5767,13 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
         decode->input_backpressured = true;
         break;
       }
+      CH_REPLAY_ONLY(auto replay_input = crystalhd_test_replay_disposition::Base(
+          driver->trace.session(), decode->id, decode->generation,
+          decode->replay_restart_ordinal);
+        replay_input.token = input_timestamp;replay_input.completed_before = unit->completed;
+        replay_input.fragmented = fragmented_h264;replay_input.consume_prefeed = consume_prefeed;
+        replay_input.input_offset = offset;replay_input.input_bytes = transfer;
+        replay_input.unit_bytes = unit->bytes.size();replay_input.has_result = true);
       BC_STATUS status;
       if (fragmented_h264) {
         uint32_t flags = offset == 0 ? DTS_INPUT_FRAGMENT_FIRST : 0;
@@ -5719,6 +5792,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
             static_cast<uint32_t>(transfer),
             consume_prefeed ? 0 : unit->timestamp, FALSE);
       }
+      CH_REPLAY_ONLY(replay_input.type = crystalhd_test_replay_disposition::Type::InputAttempt;
+        replay_input.result = status;crystalhd_test_replay_disposition::Record(replay_input));
       if (status == BC_STS_BUSY) {
         decode->input_backpressured = true;
         break;
@@ -5777,10 +5852,20 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                      static_cast<unsigned long long>(input_timestamp),
                      static_cast<unsigned long long>(decode->generation));
       }
+#if defined(CRYSTALHD_VAAPI_TEST_REPLAY_DISPOSITION)
+      if (driver->trace.enabled())
+        replay_input.native_seq = driver->trace.Emit(
+            crystalhd_vaapi_trace::Event::InputSent,
+            TraceDecodeTokenFields(driver, decode, input_timestamp));
+      replay_input.type = crystalhd_test_replay_disposition::Type::InputCommit;
+      replay_input.result = 1;
+      crystalhd_test_replay_disposition::Record(replay_input);
+#else
       if (driver->trace.enabled())
         driver->trace.Emit(crystalhd_vaapi_trace::Event::InputSent,
                            TraceDecodeTokenFields(driver, decode,
                                                   input_timestamp));
+#endif
       if (consume_prefeed)
         decode->prefed_timestamp = 0;
       if (attempt + 1 == max_attempts)

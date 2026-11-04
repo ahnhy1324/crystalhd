@@ -41,6 +41,8 @@ PACKET_IMAGE = Path('filters/vaapi/packet-admission-observer/packet-admission-pr
 PACKET_MOUNT = '/own-observer/packet-admission-probe.so'
 COST_READER = Path(__file__).with_name('vaapi-maintained-cost-reader.py')
 COST_IMAGE = Path('filters/vaapi/maintained-cost-observer/crystalhd_drv_video.so')
+REPLAY_READER = Path(__file__).with_name('vaapi-replay-disposition-reader.py')
+REPLAY_IMAGE = Path('filters/vaapi/replay-disposition-observer/crystalhd_drv_video.so')
 CENTERED_IMAGE = Path('filters/vaapi/centered-observer/crystalhd_drv_video.so')
 FIXTURE = Path('/home/mache/.cache/crystalhd-single-field-20261015.boremY/kodi-h264-1080i25-30s.mkv')
 BWDIF_FIXTURE = Path('/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts')
@@ -356,16 +358,62 @@ def cost_mode(value, scenario_name, observe_packets):
     return value
 
 
-def backend_image(observe_cost=False):
-    require(type(observe_cost) is bool, 'backend mode must be boolean')
+def replay_mode(value, scenario_name, observe_packets, observe_cost):
+    require(type(value) is bool, 'replay observation mode must be a frozen boolean')
+    require(not value or (scenario_name == 'bwdif2997' and observe_packets is True and observe_cost is True),
+            'replay observation requires the explicit BWDIF packet/cost case')
+    return value
+
+
+def backend_image(observe_cost=False, observe_replay=False):
+    require(type(observe_cost) is bool and type(observe_replay) is bool, 'backend mode must be boolean')
+    require(not observe_replay or observe_cost, 'replay backend requires cost observation')
+    if observe_replay:return REPLAY_IMAGE
     return COST_IMAGE if observe_cost else CENTERED_IMAGE
 
 
-def cost_files(source):
-    return [source / COST_IMAGE, COST_READER,
+def cost_files(source, observe_replay=False):
+    return [source / backend_image(True, observe_replay), COST_READER,
             source / 'tests/vaapi-maintained-cost-observer.h',
             source / 'tests/vaapi-maintained-cost-backend.cpp',
             source / 'tests/vaapi-maintained-cost-protocol.md']
+
+
+def replay_files(source):
+    return [source / REPLAY_IMAGE, REPLAY_READER,
+            source / 'tests/vaapi-replay-disposition-observer.h',
+            source / 'tests/vaapi-replay-disposition-backend.cpp',
+            source / 'tests/vaapi-replay-disposition-protocol.md',
+            source / 'filters/vaapi/crystalhd-trace.h',
+            source / 'filters/vaapi/crystalhd-decode-replay.h']
+
+
+def replay_options(observe_replay=False):
+    require(type(observe_replay) is bool, 'replay observation mode must be boolean')
+    return (['--setenv', 'CRYSTALHD_TEST_REPLAY_DISPOSITION', 'v1',
+             '--setenv', 'CRYSTALHD_TEST_REPLAY_DISPOSITION_PREFIX', '/payload/replay-disposition']
+            if observe_replay else [])
+
+
+def pending_replay_census(rows, interval, pid, expected_originals):
+    """Retain the per-play census until the complete disposition ledger exists.
+
+    This is deliberately not a qualified ledger. Unknown outputs stay in the
+    raw population and must be classified after normal application retirement.
+    """
+    selected = [row for offset, row in rows if interval['begin'] <= offset < interval['end']]
+    require(all(row['pid'] == pid for row in selected), 'foreign PID in replay interval')
+    submitted = [row for row in selected if row['event'] == 'submit_bind']
+    fields = BINDING + ('surface', 'owner')
+    require(submitted and all(all(type(row[k]) is int and row[k] > 0 for k in fields) for row in submitted),
+            'original replay-mode submission lacks complete binding')
+    keys = {tuple(row[k] for k in fields) for row in submitted}
+    require(len(keys) == len(submitted), 'replay-mode original submission identity repeats')
+    return {'status': 'PENDING_REPLAY_CLASSIFICATION', 'ledger_status': 'PENDING_REPLAY_CLASSIFICATION',
+            'source_population_qualified': False, 'errors': ['complete replay ledger not yet published'],
+            'event_counts': dict(Counter(row['event'] for row in selected)),
+            'source_metadata_pictures': expected_originals, 'observed_submit_bindings': len(keys),
+            'scope': 'Unqualified per-play population; final exact replay/history/lease census is mandatory.'}
 
 
 def cost_options(observe_cost=False):
@@ -573,6 +621,24 @@ def correlate_cost_native(validated, rows, intervals, pid):
                      'including identity resolved after output; no media PTS, payload or storage identity is inferred.'}
 
 
+def audit_replay_case(case, report, native_rows):
+    pid = report['owned_app']['pid']
+    path = case / 'payload' / ('replay-disposition-' + str(pid) + '.jsonl')
+    reader = load('own_replay_disposition_case_reader', REPLAY_READER)
+    validated = reader.read_report(path, expected_pid=pid)
+    summary = reader.audit_report(path, expected_pid=pid)
+    require(summary.get('status') == 'PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION',
+            'replay disposition observation is incomplete: ' + json.dumps(summary))
+    census = reader.census_case(validated, native_rows, report['intervals'], pid, expected_originals=900)
+    require(census.get('status') == 'PASS_SCOPED_REPLAY_DISPOSITION_CENSUS' and
+            set(census.get('plays', {})) == set(report['intervals']) and
+            all(p.get('ledger_status') == 'PASS' for p in census['plays'].values()),
+            'native replay/history/lease census failed: ' + json.dumps(census))
+    return {'status': 'PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION', 'report': str(path),
+            'observer': summary, 'census': census,
+            'scope': 'Classified original/replay transport and actual dispositions; the separate900-source criterion remains.'}
+
+
 def audit_cost_case(case, report, native_rows=None):
     """Read retired OWN CPU/wall scopes, retaining source qualification separately."""
     pid = report['owned_app']['pid']
@@ -617,14 +683,17 @@ def main():
                    help='prepare-only: add isolated original demux/codec metadata observation to bwdif2997')
     p.add_argument('--observe-cost', action='store_const', const=True, default=None,
                    help='prepare-only: select private OWN CPU/wall backend with BWDIF packet observation')
+    p.add_argument('--observe-replay', action='store_const', const=True, default=None,
+                   help='prepare-only: add exact replay/history/disposition observation to the BWDIF packet/cost case')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
-    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets, a.observe_cost)):
-        p.error('source/revision/probe/cycles/scenario/packet/cost mode belong only to --prepare-plan')
+    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets, a.observe_cost, a.observe_replay)):
+        p.error('source/revision/probe/cycles/scenario/packet/cost/replay mode belong only to --prepare-plan')
     case = a.case_root.resolve() / a.case
     config = scenario(a.scenario or 'off750') if a.prepare_plan else None
     observe_packets = packet_mode(bool(a.observe_packets), config['name']) if a.prepare_plan else False
     observe_cost = cost_mode(bool(a.observe_cost), config['name'], observe_packets) if a.prepare_plan else False
+    observe_replay = replay_mode(bool(a.observe_replay), config['name'], observe_packets, observe_cost) if a.prepare_plan else False
     if a.prepare_plan:
         if a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '') or a.source_probe is None:
             p.error('prepare needs own source/full revision and independent packet/frame probe JSON')
@@ -696,7 +765,7 @@ def main():
                     'freeze needs a committed clean own source tree')
             probe = a.source_probe.resolve(strict=True); metadata = source_metadata(json.loads(probe.read_text()), Path(config['fixture']), config['name'])
             selected = [Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY,
-                        source / backend_image(observe_cost),
+                        source / backend_image(observe_cost, observe_replay),
                         source / 'tests/vaapi-centered-payload-backend.cpp', source / 'tests/vaapi-centered-payload-observer.h',
                         source / 'filters/vaapi/crystalhd_drv_video.cpp', source / 'filters/vaapi/crystalhd-trace.h',
                         source / 'filters/vaapi/crystalhd-centered-output.h', source / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6',
@@ -709,14 +778,15 @@ def main():
                 require(a.cycles in (None, 2), 'bwdif2997 requires same-process two natural plays')
                 selected += postfilter_files(source, Path(route['client']['app_directory']))
             if observe_packets:selected += packet_files(source, Path(route['client']['app_directory']))
-            if observe_cost:selected += cost_files(source)
+            if observe_cost:selected += cost_files(source, observe_replay)
+            if observe_replay:selected += replay_files(source)
             pins = {str(f): digest(f) for f in selected}
             if config['name'] == 'bwdif2997':require(pins[config['fixture']] == BWDIF_FIXTURE_SHA, 'original short input changed')
             for path, expected in route['client']['pins'].items():
                 require(digest(path) == expected, 'original client artifact changed: ' + path); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_SOURCE_PLAN', 'source_directory': str(source), 'revision': a.own_revision,
                           'case_directory': str(case), 'case': a.case, 'cycles': (2 if config['name'] == 'bwdif2997' else a.cycles or 1),
-                          'scenario': config, 'observe_packets': observe_packets, 'observe_cost': observe_cost,
+                          'scenario': config, 'observe_packets': observe_packets, 'observe_cost': observe_cost, 'observe_replay': observe_replay,
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'pins': pins,
                           'source_probe': str(probe), 'fixture': config['fixture'], 'source_metadata': metadata,
                           'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': config['deintmethod'],
@@ -734,6 +804,7 @@ def main():
         config = scenario(plan.get('scenario', {}).get('name', 'off750'))
         observe_packets = packet_mode(plan.get('observe_packets', False), config['name'])
         observe_cost = cost_mode(plan.get('observe_cost', False), config['name'], observe_packets)
+        observe_replay = replay_mode(plan.get('observe_replay', False), config['name'], observe_packets, observe_cost)
         require(plan.get('scenario', config) == config, 'frozen scenario differs')
         fixture = Path(config['fixture'])
         require(plan['schema'] == 1 and plan['status'] == 'FROZEN_SOURCE_PLAN' and plan['case'] == a.case and
@@ -745,7 +816,7 @@ def main():
                 plan['publication'] == 'selected-decoder-context-retirement', 'frozen protocol differs')
         for path, expected in plan['pins'].items():require(digest(path) == expected, 'frozen artifact changed: ' + path)
         G.SOURCE = Path(plan['source_directory']).resolve(strict=True); G.REVISION = plan['revision']
-        G.VA = G.SOURCE / backend_image(observe_cost)
+        G.VA = G.SOURCE / backend_image(observe_cost, observe_replay)
         G.DIL = G.SOURCE / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
         require(Path(__file__).resolve() == G.SOURCE / 'tests/vaapi-centered-payload-stock.py',
                 'executed runner outside frozen own checkout')
@@ -757,7 +828,8 @@ def main():
             require(plan['cycles'] == 2 and plan['pins'][str(fixture)] == BWDIF_FIXTURE_SHA, 'frozen short two-play case differs')
             required += tuple(postfilter_files(G.SOURCE, Path(route['client']['app_directory'])))
         if observe_packets:required += tuple(packet_files(G.SOURCE, Path(route['client']['app_directory'])))
-        if observe_cost:required += tuple(cost_files(G.SOURCE))
+        if observe_cost:required += tuple(cost_files(G.SOURCE, observe_replay))
+        if observe_replay:required += tuple(replay_files(G.SOURCE))
         require(all(str(path) in plan['pins'] for path in required), 'required frozen artifact pin missing')
         require(all(plan['pins'].get(path) == expected for path, expected in route['client']['pins'].items()),
                 'original App/FFmpeg provenance pin differs')
@@ -771,7 +843,7 @@ def main():
                 'independent source census changed')
         report.update(revision=G.REVISION, source_directory=str(G.SOURCE), plan=str(a.plan.resolve()), pins=plan['pins'],
                       source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config,
-                      observe_packets=observe_packets, observe_cost=observe_cost,
+                      observe_packets=observe_packets, observe_cost=observe_cost, observe_replay=observe_replay,
                       scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
         if config['name'] == 'bwdif2997':
             for signum in (signal.SIGINT, signal.SIGTERM):
@@ -821,7 +893,7 @@ def main():
         command[at:at] = ['--bind', str(payload), '/payload', '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload',
                          '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', CENTERED]
         command[at:at] = observer_options(G.SOURCE, config['name'], observe_packets)
-        command[at:at] = cost_options(observe_cost)
+        command[at:at] = cost_options(observe_cost) + replay_options(observe_replay)
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff')
         save(case / 'command.json', command); log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -891,7 +963,10 @@ def main():
             require(result.get('status') == 'PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD',
                     'independent retired-context payload audit failed: ' + json.dumps(result))
             audited_contexts.add(key)
-            census = operation_census(rows, interval, kid['pid'], config['pictures']); report['source_census'][str(cycle)] = census
+            census = (pending_replay_census(rows, interval, kid['pid'], config['pictures']) if observe_replay else
+                      operation_census(rows, interval, kid['pid'], config['pictures']))
+            report['source_census'][str(cycle)] = census
+            if observe_replay:return
             if config['name'] == 'bwdif2997':
                 require(census['ledger_status'] == 'PASS', 'observed native ownership/field ledger failed')
                 if not census['source_population_qualified']:
@@ -1037,6 +1112,14 @@ def main():
                         not report['errors'] and report['live_resource_handoff'] is None):
                     try:
                         health()
+                        if observe_replay:
+                            report['replay_disposition_audit'] = audit_replay_case(case, report, parse_rows(raw, P))
+                            report['source_census'] = report['replay_disposition_audit']['census']['plays']
+                            for key, census in report['source_census'].items():
+                                if not census['source_population_qualified']:
+                                    report['qualification_failures'].append({'cycle': int(key), 'criterion': 'complete_source_population',
+                                        'expected_originals': 900, 'observed_originals': census['observed_submit_bindings'],
+                                        'status': 'FAIL', 'disposition': 'Replay classification does not lower the900-original criterion.'})
                         report['postfilter_audit'] = audit_postfilter_case(G.SOURCE,
                             Path(route['client']['app_directory']), platform, gl, case, report)
                         if observe_packets:report['packet_admission_audit'] = audit_packet_case(case, report)
@@ -1062,7 +1145,9 @@ def main():
                                'PASS_SCOPED_PACKET_ADMISSION_OBSERVATION')
                 cost_pass = (not observe_cost or report.get('maintained_cost_audit', {}).get('status') ==
                              'PASS_SCOPED_MAINTAINED_COST_OBSERVATION')
-                complete_observation = (payload_pass and report['controls_status'] == 'PASS' and postfilter_pass and packet_pass and cost_pass and
+                replay_pass = (not observe_replay or report.get('replay_disposition_audit', {}).get('status') ==
+                               'PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION')
+                complete_observation = (payload_pass and report['controls_status'] == 'PASS' and postfilter_pass and packet_pass and cost_pass and replay_pass and
                     report['application_exit'] == 0 and report.get('boundary_equal') and report.get('kernel_exit') == 0 and
                     not report['errors'] and report['live_resource_handoff'] is None)
                 report['status'] = 'PASS' if complete_observation and census_pass else 'FAIL'

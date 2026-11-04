@@ -303,7 +303,7 @@ make -C filters/vaapi check-maintained-cost-observer
 
 Add **both** `--observe-packets --observe-cost` to preparation of a fresh
 `bwdif2997` plan. `--observe-cost` requires packet observation; neither option is
-an execution-time override. The frozen cost plan selects only
+an execution-time override. A cost-only plan selects
 `maintained-cost-observer/crystalhd_drv_video.so`, with existing original App
 packet/post-filter probes and provider guards. Off, ordinary BWDIF and
 packet-only plans retain their existing backend. This artifact, its timing
@@ -317,6 +317,44 @@ be unavailable; raw values are not clamped. A Sync body may release its mutex,
 so it is not an uninterrupted mutex-holder measurement. These diagnostic costs
 do not by themselves establish the cause of Kodi's skip policy or a performance
 fix; exact native ownership and the unchanged 900-original criterion remain.
+
+For replay-disposition diagnosis, use the combined private backend and its
+separate collector/reader/actual-field-path CPU controls:
+
+```sh
+make -C filters/vaapi replay-disposition-observer
+make -C filters/vaapi check-replay-disposition-observer
+```
+
+Add **all three** `--observe-packets --observe-cost --observe-replay` to
+preparation of a fresh `bwdif2997` plan. Replay requires the packet, maintained
+cost and existing method7/BWDIF observations. Execution reads the frozen mode
+from that plan; it cannot add the flag later. Only this plan selects
+`replay-disposition-observer/crystalhd_drv_video.so`. The combined backend,
+scalar ledger and runtime marker remain excluded from normal/default/package
+paths; cost-only, packet-only and old scenarios retain their existing artifacts.
+
+The [replay-disposition protocol](vaapi-replay-disposition-protocol.md) links
+actual retained-prefix restart phases, completed-before-input state, each
+original dequeue, existing Inspect/pair/Observe decisions and its actual DIL
+release to exact native sequence IDs. During playback the replay census is
+`PENDING_REPLAY_CLASSIFICATION`, never PASS. Its complete parent-PID ledger is
+published at retirement; final classification runs after normal Quit and media
+retirement, with overflow, missing receipts, malformed pairs and failed releases
+remaining failures. No additional media run is requested merely to obtain replay.
+A run without completed replay is recorded as NOT_EXERCISED.
+
+Historical provenance is built offline from original submit_bind/binding_end
+records. It does not grant a current public VA lease or fill zero live fields.
+The wire's live_* tuple is a raw native observation, and a pending original can
+retain its full immutable decoded-picture tuple after public backing reuse;
+that tuple alone does not prove current public ownership. Observed materialized
+rows retain the existing subset/max1 rule, original New-pair provenance and
+sequence checks. Duplicate replay cannot cause another materialization. Missing
+materialization stays visible without a new all-M gate or pixel/public claim.
+The unchanged900-original submission/input/New-field requirement is separate
+from successfully classified extra replay input/field records. A balanced
+smaller diagnostic population remains source-unqualified.
 
 The ordinary build/install/package does not include these artifacts. The
 [observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded

@@ -93,6 +93,7 @@ GTAGS
 /filters/vaapi/postfilter-observer/
 /filters/vaapi/packet-admission-observer/
 /filters/vaapi/maintained-cost-observer/
+/filters/vaapi/replay-disposition-observer/
 
 /filters/gst/field-output/nv12-field-equivalence
 
