@@ -2,7 +2,7 @@
 
 # Current work
 
-Updated **2026-11-04**. This is the work queue at the RC3 source checkpoint.
+Updated **2026-11-04**, after RC3 publication. This is the current work queue.
 A packaged copy is a snapshot; subsequent completion belongs in the current
 repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
@@ -19,15 +19,16 @@ maintained components; isolated diagnostic probes retain their own scope.
 | Scope | Current state |
 | --- | --- |
 | Stable release | [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module/DKMS `3.10.13`, is published. Earlier releases and RCs remain immutable; see [release history](HISTORY.md). |
-| RC3 candidate | `1.3.0-rc.3` / module-DKMS `3.10.18`: complete core + settings ZIP + native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Actual archive/install/native results and public status belong in its separate qualification receipt and release entry. See [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). |
+| Published RC3 candidate | [1.3.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), core `36ef4c681f49` / module-DKMS `3.10.18`, is published with 12 assets: complete core, settings ZIP and native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Current-equipment qualification is complete; see the [actual results](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json) and [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). Stable 1.3 promotion remains deferred. |
 | Frozen published candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. **Stable 1.3 remains deferred.** |
-| Development master | Later research and diagnostics are integrated, including [#647 raw-frame observation](https://github.com/ahnhy1324/crystalhd/pull/647) and [#648 progressive Off CPU-copy](https://github.com/ahnhy1324/crystalhd/pull/648). Master is not a replacement RC2 payload or a new release. |
+| Development master | Integrated research and diagnostics through [#648 progressive Off CPU-copy](https://github.com/ahnhy1324/crystalhd/pull/648) are included in RC3. Later master changes keep their own scope and do not replace frozen release payloads. |
 
-The [complete 1.3 claim map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
-binds the integrated feature groups to their qualification and evidence reuse.
-RC3 preparation now packages that complete scope plus later integrated changes
-under a new identity. Qualify the actual candidate and affected installed/native
-paths; older source or module13 observations retain only their original scope.
+The [published RC3 claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
+binds every integrated feature group to fresh qualification or explicitly scoped
+reuse. The [earlier integration map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
+retains its historical attribution. Actual RC3 archive, installed/native,
+normal Centered and application checks are complete; older source or module13
+observations retain only their original scope.
 Do not replace frozen RC2 assets or registered module 17 source with master.
 
 <a id="current-priorities--2026-11-03"></a>
@@ -42,7 +43,6 @@ plans. Nonblocking research continues alongside release work.
 
 | Order | Owner | Remaining work and existing boundary |
 | --- | --- | --- |
-| Release priority | [Complete RC3 preparation](RELEASING.md#rc3-complete-scope-and-candidate-preparation) | Freeze new source/module identity, build the complete core and companion, run required candidate/package/installed/native checks, record unchanged-evidence reuse, review and publish only after actual qualification. Keep all integrated features and opt-ins; preserve frozen RC2 and stable rollback. |
 | 1, parallel diagnosis | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | Capture a useful failing native/Python stack and establish the original CSS assertion/SIGSEGV cause. The capture helper is implemented; the original crash is still unreproduced and unfixed. Continue other work instead of looping clean tests. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | Exercise representative congestion/pending residence and attribute latency, then broader formats, controls, interruption and endurance. Timing/latest-frame support is implemented; current-card runs showed no pending replacement or demonstrated gain. FIFO remains the default. |
 | 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Add the separate 29.97 fps/method 7 original-Kodi case and post-filter observation/reference. Off VA observations and progressive CPU-copy controls are complete within their private diagnostic scopes. Broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain separate. |
@@ -75,6 +75,7 @@ cannot substitute. See [#477's preparation record](https://github.com/ahnhy1324/
 
 | Work | Completion and retained evidence |
 | --- | --- |
+| RC3 qualification and publication | [#650](https://github.com/ahnhy1324/crystalhd/pull/650) and the [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json): exact archive/build, actual legacy/native/output, DKMS/direct install and rollback, stock Kodi/normal Centered, 30-minute Player and companion delivery pass. All 12 uploaded assets were downloaded and matched before publication. Original failures, reuse limits and deferred stable promotion remain explicit. |
 | Complete core/native/runtime integration | #619–#622 and the [master integration receipt](tests/fixtures/issue510/master-integration-20261102.json); [complete 1.3 claim map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json). The partial historical RC1 is not the complete candidate. |
 | Centered Off and seek targets | [Off EOF/reopen](tests/fixtures/issue477/centered-off-20261103.json), [initial controls](tests/fixtures/issue477/centered-controls-20261103.json) and [fresh seek-target 90/91 NV12](tests/fixtures/issue477/centered-seek-target-20261103.json). The initial case retains zero seek-target samples; later samples do not relabel it. |
 | Actual returned raw PTS | [#647 receipt](tests/fixtures/issue477/centered-frame-pts-20261103.json): 212 frame/binding joins and four source 90/91 targets, with the two original controller FAILs preserved and separate corrected offline reanalysis. Both declared time bases are unset; source-clock comparison remains unobserved. |

@@ -7,14 +7,17 @@ statements under an older version describe that checkpoint; use
 identities and historical failures retain their original qualification scope.
 
 <a id="development-after-the-frozen-rc2"></a>
+<a id="130-rc3--complete-integration-candidate"></a>
 
-## 1.3.0-rc.3 — complete integration candidate
+## 1.3.0-rc.3 — published complete integration candidate
 
-Bundle `1.3.0-rc.3` uses module/DKMS `3.10.18`. Separate candidate
-qualification receipts identify the actual source, package and runtime results;
-this source history does not grant PASS or publication. Stable 1.3 promotion
-is separate. All RC2 features and integrated optional functionality remain
-included, with their existing defaults and support limits.
+[Published on 2026-11-04](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
+from `36ef4c681f49`, bundle `1.3.0-rc.3` / module-DKMS `3.10.18`, with 12 assets.
+The [qualification receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+records actual archive, installed/runtime, native, normal Centered and
+30-minute Player results, independent review and scoped evidence reuse.
+All RC2 features and integrated optional functionality remain included, with
+their existing defaults and support limits. Stable 1.3 promotion is separate.
 
 Since frozen RC2, own native V4L2 adds token-bound H.264 source-range reporting,
 picture-preserving same-size range transitions and bounded progressive POC0/2
