@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // OWN diagnostic client; external FFmpeg/VA implementations remain unchanged.
 // Public feed/drain and retained-tail ownership follow tests/vaapi-seek.cpp.
-// There is no presentation clock, renderer, BWDIF graph or caller drop feedback.
+// There is no presentation clock, renderer or caller drop feedback. Optional
+// BWDIF compares an unflushed prefix with an explicitly reference-only EOF.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -10,9 +11,15 @@ extern "C" {
 #include <libavcodec/version.h>
 #include <libavformat/avformat.h>
 #include <libavformat/version.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/version.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/opt.h>
 #include <libavutil/version.h>
 }
 #include <va/va.h>
@@ -25,6 +32,7 @@ extern "C" {
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -37,8 +45,9 @@ extern "C" {
 
 #if LIBAVCODEC_VERSION_INT != AV_VERSION_INT(63, 1, 102) || \
     LIBAVFORMAT_VERSION_INT != AV_VERSION_INT(63, 1, 102) || \
-    LIBAVUTIL_VERSION_INT != AV_VERSION_INT(61, 1, 102)
-#error "Use unchanged original 12cc codec63/format63/util61 public headers"
+    LIBAVUTIL_VERSION_INT != AV_VERSION_INT(61, 1, 102) || \
+    LIBAVFILTER_VERSION_INT != AV_VERSION_INT(12, 1, 102)
+#error "Use unchanged original 12cc codec63/format63/util61/filter12 public headers"
 #endif
 
 namespace {
@@ -50,6 +59,7 @@ constexpr uint64_t kSyncNs = 100ULL * 1000 * 1000;
 constexpr const char* kFormat = "/app/lib/libavformat.so.63.1.102";
 constexpr const char* kCodec = "/app/lib/libavcodec.so.63.1.102";
 constexpr const char* kUtil = "/app/lib/libavutil.so.61.1.102";
+constexpr const char* kFilter = "/app/lib/libavfilter.so.12.1.102";
 constexpr const char* kVa = "/usr/lib/x86_64-linux-gnu/libva.so.2";
 volatile sig_atomic_t stopped = 0;
 uint64_t deadline = 0;
@@ -65,6 +75,14 @@ DECL(avcodec_free_context); DECL(av_packet_alloc); DECL(av_packet_free);
 DECL(av_packet_unref); DECL(av_frame_alloc); DECL(av_frame_free);
 DECL(av_frame_clone); DECL(av_frame_unref); DECL(av_hwdevice_ctx_create);
 DECL(av_hwframe_transfer_data); DECL(av_image_get_buffer_size); DECL(av_strerror);
+DECL(av_frame_copy_props); DECL(av_frame_get_buffer); DECL(av_rescale_q);
+DECL(av_strdup); DECL(av_opt_set_array);
+DECL(avfilter_version); DECL(avfilter_get_by_name); DECL(avfilter_graph_alloc);
+DECL(avfilter_graph_free); DECL(avfilter_graph_create_filter); DECL(avfilter_graph_alloc_filter);
+DECL(avfilter_init_str); DECL(avfilter_inout_alloc); DECL(avfilter_inout_free);
+DECL(avfilter_graph_parse_ptr); DECL(avfilter_graph_config);
+DECL(av_buffersrc_add_frame); DECL(av_buffersrc_close); DECL(av_buffersink_get_frame);
+DECL(av_buffersink_get_time_base); DECL(av_buffersink_get_frame_rate);
 DECL(vaSyncSurface2);
 #undef DECL
 #define AV(name) fn_##name
@@ -89,6 +107,16 @@ void CheckStop() {
 }
 void Require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
+}
+struct Metric { uint64_t calls = 0, wall_ns = 0, main_cpu_ns = 0; };
+template<typename Call> auto Measure(Metric& metric, Call call) -> decltype(call()) {
+  const uint64_t wall = Clock(CLOCK_MONOTONIC), cpu = Clock(CLOCK_THREAD_CPUTIME_ID);
+  const auto result = call();
+  const uint64_t end_cpu = Clock(CLOCK_THREAD_CPUTIME_ID), end_wall = Clock(CLOCK_MONOTONIC);
+  Require(end_cpu >= cpu && end_wall >= wall, "per-clock call timing regressed");
+  ++metric.calls; metric.wall_ns += end_wall - wall; metric.main_cpu_ns += end_cpu - cpu;
+  // Independent clocks are retained raw; no CPU<=wall clamp or inference.
+  return result;
 }
 void Check(int result, const char* operation) {
   if (result >= 0) return;
@@ -144,7 +172,7 @@ void* Symbol(void* handle, const char* name, const char* version, const char* pr
   static_assert(sizeof(address) == sizeof(AV(name)), "ELF function pointer size"); \
   std::memcpy(&AV(name), &address, sizeof(address)); \
 } while (false)
-void Providers(Report& report) {
+void Providers(Report& report, bool bwdif) {
   void* util = Library(kUtil);
   void* codec = Library(kCodec);
   void* format = Library(kFormat);
@@ -153,6 +181,10 @@ void Providers(Report& report) {
   UTIL(avutil_version); UTIL(av_frame_alloc); UTIL(av_frame_free);
   UTIL(av_frame_clone); UTIL(av_frame_unref); UTIL(av_hwdevice_ctx_create);
   UTIL(av_hwframe_transfer_data); UTIL(av_image_get_buffer_size); UTIL(av_strerror);
+  UTIL(av_frame_copy_props);
+  if (bwdif) {
+    UTIL(av_frame_get_buffer); UTIL(av_rescale_q); UTIL(av_strdup); UTIL(av_opt_set_array);
+  }
 #undef UTIL
 #define CODEC(name) LOAD(codec, name, "LIBAVCODEC_63", kCodec)
   CODEC(avcodec_version); CODEC(avcodec_alloc_context3); CODEC(avcodec_parameters_to_context);
@@ -165,6 +197,20 @@ void Providers(Report& report) {
   FORMAT(avformat_close_input);
 #undef FORMAT
   LOAD(va, vaSyncSurface2, nullptr, kVa);
+  if (bwdif) {
+    void* filter = Library(kFilter);
+#define FILTER(name) LOAD(filter, name, "LIBAVFILTER_12", kFilter)
+    FILTER(avfilter_version); FILTER(avfilter_get_by_name); FILTER(avfilter_graph_alloc);
+    FILTER(avfilter_graph_free); FILTER(avfilter_graph_create_filter); FILTER(avfilter_graph_alloc_filter);
+    FILTER(avfilter_init_str); FILTER(avfilter_inout_alloc); FILTER(avfilter_inout_free);
+    FILTER(avfilter_graph_parse_ptr); FILTER(avfilter_graph_config);
+    FILTER(av_buffersrc_add_frame); FILTER(av_buffersrc_close); FILTER(av_buffersink_get_frame);
+    FILTER(av_buffersink_get_time_base); FILTER(av_buffersink_get_frame_rate);
+#undef FILTER
+    Require(AV(avfilter_version)() == LIBAVFILTER_VERSION_INT, "original filter version mismatch");
+    report.Row("{\"type\":\"filter_provider\",\"path\":%s,\"version\":%u}",
+               Quote(kFilter).c_str(), AV(avfilter_version)());
+  }
   Require(AV(avformat_version)() == LIBAVFORMAT_VERSION_INT &&
           AV(avcodec_version)() == LIBAVCODEC_VERSION_INT &&
           AV(avutil_version)() == LIBAVUTIL_VERSION_INT, "original runtime version mismatch");
@@ -199,12 +245,25 @@ struct Probe {
   unsigned returned = 0, completed = 0, max_held = 0, drain_attempts = 0;
   bool decoder_eof = false, demux_eof = false, drain_accepted = false;
   bool closed_before_tail = false, resources_released = false;
-  explicit Probe(Report& r) : report(r) {}
+  const bool bwdif;
+  AVFilterGraph* graph = nullptr;
+  AVFilterContext* filter_source = nullptr;
+  AVFilterContext* filter_sink = nullptr;
+  Frame filter_input, filter_output;
+  std::map<int64_t, unsigned> filter_labels;
+  unsigned filter_inputs = 0, filter_outputs = 0, unflushed_outputs = 0;
+  bool filter_source_eof = false, filter_sink_eof = false;
+  Metric send_metric, receive_metric, sync_metric, download_metric;
+  Metric filter_add_metric, filter_sink_metric, filter_close_metric;
+  explicit Probe(Report& r, bool enable_bwdif) : report(r), bwdif(enable_bwdif) {}
   ~Probe() { Close(); }
   void Close() {
     // Match the explicit retained-tail close ordering even on cancellation.
     if (decoder) AV(avcodec_free_context)(&decoder);
     held.clear(); frame.reset(); download.reset();
+    filter_input.reset(); filter_output.reset();
+    if (graph) AV(avfilter_graph_free)(&graph);
+    filter_source = filter_sink = nullptr;
     if (packet) AV(av_packet_free)(&packet);
     if (input) AV(avformat_close_input)(&input);
     resources_released = true;
@@ -255,6 +314,168 @@ struct Probe {
                decoder->width, decoder->height, decoder->coded_width, decoder->coded_height,
                decoder->thread_count, decoder->extra_hw_frames);
   }
+  void OpenFilter(const AVFrame* picture) {
+    graph = AV(avfilter_graph_alloc)();
+    Require(graph, "allocate original BWDIF graph");
+    Require(graph->nb_threads == 0, "unexpected original graph thread default");
+    const AVFilter* buffer = AV(avfilter_get_by_name)("buffer");
+    const AVFilter* sink = AV(avfilter_get_by_name)("buffersink");
+    Require(buffer && sink && AV(avfilter_get_by_name)("bwdif"), "original BWDIF filters absent");
+    AVRational sar = picture->sample_aspect_ratio;
+    if (sar.num <= 0 || sar.den <= 0) sar = {1, 1};
+    char args[160];
+    std::snprintf(args, sizeof(args),
+                  "video_size=1920x1080:pix_fmt=%d:time_base=1/1:pixel_aspect=%d/%d",
+                  AV_PIX_FMT_NV12, sar.num, sar.den);
+    Check(AV(avfilter_graph_create_filter)(&filter_source, buffer, "src", args, nullptr, graph),
+          "create original-style NV12 source");
+    filter_sink = AV(avfilter_graph_alloc_filter)(graph, sink, "out");
+    Require(filter_sink, "allocate original-style NV12 sink");
+    const AVPixelFormat pixel = AV_PIX_FMT_NV12;
+    Check(AV(av_opt_set_array)(filter_sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN,
+                              0, 1, AV_OPT_TYPE_PIXEL_FMT, &pixel), "constrain original NV12 sink");
+    Check(AV(avfilter_init_str)(filter_sink, nullptr), "initialize original NV12 sink");
+    AVFilterInOut* outputs = AV(avfilter_inout_alloc)();
+    AVFilterInOut* inputs = AV(avfilter_inout_alloc)();
+    if (!outputs || !inputs) {
+      AV(avfilter_inout_free)(&outputs); AV(avfilter_inout_free)(&inputs);
+      throw std::runtime_error("allocate filter endpoints");
+    }
+    outputs->name = AV(av_strdup)("in"); outputs->filter_ctx = filter_source;
+    inputs->name = AV(av_strdup)("out"); inputs->filter_ctx = filter_sink;
+    if (!outputs->name || !inputs->name) {
+      AV(avfilter_inout_free)(&outputs); AV(avfilter_inout_free)(&inputs);
+      throw std::runtime_error("allocate filter endpoint names");
+    }
+    const int parsed = AV(avfilter_graph_parse_ptr)(graph, "bwdif=1:-1", &inputs, &outputs, nullptr);
+    AV(avfilter_inout_free)(&outputs); AV(avfilter_inout_free)(&inputs);
+    Check(parsed, "parse exact original BWDIF graph");
+    Check(AV(avfilter_graph_config)(graph, nullptr), "configure original BWDIF graph");
+    filter_input.reset(AV(av_frame_alloc)()); filter_output.reset(AV(av_frame_alloc)());
+    Require(filter_input && filter_output, "allocate bounded filter frames");
+    const AVRational tb = AV(av_buffersink_get_time_base)(filter_sink);
+    const AVRational rate = AV(av_buffersink_get_frame_rate)(filter_sink);
+    report.Row("{\"type\":\"filter_graph\",\"buffer_args\":%s,\"filter_args\":\"bwdif=1:-1\","
+               "\"requested_nb_threads\":0,\"configured_nb_threads\":%d,\"thread_type\":%d,"
+               "\"sink_time_base\":[%d,%d],\"sink_frame_rate\":[%d,%d],"
+               "\"timestamp_recipe\":\"PUBLIC_STREAM_TIME_BASE_TO_AV_TIME_BASE_NO_KODI_OFFSET\","
+               "\"input_frame_time_base\":[1,1000000],\"public_frame_properties_copied\":true,"
+               "\"stock_private_metadata_equivalence\":false}",
+               Quote(args).c_str(), graph->nb_threads, graph->thread_type,
+               tb.num, tb.den, rate.num, rate.den);
+  }
+  void PullFilter(bool after_close) {
+    for (unsigned turn = 0; turn != 16; ++turn) {
+      CheckStop(); AV(av_frame_unref)(filter_output.get());
+      const int result = Measure(filter_sink_metric, [&] {
+        return AV(av_buffersink_get_frame)(filter_sink, filter_output.get());
+      });
+      if (result == AVERROR(EAGAIN)) {
+        Require(!after_close, "BWDIF requested input after explicit reference EOF");
+        return;
+      }
+      if (result == AVERROR_EOF) {
+        Require(after_close, "BWDIF sink EOF before explicit reference EOF");
+        filter_sink_eof = true; return;
+      }
+      Check(result, "pull original BWDIF output");
+      Require(filter_output->format == AV_PIX_FMT_NV12 && filter_output->width == 1920 &&
+              filter_output->height == 1080 && filter_output->data[0] && filter_output->data[1] &&
+              filter_output->linesize[0] >= 1920 && filter_output->linesize[1] >= 1920 &&
+              !(filter_output->flags & (AV_FRAME_FLAG_CORRUPT | AV_FRAME_FLAG_INTERLACED)) &&
+              filter_output->decode_error_flags == 0,
+              "unexpected or corrupt BWDIF NV12 output");
+      Require(++filter_outputs <= 2 * kExpected, "more than1800 BWDIF reference outputs");
+      const auto label = filter_labels.find(filter_output->best_effort_timestamp);
+      Require(label != filter_labels.end() && ++label->second <= 2,
+              "foreign or repeated BWDIF best-effort label");
+      report.Row("{\"type\":\"filter_output\",\"ordinal\":%u,\"after_reference_eof\":%s,"
+                 "\"pts\":%lld,\"best_effort_timestamp\":%lld,\"pkt_dts\":%lld,\"duration\":%lld,"
+                 "\"time_base\":[%d,%d],\"flags\":%d,\"decode_error_flags\":%d,"
+                 "\"sample_aspect_ratio\":[%d,%d],\"colour\":[%d,%d,%d,%d,%d],"
+                 "\"crop\":[%zu,%zu,%zu,%zu]}",
+                 filter_outputs, after_close ? "true" : "false",
+                 static_cast<long long>(filter_output->pts),
+                 static_cast<long long>(filter_output->best_effort_timestamp),
+                 static_cast<long long>(filter_output->pkt_dts), static_cast<long long>(filter_output->duration),
+                 filter_output->time_base.num, filter_output->time_base.den, filter_output->flags,
+                 filter_output->decode_error_flags, filter_output->sample_aspect_ratio.num,
+                 filter_output->sample_aspect_ratio.den, filter_output->color_range,
+                 filter_output->color_primaries, filter_output->color_trc, filter_output->colorspace,
+                 filter_output->chroma_location, filter_output->crop_top, filter_output->crop_bottom,
+                 filter_output->crop_left, filter_output->crop_right);
+      AV(av_frame_unref)(filter_output.get());
+    }
+    throw std::runtime_error("bounded BWDIF sink turn exhausted");
+  }
+  void FeedFilter(const AVFrame* picture) {
+    if (!graph) OpenFilter(picture);
+    AV(av_frame_unref)(filter_input.get());
+    Check(AV(av_frame_copy_props)(filter_input.get(), download.get()), "copy public filter input properties");
+    filter_input->format = AV_PIX_FMT_NV12;
+    filter_input->width = 1920; filter_input->height = 1080;
+    const AVRational from = input->streams[stream]->time_base, microseconds{1, AV_TIME_BASE};
+    const auto rescale = [&](int64_t value) {
+      return value == AV_NOPTS_VALUE ? AV_NOPTS_VALUE : AV(av_rescale_q)(value, from, microseconds);
+    };
+    filter_input->pts = rescale(picture->pts);
+    filter_input->best_effort_timestamp = rescale(picture->best_effort_timestamp);
+    filter_input->pkt_dts = rescale(picture->pkt_dts);
+    filter_input->duration = AV(av_rescale_q)(picture->duration, from, microseconds);
+    filter_input->time_base = microseconds;
+    Check(AV(av_frame_get_buffer)(filter_input.get(), 64), "allocate visible NV12 filter input");
+    // Copy active visible planes only; no coded1088 padding/pixel equivalence claim.
+    for (int plane = 0; plane != 2; ++plane) {
+      const int rows = plane == 0 ? 1080 : 540;
+      Require(download->linesize[plane] >= 1920 && filter_input->linesize[plane] >= 1920,
+              "invalid NV12 copy stride");
+      for (int row = 0; row != rows; ++row)
+        std::memcpy(filter_input->data[plane] + row * filter_input->linesize[plane],
+                    download->data[plane] + row * download->linesize[plane], 1920);
+    }
+    const int64_t label = filter_input->best_effort_timestamp;
+    Require(filter_inputs < kExpected && label != AV_NOPTS_VALUE &&
+            filter_labels.emplace(label, 0).second, "missing or duplicate BWDIF input label");
+    report.Row("{\"type\":\"filter_input\",\"ordinal\":%u,\"source_raw_label\":%lld,"
+               "\"pts\":%lld,\"best_effort_timestamp\":%lld,\"pkt_dts\":%lld,\"duration\":%lld,"
+               "\"time_base\":[%d,%d],\"flags\":%d,\"linesize\":[%d,%d],"
+               "\"sample_aspect_ratio\":[%d,%d],\"colour\":[%d,%d,%d,%d,%d],"
+               "\"crop\":[%zu,%zu,%zu,%zu]}",
+               filter_inputs + 1, static_cast<long long>(picture->best_effort_timestamp),
+               static_cast<long long>(filter_input->pts), static_cast<long long>(label),
+               static_cast<long long>(filter_input->pkt_dts), static_cast<long long>(filter_input->duration),
+               filter_input->time_base.num, filter_input->time_base.den, filter_input->flags,
+               filter_input->linesize[0], filter_input->linesize[1], filter_input->sample_aspect_ratio.num,
+               filter_input->sample_aspect_ratio.den, filter_input->color_range, filter_input->color_primaries,
+               filter_input->color_trc, filter_input->colorspace, filter_input->chroma_location,
+               filter_input->crop_top, filter_input->crop_bottom, filter_input->crop_left, filter_input->crop_right);
+    Check(Measure(filter_add_metric, [&] {
+      return AV(av_buffersrc_add_frame)(filter_source, filter_input.get());
+    }), "add original BWDIF input");
+    ++filter_inputs;
+    PullFilter(false);
+  }
+  void FinishFilter() {
+    if (!bwdif) return;
+    unflushed_outputs = filter_outputs;
+    report.Row("{\"type\":\"bwdif_unflushed_checkpoint\",\"inputs\":%u,\"outputs\":%u,"
+               "\"source_eof_injected\":false,\"sink_eof\":%s,\"stock_qualification\":false}",
+               filter_inputs, unflushed_outputs, filter_sink_eof ? "true" : "false");
+    Require(filter_inputs == kExpected && unflushed_outputs == 2 * kExpected - 2 && !filter_sink_eof,
+            "unexpected unflushed BWDIF reference prefix count");
+    Check(Measure(filter_close_metric, [&] {
+      return AV(av_buffersrc_close)(filter_source, AV_NOPTS_VALUE, 0);
+    }), "explicit reference-only BWDIF source EOF");
+    filter_source_eof = true;
+    PullFilter(true);
+    Require(filter_sink_eof && filter_outputs == 2 * kExpected && filter_labels.size() == kExpected,
+            "explicit BWDIF reference tail incomplete");
+    for (const auto& label : filter_labels)
+      Require(label.second == 2, "BWDIF reference did not return both fields per input label");
+    report.Row("{\"type\":\"bwdif_reference_flushed_checkpoint\",\"inputs\":%u,\"outputs\":%u,"
+               "\"source_eof_injected\":true,\"sink_eof\":true,\"stock_qualification\":false}",
+               filter_inputs, filter_outputs);
+  }
   void CompleteOldest() {
     CheckStop();
     const AVFrame* picture = held.front().get();
@@ -268,7 +489,9 @@ struct Probe {
     const auto surface = static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(picture->data[3]));
     // Eight later returned pictures have already fed future-reference work.
     // This finite readiness call is not a fake decoder EOF or an ownership bypass.
-    const VAStatus ready = AV(vaSyncSurface2)(device->display, surface, kSyncNs);
+    const VAStatus ready = Measure(sync_metric, [&] {
+      return AV(vaSyncSurface2)(device->display, surface, kSyncNs);
+    });
     if (ready != VA_STATUS_SUCCESS) {
       report.Row("{\"type\":\"readiness_failure\",\"returned_ordinal\":%u,\"surface\":%u,"
                  "\"status\":%d,\"retained\":%zu,\"decoder_closed\":%s}",
@@ -276,7 +499,10 @@ struct Probe {
       throw std::runtime_error("bounded retained-frame readiness failed");
     }
     AV(av_frame_unref)(download.get());
-    Check(AV(av_hwframe_transfer_data)(download.get(), picture, 0), "download ready VA frame");
+    Check(Measure(download_metric, [&] {
+      return AV(av_hwframe_transfer_data)(download.get(), picture, 0);
+    }), "download ready VA frame");
+    Check(AV(av_frame_copy_props)(download.get(), picture), "copy public downloaded frame properties");
     Require(download->format == AV_PIX_FMT_NV12 && download->width >= picture->width &&
             download->height >= picture->height && download->data[0] && download->data[1],
             "unexpected downloaded NV12 geometry");
@@ -296,6 +522,7 @@ struct Probe {
                picture->crop_top, picture->crop_bottom,
                picture->crop_left, picture->crop_right, surface, ready, download->format,
                download->width, download->height, bytes, closed_before_tail ? "true" : "false");
+    if (bwdif) FeedFilter(picture);
     AV(av_frame_unref)(download.get());
     held.pop_front();
   }
@@ -303,7 +530,9 @@ struct Probe {
     unsigned progress = 0;
     for (;;) {
       CheckStop(); DefaultDiscard();
-      const int result = AV(avcodec_receive_frame)(decoder, frame.get());
+      const int result = Measure(receive_metric, [&] {
+        return AV(avcodec_receive_frame)(decoder, frame.get());
+      });
       DefaultDiscard();
       if (result == AVERROR(EAGAIN)) return progress;
       if (result == AVERROR_EOF) { decoder_eof = true; return progress; }
@@ -337,7 +566,9 @@ struct Probe {
     // A send EAGAIN retains this exact packet; receive and retry it unchanged.
     for (unsigned retry = 0; retry < 16; ++retry) {
       CheckStop(); DefaultDiscard();
-      const int result = AV(avcodec_send_packet)(decoder, value);
+      const int result = Measure(send_metric, [&] {
+        return AV(avcodec_send_packet)(decoder, value);
+      });
       DefaultDiscard();
       if (value) ++attempts; else ++drain_attempts;
       report.Row("{\"type\":\"send\",\"packet_ordinal\":%u,\"drain\":%s,\"ret\":%d,"
@@ -393,8 +624,21 @@ struct Probe {
     Require(accepted_labels.size() == kExpected && returned_labels.size() == kExpected &&
             accepted_labels == returned_labels,
             "accepted/returned900 raw label sets differ");
+    FinishFilter();
   }
-  void Counts(const char* status, const std::string& error, uint64_t wall, uint64_t cpu) {
+  void MetricRow(const char* name, const Metric& metric) {
+    report.Row("{\"type\":\"call_metric\",\"operation\":%s,\"calls\":%llu,\"wall_ns\":%llu,"
+               "\"calling_thread_cpu_ns\":%llu,\"scope\":\"INCLUSIVE_CALL_INTERVAL_NOT_PURE_COMPONENT_CPU\"}",
+               Quote(name).c_str(), static_cast<unsigned long long>(metric.calls),
+               static_cast<unsigned long long>(metric.wall_ns),
+               static_cast<unsigned long long>(metric.main_cpu_ns));
+  }
+  void Counts(const char* status, const std::string& error, uint64_t wall, uint64_t cpu,
+              uint64_t process_cpu) {
+    MetricRow("send", send_metric); MetricRow("receive", receive_metric);
+    MetricRow("va_sync", sync_metric); MetricRow("download", download_metric);
+    MetricRow("filter_add", filter_add_metric); MetricRow("filter_sink", filter_sink_metric);
+    MetricRow("filter_reference_close", filter_close_metric);
     report.Row("{\"type\":\"result\",\"status\":%s,\"error\":%s,\"pid\":%ld,"
                "\"expected\":%u,\"demux_packets\":%u,\"video_packets\":%u,\"send_attempts\":%u,"
                "\"accepted_packets\":%u,\"returned_vaapi_frames\":%u,\"completed_downloads\":%u,"
@@ -402,8 +646,12 @@ struct Probe {
                "\"max_retained_frames\":%u,\"demux_eof\":%s,\"drain_attempts\":%u,"
                "\"drain_accepted\":%s,\"decoder_eof\":%s,\"decoder_closed_before_tail\":%s,"
                "\"client_resources_released\":%s,"
-               "\"elapsed_wall_ns\":%llu,\"calling_thread_cpu_ns\":%llu,\"signal\":%d,"
-               "\"stock_realtime_qualification\":false,\"bwdif_tail_qualification\":false}",
+               "\"elapsed_wall_ns\":%llu,\"calling_thread_cpu_ns\":%llu,\"process_cpu_ns\":%llu,\"signal\":%d,"
+               "\"bwdif_enabled\":%s,\"bwdif_inputs\":%u,\"bwdif_unflushed_outputs\":%u,"
+               "\"bwdif_reference_flushed_outputs\":%u,\"bwdif_reference_source_eof_injected\":%s,"
+               "\"bwdif_reference_sink_eof\":%s,\"bwdif_unique_input_labels\":%zu,"
+               "\"stock_realtime_qualification\":false,\"bwdif_tail_qualification\":false,"
+               "\"independent_pixel_golden\":false}",
                Quote(status).c_str(), Quote(error).c_str(), static_cast<long>(getpid()), kExpected,
                reads, video_reads, attempts, accepted, returned, completed,
                accepted_labels.size(), returned_labels.size(),
@@ -412,43 +660,48 @@ struct Probe {
                decoder_eof ? "true" : "false", closed_before_tail ? "true" : "false",
                resources_released ? "true" : "false",
                static_cast<unsigned long long>(wall), static_cast<unsigned long long>(cpu),
-               static_cast<int>(stopped));
+               static_cast<unsigned long long>(process_cpu), static_cast<int>(stopped),
+               bwdif ? "true" : "false", filter_inputs, unflushed_outputs, filter_outputs,
+               filter_source_eof ? "true" : "false", filter_sink_eof ? "true" : "false", filter_labels.size());
   }
 };
 } // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: %s ORIGINAL_TS VA_DEVICE FRESH_JSONL_REPORT\n", argv[0]);
+  if ((argc != 4 && argc != 5) || (argc == 5 && std::strcmp(argv[4], "--bwdif") != 0)) {
+    std::fprintf(stderr, "usage: %s ORIGINAL_TS VA_DEVICE FRESH_JSONL_REPORT [--bwdif]\n", argv[0]);
     return 2;
   }
+  const bool bwdif = argc == 5;
   try {
     Report report(argv[3]);
     struct sigaction action{}; action.sa_handler = Signal; sigemptyset(&action.sa_mask);
     Require(sigaction(SIGTERM, &action, nullptr) == 0 && sigaction(SIGINT, &action, nullptr) == 0,
             "install normal cleanup signal handlers");
     const uint64_t start = Clock(CLOCK_MONOTONIC), cpu = Clock(CLOCK_THREAD_CPUTIME_ID);
+    const uint64_t process_cpu = Clock(CLOCK_PROCESS_CPUTIME_ID);
     deadline = start + kDeadlineNs;
     report.Row("{\"type\":\"header\",\"schema\":\"crystalhd-original-decode900-v1\","
                "\"pid\":%ld,\"input\":%s,\"device\":%s,\"expected\":%u,\"lookahead\":%u,"
                "\"deadline_ns\":%llu,\"readiness_timeout_ns\":%llu,\"discard\":\"DEFAULT\","
+               "\"bwdif_enabled\":%s,\"bwdif_eof_policy\":\"UNFLUSHED_CHECKPOINT_THEN_REFERENCE_ONLY_EOF\","
                "\"scope\":\"OWN_NO_CLOCK_OR_RENDERER_COUNTERFACTUAL_UNMODIFIED_ORIGINAL_PROVIDERS\"}",
                static_cast<long>(getpid()), Quote(argv[1]).c_str(), Quote(argv[2]).c_str(),
                kExpected, kLookahead, static_cast<unsigned long long>(kDeadlineNs),
-               static_cast<unsigned long long>(kSyncNs));
-    Providers(report);
-    Probe probe(report);
+               static_cast<unsigned long long>(kSyncNs), bwdif ? "true" : "false");
+    Providers(report, bwdif);
+    Probe probe(report, bwdif);
     try {
       probe.Open(argv[1], argv[2]);
       probe.Run();
       probe.Close();
       probe.Counts("PASS_DIAGNOSTIC_900_ORIGINALS", "", Clock(CLOCK_MONOTONIC) - start,
-                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu);
+                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu);
       return 0;
     } catch (const std::exception& error) {
       probe.Close();
       probe.Counts(stopped ? "CANCELLED" : "FAIL", error.what(), Clock(CLOCK_MONOTONIC) - start,
-                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu);
+                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu);
       std::fprintf(stderr, "OWN no-clock decode900: %s\n", error.what());
       return stopped ? 128 + static_cast<int>(stopped) : 1;
     }

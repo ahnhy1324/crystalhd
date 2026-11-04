@@ -1,8 +1,10 @@
 # Original-provider no-clock 900-picture diagnostic
 
 This OWN client uses unchanged original App FFmpeg and a maintained VA backend.
-It tests source population without Kodi's renderer, media clock, BWDIF or
-NONREF feedback. It does not qualify stock real-time playback, presentation,
+The default mode tests source population without Kodi's renderer, media clock,
+BWDIF or NONREF feedback. Optional `--bwdif` adds the original software graph
+with separate unflushed and explicitly reference-flushed results.
+Neither mode qualifies stock real-time playback, presentation,
 independent pixel correctness or a release. Existing source-population FAILs
 remain unchanged.
 
@@ -54,19 +56,55 @@ the detected MPEG-TS input contract. Inside that namespace:
 
 ```sh
 /reference /fixture.mp4 /dev/dri/renderD128 /payload/decode900.jsonl
+# Separate optional experiment, with a new report:
+/reference /fixture.mp4 /dev/dri/renderD128 /payload/decode900-bwdif.jsonl --bwdif
 ```
 
-Arguments are exactly `INPUT VA_DEVICE FRESH_REPORT`. Providers are fixed to
+Arguments are `INPUT VA_DEVICE FRESH_REPORT [--bwdif]`. Providers are fixed to
 `/app/lib/libavformat.so.63.1.102`, `libavcodec.so.63.1.102`,
 `libavutil.so.61.1.102`, and the namespace's
 `/usr/lib/x86_64-linux-gnu/libva.so.2`. Each called API is resolved to its exact
 provider; FFmpeg runtime versions must match the original headers. No external
 library is rebuilt or replaced.
 
+The optional graph also resolves exact `/app/lib/libavfilter.so.12.1.102`
+versioned APIs. Its source is NV12 visible1920×1080, graph time_base1/1 and the
+public source SAR (fallback1/1 if unspecified); its sink is NV12 and its filter
+is exactly `bwdif=1:-1`. Graph threading remains its original auto default0,
+with the effective configured thread count recorded. It is independent of
+the decoder's thread_count1. Original FFmpeg supports NV12 directly.
+
+`av_hwframe_transfer_data` does not copy all properties. The client explicitly
+uses `av_frame_copy_props` for the software download and filter input, preserving
+public flags, SAR, colours, crop and error metadata. It copies active visible
+Y/UV rows into a64-aligned input frame; coded1088 padding is not a pixel claim.
+For this OWN graph, PTS/best-effort/DTS and duration are explicitly rescaled from
+the public stream time base into AV_TIME_BASE and frame.time_base is1/1000000.
+Graph time_base remains1/1 to match the original configuration. These are raw
+diagnostic labels, not a physical graph clock or Kodi's private offset/rounding
+recipe. This metadata join does not establish stock/private-frame equivalence.
+
+After900 inputs, the unflushed checkpoint must have1798 outputs and no sinkEOF.
+Only then does the OWN client call `av_buffersrc_close` with NOPTS, recording
+reference-only sourceEOF separately;1800 outputs, sinkEOF and exactly two
+best-effort labels per input are then required. Outputs must be progressive
+(interlace flag cleared), valid NV12 and free of corruption/error flags.
+Output metadata is streamed,
+not retained as1800 images. No synthetic901st input is added. This reference
+flush does not repair or qualify the original Kodi caller's absent filterEOF.
+Original900 shortage and two held filter-tail outputs are separate questions.
+
 The executor sends SIGTERM to its identity-pinned owned process on cancellation;
 the handler requests normal decoder/frame/context cleanup. There is no SIGKILL
 or implicit timeout subprocess. A blocked cleanup must retain the process and
 resources under the existing handoff rule. Root verifies exit, native ledger,
-kernel and full restored boundary separately. Wall time and the calling
-thread's CPU time are separate raw metrics; the latter excludes other threads
-and is not total application CPU or a real-time throughput qualification.
+kernel and full restored boundary separately. Whole-process CPU (all threads),
+calling-thread CPU and wall time are separate raw metrics. Bounded cumulative
+call counts/wall/main-CPU rows cover send, receive, finite VA readiness,
+download, filter add, filter sink and explicit reference close. These are
+inclusive public-call intervals; concurrent worker CPU and nested maintained
+work prevent interpreting them as pure component CPU or proof of the stock
+900-picture loss cause. Copies, source I/O, initialization and report writing
+also contribute to total execution outside those call intervals. No CPU<=wall
+clamp or inferred negative off-CPU metric is used. The unchanged frozen
+no-filter0277883 result remains separate; this option requires its own execution.
