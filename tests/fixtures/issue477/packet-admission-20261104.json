@@ -1,0 +1,1128 @@
+{
+  "schema": "crystalhd-packet-admission-observation-v1",
+  "date": "2026-11-04",
+  "owner_issues": [
+    477,
+    436
+  ],
+  "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+  "controller_exit": 1,
+  "complete_source_population_qualification": "FAIL",
+  "diagnostic_packet_observation": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+  "diagnostic_census": "PASS_SCOPED_PACKET_ADMISSION_CENSUS",
+  "runtime_source_revision": "b9d0ac2f89eadd3d318fa57c76519accf7016199",
+  "summary": "Each play has900 selected original video demux returns and900 accepted nonempty codec sends. Actual VAAPI frame returns/native originals677/684 keep whole900 qualification FAIL. All223/216 absent raw codec PTS labels were accepted with NONREF skip state; no private clock/payload/VA identity or underlying latency cause is inferred.",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "os": "Ubuntu26.04",
+    "kernel": "7.0.0-38-generic",
+    "loaded_module": "3.10.13"
+  },
+  "runtime": {
+    "client": "Unchanged original Kodi22RC1/App FFmpeg",
+    "upstream_kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "ffmpeg_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "same_pid": 2120966,
+    "method": 7,
+    "actual_decoder": "ff-h264-vaapi",
+    "actual_deintmethod": "bwdif",
+    "prefer_vaapi_renderer": false,
+    "actual_LOGVIDEO": {
+      "debug.extralogging": true,
+      "debug.setextraloglevel": [
+        32768
+      ]
+    },
+    "observer": "Explicit metadata-only public format/codec observer, existing private centered backend and transparent post-filter observer",
+    "packet_header": {
+      "type": "header",
+      "schema": "crystalhd-packet-admission-v1",
+      "pid": 2120966,
+      "fork_policy": "PARENT_PID_ONLY_CHILD_FORWARD_ONLY",
+      "observation_scope": "OUTERMOST_PUBLIC_CALLS_PARENT_PID",
+      "capacity": 32768,
+      "lifecycle_capacity": 256,
+      "max_streams": 1024,
+      "format_provider": "/app/lib/libavformat.so.63.1.102",
+      "codec_provider": "/app/lib/libavcodec.so.63.1.102",
+      "util_provider": "/app/lib/libavutil.so.61.1.102",
+      "format_version": 4129126,
+      "codec_version": 4129126,
+      "util_version": 3998054,
+      "provider_ok": true,
+      "h264_codec_id": 27,
+      "video_media_type": 0,
+      "vaapi_format": 44,
+      "discard_none": -16,
+      "discard_default": 0,
+      "discard_nonref": 8
+    },
+    "packet_footer": {
+      "type": "footer",
+      "events": 18275,
+      "attempted_events": 18275,
+      "dropped": 0,
+      "lifecycle_failures": 0,
+      "string_truncations": 0,
+      "clock_failure": false,
+      "fork_seen": true,
+      "inflight": 0,
+      "unpublished": 0,
+      "open_formats": 0,
+      "open_codecs": 0,
+      "complete": true
+    },
+    "format_lifetimes": 15,
+    "codec_lifetimes": 16,
+    "scheduling": "ordinary inherited scheduling; no priority changes"
+  },
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts",
+    "bytes": 49960248,
+    "sha256": "2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905",
+    "metadata": {
+      "codec": "h264",
+      "visible": [
+        1920,
+        1080
+      ],
+      "packets": 900,
+      "pictures": 900,
+      "source_time_base": "1/90000",
+      "nominal_picture_duration": "1001/30000",
+      "nominal_duration_seconds": "3003/100",
+      "stream_field_order": "tt",
+      "decoded_field_flag_counts": [
+        {
+          "interlaced_frame": 1,
+          "top_field_first": 1,
+          "count": 900
+        }
+      ],
+      "uniform_physical_parity_claimed": false,
+      "actual_source_PTS_to_VA_binding": "NOT_OBSERVED",
+      "coded": [
+        1920,
+        1088
+      ],
+      "source_PTS_ticks": {
+        "count": 900,
+        "first": 6006,
+        "last": 2705703,
+        "spacing": 3003,
+        "full_vectors": "/home/mache/.cache/crystalhd-bwdif-short-preparation-20261104/raw-packets-frames.json"
+      }
+    },
+    "provenance": "Retained short uniform-18.ts, original18x50 seed/retiming/generator and full packet/frame vectors; system ffprobe8.0.1/codec62/filter11 source preparation. Not original-App output or long9000-picture metadata."
+  },
+  "plays": [
+    {
+      "play": 1,
+      "source_population": {
+        "status": "PASS_EXACT_VIDEO_DEMUX_POPULATION",
+        "expected_video_packets": 900,
+        "expected_url": "/fixture.mp4",
+        "selected_format_instance": 7,
+        "observed_video_packets": 900,
+        "selected_stream": {
+          "index": 0,
+          "id": 256,
+          "codec_type": 0,
+          "codec_id": 27
+        },
+        "exact_original_source_frame_mapping": false,
+        "observed_read_eof": 40,
+        "selected_stream_metadata_variants": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27,
+            "width": 1920,
+            "height": 1080,
+            "time_base": [
+              1,
+              90000
+            ],
+            "start_time": 6006,
+            "duration": -9223372036854775808
+          }
+        ]
+      },
+      "selected_format": {
+        "format_instance": 7,
+        "context": "0x574e17c0dd40",
+        "url_evidence": [
+          {
+            "seq": 35,
+            "input_url": "/fixture.mp4",
+            "format_url": "/fixture.mp4"
+          }
+        ],
+        "url_status": "EXACT_PUBLIC_URL_MATCH",
+        "read_attempts": 2349,
+        "read_successes": 2309,
+        "read_eagain": 0,
+        "read_eof": 40,
+        "read_other_errors": 0,
+        "h264_video_outer_reads": 900,
+        "h264_video_before_observed_info_reads": 900,
+        "h264_video_after_observed_info_reads": 0,
+        "other_stream_reads": 1409,
+        "video_stream_variants": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27,
+            "width": 1920,
+            "height": 1080,
+            "time_base": [
+              1,
+              90000
+            ],
+            "start_time": 6006,
+            "duration": -9223372036854775808
+          }
+        ],
+        "video_stream_identities": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27
+          }
+        ],
+        "successful_find_stream_info": 0,
+        "info_phase_scope": "DESCRIPTIVE_ONLY_NOT_DISCOVERY_OR_PLAYBACK_IDENTITY",
+        "nested_discovery_calls": "EXCLUDED_BY_OUTERMOST_OBSERVER"
+      },
+      "selected_codec": {
+        "codec_instance": 7,
+        "codec_epoch": 1,
+        "h264_video_candidate": true,
+        "send_attempts": 910,
+        "send_payload_attempts": 901,
+        "send_data_attempts": 901,
+        "send_data_accepted": 900,
+        "send_data_eagain": 1,
+        "send_data_other_errors": 0,
+        "send_payload_accepted": 900,
+        "send_payload_eagain": 1,
+        "send_payload_other_errors": 0,
+        "send_null_attempts": 0,
+        "send_null_accepted": 0,
+        "send_nonnull_zero_size": 9,
+        "send_zero_size_data_nonnull": 0,
+        "send_zero_size_with_side_data": 0,
+        "send_empty_drain_shaped_attempts": 9,
+        "send_empty_drain_shaped_accepted": 1,
+        "send_negative_size_attempts": 0,
+        "send_return_histogram": {
+          "-11": 1,
+          "-541478725": 8,
+          "0": 901
+        },
+        "receive_attempts": 1578,
+        "receive_successes": 677,
+        "receive_vaapi": 677,
+        "receive_other_format": 0,
+        "receive_eagain": 894,
+        "receive_eof": 7,
+        "receive_other_errors": 0,
+        "frame_format_histogram": {
+          "44": 677
+        }
+      },
+      "entry_skip_states": [
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -541478725,
+          "calls": 7
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -11,
+          "calls": 326
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": 0,
+          "calls": 332
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": -11,
+          "calls": 568
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": 0,
+          "calls": 345
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -541478725,
+          "calls": 8
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -11,
+          "calls": 1
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": 0,
+          "calls": 333
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": 0,
+          "calls": 568
+        }
+      ],
+      "native_subset": {
+        "status": "FAIL",
+        "ledger_status": "PASS",
+        "source_expected": 900,
+        "submitted_input_materialized": 677,
+        "event_counts": {
+          "sync_enter": 685,
+          "sync_exit": 685,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 677,
+          "input_sent": 677,
+          "prefeed_sent": 677,
+          "output_dequeued": 1354,
+          "materialized": 677,
+          "binding_end": 677
+        },
+        "all_stage_binding_sets_equal": true,
+        "binding_multiplicity_histograms": {
+          "submit_bind": {
+            "1": 677
+          },
+          "input_sent": {
+            "1": 677
+          },
+          "output_dequeued": {
+            "2": 677
+          },
+          "materialized": {
+            "1": 677
+          }
+        }
+      },
+      "postfilter": {
+        "graphs": [
+          1
+        ],
+        "accepted_filter_inputs": 677,
+        "filter_outputs": 1352,
+        "source_null_calls": 0,
+        "source_close_calls": 0,
+        "driver_source_originals": 677,
+        "nominal_two_outputs_per_accepted_input": 1354,
+        "output_minus_nominal": -2,
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      },
+      "same_input_prefix": [
+        {
+          "graph_id": 1,
+          "reference_status": "PASS",
+          "reference_mode": "prefix",
+          "reference_exit": 0,
+          "source_eof_injected": false,
+          "independent_join": {
+            "status": "PASS_SAME_INPUT_PREFIX",
+            "graph_id": 1,
+            "comparisons": [
+              {
+                "output_index": 1,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 2,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 3,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 4,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              }
+            ],
+            "source_clock_comparison": false,
+            "original_client_eof_claim": false,
+            "comparison_scope": "SAME_INPUT_PREFIX_ACTIVE_NV12_AND_CAPTURED_METADATA",
+            "limits": [
+              "OWN observation/reference only; no stock compatibility or release claim.",
+              "A parent-PID ledger excludes forked child behaviour; fork_seen is descriptive only under the explicit parent-only policy.",
+              "Frame raw clocks, source stream clock, graph arguments and measured sink clocks remain distinct.",
+              "Successful calls are measured returns, not an inferred 900-input/1800-output or scanout proof.",
+              "Selected active NV12 bytes do not independently qualify the source decoder, scaler or colour conversion.",
+              "Missing original NULL/close/EOF stays missing; same-input prefix never supplies client EOF."
+            ]
+          }
+        }
+      ],
+      "raw_codec_PTS_labels": {
+        "status": "PASS_EXACT_UNIQUE_INTEGER_LABEL_SUBSET",
+        "codec_instance": 7,
+        "codec_epoch": 1,
+        "accepted": {
+          "attempts": 901,
+          "accepted": 900,
+          "eagain": 1,
+          "unique_raw_pts": 900,
+          "nopts_count": 0,
+          "raw_pts_range": [
+            66734,
+            30063367
+          ]
+        },
+        "returned": {
+          "all_successes": 677,
+          "vaapi_successes": 677,
+          "unique_raw_pts": 677,
+          "nopts_count": 0,
+          "pts_equals_best_effort_for_every_frame": true,
+          "raw_pts_range": [
+            66734,
+            30063367
+          ]
+        },
+        "returned_subset_of_accepted": true,
+        "foreign_returned_labels": [],
+        "missing_label_count": 223,
+        "missing_raw_pts_first8": [
+          3303301,
+          3470134,
+          3570234,
+          3636967,
+          3703701,
+          3803801,
+          3870534,
+          3937267
+        ],
+        "missing_raw_pts_last8": [
+          29362667,
+          29462767,
+          29529501,
+          29596234,
+          29662967,
+          29729701,
+          29796434,
+          29863167
+        ],
+        "full_missing_label_vector": "/home/mache/.cache/crystalhd-packet-admission-run-20261104/packet-pts-review.json",
+        "entry_skip_partition": [
+          {
+            "skip_frame": 0,
+            "skip_idct": 0,
+            "skip_loop_filter": 0,
+            "accepted_labels": 332,
+            "labels_present_in_returned_pts": 332,
+            "labels_absent_from_returned_pts": 0
+          },
+          {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8,
+            "accepted_labels": 568,
+            "labels_present_in_returned_pts": 345,
+            "labels_absent_from_returned_pts": 223
+          }
+        ],
+        "all_missing_accepted_under_8_8_8": true,
+        "all_default_labels_returned": true,
+        "first_missing_call": {
+          "seq": 1597,
+          "api": "avcodec_send_packet",
+          "tid": 2121081,
+          "begin_ns": 768627569119697,
+          "end_ns": 768627569256519,
+          "since_play_begin_ns": 6711261804,
+          "ret": 0,
+          "skip_state": {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8
+          },
+          "packet_pts": 3303301,
+          "packet_dts": 3269934,
+          "frame_pts": null,
+          "frame_best_effort_timestamp": null
+        },
+        "first_accepted_nonref_call": {
+          "seq": 1597,
+          "api": "avcodec_send_packet",
+          "tid": 2121081,
+          "begin_ns": 768627569119697,
+          "end_ns": 768627569256519,
+          "since_play_begin_ns": 6711261804,
+          "ret": 0,
+          "skip_state": {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8
+          },
+          "packet_pts": 3303301,
+          "packet_dts": 3269934,
+          "frame_pts": null,
+          "frame_best_effort_timestamp": null
+        },
+        "first_missing_is_first_nonref": true,
+        "raw_clock_metadata": {
+          "packet_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "frame_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "codec_packet_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "clock_calibration": "UNSET_NOT_ESTABLISHED",
+          "source_seconds_comparison": false
+        }
+      }
+    },
+    {
+      "play": 2,
+      "source_population": {
+        "status": "PASS_EXACT_VIDEO_DEMUX_POPULATION",
+        "expected_video_packets": 900,
+        "expected_url": "/fixture.mp4",
+        "selected_format_instance": 12,
+        "observed_video_packets": 900,
+        "selected_stream": {
+          "index": 0,
+          "id": 256,
+          "codec_type": 0,
+          "codec_id": 27
+        },
+        "exact_original_source_frame_mapping": false,
+        "observed_read_eof": 41,
+        "selected_stream_metadata_variants": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27,
+            "width": 1920,
+            "height": 1080,
+            "time_base": [
+              1,
+              90000
+            ],
+            "start_time": 6006,
+            "duration": -9223372036854775808
+          }
+        ]
+      },
+      "selected_format": {
+        "format_instance": 12,
+        "context": "0x78aa30202b40",
+        "url_evidence": [
+          {
+            "seq": 9154,
+            "input_url": "/fixture.mp4",
+            "format_url": "/fixture.mp4"
+          }
+        ],
+        "url_status": "EXACT_PUBLIC_URL_MATCH",
+        "read_attempts": 2350,
+        "read_successes": 2309,
+        "read_eagain": 0,
+        "read_eof": 41,
+        "read_other_errors": 0,
+        "h264_video_outer_reads": 900,
+        "h264_video_before_observed_info_reads": 900,
+        "h264_video_after_observed_info_reads": 0,
+        "other_stream_reads": 1409,
+        "video_stream_variants": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27,
+            "width": 1920,
+            "height": 1080,
+            "time_base": [
+              1,
+              90000
+            ],
+            "start_time": 6006,
+            "duration": -9223372036854775808
+          }
+        ],
+        "video_stream_identities": [
+          {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27
+          }
+        ],
+        "successful_find_stream_info": 0,
+        "info_phase_scope": "DESCRIPTIVE_ONLY_NOT_DISCOVERY_OR_PLAYBACK_IDENTITY",
+        "nested_discovery_calls": "EXCLUDED_BY_OUTERMOST_OBSERVER"
+      },
+      "selected_codec": {
+        "codec_instance": 13,
+        "codec_epoch": 1,
+        "h264_video_candidate": true,
+        "send_attempts": 907,
+        "send_payload_attempts": 900,
+        "send_data_attempts": 900,
+        "send_data_accepted": 900,
+        "send_data_eagain": 0,
+        "send_data_other_errors": 0,
+        "send_payload_accepted": 900,
+        "send_payload_eagain": 0,
+        "send_payload_other_errors": 0,
+        "send_null_attempts": 0,
+        "send_null_accepted": 0,
+        "send_nonnull_zero_size": 7,
+        "send_zero_size_data_nonnull": 0,
+        "send_zero_size_with_side_data": 0,
+        "send_empty_drain_shaped_attempts": 7,
+        "send_empty_drain_shaped_accepted": 1,
+        "send_negative_size_attempts": 0,
+        "send_return_histogram": {
+          "-541478725": 6,
+          "0": 901
+        },
+        "receive_attempts": 1583,
+        "receive_successes": 684,
+        "receive_vaapi": 684,
+        "receive_other_format": 0,
+        "receive_eagain": 894,
+        "receive_eof": 5,
+        "receive_other_errors": 0,
+        "frame_format_histogram": {
+          "44": 684
+        }
+      },
+      "entry_skip_states": [
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -541478725,
+          "calls": 5
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -11,
+          "calls": 324
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": 0,
+          "calls": 330
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": -11,
+          "calls": 570
+        },
+        {
+          "api": "avcodec_receive_frame",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": 0,
+          "calls": 354
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": -541478725,
+          "calls": 6
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 0,
+          "skip_idct": 0,
+          "skip_loop_filter": 0,
+          "ret": 0,
+          "calls": 331
+        },
+        {
+          "api": "avcodec_send_packet",
+          "skip_frame": 8,
+          "skip_idct": 8,
+          "skip_loop_filter": 8,
+          "ret": 0,
+          "calls": 570
+        }
+      ],
+      "native_subset": {
+        "status": "FAIL",
+        "ledger_status": "PASS",
+        "source_expected": 900,
+        "submitted_input_materialized": 684,
+        "event_counts": {
+          "sync_enter": 692,
+          "sync_exit": 692,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 684,
+          "input_sent": 684,
+          "prefeed_sent": 684,
+          "output_dequeued": 1368,
+          "materialized": 684,
+          "binding_end": 684
+        },
+        "all_stage_binding_sets_equal": true,
+        "binding_multiplicity_histograms": {
+          "submit_bind": {
+            "1": 684
+          },
+          "input_sent": {
+            "1": 684
+          },
+          "output_dequeued": {
+            "2": 684
+          },
+          "materialized": {
+            "1": 684
+          }
+        }
+      },
+      "postfilter": {
+        "graphs": [
+          4
+        ],
+        "accepted_filter_inputs": 684,
+        "filter_outputs": 1366,
+        "source_null_calls": 0,
+        "source_close_calls": 0,
+        "driver_source_originals": 684,
+        "nominal_two_outputs_per_accepted_input": 1368,
+        "output_minus_nominal": -2,
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      },
+      "same_input_prefix": [
+        {
+          "graph_id": 4,
+          "reference_status": "PASS",
+          "reference_mode": "prefix",
+          "reference_exit": 0,
+          "source_eof_injected": false,
+          "independent_join": {
+            "status": "PASS_SAME_INPUT_PREFIX",
+            "graph_id": 4,
+            "comparisons": [
+              {
+                "output_index": 1,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 2,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 3,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              },
+              {
+                "output_index": 4,
+                "active_bytes": 3110400,
+                "active_pixels_equal": true,
+                "captured_metadata_equal": true
+              }
+            ],
+            "source_clock_comparison": false,
+            "original_client_eof_claim": false,
+            "comparison_scope": "SAME_INPUT_PREFIX_ACTIVE_NV12_AND_CAPTURED_METADATA",
+            "limits": [
+              "OWN observation/reference only; no stock compatibility or release claim.",
+              "A parent-PID ledger excludes forked child behaviour; fork_seen is descriptive only under the explicit parent-only policy.",
+              "Frame raw clocks, source stream clock, graph arguments and measured sink clocks remain distinct.",
+              "Successful calls are measured returns, not an inferred 900-input/1800-output or scanout proof.",
+              "Selected active NV12 bytes do not independently qualify the source decoder, scaler or colour conversion.",
+              "Missing original NULL/close/EOF stays missing; same-input prefix never supplies client EOF."
+            ]
+          }
+        }
+      ],
+      "raw_codec_PTS_labels": {
+        "status": "PASS_EXACT_UNIQUE_INTEGER_LABEL_SUBSET",
+        "codec_instance": 13,
+        "codec_epoch": 1,
+        "accepted": {
+          "attempts": 900,
+          "accepted": 900,
+          "eagain": 0,
+          "unique_raw_pts": 900,
+          "nopts_count": 0,
+          "raw_pts_range": [
+            66734,
+            30063367
+          ]
+        },
+        "returned": {
+          "all_successes": 684,
+          "vaapi_successes": 684,
+          "unique_raw_pts": 684,
+          "nopts_count": 0,
+          "pts_equals_best_effort_for_every_frame": true,
+          "raw_pts_range": [
+            66734,
+            30063367
+          ]
+        },
+        "returned_subset_of_accepted": true,
+        "foreign_returned_labels": [],
+        "missing_label_count": 216,
+        "missing_raw_pts_first8": [
+          3236567,
+          3303301,
+          3470134,
+          3570234,
+          3636967,
+          3703701,
+          3803801,
+          3870534
+        ],
+        "missing_raw_pts_last8": [
+          29162467,
+          29295934,
+          29362667,
+          29462767,
+          29796434,
+          29863167,
+          29929901,
+          29996634
+        ],
+        "full_missing_label_vector": "/home/mache/.cache/crystalhd-packet-admission-run-20261104/packet-pts-review.json",
+        "entry_skip_partition": [
+          {
+            "skip_frame": 0,
+            "skip_idct": 0,
+            "skip_loop_filter": 0,
+            "accepted_labels": 330,
+            "labels_present_in_returned_pts": 330,
+            "labels_absent_from_returned_pts": 0
+          },
+          {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8,
+            "accepted_labels": 570,
+            "labels_present_in_returned_pts": 354,
+            "labels_absent_from_returned_pts": 216
+          }
+        ],
+        "all_missing_accepted_under_8_8_8": true,
+        "all_default_labels_returned": true,
+        "first_missing_call": {
+          "seq": 10654,
+          "api": "avcodec_send_packet",
+          "tid": 2121126,
+          "begin_ns": 768661239269134,
+          "end_ns": 768661239393943,
+          "since_play_begin_ns": 6121081844,
+          "ret": 0,
+          "skip_state": {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8
+          },
+          "packet_pts": 3236567,
+          "packet_dts": 3236567,
+          "frame_pts": null,
+          "frame_best_effort_timestamp": null
+        },
+        "first_accepted_nonref_call": {
+          "seq": 10654,
+          "api": "avcodec_send_packet",
+          "tid": 2121126,
+          "begin_ns": 768661239269134,
+          "end_ns": 768661239393943,
+          "since_play_begin_ns": 6121081844,
+          "ret": 0,
+          "skip_state": {
+            "skip_frame": 8,
+            "skip_idct": 8,
+            "skip_loop_filter": 8
+          },
+          "packet_pts": 3236567,
+          "packet_dts": 3236567,
+          "frame_pts": null,
+          "frame_best_effort_timestamp": null
+        },
+        "first_missing_is_first_nonref": true,
+        "raw_clock_metadata": {
+          "packet_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "frame_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "codec_packet_time_bases": [
+            [
+              0,
+              1
+            ]
+          ],
+          "clock_calibration": "UNSET_NOT_ESTABLISHED",
+          "source_seconds_comparison": false
+        }
+      }
+    }
+  ],
+  "supported_findings": [
+    "The selected public-URL video demux and codec-acceptance populations each reach900. One first-play EAGAIN attempt is not another acceptance; audio and other codecs remain separate.",
+    "Inside each selected codec lifetime/epoch,900 unique nonempty accepted packetPTS labels contain all677/684 unique returned VAAPI framePTS labels exactly; every framePTS equals best_effort. All absent223/216 labels belong to the accepted8/8/8 skip cohort, while allDEFAULT labels return. This is raw integer-label/state correspondence.",
+    "The decoder receives an accepted nonnull/dataNULL/size0/side_data0 drain each play and returns original EOF. Decoder drain/EOF is distinct from absent post-filter source NULL/close and sink EOF.",
+    "The submitted native populations remain balanced through two native field dequeues and materialization per original; post-filter inputs equal677/684, then outputs1352/1366. No full900-source or lossless-tail qualification is established.",
+    "TS playback reopens without find_stream_info after its initial probe. All900 video reads in each selected format have info_completefalse; treating that flag as discovery would omit actual playback. Zero-read GUI/probe formats remain explicitly separate."
+  ],
+  "checks": {
+    "controller_tests": 31,
+    "controller_existing_optional_retained_trace_skip": 1,
+    "initial_probe_controls": 25,
+    "final_probe_controls": 28,
+    "final_reader_controls": 45,
+    "actual_unchanged_public_header_build": "PASS",
+    "public_header_closure": {
+      "status": "PASS_UNCHANGED_MATCHING_PUBLIC_HEADER_CLOSURE",
+      "source_revision": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "include": "/home/mache/.cache/crystalhd-v13-distribution-20261102/prefix-a/include",
+      "unchanged_headers": [
+        "libavformat/avformat.h",
+        "libavcodec/codec_par.h",
+        "libavutil/avutil.h",
+        "libavutil/common.h",
+        "libavutil/attributes.h",
+        "libavutil/error.h",
+        "libavutil/macros.h",
+        "libavutil/version.h",
+        "libavutil/mem.h",
+        "libavutil/rational.h",
+        "libavutil/mathematics.h",
+        "libavutil/intfloat.h",
+        "libavutil/log.h",
+        "libavutil/pixfmt.h",
+        "libavutil/channel_layout.h",
+        "libavutil/rational.h",
+        "libavutil/pixfmt.h",
+        "libavcodec/codec_id.h",
+        "libavutil/samplefmt.h",
+        "libavcodec/defs.h",
+        "libavcodec/packet.h",
+        "libavutil/attributes.h",
+        "libavutil/buffer.h",
+        "libavutil/dict.h",
+        "libavutil/version.h",
+        "libavcodec/version_major.h",
+        "libavcodec/defs.h",
+        "libavcodec/packet.h",
+        "libavutil/log.h",
+        "libavformat/avio.h",
+        "libavformat/version_major.h",
+        "libavformat/version.h",
+        "libavformat/version_major.h",
+        "libavutil/frame.h",
+        "libavutil/avutil.h",
+        "libavutil/buffer.h",
+        "libavutil/channel_layout.h",
+        "libavutil/dict.h",
+        "libavutil/samplefmt.h",
+        "libavcodec/codec.h",
+        "libavutil/hwcontext.h",
+        "libavutil/frame.h",
+        "libavcodec/codec_id.h",
+        "libavcodec/avcodec.h",
+        "libavcodec/codec.h",
+        "libavcodec/version_major.h",
+        "libavcodec/version.h",
+        "libavcodec/codec_desc.h",
+        "libavcodec/codec_par.h",
+        "libavcodec/version.h"
+      ],
+      "generated_configuration_headers": [
+        "libavutil/avconfig.h"
+      ],
+      "comparison": "Exact bytes vs original source Gitobjects; no external source/header modification or private library linkage."
+    },
+    "actual_header_enums": {
+      "h264": 27,
+      "video": 0,
+      "vaapi": 44,
+      "discard_none": -16,
+      "discard_default": 0,
+      "discard_nonref": 8
+    },
+    "independent_source_review": "PASS_ORIGINAL_SOURCE_AND_PUBLIC_ABI_AUDIT",
+    "independent_implementation_review": "PASS_OWN_PACKET_ADMISSION_IMPLEMENTATION_REVIEW",
+    "same_input_prefix_frames": 8,
+    "same_input_prefix_active_NV12_bytes": 24883200,
+    "same_input_prefix_scope": "Original-App filter12 reference with captured input pixels/raw metadata only; no independent decoder/scaler/colour golden.",
+    "independent_actual_evidence_review": "PASS_PACKET_ADMISSION_ACTUAL_EVIDENCE_REVIEW"
+  },
+  "preserved_failures_and_review_corrections": [
+    {
+      "case": "bwdif2997-01",
+      "status": "FAIL",
+      "originals": 695,
+      "scope": "Original strict900 census/fork-gate failure and one-play abort unchanged.",
+      "receipt": "bwdif-postfilter-20261104.json"
+    },
+    {
+      "case": "bwdif2997-02",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "originals": [
+        687,
+        690
+      ],
+      "scope": "Earlier post-filter-only capture has no packet-admission or raw codec-label proof. It is not relabeled or causally attributed by this new execution.",
+      "receipt": "bwdif-postfilter-20261104.json"
+    },
+    {
+      "case": "OWN packet observer pre-physical concurrency review",
+      "finding": "busy==1 alone did not establish context lifetime after overlapping close/reopen. Before physical use, the OWN probe gained open+same-instance guards before post-read metadata and same-ID/epoch checks for post-call state updates.",
+      "distinguishing_control": "Owned mmap context is protected after concurrent retirement; fixed probe survives and rejects evidence. A bounded OWN mutation restoring the old guard receives expected SIGSEGV with core dumps disabled. This is synthetic diagnostic coverage, not an original-client crash, external fix or the excluded#538heap investigation.",
+      "initial_25_controls": "PASS; missing race coverage is not represented as an actual original-client pass/fix."
+    },
+    {
+      "case": "OWN reader pre-physical review",
+      "finding": "Replaced quadratic event-membership window checking with an equivalent linear predicate; kept crossing-window rejection. Actual-format selector separates a software thumbnail codec and rejects multiple VAAPI candidates. TS reads and exact original enum values are explicitly validated."
+    }
+  ],
+  "retirement": {
+    "controls_status": "PASS",
+    "original_application_exit": 0,
+    "controller_exit": 1,
+    "kernel_check_exit": 0,
+    "live_resource_handoff": null,
+    "errors": [],
+    "natural_EOFs": 2,
+    "full_before_after_equal": true,
+    "runtime_verification": {
+      "baseline_verify": true,
+      "leaves": 36
+    },
+    "module_changes": 0,
+    "installed_changes": 0,
+    "max_temperature_mC": 67000,
+    "all_AC_present": true,
+    "scope": "Full equality is from the separate final-boundary.json guard versus initial-boundary.json, not mixed full/lean case dictionaries."
+  },
+  "remaining": [
+    "Why the original caller selects NONREF in this clocked route, and the underlying processing/CPU/latency cost including maintained components, remain unmeasured. Do not label ordinary discard policy an external-code defect or alter it to manufacture900 native outputs.",
+    "Demux-to-codec payload identity, source90k/private-offset conversion, per-packet/frame/VA/pixel identity and hardware ownership bridges remain unqualified. Exact raw labels are not calibrated timestamps or physical presentation.",
+    "Whole900 native population, full filter tail/cadence, unselected pixels, broader streams/geometry/lifetime, stock compatibility and release qualification remain separate."
+  ],
+  "evidence": {
+    "host_root": "/home/mache/.cache/crystalhd-packet-admission-run-20261104",
+    "scope": "Portable summary; original raw ledgers/snapshots/references/plans/old failures and finite reviews retained in current-host cache, not new release artifacts.",
+    "files": [
+      "packet2997-01.plan.json",
+      "packet2997-01/result.json",
+      "packet2997-01/payload/packet-admission-2120966.jsonl",
+      "packet2997-01/payload/postfilter-2120966.jsonl",
+      "packet2997-01/graph-1.reference.json",
+      "packet2997-01/graph-4.reference.json",
+      "packet2997-01/profile/temp/kodi.log",
+      "source-review.json",
+      "implementation-review.json",
+      "packet-pts-review.json",
+      "header-provenance.json",
+      "header-enums.c",
+      "final-packet-controls.log",
+      "reader-controls-initial.log",
+      "reader-controls-final.log",
+      "initial-boundary.json",
+      "final-boundary.json",
+      "final-runtime-verification.log",
+      "original-source/provenance.json",
+      "independent-review.json"
+    ]
+  },
+  "exclusions": {
+    "external_product_edits": 0,
+    "install_package_changes": 0,
+    "frozen_release_changes": 0,
+    "stock_or_release_qualification": false,
+    "heap538": "Original heap subtask excluded; no reproduction/investigation.",
+    "security_filter": "No actual filter denial occurred; no filter-block claim."
+  }
+}

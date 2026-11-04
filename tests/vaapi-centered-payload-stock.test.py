@@ -14,6 +14,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 DIRECTORY = Path(__file__).resolve().parent
@@ -235,6 +236,70 @@ class BwdifScenarioTests(unittest.TestCase):
         self.assertEqual(STOCK.scenario('bwdif2997')['deintmethod'],'bwdif')
         self.assertFalse(STOCK.scenario('bwdif2997')['prefer_vaapi_renderer'])
         with self.assertRaises(ValueError):STOCK.scenario('automatic-unqualified')
+
+
+class PacketAdmissionModeTests(unittest.TestCase):
+    def test_explicit_packet_mode_cannot_leak_into_off_or_truthy_nonboolean_plan(self):
+        self.assertFalse(STOCK.packet_mode(False, 'off750'))
+        self.assertTrue(STOCK.packet_mode(True, 'bwdif2997'))
+        for value, name in ((True, 'off750'), (1, 'bwdif2997'), ('true', 'bwdif2997'), (None, 'bwdif2997')):
+            with self.subTest(value=value, scenario=name):
+                with self.assertRaises(ValueError):STOCK.packet_mode(value, name)
+
+    def test_packet_preload_composes_with_filter_without_client_control_changes(self):
+        ordinary = STOCK.observer_options(Path('/own'), 'off750')
+        self.assertEqual(ordinary, [])
+        old = STOCK.observer_options(Path('/own'), 'bwdif2997')
+        combined = STOCK.observer_options(Path('/own'), 'bwdif2997', True)
+        for command, expected in ((old, STOCK.POSTFILTER_MOUNT),
+                                  (combined, STOCK.POSTFILTER_MOUNT + ':' + STOCK.PACKET_MOUNT)):
+            self.assertEqual(command.count('LD_PRELOAD'), 1)
+            self.assertEqual(command[command.index('LD_PRELOAD') + 1], expected)
+            self.assertNotIn('--dev-bind', command)
+            self.assertNotIn('skip_frame', command)
+        self.assertIn(STOCK.PACKET_MOUNT, combined)
+        self.assertNotIn(STOCK.PACKET_MOUNT, old)
+
+    def test_packet_pins_require_original_format_codec_util_and_reader(self):
+        paths = STOCK.packet_files(Path('/own'), Path('/original-app'))
+        for name in ('format.so.63.1.102', 'codec.so.63.1.102', 'util.so.61.1.102'):
+            self.assertIn(Path('/original-app/lib/libav' + name), paths)
+        self.assertIn(STOCK.PACKET_READER, paths)
+        self.assertIn(Path('/own') / STOCK.PACKET_IMAGE, paths)
+
+    def audit_with(self, status):
+        seen = {}
+        def read(path, **kwargs):
+            seen.update(path=path, **kwargs)
+            return {'validated': True}
+        def census(validated, intervals, **kwargs):
+            seen.update(census=kwargs, intervals=intervals)
+            self.assertTrue(validated['validated'])
+            return {'status': status, 'source_population': {'status': 'FAIL', 'observed': 695}}
+        reader = SimpleNamespace(read_report=read,
+            audit_report=lambda *a, **k: {'status': 'PASS_SCOPED_PACKET_ADMISSION_OBSERVATION'},
+            census_case=census)
+        report = {'owned_app': {'pid': 123}, 'intervals': {'1': {'begin_ns': 10, 'end_ns': 20}},
+                  'source_census': {'1': {'observed_submit_bindings': 695}}}
+        with patch.object(STOCK, 'load', return_value=reader):
+            result = STOCK.audit_packet_case(Path('/retired-case'), report)
+        return result, seen
+
+    def test_packet_observation_keeps_partial_population_and_unobserved_identity_explicit(self):
+        result, seen = self.audit_with('PASS_SCOPED_PACKET_ADMISSION_CENSUS')
+        self.assertEqual(result['census']['source_population']['status'], 'FAIL')
+        self.assertEqual(result['native_submitted_by_play'], {'1': 695})
+        self.assertEqual(result['codec_to_VA_binding'], 'NOT_OBSERVED')
+        self.assertFalse(result['source_clock_comparison'])
+        self.assertEqual(seen['expected_pid'], 123)
+        self.assertEqual(seen['expected_providers']['format'], '/app/lib/libavformat.so.63.1.102')
+        self.assertEqual(seen['census'], {'expected_video_packets': 900, 'expected_url': '/fixture.mp4'})
+
+    def test_complete_report_cannot_hide_ambiguous_or_empty_source_selection(self):
+        for status in ('NOT_QUALIFIED', 'FAIL', 'PASS'):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ValueError, 'source/play selection'):
+                    self.audit_with(status)
 
 
 class AbortTests(unittest.TestCase):

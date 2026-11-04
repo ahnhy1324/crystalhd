@@ -91,6 +91,7 @@ GTAGS
 /filters/vaapi/centered-observer/
 /filters/vaapi/frame-pts-observer/
 /filters/vaapi/postfilter-observer/
+/filters/vaapi/packet-admission-observer/
 
 /filters/gst/field-output/nv12-field-equivalence
 

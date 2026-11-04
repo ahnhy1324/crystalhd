@@ -36,6 +36,9 @@ POSTFILTER_IMAGE = Path('filters/vaapi/postfilter-observer/postfilter-probe.so')
 POSTFILTER_MOUNT = '/own-observer/postfilter-probe.so'
 POSTFILTER_REFERENCE = Path('filters/vaapi/postfilter-observer/postfilter-reference')
 POSTFILTER_REFERENCE_WRAPPER = Path(__file__).with_name('vaapi-postfilter-reference.py')
+PACKET_READER = Path(__file__).with_name('vaapi-packet-admission-reader.py')
+PACKET_IMAGE = Path('filters/vaapi/packet-admission-observer/packet-admission-probe.so')
+PACKET_MOUNT = '/own-observer/packet-admission-probe.so'
 FIXTURE = Path('/home/mache/.cache/crystalhd-single-field-20261015.boremY/kodi-h264-1080i25-30s.mkv')
 BWDIF_FIXTURE = Path('/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts')
 BWDIF_FIXTURE_SHA = '2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905'
@@ -328,6 +331,37 @@ def postfilter_files(source, app):
             app / 'lib/libavfilter.so.12.1.102']
 
 
+def packet_files(source, app):
+    return [source / PACKET_IMAGE, PACKET_READER,
+            source / 'tests/vaapi-packet-admission-probe.c',
+            source / 'tests/vaapi-packet-admission-probe.map',
+            source / 'tests/vaapi-packet-admission-protocol.md',
+            *(app / ('lib/libav' + family + suffix) for family, suffix in
+              (('format', '.so.63.1.102'), ('codec', '.so.63.1.102'), ('util', '.so.61.1.102')))]
+
+
+def packet_mode(value, scenario_name):
+    require(type(value) is bool, 'packet observation mode must be a frozen boolean')
+    require(not value or scenario_name == 'bwdif2997', 'packet observation requires the explicit two-play BWDIF case')
+    return value
+
+
+def observer_options(source, scenario_name, observe_packets=False):
+    """Compose one preload value without changing original client options."""
+    packet_mode(observe_packets, scenario_name)
+    if scenario_name != 'bwdif2997':return []
+    images = [POSTFILTER_MOUNT]
+    result = ['--ro-bind', str(source / POSTFILTER_IMAGE), POSTFILTER_MOUNT,
+              '--setenv', 'CRYSTALHD_TEST_POSTFILTER', 'v1',
+              '--setenv', 'CRYSTALHD_TEST_POSTFILTER_PREFIX', '/payload/postfilter']
+    if observe_packets:
+        images.append(PACKET_MOUNT)
+        result += ['--ro-bind', str(source / PACKET_IMAGE), PACKET_MOUNT,
+                   '--setenv', 'CRYSTALHD_TEST_PACKET_ADMISSION', 'v1',
+                   '--setenv', 'CRYSTALHD_TEST_PACKET_ADMISSION_PREFIX', '/payload/packet-admission']
+    return result + ['--setenv', 'LD_PRELOAD', ':'.join(images)]
+
+
 def mapped_image(pid, mount, original, pins):
     """Verify a selected image at the held owned-identity gate."""
     proc = Path('/proc', str(pid)); found = set()
@@ -426,6 +460,32 @@ def audit_postfilter_case(source, app, platform, gl, case, report):
             'clock_scope': 'Raw stream/frame/graph/sink clocks remain separate; no source-seconds or physical-cadence inference.'}
 
 
+def audit_packet_case(case, report):
+    """Read the retired owner-PID ledger; no media calls or inferred PTS join."""
+    pid = report['owned_app']['pid']
+    path = case / 'payload' / ('packet-admission-' + str(pid) + '.jsonl')
+    reader = load('original_packet_admission_case_reader', PACKET_READER)
+    expected = {'format': '/app/lib/libavformat.so.63.1.102',
+                'codec': '/app/lib/libavcodec.so.63.1.102',
+                'util': '/app/lib/libavutil.so.61.1.102'}
+    validated = reader.read_report(path, expected_pid=pid, expected_providers=expected)
+    summary = reader.audit_report(path, expected_pid=pid, expected_providers=expected)
+    require(summary.get('status') == 'PASS_SCOPED_PACKET_ADMISSION_OBSERVATION',
+            'packet admission observation is incomplete: ' + json.dumps(summary))
+    census = reader.census_case(validated, report['intervals'], expected_video_packets=900,
+                                expected_url='/fixture.mp4')
+    require(census.get('status') == 'PASS_SCOPED_PACKET_ADMISSION_CENSUS',
+            'packet source/play selection is not qualified: ' + json.dumps(census))
+    return {'status': 'PASS_SCOPED_PACKET_ADMISSION_OBSERVATION', 'report': str(path),
+            'observer': summary, 'census': census,
+            'native_submitted_by_play': {key: value['observed_submit_bindings']
+                                         for key, value in report['source_census'].items()},
+            'codec_to_VA_binding': 'NOT_OBSERVED', 'source_clock_comparison': False,
+            'scope': 'Outer original public demux/codec metadata and entry skip states; '
+                     'aggregate counts do not prove each omitted packet, underlying latency cause, '
+                     'private Kodi offsets, source/VA/pixel identity, stock compatibility or release quality.'}
+
+
 def main():
     require(__debug__, 'ordinary Python without -O required')
     p = argparse.ArgumentParser(description=__doc__)
@@ -436,12 +496,15 @@ def main():
     p.add_argument('--own-source', type=Path); p.add_argument('--own-revision'); p.add_argument('--source-probe', type=Path)
     p.add_argument('--cycles', type=int, choices=(1, 2))
     p.add_argument('--scenario', choices=('off750', 'bwdif2997'))
+    p.add_argument('--observe-packets', action='store_const', const=True, default=None,
+                   help='prepare-only: add isolated original demux/codec metadata observation to bwdif2997')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
-    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario)):
-        p.error('source/revision/probe/cycles/scenario belong only to --prepare-plan')
+    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets)):
+        p.error('source/revision/probe/cycles/scenario/packet mode belong only to --prepare-plan')
     case = a.case_root.resolve() / a.case
     config = scenario(a.scenario or 'off750') if a.prepare_plan else None
+    observe_packets = packet_mode(bool(a.observe_packets), config['name']) if a.prepare_plan else False
     if a.prepare_plan:
         if a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '') or a.source_probe is None:
             p.error('prepare needs own source/full revision and independent packet/frame probe JSON')
@@ -525,13 +588,14 @@ def main():
             if config['name'] == 'bwdif2997':
                 require(a.cycles in (None, 2), 'bwdif2997 requires same-process two natural plays')
                 selected += postfilter_files(source, Path(route['client']['app_directory']))
+            if observe_packets:selected += packet_files(source, Path(route['client']['app_directory']))
             pins = {str(f): digest(f) for f in selected}
             if config['name'] == 'bwdif2997':require(pins[config['fixture']] == BWDIF_FIXTURE_SHA, 'original short input changed')
             for path, expected in route['client']['pins'].items():
                 require(digest(path) == expected, 'original client artifact changed: ' + path); pins[path] = expected
             save(a.plan, {'schema': 1, 'status': 'FROZEN_SOURCE_PLAN', 'source_directory': str(source), 'revision': a.own_revision,
                           'case_directory': str(case), 'case': a.case, 'cycles': (2 if config['name'] == 'bwdif2997' else a.cycles or 1),
-                          'scenario': config,
+                          'scenario': config, 'observe_packets': observe_packets,
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'pins': pins,
                           'source_probe': str(probe), 'fixture': config['fixture'], 'source_metadata': metadata,
                           'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': config['deintmethod'],
@@ -547,6 +611,7 @@ def main():
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         plan = json.loads(a.plan.read_text())
         config = scenario(plan.get('scenario', {}).get('name', 'off750'))
+        observe_packets = packet_mode(plan.get('observe_packets', False), config['name'])
         require(plan.get('scenario', config) == config, 'frozen scenario differs')
         fixture = Path(config['fixture'])
         require(plan['schema'] == 1 and plan['status'] == 'FROZEN_SOURCE_PLAN' and plan['case'] == a.case and
@@ -569,6 +634,7 @@ def main():
         if config['name'] == 'bwdif2997':
             require(plan['cycles'] == 2 and plan['pins'][str(fixture)] == BWDIF_FIXTURE_SHA, 'frozen short two-play case differs')
             required += tuple(postfilter_files(G.SOURCE, Path(route['client']['app_directory'])))
+        if observe_packets:required += tuple(packet_files(G.SOURCE, Path(route['client']['app_directory'])))
         require(all(str(path) in plan['pins'] for path in required), 'required frozen artifact pin missing')
         require(all(plan['pins'].get(path) == expected for path, expected in route['client']['pins'].items()),
                 'original App/FFmpeg provenance pin differs')
@@ -581,7 +647,8 @@ def main():
         require(source_metadata(json.loads(Path(plan['source_probe']).read_text()), fixture, config['name']) == plan['source_metadata'],
                 'independent source census changed')
         report.update(revision=G.REVISION, source_directory=str(G.SOURCE), plan=str(a.plan.resolve()), pins=plan['pins'],
-                      source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config, scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
+                      source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config,
+                      observe_packets=observe_packets, scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
         if config['name'] == 'bwdif2997':
             for signum in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[signum] = signal.getsignal(signum)
@@ -629,11 +696,7 @@ def main():
         at = command.index('--')
         command[at:at] = ['--bind', str(payload), '/payload', '--setenv', 'CRYSTALHD_TEST_CENTERED_PAYLOAD_DIR', '/payload',
                          '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', CENTERED]
-        if config['name'] == 'bwdif2997':
-            command[at:at] = ['--ro-bind', str(G.SOURCE / POSTFILTER_IMAGE), POSTFILTER_MOUNT,
-                             '--setenv', 'LD_PRELOAD', POSTFILTER_MOUNT,
-                             '--setenv', 'CRYSTALHD_TEST_POSTFILTER', 'v1',
-                             '--setenv', 'CRYSTALHD_TEST_POSTFILTER_PREFIX', '/payload/postfilter']
+        command[at:at] = observer_options(G.SOURCE, config['name'], observe_packets)
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff')
         save(case / 'command.json', command); log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -745,6 +808,12 @@ def main():
                             for mount, original in ((POSTFILTER_MOUNT, G.SOURCE / POSTFILTER_IMAGE),
                                 ('/app/' + str(CPU_COPY_PROVIDER), app / CPU_COPY_PROVIDER),
                                 ('/app/lib/libavfilter.so.12.1.102', app / 'lib/libavfilter.so.12.1.102'))]
+                    if observe_packets:
+                        check['packet_images'] = [mapped_image(kid['pid'], mount, original, plan['pins'])
+                            for mount, original in ((PACKET_MOUNT, G.SOURCE / PACKET_IMAGE),
+                                *[('/app/lib/libav' + family + suffix, app / ('lib/libav' + family + suffix))
+                                  for family, suffix in (('format', '.so.63.1.102'), ('codec', '.so.63.1.102'),
+                                                         ('util', '.so.61.1.102'))])]
                     report['identity_checks'].append(check); gate('identity-' + suffix)
                 elif phase == 'await-retirement-' + suffix:
                     require(value['active_players'] == [], 'EOF left active player')
@@ -845,6 +914,7 @@ def main():
                         health()
                         report['postfilter_audit'] = audit_postfilter_case(G.SOURCE,
                             Path(route['client']['app_directory']), platform, gl, case, report)
+                        if observe_packets:report['packet_admission_audit'] = audit_packet_case(case, report)
                         health()
                     except BaseException as error:report['errors'].append({'step': 'postfilter-observation/reference', 'error': fault(error)})
             except BaseException as error:
@@ -862,7 +932,9 @@ def main():
                 census_pass = bool(report['source_census']) and all(v['status'] == 'PASS' for v in report['source_census'].values())
                 postfilter_pass = (config is None or config['name'] != 'bwdif2997' or
                     report.get('postfilter_audit', {}).get('status') == 'PASS_SCOPED_POSTFILTER_OBSERVATION')
-                complete_observation = (payload_pass and report['controls_status'] == 'PASS' and postfilter_pass and
+                packet_pass = (not observe_packets or report.get('packet_admission_audit', {}).get('status') ==
+                               'PASS_SCOPED_PACKET_ADMISSION_OBSERVATION')
+                complete_observation = (payload_pass and report['controls_status'] == 'PASS' and postfilter_pass and packet_pass and
                     report['application_exit'] == 0 and report.get('boundary_equal') and report.get('kernel_exit') == 0 and
                     not report['errors'] and report['live_resource_handoff'] is None)
                 report['status'] = 'PASS' if complete_observation and census_pass else 'FAIL'
