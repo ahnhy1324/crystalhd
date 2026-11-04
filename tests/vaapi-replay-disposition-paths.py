@@ -80,6 +80,7 @@ def main():
             # scaffold. The real frozen controller always supplies900.
             census = reader.census_case(validated, native, windows, child.pid, expected_originals=2)
             positive = case in ('positive', 'retired-backing')
+            legacy_comparison = None
             if positive:
                 require(census.get('status') == 'PASS_SCOPED_REPLAY_DISPOSITION_CENSUS' and
                         census['plays']['1']['ledger_status'] == 'PASS',
@@ -90,6 +91,23 @@ def main():
                     require(any(e['event'] == 'output' and e['token'] == 1 and
                                 e['live_decode_identity'] == e['live_owner'] == 0 for e in events),
                             'retired backing must retain raw zero live identity')
+                    try:
+                        stock.operation_census(native, windows['1'], child.pid, 900)
+                    except ValueError as error:
+                        require('incomplete binding/sequence identity' in str(error),
+                                'legacy comparison must reproduce the original identity rejection')
+                        legacy_error = str(error)
+                    else:
+                        raise RuntimeError('untagged legacy census unexpectedly accepts retired raw identity')
+                    same900 = reader.census_case(validated, native, windows, child.pid, expected_originals=900)
+                    play900 = same900['plays']['1']
+                    require(play900['ledger_status'] == 'PASS' and play900['status'] == 'FAIL' and
+                            play900['source_population_qualified'] is False,
+                            'replay repair must keep the identical900-original criterion unqualified')
+                    legacy_comparison = dict(expected_originals=900, legacy_error=legacy_error,
+                        corrected_ledger_status=play900['ledger_status'],
+                        corrected_source_status=play900['status'],
+                        observed_originals=play900['observed_submit_bindings'])
             else:
                 require(census.get('status') != 'PASS_SCOPED_REPLAY_DISPOSITION_CENSUS' and
                         census['plays']['1']['ledger_status'] == 'FAIL',
@@ -101,7 +119,7 @@ def main():
                     require(any(e['event'] == 'release' and e['result'] != 0 for e in events),
                             'failed original release not observed')
             result = dict(cpu_scaffold_status='PASS', owner_pid=child.pid, expected_negative=not positive,
-                          audit=audit, census=census)
+                          audit=audit, census=census, legacy_versus_new_900=legacy_comparison)
             (output / 'analysis.json').write_text(json.dumps(result, indent=2)+'\n')
             results[case] = dict(owner_pid=child.pid, expected_negative=not positive,
                                  ledger_status=census['plays']['1']['ledger_status'])

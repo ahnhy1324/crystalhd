@@ -20,6 +20,17 @@ uses prepare-only `--scenario bwdif2997 --observe-packets --observe-cost
 only the explicit later frozen execution runs the diagnostic case. It does not
 change ordinary defaults or authorize a different installed backend.
 
+The [current actual receipt](fixtures/issue477/replay-disposition-20261104.json)
+records one completed two-natural-EOF diagnostic case using source `42ab9ac`:
+11,072 complete scalar events and balanced original records at 690/694. Its
+controls, original-provider post-filter prefix references and four observation
+audits pass, while the unchanged 900-original requirement remains FAIL.
+Physical restarts/replay are zero in both plays and explicitly NOT_EXERCISED;
+actual maintained-path CPU controls separately exercise the replay/retired-
+backing branch. No additional media run is required to obtain replay. See the
+[scoped result](vaapi-centered-payload-protocol.md#current-replay-disposition-observation)
+for counts, retained failures and the next OWN cost/latency attribution.
+
 Enable `CRYSTALHD_TEST_REPLAY_DISPOSITION=v1` and absolute
 `CRYSTALHD_TEST_REPLAY_DISPOSITION_PREFIX`. Exclusive0600 output is
 `PREFIX-PID.jsonl`, published at process/private-state retirement.
