@@ -1,0 +1,1421 @@
+{
+  "schema": 1,
+  "date": "2026-11-04",
+  "issue": 513,
+  "status": "PASS_SELECTED_NATURAL_FHD_PAIR_UNSATURATED_NO_GAIN_DEMONSTRATED",
+  "change": "Test-only native720/default versus optional packed-fhd profile and <=46 coarse1Hz timing snapshots; no maintained product code/default/QoS/ring/pool or external product change.",
+  "bench_source": "a8f16cc599afdffd9f5df1d6afff5746e4e8a436",
+  "product_source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+  "product_provenance": "Exact prebuilt own DIL/decoder/Xv/packed components from qualified final1.3 source24a archive; each actualprocess mapped all four expected private ELF paths. No rebuild or installed replacement.",
+  "actual_loaded_module": {
+    "version": "3.10.13",
+    "srcversion": "F76E163690F147B91495DDD",
+    "swaps": 0
+  },
+  "input": {
+    "path": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+    "provenance": "Original retained #513 stockFFmpeg stream-copy H264/PCM30s fixture; not regenerated",
+    "video": "H264 1920x1080 top-field-first25/1",
+    "audio": "PCM stereo, actual mutedPulseSink",
+    "independent_demux_video_packets": 750,
+    "expected_decoded_pictures": 750,
+    "stat_identity": {
+      "path": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+      "bytes": 63379409,
+      "inode": 11177281,
+      "mtime_ns": 1793684334930143991,
+      "provenance": "Retained original #513 H264/PCM30s/750-picture stream-copy fixture; no regeneration"
+    }
+  },
+  "route": {
+    "card": "BCM70015",
+    "cpu": "Core2 Duo T8100",
+    "graphics": "Intel965GM",
+    "card_scale": [
+      1280,
+      720
+    ],
+    "packed_size": [
+      1920,
+      1080
+    ],
+    "format": "UYVY",
+    "progressive_rate": "50/1",
+    "pixel_aspect": "1/1",
+    "mapped_window": [
+      640,
+      360
+    ],
+    "ring": 3,
+    "pool": 6,
+    "observe_timing": true,
+    "order": [
+      "fifo",
+      "latest"
+    ]
+  },
+  "conclusion": "Both selected natural FHD50 arms finish750 original decodes/1500 rendered buffers and naturalEOS with queue/residence/replacementall0. Representative congestion or latest-frame gain is not demonstrated. KeepFIFOdefault; do not repeat ABBA or force/stall the Xserver to manufacture a representative result.",
+  "limits": [
+    "Single pair at one fixed geometry/input/currenthost; no repeatability, thermal-causal, broadformat/control/interruption/endurance claim.",
+    "Renderer/QoS losses are recorded separately under existing policy;1500/drop0 are actual observations, not a new universal acceptance gate.",
+    "750demux packets/decodedoriginals,1500renderedbuffers and1501SHM requests/ACKs are different stages; preroll/request completion is not unique displayed-picture identity.",
+    "Sink copied-bytes0 means no extra sinkpayload copy; CPU packed enlargement and other pipeline work remain. No end-to-endzero-copy claim.",
+    "Coarse1Hzsamples can miss transient occupancy; all final cumulative unsent-source/residence/replacement counters are alsozero, so no successful pending-source path was exercised.",
+    "LocalACK receipt includes reader scheduling and excludes producer/clock/preparation time; successful pendingresidence excludes replaced/cancelled inputs. No physicalscanout, GPUlatency or end-to-enddelay measurement.",
+    "Process CPU and ACKmeans/maxima are descriptive only; oneFIFO/latest pair with distinct temperature peaks does not establish benefit or a causal comparison to the oldernative720source.",
+    "No GTK repair, nativekernel20 qualification or publishedrelease payload change is claimed; old failures and previous720p measurements remain unchanged."
+  ],
+  "existing_boundary": {
+    "status": "PASS_ORIGINAL_BOUNDARY_AND_RUNTIME_UNCHANGED",
+    "before": {
+      "module": "3.10.13",
+      "srcversion": "F76E163690F147B91495DDD",
+      "ref": 0,
+      "pin_net": 0,
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "aer": {
+        "0000:02:00.0": {
+          "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+          "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+          "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+        },
+        "0000:00:1c.0": {}
+      },
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      },
+      "debug_rows": 85,
+      "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+      "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+      "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "video_nodes": []
+    },
+    "after": {
+      "module": "3.10.13",
+      "srcversion": "F76E163690F147B91495DDD",
+      "ref": 0,
+      "pin_net": 0,
+      "force": "Y",
+      "session": "N",
+      "power": "on",
+      "aer": {
+        "0000:02:00.0": {
+          "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+          "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+          "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+        },
+        "0000:00:1c.0": {}
+      },
+      "links": {
+        "0000:02:00.0": 66,
+        "0000:00:1c.0": 66
+      },
+      "debug_rows": 85,
+      "debug_sha256": "4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4",
+      "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+      "installed_module_sha256": "9e959ab420fe9914cbb78921535832b8a0037b4dc5be67480bf328c87b755d6a",
+      "video_nodes": []
+    },
+    "kernel_check_exit": 0,
+    "runtime_verification_exit": 0,
+    "temporary_module_or_install_changes": false
+  },
+  "runs": [
+    {
+      "mode": "fifo",
+      "summary": {
+        "decoded": 750,
+        "rendered": 1500,
+        "renderer_dropped": 0,
+        "natural_eos": true,
+        "actual_audio_clock_samples": 120,
+        "audio_clock_mismatches": 0,
+        "process_cpu_s": 18.905056,
+        "elapsed_s": 31.627969017950818,
+        "process_cpu_percent": 59.77322157255882,
+        "peak_temperature_mC": 59000,
+        "start_temperature_mC": 52000,
+        "ack_receipt_count": 1501,
+        "ack_receipt_mean_us": 5449.84143904064,
+        "ack_receipt_max_us": 26031,
+        "queued": 0,
+        "intentionally_replaced": 0,
+        "successful_pending_residence_samples": 0,
+        "coarse_queue_samples": 30
+      },
+      "actual_report": {
+        "mode": "fifo",
+        "file": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+        "eos": true,
+        "code": 0,
+        "profile": "packed-fhd",
+        "expected_output_size": [
+          1920,
+          1080
+        ],
+        "factories": {
+          "crystalhd-video-output": {
+            "factory": "crystalhdxvsink",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so"
+          },
+          "xv-bench-audio": {
+            "factory": "pulsesink",
+            "plugin": "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpulseaudio.so"
+          },
+          "crystalhd-packed-upscale": {
+            "factory": "crystalhdpackedscale",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so"
+          },
+          "crystalhddec0": {
+            "factory": "crystalhddec",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so"
+          },
+          "deinterlace": {
+            "factory": "deinterlace",
+            "plugin": "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstdeinterlace.so"
+          }
+        },
+        "observe_timing_requested": true,
+        "audio_buffers": 352,
+        "sink_buffers": 1500,
+        "clock_samples": 120,
+        "audio_clock_mismatches": 0,
+        "same_audio_clock": true,
+        "audio_stream_muted": true,
+        "warnings": [],
+        "errors": [],
+        "message_counts": {
+          "warnings": 0,
+          "errors": 0
+        },
+        "qos_sources": {},
+        "sizes": [
+          [
+            640,
+            360
+          ]
+        ],
+        "pass_scope": "card/audio-clock/counts/retirement only",
+        "limits": [
+          "No source pixel or unique displayed-picture census, physical scanout or endurance claim.",
+          "Timing is local pending residence/request-to-ACK receipt, not media lateness, server/GPU/display latency or percentiles; CPU is process-only.",
+          "Zero replacements means replacement behavior was not exercised; no gain is demonstrated."
+        ],
+        "queue_samples": [
+          {
+            "elapsed_s": 0.2527784149860963,
+            "submitted": 0,
+            "acknowledged": 0,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 1.254094876931049,
+            "submitted": 0,
+            "acknowledged": 0,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 2.2575627089245245,
+            "submitted": 47,
+            "acknowledged": 47,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 3.2580307949101552,
+            "submitted": 97,
+            "acknowledged": 97,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 4.258529332932085,
+            "submitted": 147,
+            "acknowledged": 147,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 5.2601661019725725,
+            "submitted": 197,
+            "acknowledged": 197,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 6.265637731994502,
+            "submitted": 248,
+            "acknowledged": 248,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 7.5116052269004285,
+            "submitted": 311,
+            "acknowledged": 310,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 8.51201276795473,
+            "submitted": 360,
+            "acknowledged": 360,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 9.516589228995144,
+            "submitted": 411,
+            "acknowledged": 411,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 10.768269033986144,
+            "submitted": 473,
+            "acknowledged": 473,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 11.771691974950954,
+            "submitted": 523,
+            "acknowledged": 523,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 12.773708701948635,
+            "submitted": 573,
+            "acknowledged": 572,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 14.020622791955248,
+            "submitted": 636,
+            "acknowledged": 636,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 15.272815881995484,
+            "submitted": 699,
+            "acknowledged": 699,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 16.273632856900804,
+            "submitted": 749,
+            "acknowledged": 749,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 17.524920859956183,
+            "submitted": 811,
+            "acknowledged": 811,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 18.52601211098954,
+            "submitted": 861,
+            "acknowledged": 861,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 19.53077646694146,
+            "submitted": 911,
+            "acknowledged": 911,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 20.78102766093798,
+            "submitted": 973,
+            "acknowledged": 973,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 21.784057474927977,
+            "submitted": 1023,
+            "acknowledged": 1023,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 22.7850821739994,
+            "submitted": 1074,
+            "acknowledged": 1073,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 24.032591625931673,
+            "submitted": 1136,
+            "acknowledged": 1136,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 25.035139390965924,
+            "submitted": 1186,
+            "acknowledged": 1186,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 26.038014580961317,
+            "submitted": 1237,
+            "acknowledged": 1236,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 27.038563168956898,
+            "submitted": 1286,
+            "acknowledged": 1286,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 28.04090644000098,
+            "submitted": 1336,
+            "acknowledged": 1336,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 29.04158822190948,
+            "submitted": 1386,
+            "acknowledged": 1386,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 30.044994922936894,
+            "submitted": 1436,
+            "acknowledged": 1436,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 31.050163898966275,
+            "submitted": 1487,
+            "acknowledged": 1487,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          }
+        ],
+        "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+        "packed_plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+        "observe_timing_supported": true,
+        "observe_timing_applied": true,
+        "start_mC": 52000,
+        "peak_mC": 59000,
+        "sink_caps": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+        "native_progressive": false,
+        "profile_caps_valid": true,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "base_sink_before_null": {
+          "average-rate": 0.07783568393636195,
+          "dropped": 0,
+          "rendered": 1500
+        },
+        "xv_before_null": {
+          "submitted": 1501,
+          "acknowledged": 1501,
+          "video-submitted": 1501,
+          "redraw-submitted": 0,
+          "retained-picture": true,
+          "latest-frame": false,
+          "latest-pending": false,
+          "latest-queued": 0,
+          "latest-replaced": 0,
+          "latest-submitted": 0,
+          "latest-cancelled": 0,
+          "observe-timing": true,
+          "timing-overflow": false,
+          "ack-receipt-count": 1501,
+          "ack-receipt-us-sum": 8180212,
+          "ack-receipt-us-max": 26031,
+          "latest-residence-count": 0,
+          "latest-residence-us-sum": 0,
+          "latest-residence-us-max": 0,
+          "latest-pending-age-us": 0,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 1501,
+          "pending": 0,
+          "images": 6,
+          "bytes": 24883200,
+          "allocated": 6,
+          "freed": 0,
+          "active-port": 95,
+          "port-switches": 0,
+          "port-rejections": 0,
+          "failed": false,
+          "closed": false,
+          "quarantined": false
+        },
+        "decoded": 750,
+        "health_error": null,
+        "closed": true,
+        "pipeline_null": true,
+        "xv_after_null": {
+          "submitted": 1501,
+          "acknowledged": 1501,
+          "video-submitted": 1501,
+          "redraw-submitted": 0,
+          "retained-picture": false,
+          "latest-frame": false,
+          "latest-pending": false,
+          "latest-queued": 0,
+          "latest-replaced": 0,
+          "latest-submitted": 0,
+          "latest-cancelled": 0,
+          "observe-timing": true,
+          "timing-overflow": false,
+          "ack-receipt-count": 1501,
+          "ack-receipt-us-sum": 8180212,
+          "ack-receipt-us-max": 26031,
+          "latest-residence-count": 0,
+          "latest-residence-us-sum": 0,
+          "latest-residence-us-max": 0,
+          "latest-pending-age-us": 0,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 1501,
+          "pending": 0,
+          "images": 0,
+          "bytes": 0,
+          "allocated": 6,
+          "freed": 6,
+          "active-port": 95,
+          "port-switches": 0,
+          "port-rejections": 0,
+          "failed": false,
+          "closed": true,
+          "quarantined": false
+        },
+        "elapsed_s": 31.627969017950818,
+        "cpu_s": 18.905056,
+        "max_rss_kib": 196404,
+        "timing_valid": true,
+        "replacement_observed": false,
+        "pass": true
+      },
+      "controller": {
+        "status": "PASS_SELECTED_NATURAL_FHD_LOAD_POINT",
+        "mode": "fifo",
+        "profile": "packed-fhd",
+        "product_source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+        "scope": "Natural packed FHD50 own-Xv/Pulse selected load point on original module13. No forced congestion, external product changes, physical-display or release claim.",
+        "bench_source": "a8f16cc599afdffd9f5df1d6afff5746e4e8a436",
+        "fixture_identity": {
+          "path": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+          "bytes": 63379409,
+          "inode": 11177281,
+          "mtime_ns": 1793684334930143991,
+          "provenance": "Retained original #513 H264/PCM30s/750-picture stream-copy fixture; no regeneration"
+        },
+        "before": {
+          "module": "3.10.13",
+          "srcversion": "F76E163690F147B91495DDD",
+          "ref": 0,
+          "pin_net": 0,
+          "force": "Y",
+          "session": "N",
+          "power": "on",
+          "aer": {
+            "0000:02:00.0": {
+              "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+              "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+              "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+            },
+            "0000:00:1c.0": {}
+          },
+          "links": {
+            "0000:02:00.0": 66,
+            "0000:00:1c.0": 66
+          },
+          "video_nodes": []
+        },
+        "command": [
+          "python3",
+          "-B",
+          "/home/mache/.cache/crystalhd-xv-fhd-congestion-20261104/tests/gst-xv-output-bench.py",
+          "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+          "--profile",
+          "packed-fhd",
+          "--mode",
+          "fifo",
+          "--observe-timing",
+          "--expected-pictures",
+          "750",
+          "--expected-plugin",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "--expected-packed-plugin",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "--results",
+          "/home/mache/.cache/crystalhd-xv-fhd-congestion-run-20261104/fifo/result.json"
+        ],
+        "start_temperature_mC": 52000,
+        "started_at": "2026-11-04T05:35:07.057968+00:00",
+        "exit": 0,
+        "elapsed_s": 33.63747106096707,
+        "peak_mC": 59000,
+        "expected_providers": [
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+        ],
+        "observed_providers": [
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+        ],
+        "owned_process": {
+          "pid": 2102561,
+          "parent_pid": 2102455,
+          "start_ticks": 75741552,
+          "exe": "/usr/bin/python3.14",
+          "exe_device": 2049,
+          "exe_inode": 20071399
+        },
+        "after": {
+          "module": "3.10.13",
+          "srcversion": "F76E163690F147B91495DDD",
+          "ref": 0,
+          "pin_net": 0,
+          "force": "Y",
+          "session": "N",
+          "power": "on",
+          "aer": {
+            "0000:02:00.0": {
+              "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+              "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+              "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+            },
+            "0000:00:1c.0": {}
+          },
+          "links": {
+            "0000:02:00.0": 66,
+            "0000:00:1c.0": 66
+          },
+          "video_nodes": []
+        },
+        "private_provider_paths_verified": true
+      }
+    },
+    {
+      "mode": "latest",
+      "summary": {
+        "decoded": 750,
+        "rendered": 1500,
+        "renderer_dropped": 0,
+        "natural_eos": true,
+        "actual_audio_clock_samples": 120,
+        "audio_clock_mismatches": 0,
+        "process_cpu_s": 18.923525,
+        "elapsed_s": 31.656133180949837,
+        "process_cpu_percent": 59.77838446607206,
+        "peak_temperature_mC": 61000,
+        "start_temperature_mC": 55000,
+        "ack_receipt_count": 1501,
+        "ack_receipt_mean_us": 5410.985343104597,
+        "ack_receipt_max_us": 13530,
+        "queued": 0,
+        "intentionally_replaced": 0,
+        "successful_pending_residence_samples": 0,
+        "coarse_queue_samples": 30
+      },
+      "actual_report": {
+        "mode": "latest",
+        "file": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+        "eos": true,
+        "code": 0,
+        "profile": "packed-fhd",
+        "expected_output_size": [
+          1920,
+          1080
+        ],
+        "factories": {
+          "crystalhd-video-output": {
+            "factory": "crystalhdxvsink",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so"
+          },
+          "xv-bench-audio": {
+            "factory": "pulsesink",
+            "plugin": "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpulseaudio.so"
+          },
+          "crystalhd-packed-upscale": {
+            "factory": "crystalhdpackedscale",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so"
+          },
+          "crystalhddec0": {
+            "factory": "crystalhddec",
+            "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so"
+          },
+          "deinterlace": {
+            "factory": "deinterlace",
+            "plugin": "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstdeinterlace.so"
+          }
+        },
+        "observe_timing_requested": true,
+        "audio_buffers": 352,
+        "sink_buffers": 1500,
+        "clock_samples": 120,
+        "audio_clock_mismatches": 0,
+        "same_audio_clock": true,
+        "audio_stream_muted": true,
+        "warnings": [],
+        "errors": [],
+        "message_counts": {
+          "warnings": 0,
+          "errors": 0
+        },
+        "qos_sources": {},
+        "sizes": [
+          [
+            640,
+            360
+          ]
+        ],
+        "pass_scope": "card/audio-clock/counts/retirement only",
+        "limits": [
+          "No source pixel or unique displayed-picture census, physical scanout or endurance claim.",
+          "Timing is local pending residence/request-to-ACK receipt, not media lateness, server/GPU/display latency or percentiles; CPU is process-only.",
+          "Zero replacements means replacement behavior was not exercised; no gain is demonstrated."
+        ],
+        "queue_samples": [
+          {
+            "elapsed_s": 0.25293761293869466,
+            "submitted": 0,
+            "acknowledged": 0,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 1.2605433169519529,
+            "submitted": 0,
+            "acknowledged": 0,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 2.509387756930664,
+            "submitted": 58,
+            "acknowledged": 58,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 3.7613165279617533,
+            "submitted": 121,
+            "acknowledged": 121,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 4.761673253029585,
+            "submitted": 170,
+            "acknowledged": 170,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 5.7635822360171005,
+            "submitted": 221,
+            "acknowledged": 221,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 6.765911394963041,
+            "submitted": 271,
+            "acknowledged": 271,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 8.016278908937238,
+            "submitted": 334,
+            "acknowledged": 334,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 9.01790691993665,
+            "submitted": 384,
+            "acknowledged": 384,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 10.0194414119469,
+            "submitted": 434,
+            "acknowledged": 434,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 11.020175787969492,
+            "submitted": 484,
+            "acknowledged": 484,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 12.02231526200194,
+            "submitted": 534,
+            "acknowledged": 533,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 13.023019607993774,
+            "submitted": 583,
+            "acknowledged": 583,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 14.023572815931402,
+            "submitted": 633,
+            "acknowledged": 633,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 15.025277524022385,
+            "submitted": 684,
+            "acknowledged": 684,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 16.280672759981826,
+            "submitted": 747,
+            "acknowledged": 747,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 17.526233920943923,
+            "submitted": 809,
+            "acknowledged": 809,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 18.52690621803049,
+            "submitted": 859,
+            "acknowledged": 859,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 19.530597541946918,
+            "submitted": 909,
+            "acknowledged": 909,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 20.53399811196141,
+            "submitted": 959,
+            "acknowledged": 958,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 21.536171057028696,
+            "submitted": 1009,
+            "acknowledged": 1009,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 22.786540905945003,
+            "submitted": 1072,
+            "acknowledged": 1072,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 24.03797907300759,
+            "submitted": 1135,
+            "acknowledged": 1135,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 25.03814739594236,
+            "submitted": 1185,
+            "acknowledged": 1185,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 26.039468545001,
+            "submitted": 1235,
+            "acknowledged": 1235,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 27.04418677999638,
+            "submitted": 1285,
+            "acknowledged": 1285,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 28.293075204011984,
+            "submitted": 1347,
+            "acknowledged": 1347,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 29.293532821931876,
+            "submitted": 1397,
+            "acknowledged": 1397,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 30.297353861969896,
+            "submitted": 1448,
+            "acknowledged": 1447,
+            "pending": 1,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          },
+          {
+            "elapsed_s": 31.29742965195328,
+            "submitted": 1498,
+            "acknowledged": 1498,
+            "pending": 0,
+            "latest-queued": 0,
+            "latest-replaced": 0,
+            "latest-submitted": 0,
+            "latest-cancelled": 0,
+            "latest-residence-count": 0,
+            "latest-pending-age-us": 0
+          }
+        ],
+        "plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+        "packed_plugin": "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+        "observe_timing_supported": true,
+        "observe_timing_applied": true,
+        "start_mC": 55000,
+        "peak_mC": 61000,
+        "sink_caps": "video/x-raw, format=(string)UYVY, width=(int)1920, height=(int)1080, interlace-mode=(string)progressive, multiview-mode=(string)mono, multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff:/right-view-first/left-flipped/left-flopped/right-flipped/right-flopped/half-aspect/mixed-mono, pixel-aspect-ratio=(fraction)1/1, colorimetry=(string)2:0:0:0, framerate=(fraction)50/1",
+        "native_progressive": false,
+        "profile_caps_valid": true,
+        "clock": "GstPulseSinkClock",
+        "audio_clock": "GstPulseSinkClock",
+        "base_sink_before_null": {
+          "average-rate": 0.06104239919812746,
+          "dropped": 0,
+          "rendered": 1500
+        },
+        "xv_before_null": {
+          "submitted": 1501,
+          "acknowledged": 1501,
+          "video-submitted": 1501,
+          "redraw-submitted": 0,
+          "retained-picture": true,
+          "latest-frame": true,
+          "latest-pending": false,
+          "latest-queued": 0,
+          "latest-replaced": 0,
+          "latest-submitted": 0,
+          "latest-cancelled": 0,
+          "observe-timing": true,
+          "timing-overflow": false,
+          "ack-receipt-count": 1501,
+          "ack-receipt-us-sum": 8121889,
+          "ack-receipt-us-max": 13530,
+          "latest-residence-count": 0,
+          "latest-residence-us-sum": 0,
+          "latest-residence-us-max": 0,
+          "latest-pending-age-us": 0,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 1501,
+          "pending": 0,
+          "images": 6,
+          "bytes": 24883200,
+          "allocated": 6,
+          "freed": 0,
+          "active-port": 95,
+          "port-switches": 0,
+          "port-rejections": 0,
+          "failed": false,
+          "closed": false,
+          "quarantined": false
+        },
+        "decoded": 750,
+        "health_error": null,
+        "closed": true,
+        "pipeline_null": true,
+        "xv_after_null": {
+          "submitted": 1501,
+          "acknowledged": 1501,
+          "video-submitted": 1501,
+          "redraw-submitted": 0,
+          "retained-picture": false,
+          "latest-frame": true,
+          "latest-pending": false,
+          "latest-queued": 0,
+          "latest-replaced": 0,
+          "latest-submitted": 0,
+          "latest-cancelled": 0,
+          "observe-timing": true,
+          "timing-overflow": false,
+          "ack-receipt-count": 1501,
+          "ack-receipt-us-sum": 8121889,
+          "ack-receipt-us-max": 13530,
+          "latest-residence-count": 0,
+          "latest-residence-us-sum": 0,
+          "latest-residence-us-max": 0,
+          "latest-pending-age-us": 0,
+          "terminal-retired": 0,
+          "copied-bytes": 0,
+          "pool-submitted": 1501,
+          "pending": 0,
+          "images": 0,
+          "bytes": 0,
+          "allocated": 6,
+          "freed": 6,
+          "active-port": 95,
+          "port-switches": 0,
+          "port-rejections": 0,
+          "failed": false,
+          "closed": true,
+          "quarantined": false
+        },
+        "elapsed_s": 31.656133180949837,
+        "cpu_s": 18.923525,
+        "max_rss_kib": 196084,
+        "timing_valid": true,
+        "replacement_observed": false,
+        "pass": true
+      },
+      "controller": {
+        "status": "PASS_SELECTED_NATURAL_FHD_LOAD_POINT",
+        "mode": "latest",
+        "profile": "packed-fhd",
+        "product_source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+        "scope": "Natural packed FHD50 own-Xv/Pulse selected load point on original module13. No forced congestion, external product changes, physical-display or release claim.",
+        "bench_source": "a8f16cc599afdffd9f5df1d6afff5746e4e8a436",
+        "fixture_identity": {
+          "path": "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+          "bytes": 63379409,
+          "inode": 11177281,
+          "mtime_ns": 1793684334930143991,
+          "provenance": "Retained original #513 H264/PCM30s/750-picture stream-copy fixture; no regeneration"
+        },
+        "before": {
+          "module": "3.10.13",
+          "srcversion": "F76E163690F147B91495DDD",
+          "ref": 0,
+          "pin_net": 0,
+          "force": "Y",
+          "session": "N",
+          "power": "on",
+          "aer": {
+            "0000:02:00.0": {
+              "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+              "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+              "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+            },
+            "0000:00:1c.0": {}
+          },
+          "links": {
+            "0000:02:00.0": 66,
+            "0000:00:1c.0": 66
+          },
+          "video_nodes": []
+        },
+        "command": [
+          "python3",
+          "-B",
+          "/home/mache/.cache/crystalhd-xv-fhd-congestion-20261104/tests/gst-xv-output-bench.py",
+          "/home/mache/.cache/crystalhd-issue513-card-latest-run-20261103/dialogue-30s.mkv",
+          "--profile",
+          "packed-fhd",
+          "--mode",
+          "latest",
+          "--observe-timing",
+          "--expected-pictures",
+          "750",
+          "--expected-plugin",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "--expected-packed-plugin",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "--results",
+          "/home/mache/.cache/crystalhd-xv-fhd-congestion-run-20261104/latest/result.json"
+        ],
+        "start_temperature_mC": 55000,
+        "started_at": "2026-11-04T05:36:07.549786+00:00",
+        "exit": 0,
+        "elapsed_s": 32.64086545002647,
+        "peak_mC": 61000,
+        "expected_providers": [
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+        ],
+        "observed_providers": [
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/filters/gst/xv-output/libgstcrystalhdxv.so",
+          "/home/mache/.cache/crystalhd-v130-run-20261104/qualification-01/archive-build/crystalhd-1.3.0-24a5182b988b/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+        ],
+        "owned_process": {
+          "pid": 2102781,
+          "parent_pid": 2102692,
+          "start_ticks": 75747602,
+          "exe": "/usr/bin/python3.14",
+          "exe_device": 2049,
+          "exe_inode": 20071399
+        },
+        "after": {
+          "module": "3.10.13",
+          "srcversion": "F76E163690F147B91495DDD",
+          "ref": 0,
+          "pin_net": 0,
+          "force": "Y",
+          "session": "N",
+          "power": "on",
+          "aer": {
+            "0000:02:00.0": {
+              "aer_dev_nonfatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_NONFATAL 0\n",
+              "aer_dev_correctable": "RxErr 0\nBadTLP 0\nBadDLLP 0\nRollover 0\nTimeout 0\nNonFatalErr 0\nCorrIntErr 0\nHeaderOF 0\nTOTAL_ERR_COR 0\n",
+              "aer_dev_fatal": "Undefined 0\nDLP 0\nSDES 0\nTLP 0\nFCP 0\nCmpltTO 0\nCmpltAbrt 0\nUnxCmplt 0\nRxOF 0\nMalfTLP 0\nECRC 0\nUnsupReq 0\nACSViol 0\nUncorrIntErr 0\nBlockedTLP 0\nAtomicOpBlocked 0\nTLPBlockedErr 0\nPoisonTLPBlocked 0\nDMWrReqBlocked 0\nIDECheck 0\nMisIDETLP 0\nPCRC_CHECK 0\nTLPXlatBlocked 0\nTOTAL_ERR_FATAL 0\n"
+            },
+            "0000:00:1c.0": {}
+          },
+          "links": {
+            "0000:02:00.0": 66,
+            "0000:00:1c.0": 66
+          },
+          "video_nodes": []
+        },
+        "private_provider_paths_verified": true
+      }
+    }
+  ],
+  "next": "Keep broader513congestion/latencyattribution/formats/interruption work OPEN. The next distinct prepared development target is477/436 originalKodi29.97/method7 postfilter observation/reference; it is not implemented by this record."
+}

@@ -210,8 +210,9 @@ replacement behavior and a CPU/latency benefit are not demonstrated on this
 noncongested route. FIFO remains the default. The logs detect no A/V drift,
 accepted for this exact route; sampled clock identity is not a measured offset.
 
-The explicit30s harness uses a fixed640x360 mapped area and the current
-Player's scale1280/native output path. Build the own decoder/DIL and Xv plugin,
+The explicit30s harness uses a fixed640x360 mapped area. Its default
+`--profile native720` uses the Player's scale1280/native output path.
+Build the own decoder/DIL and Xv plugin,
 select their process-local paths as above, and supply a known750-picture
 H264/PCM fixture in the current X11/Pulse session:
 
@@ -235,6 +236,29 @@ python3 -B tests/gst-xv-output-bench.py /absolute/dialogue-30s.mkv \
   --expected-plugin "$PWD/filters/gst/xv-output/libgstcrystalhdxv.so" \
   --results /absolute/new-latest-timing.json
 ```
+
+To compare the existing [packed enlargement](../packed-upscale/README.md),
+build that optional component with its required GStreamer1.28.2 and select
+`--profile packed-fhd`. It uses the Player's existing packed-upscale flags,
+producing progressive UYVY1920x1080/PAR1/50Hz in the same640x360 window;
+it changes neither the Xv ring nor QoS policy. From the source root:
+
+```sh
+GST_PLUGIN_PATH="$PWD/filters/gst/packed-upscale:$PWD/filters/gst/xv-output:$PWD/filters/gst/gst-plugin-1.0" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+python3 -B tests/gst-xv-output-bench.py /absolute/dialogue-30s.mkv \
+  --profile packed-fhd --mode fifo --observe-timing --expected-pictures 750 \
+  --expected-plugin "$PWD/filters/gst/xv-output/libgstcrystalhdxv.so" \
+  --expected-packed-plugin "$PWD/filters/gst/packed-upscale/libgstcrystalhdpackedscale.so" \
+  --results /absolute/new-packed-fifo.json
+```
+
+Use `--mode latest` and a new result file for its paired arm. The packed profile
+requires the exact packed plugin path, checks the instantiated factory and
+negotiated profile caps, and reports the actual factories. Timing observation
+also records at most46 coarse queue samples, about once per second, to
+distinguish startup counters from later growth. Those samples can miss brief
+occupancy; read the final cumulative pending/replacement/residence counters too.
 
 The benchmark checks the Boolean property's default and applies the requested
 mode before startup, then preserves the timing fields in its before/after-NULL
@@ -268,6 +292,16 @@ so no current-card residence under congestion or latency benefit is qualified.
 These single-run means/maxima are descriptive local receipt observations,
 not percentiles or a physical-display measurement. Observed maximum57C and
 related kernel errors0 add no broader target/endurance/release acceptance.
+
+The [selected natural FHD50 pair](../../../tests/fixtures/issue513/natural-fhd-20261104.json)
+uses previously qualified source24a userspace DSOs and unchanged module13.
+FIFO and latest each decode750 originals/render1500/drop0 with natural EOS
+and real Pulse audio/clock. Each retires1501 pool-backed requests/ACKs with
+zero sink-row-copy bytes and all6 images freed; maxima are59/61C. Neither arm
+exercises the unsent latest queue, residence or replacement. This bounded
+negative finding demonstrates no congestion benefit, performance gain,
+physical presentation or endurance; FIFO stays the default and the earlier
+720p records retain their original scope.
 
 ### Window, port and setup controls
 
