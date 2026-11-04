@@ -96,9 +96,9 @@ class Trace {
   bool enabled() const { return enabled_; }
   uint64_t session() const { return session_; }
 
-  void Emit(Event event, const Fields &fields = {}) {
+  uint64_t Emit(Event event, const Fields &fields = {}) {
     if (!enabled_)
-      return;
+      return 0;
 
     // Serialize formatting and the single write so driver worker/frontend
     // threads cannot splice JSON records. Capture the clock under the same
@@ -154,7 +154,7 @@ class Trace {
         static_cast<unsigned long long>(fields.payload_submission_ordinal),
         static_cast<long long>(fields.submission_drift));
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(line))
-      return;
+      return 0;
     size_t written = 0;
     while (written < static_cast<size_t>(length)) {
       const ssize_t result = write(output_fd_, line + written,
@@ -167,6 +167,7 @@ class Trace {
         continue;
       break;
     }
+    return written == static_cast<size_t>(length) ? sequence : 0;
   }
 
  private:

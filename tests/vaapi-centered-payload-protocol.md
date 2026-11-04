@@ -303,7 +303,7 @@ make -C filters/vaapi check-maintained-cost-observer
 
 Add **both** `--observe-packets --observe-cost` to preparation of a fresh
 `bwdif2997` plan. `--observe-cost` requires packet observation; neither option is
-an execution-time override. The frozen cost plan selects only
+an execution-time override. A cost-only plan selects
 `maintained-cost-observer/crystalhd_drv_video.so`, with existing original App
 packet/post-filter probes and provider guards. Off, ordinary BWDIF and
 packet-only plans retain their existing backend. This artifact, its timing
@@ -317,6 +317,44 @@ be unavailable; raw values are not clamped. A Sync body may release its mutex,
 so it is not an uninterrupted mutex-holder measurement. These diagnostic costs
 do not by themselves establish the cause of Kodi's skip policy or a performance
 fix; exact native ownership and the unchanged 900-original criterion remain.
+
+For replay-disposition diagnosis, use the combined private backend and its
+separate collector/reader/actual-field-path CPU controls:
+
+```sh
+make -C filters/vaapi replay-disposition-observer
+make -C filters/vaapi check-replay-disposition-observer
+```
+
+Add **all three** `--observe-packets --observe-cost --observe-replay` to
+preparation of a fresh `bwdif2997` plan. Replay requires the packet, maintained
+cost and existing method7/BWDIF observations. Execution reads the frozen mode
+from that plan; it cannot add the flag later. Only this plan selects
+`replay-disposition-observer/crystalhd_drv_video.so`. The combined backend,
+scalar ledger and runtime marker remain excluded from normal/default/package
+paths; cost-only, packet-only and old scenarios retain their existing artifacts.
+
+The [replay-disposition protocol](vaapi-replay-disposition-protocol.md) links
+actual retained-prefix restart phases, completed-before-input state, each
+original dequeue, existing Inspect/pair/Observe decisions and its actual DIL
+release to exact native sequence IDs. During playback the replay census is
+`PENDING_REPLAY_CLASSIFICATION`, never PASS. Its complete parent-PID ledger is
+published at retirement; final classification runs after normal Quit and media
+retirement, with overflow, missing receipts, malformed pairs and failed releases
+remaining failures. No additional media run is requested merely to obtain replay.
+A run without completed replay is recorded as NOT_EXERCISED.
+
+Historical provenance is built offline from original submit_bind/binding_end
+records. It does not grant a current public VA lease or fill zero live fields.
+The wire's live_* tuple is a raw native observation, and a pending original can
+retain its full immutable decoded-picture tuple after public backing reuse;
+that tuple alone does not prove current public ownership. Observed materialized
+rows retain the existing subset/max1 rule, original New-pair provenance and
+sequence checks. Duplicate replay cannot cause another materialization. Missing
+materialization stays visible without a new all-M gate or pixel/public claim.
+The unchanged 900-original submission/input/New-field requirement is separate
+from successfully classified extra replay input/field records. A balanced
+smaller diagnostic population remains source-unqualified.
 
 The ordinary build/install/package does not include these artifacts. The
 [observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded
@@ -344,7 +382,65 @@ codec/scaler correctness, physical presentation, normal-backend compatibility
 or release qualification. The system codec62/filter11 input census and native
 field-weave reference cannot substitute for this original-App filter12 replay.
 
-### Current maintained-cost observation
+### Current replay-disposition observation
+
+The [replay2997-01 receipt](fixtures/issue477/replay-disposition-20261104.json)
+uses diagnostic source `42ab9ac` and original Kodi/App/providers. Its two
+same-PID natural EOFs, normal Quit, final parent-PID analysis and both selected
+prefix references complete. Controls and native replay, packet, cost and
+post-filter audits pass; the application exits0, kernel checking is0, the
+module13/runtime36 boundary is equal, no handoff remains and maximum temperature is 67C.
+
+| Actual stage | First natural play | Reopen natural play |
+| --- | --- | --- |
+| Native original bindings / logical inputs / public M | 690 / 690 / 690 | 694 / 694 / 694 |
+| Original field dequeues / validated released pairs | 1,380 / 690 | 1,388 / 694 |
+| Successful restarts / completed replay inputs / replay fields | 0 / 0 / 0 | 0 / 0 / 0 |
+| Accepted BWDIF inputs / successful outputs | 690 / 1,378 | 694 / 1,386 |
+| Original filter source NULL/close; sink EOF | 0; 0 | 0; 0 |
+
+All 11,072 replay events publish completely and classify the observed original
+records. Physical replay remains **NOT_EXERCISED** in both plays. Separate
+actual maintained-path CPU controls cover completed replay after backing reuse,
+raw zero tuples, valid pairs/releases and rejected parity/release failures;
+those controls do not qualify physical replay. Applied to the same retained-
+backing CPU records, the old census rejects incomplete live identity while
+the corrected census classifies two originals plus one completed replay, with
+raw zero tuples preserved. The unchanged 900-original requirement still fails
+with two observed.
+Do not repeat a physical case merely to obtain the event.
+
+The first four filter outputs in each play match their same-input original-App
+prefix reference in all 24,883,200 active NV12 bytes and captured raw metadata;
+no EOF is injected. This is fresh selected-prefix evidence, not full-tail,
+independent codec/scaler, source-clock or presentation qualification. The whole
+case remains **OBSERVED_SOURCE_QUALIFICATION_FAIL** because 690/694 is below 900.
+Successful diagnostic control flow and the existing public-M subset/max1 rule
+do not waive the original-picture requirement or establish a performance fix.
+
+The fresh selected codec/epoch sets contain 900 unique accepted nonempty-packet
+PTS labels per play and 690/694 unique returned labels, exact integer subsets:
+
+| Accepted-call entry state | Play 1: labels / returned / absent | Play 2: labels / returned / absent |
+| --- | --- | --- |
+| DEFAULT `0/0/0` | 340 / 340 / 0 | 356 / 356 / 0 |
+| NONREF `8/8/8` | 560 / 350 / 210 | 544 / 338 / 206 |
+
+All absent labels associate with entry NONREF state. In observed accepted-call
+order, the first NONREF call's label is absent in play1 but returns in play2;
+do not generalize the older
+packet-only case's first-call finding. Raw timebases remain unset `0/1`.
+This is label/state correspondence, not payload/source-clock/VA identity or
+proof why the caller selects the policy.
+
+Next distinguish the underlying NONREF/latency policy from measured OWN pixel
+and CPU-access/release costs before a bounded own-code candidate comparison.
+Keep original inputs and leases, ordinary defaults and all source criteria;
+external applications/dependencies are not patched.
+
+<a id="current-maintained-cost-observation"></a>
+
+### Retained maintained-cost observation
 
 The [maintained2997-01 receipt](fixtures/issue477/maintained-cost-20261104.json)
 uses diagnostic source `8cdbc62` and the original App/providers, leaving the
@@ -365,8 +461,8 @@ source-population PASS.
 These scopes exclude selected payload capture and separate CPU-access begin/
 end from pixel loops. They are not summed medians or overlapping playback
 budgets. CPU-access-end p95 thread CPU is2.869/2.706ms in the correlated
-population; parent/direction attribution is still needed before interpreting
-that tail. Wall-minus-thread-CPU mixes waits and preemption, with negative
+population; interpret that aggregate with the retained parent/direction split
+below rather than as pure waiting. Wall-minus-thread-CPU mixes waits and preemption, with negative
 independent-clock differences retained as unavailable derived off-CPU rather
 than clamped. The initial active-pixel clock-accounting FAIL is preserved.
 
@@ -382,11 +478,11 @@ mutex ownership.
 The original actual case and controls remain **FAIL**. Both natural end callbacks
 occur, application exit is0, kernel checking is0, the original runtime/boundary
 is retained, no handoff remains and maximum temperature is73C. Materializations
-are 689/681 against the unchanged900 criterion. In the second play, 691 input
+are 689/681 against the unchanged 900 criterion. In the second play, 691 input
 sends and1,382 dequeue events include10 replayed AUs/20 fields; four dequeue
 records arrive after their old full bindings retired. Source review explains
 how completed transport AUs can be resent and duplicate outputs return before
-copy/materialization, but the current strict census lacks explicit replay/
+copy/materialization, but that capture's original strict census lacked explicit replay/
 historical-binding disposition. That is a concrete own diagnostic coverage gap,
 not proof of a product defect or harmlessness. The retired raw post-filter
 report records689→1,376 and681→1,360 inputs/outputs, with no source NULL/close
@@ -396,11 +492,14 @@ receipts retain their earlier source/case identities. Separate offline packet
 metadata still records900 video demux returns and900 accepted codec data sends
 per play; it does not repair the native ledger.
 
-Next add replay-aware history/disposition observation and ownership controls,
-then use the measured OWN pixel/CPU-access/DIL scopes for a bounded attribution
-comparison. Preserve first-field staging and every original lease/copy unless
-an ownership proof supports a maintained-code change. No external code change,
-normal-backend speedup, underlying NONREF cause or release result is established.
+The retained parent/direction review of this same `8cdbc62` record locates
+median thread CPU for canvas WRITE CPU-access END at 1.971/1.928 ms across the
+689/681-key subset. This is a source/branch-qualified measurement, not pure
+GPU waiting, a causal NONREF explanation or current `42ab9ac` performance.
+Preserve first-field staging and every original lease/copy unless an ownership
+proof supports an own-code change. The new replay-aware implementation and its
+separate receipt do not relabel this original actual-case/control FAIL or
+establish an external code fix, normal-backend speedup or release result.
 
 <a id="current-packet-admission-observation"></a>
 

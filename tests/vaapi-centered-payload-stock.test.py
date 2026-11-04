@@ -8,6 +8,7 @@ import argparse
 import ast
 import copy
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -300,6 +301,78 @@ class PacketAdmissionModeTests(unittest.TestCase):
             with self.subTest(status=status):
                 with self.assertRaisesRegex(ValueError, 'source/play selection'):
                     self.audit_with(status)
+
+
+class ReplayDispositionModeTests(unittest.TestCase):
+    def test_replay_is_explicit_frozen_bwdif_packet_cost_only(self):
+        self.assertFalse(STOCK.replay_mode(False, 'off750', False, False))
+        self.assertTrue(STOCK.replay_mode(True, 'bwdif2997', True, True))
+        for args in ((1,'bwdif2997',True,True),(True,'off750',True,True),
+                     (True,'bwdif2997',False,True),(True,'bwdif2997',True,False),
+                     (True,'bwdif2997',True,1)):
+            with self.subTest(args=args), self.assertRaises(ValueError):STOCK.replay_mode(*args)
+        self.assertEqual(STOCK.backend_image(), STOCK.CENTERED_IMAGE)
+        self.assertEqual(STOCK.backend_image(True), STOCK.COST_IMAGE)
+        self.assertEqual(STOCK.backend_image(True, True), STOCK.REPLAY_IMAGE)
+        with self.assertRaises(ValueError):STOCK.backend_image(False, True)
+
+    def test_replay_pins_and_environment_do_not_override_client_policy(self):
+        files = STOCK.replay_files(Path('/own'))
+        for name in ('tests/vaapi-replay-disposition-observer.h',
+                     'tests/vaapi-replay-disposition-reader.py',
+                     'filters/vaapi/crystalhd-trace.h'):
+            expected = STOCK.REPLAY_READER if name.endswith('reader.py') else Path('/own') / name
+            self.assertIn(expected, files)
+        self.assertIn(Path('/own') / STOCK.REPLAY_IMAGE, STOCK.cost_files(Path('/own'), True))
+        self.assertEqual(STOCK.replay_options(), [])
+        self.assertEqual(STOCK.replay_options(True), ['--setenv','CRYSTALHD_TEST_REPLAY_DISPOSITION','v1',
+            '--setenv','CRYSTALHD_TEST_REPLAY_DISPOSITION_PREFIX','/payload/replay-disposition'])
+
+    def test_pending_replay_keeps_unbound_rows_and_cannot_qualify_even900(self):
+        rows=fixture(900)
+        for _ in range(4):
+            row=dict(rows[2][1]);row.update(surface=0,owner=0,decode_identity=0,submission_ordinal=0)
+            rows.append((len(rows),row))
+        interval={'begin':0,'end':len(rows)};before=copy.deepcopy(rows)
+        pending=STOCK.pending_replay_census(rows,interval,PID,900)
+        self.assertEqual(pending['observed_submit_bindings'],900)
+        self.assertEqual(pending['event_counts']['output_dequeued'],1804)
+        self.assertEqual(pending['ledger_status'],'PENDING_REPLAY_CLASSIFICATION')
+        self.assertFalse(pending['source_population_qualified'])
+        self.assertEqual(rows,before)
+        with self.assertRaisesRegex(ValueError,'incomplete binding'):
+            STOCK.operation_census(rows,interval,PID,900)
+
+    def test_published_complete_classification_is_mandatory_for_all_plays(self):
+        report={'owned_app':{'pid':PID},'intervals':{'1':{},'2':{}}}
+        native=[('original','not discarded')]
+        good={'status':'PASS_SCOPED_REPLAY_DISPOSITION_CENSUS','plays':{
+            key:{'ledger_status':'PASS','status':'FAIL','source_population_qualified':False,
+                 'observed_submit_bindings':681} for key in report['intervals']}}
+        reader=SimpleNamespace(read_report=lambda *a,**kw:{},
+            audit_report=lambda *a,**kw:{'status':'PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION'},
+            census_case=lambda *a,**kw:good)
+        with patch.object(STOCK,'load',return_value=reader):
+            result=STOCK.audit_replay_case(Path('/case'),report,native)
+            self.assertEqual(result['census']['plays']['2']['status'],'FAIL')
+            self.assertFalse(result['census']['plays']['2']['source_population_qualified'])
+            for change in ('missingplay','badledger','incomplete'):
+                bad=copy.deepcopy(good)
+                if change=='missingplay':del bad['plays']['2']
+                elif change=='badledger':bad['plays']['2']['ledger_status']='FAIL'
+                else:bad['status']='FAIL'
+                reader.census_case=lambda *a,**kw:bad
+                with self.subTest(change=change),self.assertRaisesRegex(ValueError,'replay/history/lease'):
+                    STOCK.audit_replay_case(Path('/case'),report,native)
+            reader.audit_report=lambda *a,**kw:{'status':'FAIL'}
+            with self.assertRaisesRegex(ValueError,'observation is incomplete'):
+                STOCK.audit_replay_case(Path('/case'),report,native)
+
+    def test_replay_cannot_be_an_execution_override(self):
+        with patch.object(sys,'argv',['controller','--execute','--plan','unused.json','--observe-replay']), \
+                patch.object(sys,'stderr',io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:STOCK.main()
+        self.assertEqual(raised.exception.code,2)
 
 
 class MaintainedCostModeTests(unittest.TestCase):

@@ -1,0 +1,1490 @@
+{
+  "schema": "crystalhd-replay-disposition-observation-v1",
+  "date": "2026-11-04",
+  "owner_issues": [
+    477,
+    436
+  ],
+  "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+  "controller_exit": 1,
+  "controls_status": "PASS",
+  "errors": [],
+  "complete_source_population_qualification": "FAIL",
+  "diagnostic_replay_observation": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+  "diagnostic_replay_census": "PASS_SCOPED_REPLAY_DISPOSITION_CENSUS",
+  "physical_replay": "NOT_EXERCISED",
+  "runtime_source_revision": "42ab9ac6365ec3b4848108b8c9c18475b9ca064d",
+  "summary": "Repair the native diagnostic census by exact restart/input/dequeue/decision/release links and immutable offline history. Both natural plays complete controls and all four diagnostic audits;690/694 native originals still fail900. Physical replay did not occur, so retired-replay repair is demonstrated by separate actual OWN function-path CPU controls, not attributed to the fresh physical case.",
+  "equipment": {
+    "cpu": "Core2 Duo T8100",
+    "card": "BCM70015",
+    "gpu": "Intel965GM",
+    "os": "Ubuntu26.04",
+    "kernel": "7.0.0-38-generic",
+    "loaded_module": "3.10.13"
+  },
+  "source": {
+    "path": "/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts",
+    "bytes": 49960248,
+    "sha256": "2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905",
+    "metadata": {
+      "codec": "h264",
+      "visible": [
+        1920,
+        1080
+      ],
+      "packets": 900,
+      "pictures": 900,
+      "source_time_base": "1/90000",
+      "nominal_picture_duration": "1001/30000",
+      "nominal_duration_seconds": "3003/100",
+      "stream_field_order": "tt",
+      "decoded_field_flag_counts": [
+        {
+          "interlaced_frame": 1,
+          "top_field_first": 1,
+          "count": 900
+        }
+      ],
+      "uniform_physical_parity_claimed": false,
+      "actual_source_PTS_to_VA_binding": "NOT_OBSERVED",
+      "coded": [
+        1920,
+        1088
+      ],
+      "source_PTS_ticks": {
+        "count": 900,
+        "first": 6006,
+        "last": 2705703,
+        "spacing": 3003,
+        "full_vectors": "/home/mache/.cache/crystalhd-bwdif-short-preparation-20261104/raw-packets-frames.json"
+      }
+    },
+    "provenance": "Retained short uniform-18.ts, original18x50 seed/retiming/generator and full packet/frame vectors; system ffprobe8.0.1/codec62/filter11 source preparation. Not original-App output or long9000-picture metadata."
+  },
+  "runtime": {
+    "client": "Unchanged original Kodi22RC1/App FFmpeg",
+    "upstream_kodi_source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "ffmpeg_source": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+    "method": 7,
+    "actual_decoder": "ff-h264-vaapi",
+    "actual_deintmethod": "bwdif",
+    "prefer_vaapi_renderer": false,
+    "actual_LOGVIDEO": {
+      "debug.extralogging": true,
+      "debug.setextraloglevel": [
+        32768
+      ]
+    },
+    "scheduling": "ordinary inherited scheduling; no priority changes",
+    "same_pid": 2144863,
+    "observer": "Explicit private centered + maintained-cost + replay-disposition backend with original-provider packet/postfilter observers; diagnostic execution only."
+  },
+  "replay_ledger": {
+    "header": {
+      "type": "header",
+      "schema": "crystalhd-replay-disposition-v1",
+      "pid": 2144863,
+      "fork_policy": "PARENT_PID_ONLY_CHILD_FORWARD_ONLY",
+      "scope": "OWN_REPLAY_DISPOSITION_ONLY",
+      "capacity": 32768,
+      "bc_success": 0,
+      "va_success": 0,
+      "field_constants": {
+        "topfield": 16,
+        "bottomfield": 24,
+        "interlaced_src": 32,
+        "bottom_first": 128
+      }
+    },
+    "footer": {
+      "type": "footer",
+      "events": 11072,
+      "attempted_events": 11072,
+      "dropped": 0,
+      "inflight": 0,
+      "unpublished": 0,
+      "clock_failures": 0,
+      "lifecycle_failures": 0,
+      "fork_seen": false,
+      "complete": true
+    },
+    "observer": {
+      "status": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+      "pid": 2144863,
+      "events": 11072,
+      "event_counts": {
+        "input_attempt": 1384,
+        "input_commit": 1384,
+        "output": 2768,
+        "disposition": 2768,
+        "release": 2768
+      },
+      "fork_seen": false,
+      "limits": [
+        "OWN diagnostic classification only; no stock compatibility or release claim.",
+        "Historical submit bindings never restore or replace live surface/owner metadata.",
+        "Exact native receipt links are not source PTS, packet/pixel identity or latency attribution.",
+        "Balanced original/replay records do not waive the separate900-original requirement.",
+        "This census covers the selected paired-interlaced path; well-formed whole-picture observations are not qualified by its pair oracle.",
+        "All native records, including retired/unbound replay fields, remain in raw event counts."
+      ]
+    },
+    "exact_native_receipt_links": "PID + driver_instance + actual Trace::Emit returned sequence; no time/proximity join.",
+    "history": "Committed native submit_bind tuples and binding_end provenance remain separate from raw native tuples and current public ownership.",
+    "raw_records_preserved": true,
+    "recomputed_census_matches_stored": true
+  },
+  "plays": {
+    "1": {
+      "controller_interval": {
+        "begin": 4531,
+        "begin_ns": 779965330895512,
+        "end": 3498677,
+        "end_ns": 779998966573668
+      },
+      "natural_eof": true,
+      "ledger": {
+        "status": "FAIL",
+        "ledger_status": "PASS",
+        "source_population_qualified": false,
+        "observed_submit_bindings": 690,
+        "source_metadata_pictures": 900,
+        "event_counts": {
+          "sync_enter": 698,
+          "sync_exit": 698,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 690,
+          "input_sent": 690,
+          "prefeed_sent": 690,
+          "output_dequeued": 1380,
+          "materialized": 690,
+          "binding_end": 690
+        },
+        "replay_event_counts": {
+          "input_attempt": 690,
+          "input_commit": 690,
+          "output": 1380,
+          "disposition": 1380,
+          "release": 1380
+        },
+        "errors": [
+          "require exactly900 distinct original bindings; observed690"
+        ],
+        "original_input_commits": 690,
+        "completed_replay_input_commits": 0,
+        "original_field_records": 1380,
+        "replay_field_records": 0,
+        "original_validated_pairs": 690,
+        "replay_validated_pairs": 0,
+        "materialized_originals": 690,
+        "replay_status": "NOT_EXERCISED",
+        "public_materialization_population": "ALL_ORIGINALS_OBSERVED",
+        "originals_without_public_materialization": 0,
+        "public_pixel_qualification": "NOT_ESTABLISHED_BY_THIS_CENSUS",
+        "successful_restarts": 0
+      },
+      "successful_field_releases": 1380,
+      "all_observed_output_lifetimes_complete": true,
+      "source900_shortfall": 210,
+      "packet_raw_label_correspondence": {
+        "status": "PASS_EXACT_UNIQUE_RAW_CODEC_LABEL_SUBSET_ONLY",
+        "codec_instance": 7,
+        "codec_epoch": 1,
+        "selected_format_instance": 7,
+        "selected_demux": {
+          "status": "PASS_EXACT_VIDEO_DEMUX_POPULATION",
+          "expected_video_packets": 900,
+          "expected_url": "/fixture.mp4",
+          "selected_format_instance": 7,
+          "observed_video_packets": 900,
+          "selected_stream": {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27
+          },
+          "exact_original_source_frame_mapping": false,
+          "observed_read_eof": 39,
+          "selected_stream_metadata_variants": [
+            {
+              "index": 0,
+              "id": 256,
+              "codec_type": 0,
+              "codec_id": 27,
+              "width": 1920,
+              "height": 1080,
+              "time_base": [
+                1,
+                90000
+              ],
+              "start_time": 6006,
+              "duration": -9223372036854775808
+            }
+          ]
+        },
+        "selected_codec_lifetime_wholly_inside_window": true,
+        "send_data_attempts": 901,
+        "accepted_data_sends": 900,
+        "data_send_result_histogram": {
+          "0": 900,
+          "-11": 1
+        },
+        "accepted_unique_pts_labels": 900,
+        "successful_vaapi_returns": 690,
+        "returned_unique_pts_labels": 690,
+        "returned_formats": {
+          "44": 690
+        },
+        "accepted_nopts": 0,
+        "returned_nopts": 0,
+        "all_frame_pts_equal_best_effort": true,
+        "returned_labels_subset_of_accepted": true,
+        "foreign_returned_labels": [],
+        "missing_label_count": 210,
+        "missing_raw_pts_labels_sorted": [
+          3303301,
+          3470134,
+          3570234,
+          3636967,
+          3703701,
+          3803801,
+          3870534,
+          3937267,
+          4037367,
+          4137467,
+          4270934,
+          4337667,
+          4437767,
+          4504501,
+          4571234,
+          4637967,
+          4704701,
+          4771434,
+          4838167,
+          4904901,
+          4971634,
+          5138467,
+          5238567,
+          5305301,
+          5372034,
+          5472134,
+          5538867,
+          5605601,
+          5705701,
+          5805801,
+          5939267,
+          6006001,
+          6106101,
+          6172834,
+          6239567,
+          6306301,
+          6373034,
+          6439767,
+          6506501,
+          6573234,
+          6639967,
+          6806801,
+          6906901,
+          6973634,
+          7040367,
+          7140467,
+          7207201,
+          7273934,
+          7374034,
+          7474134,
+          7607601,
+          7674334,
+          7774434,
+          7841167,
+          7907901,
+          8475134,
+          8641967,
+          8708701,
+          8875534,
+          8942267,
+          9042367,
+          9442767,
+          9642967,
+          9709700,
+          9776434,
+          9843167,
+          9909901,
+          9976634,
+          10477134,
+          10543867,
+          10610600,
+          10810801,
+          10944267,
+          11011000,
+          11111101,
+          11444767,
+          11511501,
+          11644967,
+          11811801,
+          11911900,
+          11978634,
+          12045367,
+          12145467,
+          12212200,
+          12278934,
+          12779434,
+          12912901,
+          13046367,
+          13113100,
+          13179834,
+          13313301,
+          13480134,
+          13580234,
+          13646967,
+          13713700,
+          13813801,
+          14280934,
+          14347667,
+          14514501,
+          14581234,
+          14914900,
+          14981634,
+          15148467,
+          15248567,
+          15382034,
+          15482134,
+          15548867,
+          15615601,
+          15715701,
+          16182834,
+          16249567,
+          16383034,
+          16516501,
+          16649967,
+          16816801,
+          16916901,
+          16983634,
+          17050367,
+          17150467,
+          17617601,
+          17684334,
+          17784434,
+          17917901,
+          17984634,
+          18051367,
+          18251567,
+          18318301,
+          18485134,
+          18818801,
+          19052367,
+          19152467,
+          19285934,
+          19352667,
+          19452767,
+          19519501,
+          19586234,
+          19652967,
+          19719701,
+          19786434,
+          19853167,
+          20487134,
+          20720701,
+          20820801,
+          20954267,
+          21021001,
+          21121101,
+          21187834,
+          21254567,
+          21388034,
+          21821801,
+          21921901,
+          22155467,
+          22222201,
+          22288934,
+          22389034,
+          22489134,
+          22622601,
+          22689334,
+          23123101,
+          23189834,
+          23490134,
+          23590234,
+          23656967,
+          23723701,
+          23823801,
+          23890534,
+          23957267,
+          24057367,
+          24524501,
+          24591234,
+          24791434,
+          24858167,
+          25158467,
+          25258567,
+          25325301,
+          25392034,
+          25492134,
+          25558867,
+          25625601,
+          26126101,
+          26192834,
+          26259567,
+          26393034,
+          26459767,
+          26526501,
+          26659967,
+          26826801,
+          26926901,
+          26993634,
+          27060367,
+          27494134,
+          27794434,
+          27861167,
+          27927901,
+          28061367,
+          28128101,
+          28194834,
+          28261567,
+          28328301,
+          28828801,
+          28895534,
+          28962267,
+          29362667,
+          29529501,
+          29596234,
+          29662967,
+          29729701,
+          29863167,
+          29929901,
+          29996634
+        ],
+        "missing_labels_all_entry_nonref": true,
+        "entry_skip_label_matrix": [
+          {
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "accepted_labels": 340,
+            "returned_labels": 340,
+            "absent_labels": 0
+          },
+          {
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "accepted_labels": 560,
+            "returned_labels": 350,
+            "absent_labels": 210
+          }
+        ],
+        "first_accepted_nonref_call": {
+          "seq": 1555,
+          "tid": 2144980,
+          "begin_ns": 779971639223462,
+          "end_ns": 779971639321591,
+          "raw_pts": 3303301,
+          "entry_skip_frame_idct_loop": [
+            8,
+            8,
+            8
+          ],
+          "returned": false
+        },
+        "first_absent_label_in_accepted_call_order": {
+          "seq": 1555,
+          "tid": 2144980,
+          "begin_ns": 779971639223462,
+          "end_ns": 779971639321591,
+          "raw_pts": 3303301,
+          "entry_skip_frame_idct_loop": [
+            8,
+            8,
+            8
+          ],
+          "returned": false
+        },
+        "first_nonref_equals_first_missing": true,
+        "codec_pkt_timebase_variants": [
+          "[0, 1]"
+        ],
+        "send_packet_time_base_variants": [
+          "[0, 1]"
+        ],
+        "receive_frame_time_base_variants": [
+          "[0, 1]"
+        ],
+        "send_result_histogram": {
+          "0": 901,
+          "-11": 1,
+          "-541478725": 6
+        },
+        "receive_result_histogram": {
+          "-11": 894,
+          "0": 690,
+          "-541478725": 5
+        },
+        "null_send_calls": 0,
+        "nonnull_empty_drain_attempts": 7,
+        "accepted_empty_drain": 1,
+        "codec_to_format_identity": "NOT_OBSERVED",
+        "source90k_private_offset_mapping": "NOT_ESTABLISHED",
+        "packet_to_VA_or_pixel_identity": "NOT_OBSERVED",
+        "skip_root_cause": "NOT_PROVEN_BY_RAW_LABEL_CORRESPONDENCE",
+        "sorting_scope": "Integer label ordering only; not observed presentation/decode/call order.",
+        "accepted_skip_state_transition_count": 113,
+        "first_accepted_skip_state_transitions": [
+          {
+            "accepted_send_ordinal": 1,
+            "seq": 48,
+            "tid": 2144980,
+            "begin_ns": 779965553873969,
+            "end_ns": 779966481618059,
+            "raw_pts": 66734,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 99,
+            "seq": 1555,
+            "tid": 2144980,
+            "begin_ns": 779971639223462,
+            "end_ns": 779971639321591,
+            "raw_pts": 3303301,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": false
+          },
+          {
+            "accepted_send_ordinal": 240,
+            "seq": 2783,
+            "tid": 2144980,
+            "begin_ns": 779975234033559,
+            "end_ns": 779975243470335,
+            "raw_pts": 7974634,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 253,
+            "seq": 2940,
+            "tid": 2144980,
+            "begin_ns": 779975832828824,
+            "end_ns": 779975836746881,
+            "raw_pts": 8441767,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 257,
+            "seq": 2982,
+            "tid": 2144980,
+            "begin_ns": 779975961827989,
+            "end_ns": 779975968898971,
+            "raw_pts": 8575234,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 259,
+            "seq": 3008,
+            "tid": 2144980,
+            "begin_ns": 779976039105221,
+            "end_ns": 779976055654955,
+            "raw_pts": 8675334,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": true
+          }
+        ],
+        "transition_display_scope": "First six state transitions only; all calls remain in the named raw packet ledger. This does not truncate count/matrix or first-nonref/first-absent calculations."
+      },
+      "postfilter": {
+        "graphs": [
+          1
+        ],
+        "accepted_filter_inputs": 690,
+        "filter_outputs": 1378,
+        "nominal_two_outputs": 1380,
+        "output_minus_nominal": -2,
+        "original_source_null_calls": 0,
+        "original_source_close_calls": 0,
+        "original_sink_eof": 0,
+        "prefix_references": [
+          {
+            "graph_id": 1,
+            "reference_record": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/replay2997-01/graph-1.reference.json",
+            "status": "PASS",
+            "join_status": "PASS_SAME_INPUT_PREFIX",
+            "mode": "prefix",
+            "providers": {
+              "filter": "/app/lib/libavfilter.so.12.1.102",
+              "util": "/app/lib/libavutil.so.61.1.102"
+            },
+            "constraint_basis": "PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT",
+            "comparison_scope": "SAME_INPUT_PREFIX_ACTIVE_NV12_AND_CAPTURED_METADATA",
+            "compared_outputs": 4,
+            "compared_active_bytes": 12441600,
+            "selected_inputs": 3,
+            "source_eof_injected": false,
+            "source_clock_comparison": false,
+            "original_client_eof_claim": false
+          }
+        ],
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      },
+      "unmatched_native_input_sent_or_output_dequeued_records": 0
+    },
+    "2": {
+      "controller_interval": {
+        "begin": 3498677,
+        "begin_ns": 779999640160594,
+        "end": 7031237,
+        "end_ns": 780033380937340
+      },
+      "natural_eof": true,
+      "ledger": {
+        "status": "FAIL",
+        "ledger_status": "PASS",
+        "source_population_qualified": false,
+        "observed_submit_bindings": 694,
+        "source_metadata_pictures": 900,
+        "event_counts": {
+          "sync_enter": 702,
+          "sync_exit": 702,
+          "context_destroy": 2,
+          "surface_destroy": 18,
+          "submit_bind": 694,
+          "input_sent": 694,
+          "prefeed_sent": 694,
+          "output_dequeued": 1388,
+          "materialized": 694,
+          "binding_end": 694
+        },
+        "replay_event_counts": {
+          "input_attempt": 694,
+          "input_commit": 694,
+          "output": 1388,
+          "disposition": 1388,
+          "release": 1388
+        },
+        "errors": [
+          "require exactly900 distinct original bindings; observed694"
+        ],
+        "original_input_commits": 694,
+        "completed_replay_input_commits": 0,
+        "original_field_records": 1388,
+        "replay_field_records": 0,
+        "original_validated_pairs": 694,
+        "replay_validated_pairs": 0,
+        "materialized_originals": 694,
+        "replay_status": "NOT_EXERCISED",
+        "public_materialization_population": "ALL_ORIGINALS_OBSERVED",
+        "originals_without_public_materialization": 0,
+        "public_pixel_qualification": "NOT_ESTABLISHED_BY_THIS_CENSUS",
+        "successful_restarts": 0
+      },
+      "successful_field_releases": 1388,
+      "all_observed_output_lifetimes_complete": true,
+      "source900_shortfall": 206,
+      "packet_raw_label_correspondence": {
+        "status": "PASS_EXACT_UNIQUE_RAW_CODEC_LABEL_SUBSET_ONLY",
+        "codec_instance": 13,
+        "codec_epoch": 1,
+        "selected_format_instance": 12,
+        "selected_demux": {
+          "status": "PASS_EXACT_VIDEO_DEMUX_POPULATION",
+          "expected_video_packets": 900,
+          "expected_url": "/fixture.mp4",
+          "selected_format_instance": 12,
+          "observed_video_packets": 900,
+          "selected_stream": {
+            "index": 0,
+            "id": 256,
+            "codec_type": 0,
+            "codec_id": 27
+          },
+          "exact_original_source_frame_mapping": false,
+          "observed_read_eof": 41,
+          "selected_stream_metadata_variants": [
+            {
+              "index": 0,
+              "id": 256,
+              "codec_type": 0,
+              "codec_id": 27,
+              "width": 1920,
+              "height": 1080,
+              "time_base": [
+                1,
+                90000
+              ],
+              "start_time": 6006,
+              "duration": -9223372036854775808
+            }
+          ]
+        },
+        "selected_codec_lifetime_wholly_inside_window": true,
+        "send_data_attempts": 901,
+        "accepted_data_sends": 900,
+        "data_send_result_histogram": {
+          "0": 900,
+          "-11": 1
+        },
+        "accepted_unique_pts_labels": 900,
+        "successful_vaapi_returns": 694,
+        "returned_unique_pts_labels": 694,
+        "returned_formats": {
+          "44": 694
+        },
+        "accepted_nopts": 0,
+        "returned_nopts": 0,
+        "all_frame_pts_equal_best_effort": true,
+        "returned_labels_subset_of_accepted": true,
+        "foreign_returned_labels": [],
+        "missing_label_count": 206,
+        "missing_raw_pts_labels_sorted": [
+          3236567,
+          3303301,
+          3470134,
+          3570234,
+          3636967,
+          3703701,
+          3803801,
+          3870534,
+          3937267,
+          4037367,
+          4137467,
+          4270934,
+          4337667,
+          4437767,
+          4504501,
+          4571234,
+          4637967,
+          4704701,
+          4771434,
+          4838167,
+          4904901,
+          4971634,
+          5138467,
+          5238567,
+          5305301,
+          5372034,
+          5472134,
+          5538867,
+          5605601,
+          5705701,
+          5805801,
+          5939267,
+          6006001,
+          6106101,
+          6172834,
+          6239567,
+          6306301,
+          6373034,
+          6439767,
+          6506501,
+          6573234,
+          6639967,
+          6806801,
+          6906901,
+          6973634,
+          7040367,
+          7140467,
+          7207201,
+          7273934,
+          7374034,
+          7907901,
+          8108101,
+          8174834,
+          8241567,
+          8308300,
+          8475134,
+          8575234,
+          8641967,
+          8708701,
+          8808800,
+          8875534,
+          8942267,
+          9442767,
+          9642967,
+          9709700,
+          9776434,
+          9843167,
+          10243567,
+          10477134,
+          10543867,
+          10610600,
+          10810801,
+          10944267,
+          11011000,
+          11111101,
+          11177834,
+          11244567,
+          11811801,
+          11911900,
+          12045367,
+          12145467,
+          12212200,
+          12278934,
+          12379034,
+          12479134,
+          12779434,
+          12979634,
+          13046367,
+          13246567,
+          13313301,
+          13480134,
+          13580234,
+          13646967,
+          13713700,
+          14147467,
+          14447767,
+          14514501,
+          14581234,
+          14714701,
+          14781434,
+          14848167,
+          14914900,
+          14981634,
+          15548867,
+          15615601,
+          15715701,
+          15949267,
+          16016001,
+          16116101,
+          16249567,
+          16449767,
+          16516501,
+          16816801,
+          16916901,
+          16983634,
+          17050367,
+          17150467,
+          17484134,
+          17784434,
+          17851167,
+          17917901,
+          18118101,
+          18184834,
+          18251567,
+          18318301,
+          18485134,
+          18818801,
+          19052367,
+          19152467,
+          19285934,
+          19352667,
+          19452767,
+          19519501,
+          19586234,
+          19652967,
+          19719701,
+          20153467,
+          20320301,
+          20387034,
+          20487134,
+          20553867,
+          20620601,
+          21121101,
+          21187834,
+          21254567,
+          21454767,
+          21521501,
+          21588234,
+          21654967,
+          21821801,
+          21921901,
+          21988634,
+          22055367,
+          22489134,
+          22789434,
+          22856167,
+          22922901,
+          22989634,
+          23056367,
+          23123101,
+          23189834,
+          23823801,
+          23890534,
+          23957267,
+          24157467,
+          24290934,
+          24357667,
+          24457767,
+          24791434,
+          24858167,
+          24991634,
+          25158467,
+          25258567,
+          25325301,
+          25392034,
+          25492134,
+          25558867,
+          25625601,
+          26126101,
+          26326301,
+          26393034,
+          26593234,
+          26659967,
+          26826801,
+          26926901,
+          26993634,
+          27060367,
+          27227201,
+          27293934,
+          27394034,
+          27494134,
+          27794434,
+          27994634,
+          28061367,
+          28128101,
+          28194834,
+          28328301,
+          28661967,
+          28728701,
+          29062367,
+          29295934,
+          29362667,
+          29529501,
+          29596234,
+          29662967,
+          29729701
+        ],
+        "missing_labels_all_entry_nonref": true,
+        "entry_skip_label_matrix": [
+          {
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "accepted_labels": 356,
+            "returned_labels": 356,
+            "absent_labels": 0
+          },
+          {
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "accepted_labels": 544,
+            "returned_labels": 338,
+            "absent_labels": 206
+          }
+        ],
+        "first_accepted_nonref_call": {
+          "seq": 10644,
+          "tid": 2145025,
+          "begin_ns": 780005564241101,
+          "end_ns": 780005577780040,
+          "raw_pts": 3269934,
+          "entry_skip_frame_idct_loop": [
+            8,
+            8,
+            8
+          ],
+          "returned": true
+        },
+        "first_absent_label_in_accepted_call_order": {
+          "seq": 10655,
+          "tid": 2145025,
+          "begin_ns": 780005606930859,
+          "end_ns": 780005607050431,
+          "raw_pts": 3236567,
+          "entry_skip_frame_idct_loop": [
+            8,
+            8,
+            8
+          ],
+          "returned": false
+        },
+        "first_nonref_equals_first_missing": false,
+        "codec_pkt_timebase_variants": [
+          "[0, 1]"
+        ],
+        "send_packet_time_base_variants": [
+          "[0, 1]"
+        ],
+        "receive_frame_time_base_variants": [
+          "[0, 1]"
+        ],
+        "send_result_histogram": {
+          "0": 901,
+          "-11": 1,
+          "-541478725": 6
+        },
+        "receive_result_histogram": {
+          "-11": 894,
+          "0": 694,
+          "-541478725": 5
+        },
+        "null_send_calls": 0,
+        "nonnull_empty_drain_attempts": 7,
+        "accepted_empty_drain": 1,
+        "codec_to_format_identity": "NOT_OBSERVED",
+        "source90k_private_offset_mapping": "NOT_ESTABLISHED",
+        "packet_to_VA_or_pixel_identity": "NOT_OBSERVED",
+        "skip_root_cause": "NOT_PROVEN_BY_RAW_LABEL_CORRESPONDENCE",
+        "sorting_scope": "Integer label ordering only; not observed presentation/decode/call order.",
+        "accepted_skip_state_transition_count": 119,
+        "first_accepted_skip_state_transitions": [
+          {
+            "accepted_send_ordinal": 1,
+            "seq": 9179,
+            "tid": 2145025,
+            "begin_ns": 779999856901508,
+            "end_ns": 780000757723618,
+            "raw_pts": 66734,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 97,
+            "seq": 10644,
+            "tid": 2145025,
+            "begin_ns": 780005564241101,
+            "end_ns": 780005577780040,
+            "raw_pts": 3269934,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 224,
+            "seq": 11750,
+            "tid": 2145025,
+            "begin_ns": 780008777162262,
+            "end_ns": 780008783954360,
+            "raw_pts": 7474134,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 237,
+            "seq": 11901,
+            "tid": 2145025,
+            "begin_ns": 780009336056886,
+            "end_ns": 780009336202439,
+            "raw_pts": 7907901,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": false
+          },
+          {
+            "accepted_send_ordinal": 240,
+            "seq": 11937,
+            "tid": 2145025,
+            "begin_ns": 780009440599595,
+            "end_ns": 780009444579253,
+            "raw_pts": 7974634,
+            "entry_skip_frame_idct_loop": [
+              0,
+              0,
+              0
+            ],
+            "returned": true
+          },
+          {
+            "accepted_send_ordinal": 243,
+            "seq": 11966,
+            "tid": 2145025,
+            "begin_ns": 780009592373747,
+            "end_ns": 780009597487516,
+            "raw_pts": 8141467,
+            "entry_skip_frame_idct_loop": [
+              8,
+              8,
+              8
+            ],
+            "returned": true
+          }
+        ],
+        "transition_display_scope": "First six state transitions only; all calls remain in the named raw packet ledger. This does not truncate count/matrix or first-nonref/first-absent calculations."
+      },
+      "postfilter": {
+        "graphs": [
+          4
+        ],
+        "accepted_filter_inputs": 694,
+        "filter_outputs": 1386,
+        "nominal_two_outputs": 1388,
+        "output_minus_nominal": -2,
+        "original_source_null_calls": 0,
+        "original_source_close_calls": 0,
+        "original_sink_eof": 0,
+        "prefix_references": [
+          {
+            "graph_id": 4,
+            "reference_record": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/replay2997-01/graph-4.reference.json",
+            "status": "PASS",
+            "join_status": "PASS_SAME_INPUT_PREFIX",
+            "mode": "prefix",
+            "providers": {
+              "filter": "/app/lib/libavfilter.so.12.1.102",
+              "util": "/app/lib/libavutil.so.61.1.102"
+            },
+            "constraint_basis": "PINNED_ORIGINAL_SOURCE_PLUS_ACTUAL_NV12_SINK_OUTPUT",
+            "comparison_scope": "SAME_INPUT_PREFIX_ACTIVE_NV12_AND_CAPTURED_METADATA",
+            "compared_outputs": 4,
+            "compared_active_bytes": 12441600,
+            "selected_inputs": 3,
+            "source_eof_injected": false,
+            "source_clock_comparison": false,
+            "original_client_eof_claim": false
+          }
+        ],
+        "full_output_cadence": "NOT_QUALIFIED_BY_SELECTED_PREFIX_REFERENCE"
+      },
+      "unmatched_native_input_sent_or_output_dequeued_records": 0
+    }
+  },
+  "prefix_reference": {
+    "status": "PASS_SCOPED_SAME_INPUT_ORIGINAL_PROVIDER_PREFIX",
+    "outputs": 8,
+    "active_NV12_bytes": 24883200,
+    "graphs": [
+      1,
+      4
+    ],
+    "source_eof_injected": false,
+    "scope": "Same captured NV12 inputs/pinned App BWDIF prefix only; not independent codec/scaler correctness or a full-tail golden.",
+    "clock_scope": "Raw stream/frame/graph/sink clocks remain separate; no source-seconds or physical-cadence inference."
+  },
+  "other_diagnostics": {
+    "packet": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+    "postfilter": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+    "maintained_cost": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+    "cost_footer": {
+      "type": "footer",
+      "events": 43106,
+      "attempted_events": 43106,
+      "dropped": 0,
+      "inflight": 0,
+      "unpublished": 0,
+      "clock_failures": 0,
+      "lifecycle_failures": 0,
+      "fork_seen": false,
+      "complete": true
+    },
+    "scope": "Complete observations are separate from source900 qualification, stock compatibility and release quality."
+  },
+  "cpu_regression": {
+    "scope": "Actual maintained PumpDecodeInput/ReceiveOne/ProcessDecodedOutput field paths with existing DIL/ioctl mocks; admission is explicit scaffold provenance. No hardware or external product code is used.",
+    "declared_scaffold_originals": 2,
+    "cases": {
+      "positive": {
+        "test": "PASS",
+        "ledger": "PASS",
+        "checks": "Actual busy\u2192accept, original pair, retained-prefix restart, completed replay pair, continuation and exactly-once pixels/materialization."
+      },
+      "retired-backing": {
+        "test": "PASS",
+        "ledger": "PASS",
+        "checks": "Retired raw native identity stays zero, immutable historical association and rebound/current pixels remain protected."
+      },
+      "wrong-parity": {
+        "test": "PASS_EXPECTED_REJECTION",
+        "ledger": "FAIL",
+        "checks": "Actual malformed complementary pair remains terminal and cannot satisfy replay debt."
+      },
+      "release-failure": {
+        "test": "PASS_EXPECTED_REJECTION",
+        "ledger": "FAIL",
+        "checks": "Actual failed original DIL release cannot qualify the lease or census."
+      }
+    },
+    "identical900_comparison": {
+      "source": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/path-controls-01/retired-backing",
+      "pid": 2143313,
+      "expected_originals": 900,
+      "old_census_error": "source stage has incomplete binding/sequence identity",
+      "corrected_ledger": "PASS",
+      "corrected_source": "FAIL",
+      "observed_originals": 2,
+      "source_population_qualified": false,
+      "scope": "Exactly the same retained records and900 criterion; no raw deletion, lowered physical criterion or new process is needed for the comparison."
+    }
+  },
+  "acceptance_policy": {
+    "unchanged_source_population": 900,
+    "materialized_policy": "Preserve legacy original-subset/at-most-once policy; missing public M remains visible and does not establish full pixels/public readiness. No new all-M or universal zero-loss gate.",
+    "classification_errors": "Unknown/nonreplay history, forged debt, malformed pair, terminal restart/input error or failed/missing release stays FAIL.",
+    "input_concurrency": "Logical retry/fragments may span Pump threads; commit matches the final successful attempt. Only actual BC_BUSY2 is retryable.",
+    "physical_replay_limit": "NOT_EXERCISED in both actual plays; no rerun to seek desired events. Separate retained actual OWN CPU positive/retired/rejection path controls cover replay decisions; they are not physical/stock evidence."
+  },
+  "validation": {
+    "ordinary_va_build": "PASS",
+    "combined_private_backend_build": "PASS",
+    "collector_controls": 17,
+    "reader_controls": 40,
+    "controller_cases": 44,
+    "existing_optional_controller_skips": 1,
+    "native_trace_records_checked": 85,
+    "actual_own_cpu_path_cases": 4,
+    "combined_make_entrypoint": "PASS",
+    "producer_independent_review": "PASS",
+    "reader_independent_review": "PASS",
+    "actual_independent_review": "PASS_SCOPED_ACTUAL_REPLAY_OBSERVER_REVIEW_SOURCE_FAIL_REPLAY_NOT_EXERCISED",
+    "documentation_independent_review": "PASS"
+  },
+  "retirement": {
+    "same_pid": 2144863,
+    "natural_ends": 2,
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "retirements": 2,
+    "selected_payload_audits": [
+      "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD",
+      "PASS_SCOPED_OWN_CENTERED_NV12_PAYLOAD"
+    ],
+    "full_original_boundary_equal": true,
+    "runtime_leaves_verified": 36,
+    "original_module": "3.10.13",
+    "maximum_temperature_C": 67,
+    "live_resource_handoff": null
+  },
+  "retained_cost_direction_analysis": {
+    "source_revision": "8cdbc62092372aa4b18244a3aea9555d8ccb6e51",
+    "original_case_status": "FAIL",
+    "scope": "Exact materialized-key compatible execution lineage; direct CPU access scopes grouped by recorded parent chain and original DMA direction. No nested or cross-thread budget sums, pure-wait interpretation, source identity or causal effect claim.",
+    "plays": {
+      "1": {
+        "materialized_keys": 689,
+        "groups": [
+          {
+            "actual_parent_chain": "canvas_compose > direct_public",
+            "direction": 1,
+            "events": 689,
+            "metrics": {
+              "wall_ns": {
+                "count": 689,
+                "p50_ns": 4400,
+                "p95_ns": 4820,
+                "max_ns": 518097
+              },
+              "cpu_ns": {
+                "count": 689,
+                "p50_ns": 1674,
+                "p95_ns": 1905,
+                "max_ns": 23707
+              }
+            },
+            "raw_results": {
+              "1": 689
+            }
+          },
+          {
+            "actual_parent_chain": "decoded_cpu_end > canvas_compose",
+            "direction": 2,
+            "events": 689,
+            "metrics": {
+              "wall_ns": {
+                "count": 689,
+                "p50_ns": 2347709,
+                "p95_ns": 5854045,
+                "max_ns": 9567676
+              },
+              "cpu_ns": {
+                "count": 689,
+                "p50_ns": 1970809,
+                "p95_ns": 3317968,
+                "max_ns": 4025132
+              }
+            },
+            "raw_results": {
+              "1": 689
+            }
+          },
+          {
+            "actual_parent_chain": "decoded_cpu_end > field_convert",
+            "direction": 2,
+            "events": 689,
+            "metrics": {
+              "wall_ns": {
+                "count": 689,
+                "p50_ns": 4540,
+                "p95_ns": 5308,
+                "max_ns": 497912
+              },
+              "cpu_ns": {
+                "count": 689,
+                "p50_ns": 1930,
+                "p95_ns": 2372,
+                "max_ns": 30375
+              }
+            },
+            "raw_results": {
+              "1": 689
+            }
+          }
+        ]
+      },
+      "2": {
+        "materialized_keys": 681,
+        "groups": [
+          {
+            "actual_parent_chain": "canvas_compose > direct_public",
+            "direction": 1,
+            "events": 681,
+            "metrics": {
+              "wall_ns": {
+                "count": 681,
+                "p50_ns": 4400,
+                "p95_ns": 4889,
+                "max_ns": 699340
+              },
+              "cpu_ns": {
+                "count": 681,
+                "p50_ns": 1674,
+                "p95_ns": 1965,
+                "max_ns": 22231
+              }
+            },
+            "raw_results": {
+              "1": 681
+            }
+          },
+          {
+            "actual_parent_chain": "decoded_cpu_end > canvas_compose",
+            "direction": 2,
+            "events": 681,
+            "metrics": {
+              "wall_ns": {
+                "count": 681,
+                "p50_ns": 2323264,
+                "p95_ns": 5295089,
+                "max_ns": 10399229
+              },
+              "cpu_ns": {
+                "count": 681,
+                "p50_ns": 1927913,
+                "p95_ns": 3144522,
+                "max_ns": 4005699
+              }
+            },
+            "raw_results": {
+              "1": 681
+            }
+          },
+          {
+            "actual_parent_chain": "decoded_cpu_end > field_convert",
+            "direction": 2,
+            "events": 681,
+            "metrics": {
+              "wall_ns": {
+                "count": 681,
+                "p50_ns": 4540,
+                "p95_ns": 5169,
+                "max_ns": 1302016
+              },
+              "cpu_ns": {
+                "count": 681,
+                "p50_ns": 1910,
+                "p95_ns": 2306,
+                "max_ns": 26748
+              }
+            },
+            "raw_results": {
+              "1": 681
+            }
+          }
+        ]
+      }
+    },
+    "independent_review": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/direction-independent-review.json",
+    "conclusion": "Canvas destination WRITE-END is the larger recorded CPU-access-end method (median1.971/1.928ms CPU). This is retained8c evidence, not fresh42 runtime timing, an individual ioctl/cache mechanism, NONREF cause or measured speedup."
+  },
+  "preserved_failures": [
+    {
+      "path": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/cpu-build.log",
+      "status": "FAIL",
+      "scope": "Initial included OWN fixture triggers GCC subobject-linkage warning; one diagnostic is scoped only around unchanged single-TU fixture inclusion, full warnings remain for product/newcode."
+    },
+    {
+      "path": "tests/fixtures/issue477/maintained-cost-20261104.json",
+      "status": "FAIL",
+      "scope": "Old8c actual689/681 case and controls,10reinputs/20fields/four retired tuples remain unchanged. No new private receipt is retrofitted."
+    },
+    {
+      "path": "tests/fixtures/issue477/packet-admission-20261104.json",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "scope": "Earlier677/684 source/raw-label identity and its first-NONREF ordering remain their own case."
+    },
+    {
+      "path": "tests/fixtures/issue477/bwdif-postfilter-20261104.json",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "scope": "Earlier687/690 and initial695/legacy fork/census failures and reference-only flush remain scoped."
+    },
+    {
+      "path": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/replay2997-01/result.json",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "scope": "Fresh690/694 source900 FAIL is not a product/performance repair or complete-source PASS."
+    }
+  ],
+  "evidence": {
+    "root": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104",
+    "frozen_plan": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/replay2997-01.plan.json",
+    "case_result": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/replay2997-01/result.json",
+    "actual_analysis": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/actual-census-analysis.json",
+    "actual_independent_review": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/actual-independent-review.json",
+    "collector_artifacts": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/collector-control-artifacts",
+    "cpu_path_artifacts": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/path-controls-01",
+    "same900_regression": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/legacy-vs-new-900.json",
+    "retained_raw_labels": "/home/mache/.cache/crystalhd-replay-disposition-run-20261104/source-population-review.json"
+  },
+  "next_work": [
+    "Investigate the maintained latency/processing contribution to normal NONREF selection through a discriminating OWN-only comparison; the measured canvas WRITE-END site is a candidate, not a cause verdict.",
+    "Physical completed replay remains NOT_EXERCISED until a naturally occurring event in another justified case; do not repeat merely to obtain it.",
+    "Full-source/tail cadence, unselected pixels, actual media/source/payload/VA identity, GPU return, broader geometry/lifetime and endurance remain in their owning issues."
+  ],
+  "limits": [
+    "Original result and all raw ledgers remain unchanged; old untagged FAILs are not upgraded.",
+    "Scoped diagnostic ledger PASS does not change the overall SOURCE_QUALIFICATION_FAIL or expected900 originals.",
+    "Raw codec accepted-PTS and returned-PTS exact unique-label subsets are not source90k/private-offset, packet-to-frame, VA, surface or pixel identity proofs.",
+    "Entry NONREF correlation does not establish per-packet skip mechanism, reference marking, external bug, CPU/latency cause or harmlessness.",
+    "Observed accepted codec sends/VAAPI returns/native counts are separate populations; matching counts are aggregate correspondence only.",
+    "Fresh original-provider BWDIF reference checks only first4 outputs per graph against the same captured3-input prefix; no injected EOF, source-clock/full-cadence/scaler/stock-release claim.",
+    "Existing 8cdbc62 689/681 with replay, earlier677/684 and687/690 remain distinct historical cases.",
+    "All missing current raw returned-PTS labels correspond to accepted NONREF entries, not an observed per-NAL skip decision or packet-to-VA/pixel identity. DEFAULT entries all return. No exact ordering before each VA submission or CPU cause follows.",
+    "Physical replay0 is not a reproduction/fix of the prior physical retired-replay incident. Separate actual OWN CPU function-path controls establish the implemented classification behavior.",
+    "690/694 versus previous689/681 or677/684 is not a measured performance improvement.",
+    "No external application/dependency, decoder lease/pixel/replay behavior, scheduling/discard policy, installed runtime/module/firmware or immutable1.3 release payload is changed."
+  ]
+}
