@@ -266,10 +266,15 @@ python3 -B tests/vaapi-centered-payload-stock.py --execute \
   --case-root /absolute/existing-case-parent --case bwdif2997-new
 ```
 
-For a separate packet-admission investigation, explicitly build
-`packet-admission-observer` with the same `FFMPEG63_INCLUDE` and run
-`check-packet-admission-observer`. Add `--observe-packets` to **preparation
-only**; execution reads the frozen boolean from its new plan. It composes the
+For a separate packet-admission investigation, build its explicit artifacts:
+
+```sh
+make -C filters/vaapi packet-admission-observer FFMPEG63_INCLUDE=/absolute/original/include
+make -C filters/vaapi check-packet-admission-observer
+```
+
+Add `--observe-packets` to **preparation only**, with fresh plan/case paths;
+execution reads the frozen boolean from its new plan. It composes the
 metadata probe with the post-filter observer in a single preload value and
 verifies both probes and the unchanged original format63/codec63/util61 images
 at each held identity. Ordinary Off and BWDIF plans leave this mode disabled.
@@ -278,11 +283,15 @@ The [packet observation protocol](vaapi-packet-admission-protocol.md) separates
 public demux reads, accepted codec sends, retries, entry skip state, successful
 frame returns and original drain/EOF. Select the source by its observed public
 open URL and stream metadata; never select a population because its count is
-near 900. Discovery and empty/NULL packets remain separate. Packet, frame,
+near 900. The TS playback format may legitimately omit find_stream_info;
+`info_complete:false` does not exclude its outer reads. Nested discovery calls
+and empty/NULL packets remain separate. Packet, frame,
 context and source clocks are raw distinct domains; this does not observe
 private Kodi start offsets or a packet-to-VA binding. Aggregate counts under a
-skip policy do not identify every discarded packet or its underlying latency
-cause. The exact 900-original and native ownership requirements remain intact.
+skip policy alone do not identify every discarded packet or its underlying
+latency cause. A separate exact raw-label set comparison may establish label/state
+correspondence inside a codec/epoch without supplying payload or source identity.
+The exact 900-original and native ownership requirements remain intact.
 
 The ordinary build/install/package does not include these artifacts. The
 [observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded
@@ -310,8 +319,57 @@ codec/scaler correctness, physical presentation, normal-backend compatibility
 or release qualification. The system codec62/filter11 input census and native
 field-weave reference cannot substitute for this original-App filter12 replay.
 
-The [2026-11-04 receipt](fixtures/issue477/bwdif-postfilter-20261104.json)
-records the actual distinction:
+### Current packet-admission observation
+
+The [packet2997-01 receipt](fixtures/issue477/packet-admission-20261104.json)
+records two same-PID natural EOFs with the metadata probe enabled:
+
+| Selected public stage | First natural play | Reopen natural play |
+| --- | --- | --- |
+| H264/video outer demux returns | 900 | 900 |
+| Codec data send attempts / accepted | 901 / 900 | 900 / 900 |
+| Successful VAAPI frame returns | 677 | 684 |
+| Native submit/input/materialized originals; accepted BWDIF inputs | 677 | 684 |
+| Native field dequeue records | 1,354 | 1,368 |
+| Successful filter outputs before graph free | 1,352 | 1,366 |
+| Nonnull empty-drain attempts / accepted at codec | 9 / 1 | 7 / 1 |
+| Codec receive EOF returns | 7 | 5 |
+| Post-filter source NULL/close; sink EOF | 0; 0 | 0; 0 |
+
+One data send returns EAGAIN in the first play before the observed 900 accepted
+data sends. Codec drain is an actual nonnull data-NULL/size0 packet, with one
+accepted per play; no NULL send is observed. This codec-level EOF does not
+supply EOF to the separate BWDIF graph. NONREF skip_frame/skip_idct/
+skip_loop_filter entry states are observed. The read-only raw-label review
+finds 900 unique accepted nonempty-packet PTS values in each selected codec/epoch;
+all successful frame PTS equal best-effort and form exact subsets of those values.
+The skip-state partition is:
+
+| Accepted-call entry state | Play 1: labels / returned / absent | Play 2: labels / returned / absent |
+| --- | --- | --- |
+| DEFAULT `0/0/0` | 332 / 332 / 0 | 330 / 330 / 0 |
+| NONREF `8/8/8` | 568 / 345 / 223 | 570 / 354 / 216 |
+
+In observed accepted-call order, each play's first absent label belongs to the
+first accepted NONREF call.
+This is exact integer-label/state correspondence in the selected codec/epoch,
+with EAGAIN attempts and empty drain excluded; it is not an observed demux-to-
+codec payload identity or packet-to-VA binding. Packet/frame/codec timebases
+remain `0/1`. Private start offsets, source90k conversion, source/pixel identity
+and the underlying CPU/latency cause of selecting the skip policy remain unproved.
+
+The 900-native-original criterion still fails (677/684 observed), so the
+controller retains `OBSERVED_SOURCE_QUALIFICATION_FAIL` and exit1 despite
+scoped packet/post-filter observation and selected-prefix reference PASS.
+The application exits0 after both natural EOFs, kernel checking succeeds,
+no handoff remains and maximum temperature is67C. Those facts do not turn the
+223/216-native deficit, full-tail cadence or stock/release support into PASS.
+
+### Retained post-filter-only observation
+
+The earlier [bwdif2997-02 receipt](fixtures/issue477/bwdif-postfilter-20261104.json)
+keeps its original populations:
+
 
 | Measured stage | First natural play | Reopen natural play |
 | --- | --- | --- |
