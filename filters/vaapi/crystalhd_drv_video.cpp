@@ -250,6 +250,7 @@ static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
 
 constexpr unsigned int kMaxWidth = 1920;
 constexpr unsigned int kMaxHeight = 1088;
+constexpr size_t kMaxRetiredSnapshotBytes = size_t{kMaxWidth} * kMaxHeight * 4U;
 constexpr uint64_t kTimestampStep = 100000;
 constexpr char kSwSyncPath[] = "/sys/kernel/debug/sync/sw_sync";
 
@@ -2968,6 +2969,9 @@ struct Driver {
   std::unordered_map<VAContextID, std::shared_ptr<DecodeContext>> contexts;
   std::unordered_map<VABufferID, Buffer> buffers;
   std::unordered_map<VAImageID, Image> images;
+  // One retired independent image byte store, never a Buffer, surface or lease.
+  // Only a complete same-sized DeriveImage snapshot may consume these bytes.
+  std::vector<uint8_t> retired_snapshot_bytes;
   std::unordered_map<BackingIdentity, VASurfaceID, BackingIdentityHash>
       backing_owners;
   std::deque<PendingVpp> pending_vpp;
@@ -11183,7 +11187,8 @@ static VAStatus QueryImageFormats(VADriverContextP, VAImageFormat *formats,
 }
 
 static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
-                                  int width, int height, VAImage *va_image) {
+                                  int width, int height, VAImage *va_image,
+                                  bool full_derived_snapshot = false) {
   if ((format.fourcc != VA_FOURCC_NV12 && format.fourcc != VA_FOURCC_BGRA) ||
       width <= 0 || height <= 0 ||
       static_cast<unsigned int>(width) > kMaxWidth ||
@@ -11219,7 +11224,14 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
   image.va.offsets[1] = bgra ? 0 : uv_offset;
   bool buffer_created = false;
   try {
-    buffer.data.resize(buffer.elements);
+    if (full_derived_snapshot &&
+        driver->retired_snapshot_bytes.size() == buffer.elements &&
+        driver->retired_snapshot_bytes.capacity() <= kMaxRetiredSnapshotBytes) {
+      buffer.data.swap(driver->retired_snapshot_bytes);
+    } else {
+      // Public CreateImage and cache misses retain zero-initialized storage.
+      buffer.data.resize(buffer.elements);
+    }
     if (!driver->buffers.emplace(buffer_id, std::move(buffer)).second)
       return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
     buffer_created = true;
@@ -11259,6 +11271,20 @@ static VAStatus DestroyImage(VADriverContextP context, VAImageID image_id) {
   if (buffer != driver->buffers.end() &&
       (BufferBorrowed(buffer->second) || buffer->second.map_count != 0))
     return VA_STATUS_ERROR_SURFACE_BUSY;
+  if (buffer != driver->buffers.end() &&
+      buffer->second.derived_image != VA_INVALID_ID &&
+      buffer->second.derived_image == image_id &&
+      buffer->second.context == VA_INVALID_ID &&
+      buffer->second.type == VAImageBufferType &&
+      !buffer->second.derived_write_active && !buffer->second.data_failed &&
+      buffer->second.data.size() == image->second.va.data_size &&
+      !buffer->second.data.empty() &&
+      buffer->second.data.capacity() <= kMaxRetiredSnapshotBytes) {
+    // The guards above exclude every mapped/exported borrower. Erasing the
+    // Buffer below still releases all cold-writeback/source metadata. Swap
+    // replaces (and then frees) any older spare, bounding the cache to one.
+    driver->retired_snapshot_bytes.swap(buffer->second.data);
+  }
   driver->buffers.erase(image->second.va.buf);
   driver->images.erase(image);
   return VA_STATUS_SUCCESS;
@@ -11456,8 +11482,12 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   const VAImageFormat format = ImageFormatFor(surface->second->fourcc);
   VAImage snapshot = {};
+  // These tight layouts are overwritten completely before publication:
+  // BGRA width*4 bytes per row; NV12 width Y bytes and Align(width,2) UV bytes
+  // for ceil(height/2) rows, including odd final columns/rows. No pitch gap or
+  // old image bytes are exposed, and failure erases the unpublished snapshot.
   VAStatus status = CreateImageLocked(driver, format, surface->second->width,
-                                      surface->second->height, &snapshot);
+                                      surface->second->height, &snapshot, true);
   if (status != VA_STATUS_SUCCESS)
     return status;
   status = CopySurfaceToImage(driver, surface->second.get(),

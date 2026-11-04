@@ -23,8 +23,15 @@ thread_local bool failed_nothrow = false, raw_deleted = false;
 thread_local unsigned fail_on = 0, attempts = 0;
 thread_local size_t raw_bytes = 0, failed_bytes = 0;
 thread_local void *raw_object = nullptr;
+thread_local size_t snapshot_fail_bytes = 0;
+thread_local bool snapshot_pixel_failure = false;
 
 void *Allocate(size_t bytes, bool nothrow) {
+  if (snapshot_fail_bytes != 0 && bytes == snapshot_fail_bytes) {
+    snapshot_fail_bytes = 0;
+    snapshot_pixel_failure = true;
+    throw std::bad_alloc();
+  }
   if (observing && (raw_seen || nothrow || observe_any)) {
     if (!raw_seen) {
       raw_seen = true;
@@ -705,6 +712,294 @@ static void DeriveFailureRollback() {
   }
 }
 
+static std::shared_ptr<Surface> SnapshotPicture(Fixture &f, unsigned width,
+                                               unsigned height, uint32_t fourcc) {
+  auto picture = std::make_shared<Surface>();
+  if (fourcc == VA_FOURCC_BGRA) {
+    // Isolated padded CPU source for the public snapshot-copy oracle only.
+    // Production AllocateInternal deliberately requires GBM for BGRA; this
+    // existing mock's GBM export store supports R8, not an ARGB source BO.
+    picture->width = width;
+    picture->height = height;
+    picture->fourcc = fourcc;
+    picture->pitch[0] = Align(width * 4U, 64);
+    picture->storage.resize(static_cast<size_t>(picture->pitch[0]) * height + 32U);
+    picture->planes[0] = picture->storage.data() + 16U;
+  } else {
+    Require(picture->AllocateInternal(nullptr, -1, width, height, fourcc),
+            "allocate independent odd/padded NV12 snapshot source");
+  }
+  picture->id = 1;
+  picture->ready = true;
+  picture->expected_timestamp = picture->frame_timestamp = kTimestampStep;
+  f.driver->surfaces[1] = picture;
+  return picture;
+}
+
+static std::vector<uint8_t> SnapshotPattern(Surface &picture, uint8_t seed) {
+  std::fill(picture.storage.begin(), picture.storage.end(), 0xe7);
+  std::vector<uint8_t> packed;
+  for (unsigned plane = 0; plane != (picture.fourcc == VA_FOURCC_BGRA ? 1U : 2U); ++plane) {
+    const unsigned rows = plane == 0 ? picture.height : (picture.height + 1U) / 2U;
+    const unsigned columns = picture.fourcc == VA_FOURCC_BGRA ? picture.width * 4U :
+        plane == 0 ? picture.width : (picture.width + 1U) & ~1U;
+    for (unsigned row = 0; row != rows; ++row)
+      for (unsigned column = 0; column != columns; ++column) {
+        const uint8_t value = static_cast<uint8_t>(seed + plane * 67U + row * 31U + column * 13U);
+        picture.planes[plane][row * picture.pitch[plane] + column] = value;
+        packed.push_back(value);
+      }
+  }
+  return packed;
+}
+
+static VAStatus DeriveWithPixelAllocationFault(Fixture &f, size_t bytes,
+                                               VAImage *image, bool *hit) {
+  using namespace acquire_allocation_fault;
+  snapshot_pixel_failure = false;
+  snapshot_fail_bytes = bytes;
+  try {
+    const VAStatus status = f.table.vaDeriveImage(&f.context, 1, image);
+    *hit = snapshot_pixel_failure;
+    snapshot_fail_bytes = 0;
+    return status;
+  } catch (...) {
+    snapshot_fail_bytes = 0;
+    throw;
+  }
+}
+
+static void SnapshotCacheFullOverwriteAndGenericZero() {
+  for (uint32_t fourcc : {uint32_t(VA_FOURCC_NV12), uint32_t(VA_FOURCC_BGRA)}) {
+    Fixture f;
+    auto picture = SnapshotPicture(f, 17, 9, fourcc);
+    auto expected = SnapshotPattern(*picture, 7);
+    VAImage first = {};
+    Require(f.table.vaDeriveImage(&f.context, 1, &first) == VA_STATUS_SUCCESS &&
+                f.driver->buffers.at(first.buf).data == expected,
+            "odd NV12 UV pair/final row or BGRA snapshot contains every tightly packed source byte");
+    std::fill(f.driver->buffers.at(first.buf).data.begin(),
+              f.driver->buffers.at(first.buf).data.end(), 0xa5);
+    Require(f.table.vaDestroyImage(&f.context, first.image_id) == VA_STATUS_SUCCESS,
+            "only the explicitly retired snapshot becomes reusable");
+    VAImageFormat format = ImageFormatFor(fourcc);
+    VAImage generic = {};
+    Require(f.table.vaCreateImage(&f.context, &format, 17, 9, &generic) == VA_STATUS_SUCCESS &&
+                std::all_of(f.driver->buffers.at(generic.buf).data.begin(),
+                            f.driver->buffers.at(generic.buf).data.end(),
+                            [](uint8_t value) { return value == 0; }),
+            "generic CreateImage still returns zero bytes despite a same-sized dirty retired snapshot");
+    Require(f.table.vaDestroyImage(&f.context, generic.image_id) == VA_STATUS_SUCCESS,
+            "generic image destruction cannot replace the snapshot spare");
+    expected = SnapshotPattern(*picture, 91);
+    VAImage next = {};
+    bool allocated = false;
+    Require(DeriveWithPixelAllocationFault(f, expected.size(), &next, &allocated) == VA_STATUS_SUCCESS &&
+                !allocated && next.data_size == expected.size() &&
+                f.driver->buffers.at(next.buf).data == expected,
+            "retired snapshot reuses its allocation and overwrites all old bytes before publication");
+    const auto retained = f.driver->buffers.at(next.buf).data;
+    SnapshotPattern(*picture, 177);
+    Require(f.table.vaDestroySurfaces(&f.context, &picture->id, 1) == VA_STATUS_SUCCESS,
+            "snapshot source can retire independently");
+    picture.reset();
+    void *mapped = nullptr;
+    Require(f.table.vaMapBuffer(&f.context, next.buf, &mapped) == VA_STATUS_SUCCESS &&
+                !std::memcmp(mapped, retained.data(), retained.size()) &&
+                f.table.vaUnmapBuffer(&f.context, next.buf) == VA_STATUS_SUCCESS &&
+                f.table.vaDestroyImage(&f.context, next.image_id) == VA_STATUS_SUCCESS,
+            "retained snapshot pixels and map lifetime survive source mutation and destruction");
+  }
+}
+
+static void SnapshotCacheSingleSpareAndSizeMismatch() {
+  Fixture f;
+  auto picture = SnapshotPicture(f, 17, 9, VA_FOURCC_NV12);
+  const auto original = SnapshotPattern(*picture, 11);
+  VAImage retained = {}, spare = {};
+  Require(f.table.vaDeriveImage(&f.context, 1, &retained) == VA_STATUS_SUCCESS &&
+              f.table.vaDeriveImage(&f.context, 1, &spare) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, spare.image_id) == VA_STATUS_SUCCESS,
+          "one live snapshot remains independent while another retires");
+  auto other = SnapshotPicture(f, 18, 10, VA_FOURCC_NV12);
+  const auto different = SnapshotPattern(*other, 33);
+  VAImage miss = {}; miss.image_id = VA_INVALID_ID;
+  bool allocated = false;
+  Require(DeriveWithPixelAllocationFault(f, different.size(), &miss, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+              allocated && miss.image_id == VA_INVALID_ID &&
+              f.driver->buffers.at(retained.buf).data == original,
+          "size mismatch takes the fresh allocation path and OOM preserves the retained snapshot");
+  f.driver->surfaces[1] = picture;
+  VAImage hit = {};
+  Require(DeriveWithPixelAllocationFault(f, original.size(), &hit, &allocated) == VA_STATUS_SUCCESS && !allocated,
+          "a size-mismatch failure did not consume the older exact-sized spare");
+  VAImage no_second_spare = {}; no_second_spare.image_id = VA_INVALID_ID;
+  Require(DeriveWithPixelAllocationFault(f, original.size(), &no_second_spare, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated &&
+              f.driver->buffers.at(retained.buf).data == original &&
+              f.driver->buffers.at(hit.buf).data == original,
+          "the cache contains only one spare and never borrows either still-live snapshot");
+  Require(f.table.vaDestroyImage(&f.context, retained.image_id) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, hit.image_id) == VA_STATUS_SUCCESS,
+          "retiring two snapshots safely replaces rather than accumulates spares");
+}
+
+static void SnapshotCacheBorrowAndCapacityGuards() {
+  Fixture f;
+  auto picture = SnapshotPicture(f, 17, 9, VA_FOURCC_NV12);
+  const auto pixels = SnapshotPattern(*picture, 29);
+  VAImage image = {};
+  Require(f.table.vaDeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS, "derive before live-borrow guards");
+  void *mapped = nullptr;
+  Require(f.table.vaMapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "mapped snapshot cannot retire into the cache");
+  VAImage blocked = {}; bool allocated = false;
+  Require(DeriveWithPixelAllocationFault(f, pixels.size(), &blocked, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated,
+          "a live CPU mapping cannot be reused for another snapshot");
+  Require(f.table.vaUnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS, "close snapshot CPU borrow");
+  VABufferInfo info = {};
+  Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "exported snapshot cannot retire into the cache");
+  Require(DeriveWithPixelAllocationFault(f, pixels.size(), &blocked, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated &&
+              f.Release(image.buf) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+          "active external backing is never reused; only completed release permits retirement");
+  VAImage reused = {};
+  Require(DeriveWithPixelAllocationFault(f, pixels.size(), &reused, &allocated) == VA_STATUS_SUCCESS && !allocated,
+          "a completely released image can recycle its independent bytes");
+  const unsigned cap = kMaxWidth * kMaxHeight * 4U;
+  Require(f.table.vaBufferSetNumElements(&f.context, reused.buf, cap + 1U) == VA_STATUS_SUCCESS &&
+              f.table.vaBufferSetNumElements(&f.context, reused.buf, reused.data_size) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, reused.image_id) == VA_STATUS_SUCCESS,
+          "a public resize can leave excessive capacity even after restoring logical size");
+  Require(DeriveWithPixelAllocationFault(f, pixels.size(), &blocked, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated,
+          "over-capacity retired storage is freed rather than retained in the bounded cache");
+}
+
+static void SnapshotCacheAllocationRollback() {
+  Fixture f;
+  auto picture = SnapshotPicture(f, 17, 9, VA_FOURCC_NV12);
+  const auto pixels = SnapshotPattern(*picture, 41);
+  VAImage retained = {}, spare = {};
+  Require(f.table.vaDeriveImage(&f.context, 1, &retained) == VA_STATUS_SUCCESS &&
+              f.table.vaDeriveImage(&f.context, 1, &spare) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, spare.image_id) == VA_STATUS_SUCCESS,
+          "seed a retired allocation beside a still-live snapshot before registry OOM");
+  const auto next_image = f.driver->next_image, next_buffer = f.driver->next_buffer;
+  using namespace acquire_allocation_fault;
+  observing = observe_any = true;
+  raw_seen = injected = failed_nothrow = raw_deleted = false;
+  raw_object = nullptr; raw_bytes = failed_bytes = attempts = 0; fail_on = 1;
+  VAImage failed = {}; failed.image_id = VA_INVALID_ID;
+  VAStatus status;
+  try { status = f.table.vaDeriveImage(&f.context, 1, &failed); }
+  catch (...) { observing = observe_any = false; fail_on = 0; throw; }
+  observing = observe_any = false; fail_on = 0;
+  Require(injected && status == VA_STATUS_ERROR_ALLOCATION_FAILED && failed.image_id == VA_INVALID_ID &&
+              f.driver->next_image == next_image && f.driver->next_buffer == next_buffer &&
+              f.driver->images.size() == 1 && f.driver->buffers.size() == 1 &&
+              f.driver->buffers.at(retained.buf).data == pixels,
+          "cache-hit registry allocation failure rolls back unpublished IDs and preserves every live snapshot");
+  Require(f.table.vaDeriveImage(&f.context, 1, &failed) == VA_STATUS_SUCCESS &&
+              f.driver->buffers.at(failed.buf).data == pixels,
+          "ordinary snapshot creation recovers after cache-hit allocation failure");
+}
+
+static void SnapshotCacheColdWritebackAndSourceLifetime() {
+  Fixture f;
+  auto old = f.Picture(); old->id = 1;
+  std::weak_ptr<Surface> old_lifetime = old;
+  VAImage first = {};
+  Require(f.table.vaDeriveImage(&f.context, 1, &first) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroyImage(&f.context, first.image_id) == VA_STATUS_SUCCESS &&
+              f.table.vaDestroySurfaces(&f.context, &old->id, 1) == VA_STATUS_SUCCESS,
+          "retire a cold derived snapshot and its source before reusing only bytes");
+  old.reset();
+  Require(old_lifetime.expired(), "the spare retains no old source or backing-owner reference");
+  auto picture = f.Picture(); picture->id = 1;
+  VAImage reused = {}; bool allocated = false;
+  Require(DeriveWithPixelAllocationFault(f, first.data_size, &reused, &allocated) == VA_STATUS_SUCCESS && !allocated &&
+              f.driver->buffers.at(reused.buf).derived_source == picture &&
+              f.driver->buffers.at(reused.buf).derived_owner == picture,
+          "reused bytes acquire only the new cold source's writeback metadata");
+  void *pixels = nullptr;
+  Require(f.table.vaMapBuffer(&f.context, reused.buf, &pixels) == VA_STATUS_SUCCESS &&
+              picture->image_write_locked && picture->vpp_writers == 1 &&
+              f.driver->buffers.at(reused.buf).derived_write_active &&
+              f.table.vaDestroyImage(&f.context, reused.image_id) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "actual cold write mapping still excludes retirement and holds the source lease");
+  memset(pixels, 0x36, reused.data_size);
+  Require(f.table.vaUnmapBuffer(&f.context, reused.buf) == VA_STATUS_SUCCESS &&
+              picture->ready && !picture->image_write_locked && picture->vpp_writers == 0 &&
+              picture->planes[0][0] == 0x36 && picture->planes[1][0] == 0x36 &&
+              f.table.vaDestroyImage(&f.context, reused.image_id) == VA_STATUS_SUCCESS,
+          "cold writeback commits new bytes and retires its lease before recycling");
+}
+
+static void SnapshotCacheReadFailureDoesNotRecycle() {
+  for (uint64_t flags : {uint64_t(DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ),
+                         uint64_t(DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)}) {
+    Fixture f;
+    auto picture = f.Picture();
+    picture->id = 1;
+    VAImage spare = {};
+    Require(f.table.vaDeriveImage(&f.context, 1, &spare) == VA_STATUS_SUCCESS &&
+                f.table.vaDestroyImage(&f.context, spare.image_id) == VA_STATUS_SUCCESS,
+            "seed spare before an actual source read failure");
+    io.fail_sync = flags;
+    VAImage failed = {}; failed.image_id = VA_INVALID_ID;
+    bool allocated = false;
+    Require(DeriveWithPixelAllocationFault(f, spare.data_size, &failed, &allocated) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                !allocated && failed.image_id == VA_INVALID_ID && f.driver->images.empty() && f.driver->buffers.empty(),
+            "failed START/END read erases the unpublished cached snapshot without publishing stale bytes");
+    io.fail_sync = UINT64_MAX;
+    Require(DeriveWithPixelAllocationFault(f, spare.data_size, &failed, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated,
+            "failed snapshot bytes are not recycled as another valid spare");
+  }
+}
+
+static void SnapshotCacheInvalidRetirementMisses() {
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    Fixture f;
+    auto picture = SnapshotPicture(f, 17, 9, VA_FOURCC_NV12);
+    const auto pixels = SnapshotPattern(*picture, 53);
+    VAImage image = {};
+    Require(f.table.vaDeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS,
+            "derive before public resize/destroy or export-failure retirement");
+    if (mode == 0) {
+      Require(f.table.vaBufferSetNumElements(&f.context, image.buf, image.data_size + 1U) == VA_STATUS_SUCCESS,
+              "public buffer resize changes the original snapshot byte extent");
+    } else if (mode == 1) {
+      Require(f.table.vaDestroyBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS,
+              "public buffer destruction leaves no allocation for the parent to recycle");
+    } else {
+      VABufferInfo info = {};
+      Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS,
+              "borrow snapshot before a real external-return failure");
+      io.fail_poll = true;
+      Require(f.Release(image.buf) != VA_STATUS_SUCCESS && f.driver->buffers.at(image.buf).data_failed,
+              "failed external return poisons its original snapshot bytes");
+      io.fail_poll = false;
+    }
+    Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "invalid or absent snapshot storage remains destroyable");
+    VAImage miss = {}; bool allocated = false;
+    Require(DeriveWithPixelAllocationFault(f, pixels.size(), &miss, &allocated) == VA_STATUS_ERROR_ALLOCATION_FAILED && allocated,
+            "resized, separately destroyed and failed bytes cannot become a reusable snapshot spare");
+  }
+}
+
+static void SnapshotCacheContracts() {
+  SnapshotCacheFullOverwriteAndGenericZero();
+  SnapshotCacheSingleSpareAndSizeMismatch();
+  SnapshotCacheBorrowAndCapacityGuards();
+  SnapshotCacheAllocationRollback();
+  SnapshotCacheColdWritebackAndSourceLifetime();
+  SnapshotCacheReadFailureDoesNotRecycle();
+  SnapshotCacheInvalidRetirementMisses();
+}
+
 static void TerminateInvalidatesBorrow() {
   int fd = -1;
   {
@@ -882,6 +1177,12 @@ static void ExportLayouts() {
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--snapshot-cache") == 0) {
+    try { SnapshotCacheContracts(); }
+    catch (const std::exception &error) { Check(false, error.what()); }
+    std::printf("VAAPI snapshot cache: %s (%u failed checks)\n", failures ? "FAIL" : "PASS", failures);
+    return failures ? 1 : 0;
+  }
   if (argc == 3 && std::strcmp(argv[1], "--release-allocation") == 0) {
     if (std::strcmp(argv[2], "image") != 0 && std::strcmp(argv[2], "derived") != 0)
       return 2;
@@ -902,14 +1203,14 @@ int main(int argc, char **argv) {
     return failures ? 1 : 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "usage: %s [--acquire-allocation raw|control | --release-allocation image|derived]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s [--snapshot-cache | --acquire-allocation raw|control | --release-allocation image|derived]\n", argv[0]);
     return 2;
   }
   for (auto test : {Registration, ExportLayouts, BorrowRoundTrip, InvalidAndMapped,
                     SnapshotIsolation, ColdDerivedHandleWriteThrough,
                     AcquireAllocationFailures, ReleaseAllocationFailures,
                     AcquireRollback, ReleaseFailureInvalidates,
-                    DeriveFailureRollback, TerminateInvalidatesBorrow,
+                    DeriveFailureRollback, SnapshotCacheContracts, TerminateInvalidatesBorrow,
                     ReleaseWaitRehash, PendingReadIdentity}) {
     try { test(); }
     catch (const std::exception &error) { Check(false, error.what()); }
