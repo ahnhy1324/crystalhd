@@ -7533,16 +7533,16 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
   {
     MockNativeNodeScope scope(mock);
     auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
-    auto decoder = std::make_shared<DecodeContext>();
-    decoder->id = 53; decoder->width = 256; decoder->height = 32;
+    auto readback_decoder = std::make_shared<DecodeContext>();
+    readback_decoder->id = 53; readback_decoder->width = 256; readback_decoder->height = 32;
     crystalhd_centered_output::Config config;
     Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
-                crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder->centered_geometry),
+                crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &readback_decoder->centered_geometry),
             "freeze exact Centered geometry for the CPU/GPU provenance transition");
-    fixture.driver.contexts[53] = decoder;
+    fixture.driver.contexts[53] = readback_decoder;
     auto picture = std::make_shared<Surface>();
     picture->id = 41; picture->width = 256; picture->height = 32;
-    picture->centered_geometry = decoder->centered_geometry;
+    picture->centered_geometry = readback_decoder->centered_geometry;
     picture->centered_pixels = std::make_shared<Surface>();
     Require(picture->centered_pixels->AllocateCpuNv12(128, 16),
             "allocate the exact private immutable small picture");
