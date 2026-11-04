@@ -4307,10 +4307,14 @@ static bool CopyH264InterlacedToSurface(
   }
   if (mirror && !mirror_active)
     mirror->centered_mirror = {};
+  // The admitted write window pins this backing and layout. Snapshot pitches
+  // once, then form each public row address outside its column loop.
+  const size_t mirror_y_pitch = mirror_active ? mirror->pitch[0] : 0;
+  const size_t mirror_uv_pitch = mirror_active ? mirror->pitch[1] : 0;
   uint8_t *mirror_y = mirror_active ? mirror->planes[0] +
-      size_t{mirror_geometry->y} * mirror->pitch[0] + mirror_geometry->x : nullptr;
+      size_t{mirror_geometry->y} * mirror_y_pitch + mirror_geometry->x : nullptr;
   uint8_t *mirror_uv = mirror_active ? mirror->planes[1] +
-      size_t{mirror_geometry->y / 2U} * mirror->pitch[1] + mirror_geometry->x : nullptr;
+      size_t{mirror_geometry->y / 2U} * mirror_uv_pitch + mirror_geometry->x : nullptr;
   CH_COST_SCOPE_FLAGS(cost_pixels, FieldConvertPixels, crystalhd_test_maintained_cost::SurfaceIdentity(surface),
                       (compact_field ? 1U : 0U), field_mask);
   if (IsBgraStorageFormat(surface->fourcc)) {
@@ -4407,6 +4411,12 @@ static bool CopyH264InterlacedToSurface(
           static_cast<size_t>(second_y) * surface->pitch[0];
       uint8_t *chroma = surface->planes[1] +
           static_cast<size_t>(uv_row) * surface->pitch[1];
+      uint8_t *const mirror_first_luma = mirror_active
+          ? mirror_y + size_t{first_y} * mirror_y_pitch : nullptr;
+      uint8_t *const mirror_second_luma = mirror_active
+          ? mirror_y + size_t{second_y} * mirror_y_pitch : nullptr;
+      uint8_t *const mirror_chroma = mirror_active
+          ? mirror_uv + size_t{uv_row} * mirror_uv_pitch : nullptr;
       unsigned int column = 0;
       for (; width - column >= 16; column += 16) {
         const __m128i first0 = _mm_loadu_si128(
@@ -4428,12 +4438,9 @@ static bool CopyH264InterlacedToSurface(
         _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
         _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
         if (mirror_active) {
-          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
-              size_t{first_y} * mirror->pitch[0] + column), y0);
-          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
-              size_t{second_y} * mirror->pitch[0] + column), y1);
-          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_uv +
-              size_t{uv_row} * mirror->pitch[1] + column), uv);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_first_luma + column), y0);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_second_luma + column), y1);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_chroma + column), uv);
         }
       }
       for (; column + 1U < width; column += 2U) {
@@ -4449,12 +4456,9 @@ static bool CopyH264InterlacedToSurface(
         second_luma[column] = y10; second_luma[column + 1U] = y11;
         chroma[column] = c0; chroma[column + 1U] = c1;
         if (mirror_active) {
-          uint8_t *my0 = mirror_y + size_t{first_y} * mirror->pitch[0];
-          uint8_t *my1 = mirror_y + size_t{second_y} * mirror->pitch[0];
-          uint8_t *muv = mirror_uv + size_t{uv_row} * mirror->pitch[1];
-          my0[column] = y00; my0[column + 1U] = y01;
-          my1[column] = y10; my1[column + 1U] = y11;
-          muv[column] = c0; muv[column + 1U] = c1;
+          mirror_first_luma[column] = y00; mirror_first_luma[column + 1U] = y01;
+          mirror_second_luma[column] = y10; mirror_second_luma[column + 1U] = y11;
+          mirror_chroma[column] = c0; mirror_chroma[column + 1U] = c1;
         }
       }
     }
@@ -4480,6 +4484,8 @@ static bool CopyH264InterlacedToSurface(
           static_cast<size_t>(source_row) * field_pitch;
       uint8_t *destination = surface->planes[0] +
           static_cast<size_t>(destination_row) * surface->pitch[0];
+      uint8_t *const mirror_destination = mirror_active
+          ? mirror_y + size_t{destination_row} * mirror_y_pitch : nullptr;
       unsigned int column = 0;
 #if defined(__SSE2__)
       for (; width - column >= 16; column += 16) {
@@ -4491,16 +4497,14 @@ static bool CopyH264InterlacedToSurface(
                                           _mm_and_si128(packed1, luma_mask));
         _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), y);
         if (mirror_active)
-          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
-              size_t{destination_row} * mirror->pitch[0] + column), y);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_destination + column), y);
       }
 #endif
       for (; column + 1 < width; column += 2) {
         const uint8_t y0 = source[column * 2], y1 = source[column * 2 + 2];
         destination[column] = y0; destination[column + 1] = y1;
         if (mirror_active) {
-          uint8_t *my = mirror_y + size_t{destination_row} * mirror->pitch[0];
-          my[column] = y0; my[column + 1U] = y1;
+          mirror_destination[column] = y0; mirror_destination[column + 1U] = y1;
         }
       }
     }
@@ -4521,6 +4525,8 @@ static bool CopyH264InterlacedToSurface(
       const uint8_t *second_row = first_row + field_pitch;
       uint8_t *destination = surface->planes[1] +
           static_cast<size_t>(destination_row) * surface->pitch[1];
+      uint8_t *const mirror_destination = mirror_active
+          ? mirror_uv + size_t{destination_row} * mirror_uv_pitch : nullptr;
       unsigned int column = 0;
 #if defined(__SSE2__)
       for (; width - column >= 16; column += 16) {
@@ -4537,8 +4543,7 @@ static bool CopyH264InterlacedToSurface(
             _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8));
         _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), uv);
         if (mirror_active)
-          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_uv +
-              size_t{destination_row} * mirror->pitch[1] + column), uv);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_destination + column), uv);
       }
 #endif
       for (; column + 1 < width; column += 2) {
@@ -4552,8 +4557,7 @@ static bool CopyH264InterlacedToSurface(
             2U);
         destination[column] = c0; destination[column + 1] = c1;
         if (mirror_active) {
-          uint8_t *muv = mirror_uv + size_t{destination_row} * mirror->pitch[1];
-          muv[column] = c0; muv[column + 1U] = c1;
+          mirror_destination[column] = c0; mirror_destination[column + 1U] = c1;
         }
       }
     }
