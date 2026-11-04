@@ -58,18 +58,21 @@ support scopes are not additional promotion gates. Nonblocking research continue
 
 ### Next centered/BWDIF case
 
-The retained short 29.97 fps input has 900 H.264 access units/video packets; its
-existing packet preflight is not a full decoded-frame vector. Preserve a
-separate short-input packet/frame metadata record, add an original method 7 /
-actual `bwdif` EOF/reopen preset, and observe post-filter pixels/cadence before
-claiming that output. The existing receive-frame probe observes decoder
-returns, not BWDIF outputs.
-
-Do not adopt the long `uniform-180.ts` / 9,000-picture `preparation.json` as the
-short `uniform-18.ts` manifest. Native 1,800 field-dequeue records, 900 AVCodec
-returns and 1,800 BWDIF outputs are different stages. The retained field-weave
-reference is not a software BWDIF-output reference; unrelated 720-line source references
-cannot substitute. See [#477's preparation record](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6606058827).
+The [reviewed short-input software metadata](https://github.com/ahnhy1324/crystalhd/issues/477)
+is complete for retained `uniform-18.ts`: 900 video packets and 900 decoded
+TFF/no-repeat frames, with full vectors and current-host cache provenance in
+that issue's current record. At stream timebase `1/90000`, decoded PTS advances
+by 3003 ticks; post-decode coded `1920x1088` and visible `1920x1080` remain
+separate from the earlier stream-only 1080 and packet-only preflight.
+This used system codec62/filter11, not original Kodi codec63/filter12, and
+proves no BWDIF output or hardware acceptance: 900 decoder pictures, 1,800
+native field dequeues and nominal 1,800 BWDIF outputs are separate stages.
+Next code remains unimplemented: an original method 7 / actual `bwdif`
+EOF/reopen preset plus OWN post-filter observation and a valid matching
+software reference; the current receive-frame probe observes decoder returns only.
+The long `uniform-180.ts` / 9,000-picture `preparation.json` is not the short
+manifest, and neither the native field-weave reference nor unrelated 720-line
+references are a software BWDIF-output reference ([retained preparation detail](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6606058827)).
 
 <a id="completed-integration-baseline--2026-11-02"></a>
 <a id="completed-milestones-and-remaining-acceptance"></a>
