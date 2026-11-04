@@ -47,8 +47,8 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | Order | Owner | Remaining work and existing boundary |
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
-| 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 method7/post-filter preparation below, which is not yet implemented. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Add the separate 29.97 fps/method 7 original-Kodi case and post-filter observation/reference. Off VA observations and progressive CPU-copy controls are complete within their private diagnostic scopes. Broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain separate. |
+| 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 source-population and EOF attribution below after the completed bounded method7 observation. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [method7 observer/reference](tests/fixtures/issue477/bwdif-postfilter-20261104.json) and two natural EOFs are complete within diagnostic scope; whole-source qualification remains FAIL (687/690 submitted of 900). Next attribute the pre-VA packet/decoder skip boundary without assuming decoder-drop log rows explain the exact deficit. Full-population/tail cadence, broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Compare sized versus fixed allocation with 16/8 buffers on the current BCM70015 with paced input, then required native-planar, PM and format-change cases. Output-aware allocation is implemented. Preserve the conservative default and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -56,23 +56,41 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | 8, parallel research | [#92 capabilities](https://github.com/ahnhy1324/crystalhd/issues/92), [#204 picture ownership](https://github.com/ahnhy1324/crystalhd/issues/204) | Establish a coherent firmware-owned acquire/hold/publish/complete/release boundary. Standalone scaler/CSC/DNR and hardware deinterlacing follow that contract; headers or host-register guesses are not proof. |
 | Follow-up queue | [#91 application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91), [#510 reliability](https://github.com/ahnhy1324/crystalhd/issues/510), [#445 VA compatibility](https://github.com/ahnhy1324/crystalhd/issues/445) | HTTP(S), network seek/recovery, broader streams/frontends and specific remaining reliability contracts. MPEG-2 RFF/telecine, field-coded/progressive-first transitions, additional MPEG-4 syntax and unsupported VPP transformations keep their own acceptance limits. Add narrower CI lanes only when a concrete change needs them. |
 
-### Next centered/BWDIF case
+<a id="next-centered-bwdif-case"></a>
 
-The [reviewed short-input software metadata](https://github.com/ahnhy1324/crystalhd/issues/477)
-is complete for retained `uniform-18.ts`: 900 video packets and 900 decoded
-TFF/no-repeat frames, with full vectors and current-host cache provenance in
-that issue's current record. At stream timebase `1/90000`, decoded PTS advances
-by 3003 ticks; post-decode coded `1920x1088` and visible `1920x1080` remain
-separate from the earlier stream-only 1080 and packet-only preflight.
-This used system codec62/filter11, not original Kodi codec63/filter12, and
-proves no BWDIF output or hardware acceptance: 900 decoder pictures, 1,800
-native field dequeues and nominal 1,800 BWDIF outputs are separate stages.
-Next code remains unimplemented: an original method 7 / actual `bwdif`
-EOF/reopen preset plus OWN post-filter observation and a valid matching
-software reference; the current receive-frame probe observes decoder returns only.
-The long `uniform-180.ts` / 9,000-picture `preparation.json` is not the short
-manifest, and neither the native field-weave reference nor unrelated 720-line
-references are a software BWDIF-output reference ([retained preparation detail](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6606058827)).
+### Centered/BWDIF observation and next attribution
+
+The [bounded method7 case](tests/fixtures/issue477/bwdif-postfilter-20261104.json)
+is implemented and observed with original Kodi28ea/App filter12/util61,
+private OWN observers and two natural EOFs in one PID. Each play's first four
+post-filter NV12 outputs match a same-input original-App reference in active
+pixels and raw metadata: eight outputs, 24,883,200 bytes total. This is selected
+prefix evidence, not a full-source or release PASS.
+
+| Stage | Play 1 | Play 2 |
+| --- | --- | --- |
+| Reviewed short source (packets/software TFF frames) | 900 | 900 |
+| VA submit/input/materialized originals; accepted filter inputs | 687 | 690 |
+| Native field dequeues (balanced two per submitted original) | 1,374 | 1,380 |
+| Positive post-filter outputs before graph free | 1,372 | 1,378 |
+| Observed source NULL/close and sink EOF calls | 0 | 0 |
+
+The final case is `OBSERVED_SOURCE_QUALIFICATION_FAIL` and exits nonzero;
+the 900-original criterion is unchanged. Original-App graph teardown without
+source EOF and the two-output shortfall relative to accepted inputs are a scoped
+EOF-boundary finding. A separate three-input reference-only flush produces six
+outputs instead of the unflushed prefix's four; it never supplies EOF to Kodi.
+The initial case01 legacy fork-gate/first-play census-abort FAIL is preserved.
+
+Next distinguish packet admission, decoder skip state and the pre-VA boundary
+for the missing 213/210 originals. Approximate decoder-drop log rows do not
+establish that exact attribution. Keep this separate from the measured
+post-filter tail and full-population/cadence/pixel qualification. The retained
+[`uniform-18.ts` census](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6606058827) uses system codec62/filter11: 900 decoded TFF/no-repeat
+frames, source timebase `1/90000` and 3003-tick spacing, coded `1920x1088` versus
+visible `1920x1080`. It cannot supply original-App frame/sink seconds or replace
+filter12 evidence. The long `uniform-180.ts` / 9,000-picture preparation, native field-weave and
+unrelated 720-line references remain different inputs/scopes.
 
 <a id="completed-integration-baseline--2026-11-02"></a>
 <a id="completed-milestones-and-remaining-acceptance"></a>
@@ -89,6 +107,7 @@ references are a software BWDIF-output reference ([retained preparation detail](
 | Centered Off and seek targets | [Off EOF/reopen](tests/fixtures/issue477/centered-off-20261103.json), [initial controls](tests/fixtures/issue477/centered-controls-20261103.json) and [fresh seek-target 90/91 NV12](tests/fixtures/issue477/centered-seek-target-20261103.json). The initial case retains zero seek-target samples; later samples do not relabel it. |
 | Actual returned raw PTS | [#647 receipt](tests/fixtures/issue477/centered-frame-pts-20261103.json): 212 frame/binding joins and four source 90/91 targets, with the two original controller FAILs preserved and separate corrected offline reanalysis. Both declared time bases are unset; source-clock comparison remains unobserved. |
 | Progressive Off CPU-copy | [#648 receipt](tests/fixtures/issue477/centered-cpu-copy-20261103.json): 211 raw-frame joins (31 interrupted + 180 natural), four pre-copy NV12 targets and downstream BGRA 12→90; original per-play selection/SSE4 provider, Stop/reopen and normal retirement. The earlier flush-oracle FAIL remains unchanged. This is not all post-copy YUV or BWDIF/GPU/release qualification. |
+| Method7/BWDIF diagnostic implementation | [Bounded observation/reference](tests/fixtures/issue477/bwdif-postfilter-20261104.json): separate transparent observer/reader, same-input filter12 reference and two original-App natural EOFs are complete; selected prefixes match. Original case01 FAIL and case02 whole-source `OBSERVED_SOURCE_QUALIFICATION_FAIL` remain failures, not release or lossless-cadence qualification. |
 | Field-window handoff | [#530 receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): shared response deadline and checked geometry/ancestry/completion; scoped actual reopen and retained NV12 regressions. Broader field-GPU work stays in the queue. |
 | Xv latest-frame/timing | [Current-card comparison](tests/fixtures/issue513/latest-card-abba-20261103.json), [timing receipt](tests/fixtures/issue513/xv-timing-20261103.json) and the [natural FHD50 load point](tests/fixtures/issue513/natural-fhd-20261104.json). FIFO/latest each complete 750 decoded originals/1,500 rendered fields, natural EOS and clean resources; no source is queued/replaced and no pending residence is observed. The module13/runtime36/kernel boundary is preserved without installation or module changes. This bounded negative result leaves representative congestion and benefit unproved; FIFO stays default. Local request/ACK observations do not measure server/GPU/scanout latency. |
 | Native source range/association | [POC0](tests/fixtures/issue538/poc0-multislice-range-20261102.json), [POC2](tests/fixtures/issue538/progressive-multislice-range-20261102.json) and [same-size range staging](tests/fixtures/issue538/same-size-range-staging-20261102.json) retain their exact source/pixel/PTS/ownership scopes and earlier failures. |
