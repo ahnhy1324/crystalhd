@@ -3,6 +3,8 @@
 // Public feed/drain and retained-tail ownership follow tests/vaapi-seek.cpp.
 // There is no presentation clock, renderer or caller drop feedback. Optional
 // BWDIF compares an unflushed prefix with an explicitly reference-only EOF.
+// The ABI-compatible SDK is rpi-ffmpeg12cc; the supplied App declares canonical
+// FFmpeg9.0.2 plus its vendor patches. Numeric ABI does not identify that source.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -19,6 +21,7 @@ extern "C" {
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/mem.h>
 #include <libavutil/opt.h>
 #include <libavutil/version.h>
 }
@@ -40,6 +43,7 @@ extern "C" {
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,7 +51,7 @@ extern "C" {
     LIBAVFORMAT_VERSION_INT != AV_VERSION_INT(63, 1, 102) || \
     LIBAVUTIL_VERSION_INT != AV_VERSION_INT(61, 1, 102) || \
     LIBAVFILTER_VERSION_INT != AV_VERSION_INT(12, 1, 102)
-#error "Use unchanged original 12cc codec63/format63/util61/filter12 public headers"
+#error "Use the audited codec63/format63/util61/filter12 public-header ABI"
 #endif
 
 namespace {
@@ -65,7 +69,7 @@ volatile sig_atomic_t stopped = 0;
 uint64_t deadline = 0;
 
 #define DECL(name) static decltype(&name) fn_##name = nullptr
-DECL(avformat_version); DECL(avcodec_version); DECL(avutil_version);
+DECL(avformat_version); DECL(avcodec_version); DECL(avutil_version); DECL(av_version_info);
 DECL(avformat_alloc_context); DECL(avformat_open_input);
 DECL(avformat_find_stream_info); DECL(av_find_best_stream);
 DECL(av_read_frame); DECL(avformat_close_input);
@@ -76,8 +80,9 @@ DECL(av_packet_unref); DECL(av_frame_alloc); DECL(av_frame_free);
 DECL(av_frame_clone); DECL(av_frame_unref); DECL(av_hwdevice_ctx_create);
 DECL(av_hwframe_transfer_data); DECL(av_image_get_buffer_size); DECL(av_strerror);
 DECL(av_frame_copy_props); DECL(av_frame_get_buffer); DECL(av_rescale_q);
-DECL(av_strdup); DECL(av_opt_set_array);
-DECL(avfilter_version); DECL(avfilter_get_by_name); DECL(avfilter_graph_alloc);
+DECL(av_strdup); DECL(av_free); DECL(av_opt_set_array);
+DECL(avfilter_version); DECL(avfilter_configuration); DECL(avfilter_graph_dump);
+DECL(avfilter_get_by_name); DECL(avfilter_graph_alloc);
 DECL(avfilter_graph_free); DECL(avfilter_graph_create_filter); DECL(avfilter_graph_alloc_filter);
 DECL(avfilter_init_str); DECL(avfilter_inout_alloc); DECL(avfilter_inout_free);
 DECL(avfilter_graph_parse_ptr); DECL(avfilter_graph_config);
@@ -108,13 +113,44 @@ void CheckStop() {
 void Require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
 }
-struct Metric { uint64_t calls = 0, wall_ns = 0, main_cpu_ns = 0; };
+struct Usage {
+  uint64_t user_us = 0, system_us = 0, minor_faults = 0, major_faults = 0;
+};
+Usage ResourceUsage(decltype(RUSAGE_SELF) who) {
+  rusage value{};
+  if (getrusage(who, &value) != 0)
+    throw std::runtime_error("getrusage failed");
+  const auto microseconds = [](const timeval& t) {
+    Require(t.tv_sec >= 0 && t.tv_usec >= 0 && t.tv_usec < 1000000,
+            "invalid getrusage CPU value");
+    return static_cast<uint64_t>(t.tv_sec) * 1000000ULL + static_cast<uint64_t>(t.tv_usec);
+  };
+  Require(value.ru_minflt >= 0 && value.ru_majflt >= 0, "invalid getrusage fault counters");
+  return {microseconds(value.ru_utime), microseconds(value.ru_stime),
+          static_cast<uint64_t>(value.ru_minflt), static_cast<uint64_t>(value.ru_majflt)};
+}
+Usage UsageDelta(const Usage& after, const Usage& before) {
+  Require(after.user_us >= before.user_us && after.system_us >= before.system_us &&
+          after.minor_faults >= before.minor_faults && after.major_faults >= before.major_faults,
+          "getrusage cumulative counters regressed");
+  return {after.user_us - before.user_us, after.system_us - before.system_us,
+          after.minor_faults - before.minor_faults, after.major_faults - before.major_faults};
+}
+struct Metric {
+  uint64_t calls = 0, wall_ns = 0, main_cpu_ns = 0;
+  Usage thread_usage;
+};
 template<typename Call> auto Measure(Metric& metric, Call call) -> decltype(call()) {
+  const Usage usage = ResourceUsage(RUSAGE_THREAD);
   const uint64_t wall = Clock(CLOCK_MONOTONIC), cpu = Clock(CLOCK_THREAD_CPUTIME_ID);
   const auto result = call();
   const uint64_t end_cpu = Clock(CLOCK_THREAD_CPUTIME_ID), end_wall = Clock(CLOCK_MONOTONIC);
+  const Usage end_usage = ResourceUsage(RUSAGE_THREAD);
   Require(end_cpu >= cpu && end_wall >= wall, "per-clock call timing regressed");
+  const Usage delta = UsageDelta(end_usage, usage);
   ++metric.calls; metric.wall_ns += end_wall - wall; metric.main_cpu_ns += end_cpu - cpu;
+  metric.thread_usage.user_us += delta.user_us; metric.thread_usage.system_us += delta.system_us;
+  metric.thread_usage.minor_faults += delta.minor_faults; metric.thread_usage.major_faults += delta.major_faults;
   // Independent clocks are retained raw; no CPU<=wall clamp or inference.
   return result;
 }
@@ -178,12 +214,12 @@ void Providers(Report& report, bool bwdif) {
   void* format = Library(kFormat);
   void* va = Library(kVa);
 #define UTIL(name) LOAD(util, name, "LIBAVUTIL_61", kUtil)
-  UTIL(avutil_version); UTIL(av_frame_alloc); UTIL(av_frame_free);
+  UTIL(avutil_version); UTIL(av_version_info); UTIL(av_frame_alloc); UTIL(av_frame_free);
   UTIL(av_frame_clone); UTIL(av_frame_unref); UTIL(av_hwdevice_ctx_create);
   UTIL(av_hwframe_transfer_data); UTIL(av_image_get_buffer_size); UTIL(av_strerror);
   UTIL(av_frame_copy_props);
   if (bwdif) {
-    UTIL(av_frame_get_buffer); UTIL(av_rescale_q); UTIL(av_strdup); UTIL(av_opt_set_array);
+    UTIL(av_frame_get_buffer); UTIL(av_rescale_q); UTIL(av_strdup); UTIL(av_free); UTIL(av_opt_set_array);
   }
 #undef UTIL
 #define CODEC(name) LOAD(codec, name, "LIBAVCODEC_63", kCodec)
@@ -200,7 +236,8 @@ void Providers(Report& report, bool bwdif) {
   if (bwdif) {
     void* filter = Library(kFilter);
 #define FILTER(name) LOAD(filter, name, "LIBAVFILTER_12", kFilter)
-    FILTER(avfilter_version); FILTER(avfilter_get_by_name); FILTER(avfilter_graph_alloc);
+    FILTER(avfilter_version); FILTER(avfilter_configuration); FILTER(avfilter_graph_dump);
+    FILTER(avfilter_get_by_name); FILTER(avfilter_graph_alloc);
     FILTER(avfilter_graph_free); FILTER(avfilter_graph_create_filter); FILTER(avfilter_graph_alloc_filter);
     FILTER(avfilter_init_str); FILTER(avfilter_inout_alloc); FILTER(avfilter_inout_free);
     FILTER(avfilter_graph_parse_ptr); FILTER(avfilter_graph_config);
@@ -220,6 +257,14 @@ void Providers(Report& report, bool bwdif) {
              "\"format_version\":%u,\"codec_version\":%u,\"util_version\":%u}",
              Quote(kFormat).c_str(), Quote(kCodec).c_str(), Quote(kUtil).c_str(),
              Quote(va_path).c_str(), AV(avformat_version)(), AV(avcodec_version)(), AV(avutil_version)());
+  const char* version = AV(av_version_info)();
+  const char* configuration = bwdif ? AV(avfilter_configuration)() : nullptr;
+  Require(version && (!bwdif || configuration), "original provider build metadata absent");
+  report.Row("{\"type\":\"build_metadata\",\"version_info\":%s,\"configuration\":%s,"
+             "\"filter_loaded\":%s,\"documented_sdk_source\":\"jc-kynesim/rpi-ffmpeg@12cc1f42f06ff0e85633c2602c96786fbd280b70\","
+             "\"sdk_is_original_app_build_source\":false}",
+             Quote(version).c_str(), configuration ? Quote(configuration).c_str() : "null",
+             bwdif ? "true" : "false");
 }
 #undef LOAD
 
@@ -363,6 +408,11 @@ struct Probe {
                "\"stock_private_metadata_equivalence\":false}",
                Quote(args).c_str(), graph->nb_threads, graph->thread_type,
                tb.num, tb.den, rate.num, rate.den);
+    std::unique_ptr<char, decltype(AV(av_free))> dump(
+        AV(avfilter_graph_dump)(graph, nullptr), AV(av_free));
+    Require(dump != nullptr, "record actual original-provider graph");
+    report.Row("{\"type\":\"effective_graph\",\"scope\":\"OWN_GRAPH_CONFIGURATION_BEFORE_FIRST_FILTER_INPUT\","
+               "\"dump\":%s,\"stock_private_graph_dump\":false}", Quote(dump.get()).c_str());
   }
   void PullFilter(bool after_close) {
     for (unsigned turn = 0; turn != 16; ++turn) {
@@ -628,13 +678,38 @@ struct Probe {
   }
   void MetricRow(const char* name, const Metric& metric) {
     report.Row("{\"type\":\"call_metric\",\"operation\":%s,\"calls\":%llu,\"wall_ns\":%llu,"
-               "\"calling_thread_cpu_ns\":%llu,\"scope\":\"INCLUSIVE_CALL_INTERVAL_NOT_PURE_COMPONENT_CPU\"}",
+               "\"calling_thread_cpu_ns\":%llu,\"scope\":\"INCLUSIVE_CALL_INTERVAL_NOT_PURE_COMPONENT_CPU\","
+               "\"rusage_thread\":{\"user_cpu_us\":%llu,\"system_cpu_us\":%llu,"
+               "\"minor_faults\":%llu,\"major_faults\":%llu}}",
                Quote(name).c_str(), static_cast<unsigned long long>(metric.calls),
                static_cast<unsigned long long>(metric.wall_ns),
-               static_cast<unsigned long long>(metric.main_cpu_ns));
+               static_cast<unsigned long long>(metric.main_cpu_ns),
+               static_cast<unsigned long long>(metric.thread_usage.user_us),
+               static_cast<unsigned long long>(metric.thread_usage.system_us),
+               static_cast<unsigned long long>(metric.thread_usage.minor_faults),
+               static_cast<unsigned long long>(metric.thread_usage.major_faults));
+  }
+  void UsageRow(const char* who, const Usage& before, const Usage& after) {
+    const Usage delta = UsageDelta(after, before);
+    report.Row("{\"type\":\"resource_usage\",\"who\":%s,"
+               "\"window\":\"BEFORE_PROVIDERS_TO_AFTER_CLIENT_CLEANUP\","
+               "\"start\":{\"user_cpu_us\":%llu,\"system_cpu_us\":%llu,\"minor_faults\":%llu,\"major_faults\":%llu},"
+               "\"end\":{\"user_cpu_us\":%llu,\"system_cpu_us\":%llu,\"minor_faults\":%llu,\"major_faults\":%llu},"
+               "\"delta\":{\"user_cpu_us\":%llu,\"system_cpu_us\":%llu,\"minor_faults\":%llu,\"major_faults\":%llu}}",
+               Quote(who).c_str(),
+               static_cast<unsigned long long>(before.user_us), static_cast<unsigned long long>(before.system_us),
+               static_cast<unsigned long long>(before.minor_faults), static_cast<unsigned long long>(before.major_faults),
+               static_cast<unsigned long long>(after.user_us), static_cast<unsigned long long>(after.system_us),
+               static_cast<unsigned long long>(after.minor_faults), static_cast<unsigned long long>(after.major_faults),
+               static_cast<unsigned long long>(delta.user_us), static_cast<unsigned long long>(delta.system_us),
+               static_cast<unsigned long long>(delta.minor_faults), static_cast<unsigned long long>(delta.major_faults));
   }
   void Counts(const char* status, const std::string& error, uint64_t wall, uint64_t cpu,
-              uint64_t process_cpu) {
+              uint64_t process_cpu, const Usage& process_usage_start, const Usage& main_usage_start) {
+    const Usage main_usage_end = ResourceUsage(RUSAGE_THREAD);
+    const Usage process_usage_end = ResourceUsage(RUSAGE_SELF);
+    UsageRow("RUSAGE_SELF", process_usage_start, process_usage_end);
+    UsageRow("RUSAGE_THREAD", main_usage_start, main_usage_end);
     MetricRow("send", send_metric); MetricRow("receive", receive_metric);
     MetricRow("va_sync", sync_metric); MetricRow("download", download_metric);
     MetricRow("filter_add", filter_add_metric); MetricRow("filter_sink", filter_sink_metric);
@@ -651,7 +726,7 @@ struct Probe {
                "\"bwdif_reference_flushed_outputs\":%u,\"bwdif_reference_source_eof_injected\":%s,"
                "\"bwdif_reference_sink_eof\":%s,\"bwdif_unique_input_labels\":%zu,"
                "\"stock_realtime_qualification\":false,\"bwdif_tail_qualification\":false,"
-               "\"independent_pixel_golden\":false}",
+               "\"independent_pixel_golden\":false,\"resource_usage_recorded\":true}",
                Quote(status).c_str(), Quote(error).c_str(), static_cast<long>(getpid()), kExpected,
                reads, video_reads, attempts, accepted, returned, completed,
                accepted_labels.size(), returned_labels.size(),
@@ -680,6 +755,8 @@ int main(int argc, char** argv) {
             "install normal cleanup signal handlers");
     const uint64_t start = Clock(CLOCK_MONOTONIC), cpu = Clock(CLOCK_THREAD_CPUTIME_ID);
     const uint64_t process_cpu = Clock(CLOCK_PROCESS_CPUTIME_ID);
+    const Usage process_usage_start = ResourceUsage(RUSAGE_SELF);
+    const Usage main_usage_start = ResourceUsage(RUSAGE_THREAD);
     deadline = start + kDeadlineNs;
     report.Row("{\"type\":\"header\",\"schema\":\"crystalhd-original-decode900-v1\","
                "\"pid\":%ld,\"input\":%s,\"device\":%s,\"expected\":%u,\"lookahead\":%u,"
@@ -696,12 +773,14 @@ int main(int argc, char** argv) {
       probe.Run();
       probe.Close();
       probe.Counts("PASS_DIAGNOSTIC_900_ORIGINALS", "", Clock(CLOCK_MONOTONIC) - start,
-                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu);
+                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu,
+                   process_usage_start, main_usage_start);
       return 0;
     } catch (const std::exception& error) {
       probe.Close();
       probe.Counts(stopped ? "CANCELLED" : "FAIL", error.what(), Clock(CLOCK_MONOTONIC) - start,
-                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu);
+                   Clock(CLOCK_THREAD_CPUTIME_ID) - cpu, Clock(CLOCK_PROCESS_CPUTIME_ID) - process_cpu,
+                   process_usage_start, main_usage_start);
       std::fprintf(stderr, "OWN no-clock decode900: %s\n", error.what());
       return stopped ? 128 + static_cast<int>(stopped) : 1;
     }

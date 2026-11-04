@@ -34,8 +34,9 @@ At most 4,096 demux packets and 900 selected frames are accepted. JSONL metadata
 is streamed to a fresh mode0600 file; no 900-frame pixel collection is retained.
 
 Only the root executor builds/runs this during the serialized hardware task.
-Build the isolated binary outside the source worktree, against the unchanged
-12cc public headers used by the existing post-filter reference:
+Build the isolated binary outside the source worktree, against the audited
+public-header ABI also used by the existing post-filter reference. The SDK
+comes from unchanged `jc-kynesim/rpi-ffmpeg@12cc1f42`, not the App's build source:
 
 ```sh
 SDK=/home/mache/.cache/crystalhd-v13-distribution-20261102/prefix-a/include
@@ -64,15 +65,34 @@ Arguments are `INPUT VA_DEVICE FRESH_REPORT [--bwdif]`. Providers are fixed to
 `/app/lib/libavformat.so.63.1.102`, `libavcodec.so.63.1.102`,
 `libavutil.so.61.1.102`, and the namespace's
 `/usr/lib/x86_64-linux-gnu/libva.so.2`. Each called API is resolved to its exact
-provider; FFmpeg runtime versions must match the original headers. No external
-library is rebuilt or replaced.
+provider; numeric runtime versions must match the audited header ABI. The
+supplied App manifest instead declares canonical FFmpeg `n9.0.2` (commit
+`946fcce07b6dcd0331c8cc609192aeff5e1924f8`) with its supplier's postproc/PGS
+patches. SDK provenance and App provenance are separate: the 41-header closure
+audit found no changed used structures, signatures or earlier enum values, but
+unused fork API/inline helpers and appended RPI pixel formats are present in
+the SDK. Its generated `avconfig.h` is not an independently obtained App build
+header. Numeric ABI selection does not prove an identical build commit or
+internal implementation. No external library is rebuilt, patched or replaced.
+
+Every execution records the original provider's public `av_version_info()`.
+BWDIF mode also records `avfilter_configuration()`; without that mode the
+filter remains unloaded and configuration is null. These are measured build
+metadata, distinct from the documented SDK source. The optional graph is dumped
+once after configuration, before its first filter input. That is the actual
+OWN graph on the selected original provider, not private Kodi graph access.
 
 The optional graph also resolves exact `/app/lib/libavfilter.so.12.1.102`
 versioned APIs. Its source is NV12 visible1920×1080, graph time_base1/1 and the
 public source SAR (fallback1/1 if unspecified); its sink is NV12 and its filter
 is exactly `bwdif=1:-1`. Graph threading remains its original auto default0,
 with the effective configured thread count recorded. It is independent of
-the decoder's thread_count1. Original FFmpeg supports NV12 directly.
+the decoder's thread_count1. The supplied 9.0.2 graph actually negotiates
+`NV12 → auto_scale_1(yuv420p) → bwdif → auto_scale_0(NV12)`. The SDK fork's BWDIF
+NV12 support is a different implementation; it does not establish direct NV12
+support in the original App. Read the recorded graph rather than inferring it
+from matching ABI numbers. This automatic conversion is not a claimed external
+bug or an external replacement fix.
 
 `av_hwframe_transfer_data` does not copy all properties. The client explicitly
 uses `av_frame_copy_props` for the software download and filter input, preserving
@@ -108,3 +128,23 @@ work prevent interpreting them as pure component CPU or proof of the stock
 also contribute to total execution outside those call intervals. No CPU<=wall
 clamp or inferred negative off-CPU metric is used. The unchanged frozen
 no-filter0277883 result remains separate; this option requires its own execution.
+
+Each `call_metric.rusage_thread` adds cumulative user/system CPU microseconds
+and minor/major fault counts from Linux `getrusage(RUSAGE_THREAD)`. These
+snapshots surround the existing clock measurements, leaving the clock endpoints
+unchanged. Their wider window includes clock/query overhead and the public
+call; it is not pure component CPU or allocator-only fault attribution.
+The two `resource_usage` rows preserve start/end/delta for `RUSAGE_SELF` and
+`RUSAGE_THREAD`, beginning before Providers and ending after client cleanup.
+SELF covers all threads in this process, including filter/native workers;
+THREAD covers the main calling thread. Neither includes launcher/controller
+processes or child-process usage. API-specific THREAD measurements exclude
+other worker-thread CPU even when their work occurs during the call.
+
+`getrusage` CPU fields have microsecond representation/accounting granularity,
+independent of the nanosecond CPU clocks; summed user/system deltas need not
+equal clock CPU or the whole-window totals. Faults are cumulative counter
+differences, not a byte count or proof of a particular copy/zeroing mechanism.
+Instrumentation adds overhead, so paired comparisons use this same client
+revision in both arms. Old0277883/a162 executions and earlier failures/source
+attribution corrections retain their original identities and are not relabeled.
