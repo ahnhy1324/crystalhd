@@ -1,19 +1,73 @@
 # Experimental native runtime delivery for 1.3
 
 Use this optional companion to evaluate the **native V4L2 route in Kodi** with
-frozen 1.3 RC2 and the exact target below. For ordinary local-file playback,
+the matching 1.3 candidate and the exact target below. For ordinary local-file playback,
 start with [installation](README.md#quick-start) and [everyday usage](USAGE.md).
 The companion provides prebuilt minimal FFmpeg libraries; using them does not
 require compiling FFmpeg. To reproduce those libraries, use the
 [build recipe](NATIVE-RUNTIME-BUILDING.md).
 
+**RC3 candidate:** `1.3.0-rc.3` combines the complete own native V4L2
+producer with prebuilt, unmodified FFmpeg DRM_PRIME libraries. Its separate
+core-binding and native-qualification receipts identify the actual candidate
+source/module18 and runtime results. Existing runtime/source/build proofs do
+not by themselves qualify changed own-core bytes; the release entry supplies
+public availability and qualification status.
+
 The published [v1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2)
-has 13 public assets, frozen core source `940cf357` and module-DKMS `3.10.17`.
-Stable 1.3 promotion remains deferred. This guide applies to those immutable
-artifacts; later master research does not replace them or registered module17
-source. The ordinary source bundle supplies the driver, GStreamer, VA, Player,
-settings and experimental output features. This companion adds the separately
-licensed FFmpeg binaries and their source/build materials.
+remains frozen with 13 assets, core `940cf357` and module-DKMS `3.10.17`.
+Stable 1.3 promotion remains deferred. The ordinary source bundle supplies the
+driver, GStreamer, VA, Player, settings, default-off Centered and experimental
+outputs. The companion adds the separately licensed FFmpeg binaries and their
+complete source/build materials; no external product patch is applied.
+
+<a id="rc3-candidate-preparation"></a>
+
+## RC3 companion layout and use
+
+The outer archive is
+`crystalhd-native-runtime-1.3.0-rc.3.tar.gz`. Its own core must be selected from
+`materials/crystalhd-core-1.3.0-rc.3-source.tar.gz`, not RC2's source940 or a
+moving master checkout. The native module identity is `3.10.18`.
+
+| Item | RC3 candidate binding |
+| --- | --- |
+| Own core and native module | `evidence/rc3-core-binding.json` identifies the actual final core archive/revision, module identity and packaged own tools/guides. |
+| Native candidate acceptance | `evidence/rc3-native-qualification.json` records the actual changed-source candidate playback, PTS/picture/EOS/reopen/lifetime and restoration results. They are not inherited from module13 observations or RC2. |
+| Reused unchanged runtime | `runtime/runtime-private.tar` and its exact provider/metadata pins remain unchanged; `evidence/build-proof.json` retains the two reproduced builds. `evidence/reuse-scope.json` distinguishes this reuse from new core qualification. |
+| Original RC2 costs and native evidence | Explicitly named `evidence/rc2-first-user-cost.json`, `rc2-first-user-evidence.tar`, `rc2-native-qualification.json` and `rc2-native-evidence.tar`; their dates, old module identities and original outcomes remain intact. |
+| External source and notices | The complete FFmpeg/dependency/SDK materials and offline Git companion keep their original bytes, revisions and licenses. Historical inner `PUBLIC_NOT_READY` metadata is not rewritten. |
+
+Use the matching candidate archive and its qualification receipt:
+
+1. Verify the outer release checksums, extract into a new directory and inspect
+   `delivery-manifest.json` plus `evidence/rc3-core-binding.json`.
+2. Extract the RC3 own core into a separate private build directory and build
+   with `CRYSTALHD_V4L2=1`. Preserve installed stable/RC2 modules and registered
+   source; use the existing [idle transition rules](BRINGUP.md#reload-an-idle-device)
+   for activation and restoration. The candidate must expose a genuine
+   CrystalHD video node, not a manually created substitute.
+3. Acquire the exact App/Platform/GL target below. Use the unchanged slot
+   archive/metadata arguments in [private file installation](#install-update-and-recover-the-private-files)
+   only when the candidate's reuse receipt confirms those pins.
+4. Run the host preflight with expected version `3.10.18` and the **RC3** module
+   srcversion recorded by its candidate receipt. The literal module17 preflight
+   example below is retained RC2 history and is not an RC3 command.
+5. Select the active private FFmpeg library directory as documented below.
+   Check the candidate's actual native receipt and retire consumers before
+   changing/removing a slot; preserve a surviving owner for handoff.
+
+No external Kodi/FFmpeg replacement patch is required. The native route stays
+optional; broader nonempty STOP→START, controls, equipment and physical-display
+limits remain in [SUPPORT](NATIVE-RUNTIME-SUPPORT.md). Centered is separately
+available through the ordinary VA route and does not require this companion.
+
+## Frozen RC2 operator reference
+
+The source940/module17 preparation, outer contents, preflight literal and
+2026-11-02 measurements below describe the **published RC2**. They remain
+reproducible and are not reclassified as RC3 results. Shared target/runtime pins
+may be reused only within the RC3 receipt's declared unchanged scope.
 
 ## Before you start
 

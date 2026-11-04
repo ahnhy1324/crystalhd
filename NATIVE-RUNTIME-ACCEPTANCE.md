@@ -4,6 +4,29 @@ Current overview reviewed **2026-11-04**. Use the [documentation map](DOCUMENTAT
 for the distinction between current operator guides, tool contracts and dated
 preparation evidence.
 
+## RC3 candidate status
+
+Complete `1.3.0-rc.3` includes the own native V4L2 path and prebuilt
+unmodified FFmpeg DRM_PRIME companion, with distinct own-core module/DKMS
+`3.10.18`. Its separate receipts bind the actual candidate source, package and
+native result; this source document does not assert their PASS status. Earlier source/module13 diagnostics and RC2 final17 results retain
+their original attribution and do not qualify the new candidate automatically.
+
+| Candidate evidence | Scope and present status |
+| --- | --- |
+| Core/source binding | `evidence/rc3-core-binding.json` in the new companion identifies the final candidate core, module and packaged tools/guides. |
+| Changed own native path | `evidence/rc3-native-qualification.json` records the actual candidate range/picture/PTS, EOS/reopen, lifecycle and restoration result. |
+| Unchanged FFmpeg/provider materials | Reuse the exact pinned runtime/source/build-proof bytes with original notices and historical inner metadata; declare boundaries in `evidence/reuse-scope.json`. This does not qualify changed own native code. |
+| Existing unavailable targets | Independently booted OS, Atom/i386 and BCM70012 remain outside the declared current-equipment cohort. No broader mandatory gate is added. |
+
+See [complete RC3 scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation)
+and [candidate delivery](NATIVE-RUNTIME-DELIVERY.md#rc3-candidate-preparation).
+The next table and historical preparation sections retain their RC2/earlier
+results. Centered is separately included as a default-off ordinary-VA
+experiment; the private centered observers do not qualify this native route.
+
+## Retained RC2 completion
+
 The compatible-host private installation scope of
 [#539](https://github.com/ahnhy1324/crystalhd/issues/539) is complete: it can
 activate the measured native Kodi route without compiling FFmpeg at activation.
@@ -23,9 +46,11 @@ inner PUBLIC_NOT_READY metadata is preserved, not silently rewritten.
 
 <a id="completed-dispositions-and-future-package-constraints"></a>
 
-## Current dispositions and future-package constraints
+<a id="current-dispositions-and-future-package-constraints"></a>
 
-| Deliverable | Evidence or future-package requirement | Current disposition |
+## Retained RC2 dispositions and future-package constraints
+
+| Deliverable | Evidence or future-package requirement | Retained RC2 disposition |
 | --- | --- | --- |
 | D0 official package selection | Reuse #545's `ffmpeg-hwconfig-probe.py` for a directly linked Kodi ELF and its exact FFmpeg closure; require `--require-kodi-drm-prime`. The embedded probe applies reviewed Kodi21/22 policies to exact main-image identities. | Ubuntu/Debian sid tested metadata negatives are retained. The source-bound Flathub stable21.3 embedded result is a completed zero-config metadata negative; its old DSO-probe exit2 remains an unsupported-inspection result. Ubuntu has no supplied Kodi i386 package in the recorded inventory. |
 | D3 complete first-user burden | Preserve exact successful commands, acquisition/body counters, elapsed/resource/disk observations and update/rollback/removal costs. | Completed for fresh Ubuntu26 userspace acquisition/own build/staging and a separate empty pinned Flatpak store; [cost receipt](tests/fixtures/issue607/first-user-cost-20261102.json). The actual first140.51s prerequisite install is used; cached recheck excluded. Missing full wire/Git bytes and instantaneous disk peak remain explicitly unknown rather than fabricated. |

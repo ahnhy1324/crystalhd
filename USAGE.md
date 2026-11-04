@@ -2,8 +2,8 @@
 
 For ordinary local playback, use the latest stable **1.2.0** installation and
 `crystalhd-play`. Leave tuning options at their defaults for the first run.
-This guide starts with that route; optional 1.3 candidate/development features
-are marked separately.
+This guide starts with that route; optional 1.3 RC3 features are marked
+separately and retain their existing opt-in defaults.
 
 1. [Install and verify the stack](#verify-the-installed-stack).
 2. [Play a local file](#play-a-local-file), then use the [controls](#player-controls)
@@ -102,7 +102,7 @@ The same option works with explicit `--hardware` or `--software` playback.
 ## Saved settings (1.3 tools)
 
 Stable 1.2.0 does not include the new configuration editors. With matching
-1.3.0-rc.2 tools and updated components installed, use the optional desktop
+1.3.0-rc.3 tools and updated components installed, use the optional desktop
 window or inspect defaults from the terminal:
 
 ```sh
@@ -121,7 +121,7 @@ After saving there, restart Kodi and keep its own VA-API decoder selection
 enabled. These editors change shared CrystalHD defaults; a saved setting alone
 does not establish active hardware decoding. See [configuration](CONFIGURATION.md)
 for profiles, reset and exact precedence. Follow
-[RC2 settings installation](README.md#install-rc2-for-managed-settings) when
+[RC3 settings installation](README.md#install-rc3-for-managed-settings) when
 installing matching 1.3 components.
 
 ## Troubleshooting and proof of hardware use
@@ -548,7 +548,7 @@ flash/click offset was not measured. Other
 Kodi releases and display backends are not generally qualified; stock Kodi 22
 has the [interlaced compatibility limits above](#known-issues-and-deinterlacing-roadmap).
 
-Current-master centered Off diagnostics under original Kodi22RC1 add selected
+Retained source-scoped centered Off diagnostics under original Kodi22RC1 add selected
 full NV12 seek-target pixels and Stop/natural reopen. The separate progressive
 CPU-copy case confirms that route's selection. A separate observer joins raw
 returned AVFrame PTS, with runtime time bases still unset. These isolated OWN diagnostic builds do
@@ -824,15 +824,17 @@ global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 ## Experimental outputs and diagnostics (1.3)
 
 These are optional source-build features. Ordinary stable 1.2.0 playback uses
-the earlier commands without these output selectors. The complete 1.3.0-rc.2
-source contains the original optional outputs; later master-only additions
-are identified below and do not update the frozen RC2 payloads.
+the earlier commands without these output selectors. The complete 1.3.0-rc.3
+source includes the original optional outputs and later additions below.
+Frozen RC2 retains only its original implementation; later master updates do
+not replace frozen candidate payloads. Actual RC3 qualification is recorded
+separately from earlier component receipts.
 
 ### Experimental Xv output and packed enlargement
 
 `--video-output xv-async` selects the separately built
 [completion-controlled X11 sink](filters/gst/xv-output/README.md). Keep `auto`
-for ordinary output selection. Current master also offers
+for ordinary output selection. RC3 also offers
 `--video-output xv-async --xv-latest-frame`, which intentionally replaces
 unsent pictures under congestion. FIFO remains the default; the retained
 comparison demonstrates no CPU/latency benefit on the selected noncongested route.
@@ -854,16 +856,18 @@ of an ordinary install.
 See the [field-output build, invocation and qualification limits](tests/fixtures/issue530/README.md#experimental-window-consumer).
 
 Frozen RC2 provides the original YUY2 field output; set an embedding window
-before READY. Current master later adds local-display admission, setup/response
-deadlines, direct NV12 input and live window replacement. The additions below
-apply to current master, beyond the frozen RC2 implementation.
+before READY. RC3 adds local-display admission, setup/response deadlines,
+direct NV12 input and live window replacement. The additions below are
+included in RC3, beyond the frozen RC2 implementation.
 
 The default `--video-output auto` keeps the normal output path. The selector is
 per invocation and is not saved by the configuration manager. With `field-gpu`,
 omit `--weave` and use `--software-output-size native` to clear any saved
 software resize; either conflicting request is rejected before playback.
 
-#### Current-master additions
+<a id="current-master-additions"></a>
+
+#### RC3 additions
 
 Direct raw-video input additionally accepts explicitly declared limited-range
 NV12 within its [plane/field qualification](tests/fixtures/issue530/README.md#nv12-input--2026-11-03).

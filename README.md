@@ -13,14 +13,16 @@ limits are in [Compatibility](#compatibility).
 | --- | --- |
 | Install CrystalHD | [Quick start](#quick-start), or [DKMS installation](README.dkms) for automatic kernel-module rebuilds |
 | Play a video | [First playback](#quick-start), then [controls and subtitles](#common-use) |
-| Change playback settings | [Player options](#common-use); [desktop/Kodi settings](#settings) require 1.3 RC2 |
+| Change playback settings | [Player options](#common-use); [desktop/Kodi settings](#settings) require matching 1.3 tools |
 | Fix an installation or playback error | [Troubleshooting by symptom](BRINGUP.md#first-checks) |
 | Use an existing player | [Kodi/VLC and other paths](USAGE.md#choose-a-path), or [Moonlight streaming](MOONLIGHT.md) |
 | Contribute or investigate the source | [Development and project records](#development-and-project-records) |
 
 **Need the settings window, Kodi settings add-on or experimental native Kodi
-route?** Use the published [1.3.0-rc.2 prerelease](#versions-and-optional-features)
-and its matching instructions. Stable 1.3 has not been released.
+route?** Use the complete [1.3 RC3 candidate](#rc3-candidate-instructions)
+and its matching components. Its release entry and qualification receipt
+identify available artifacts and actual results; stable 1.2 remains the
+recommended ordinary-playback release.
 
 ## Quick start
 
@@ -119,51 +121,55 @@ For stable 1.2, use the Player's [command-line options](#common-use) and leave
 tuning variables unset for the first run. Stable 1.2's `crystalhd-config` is a
 read-only inspector; it does not save or apply managed defaults.
 
-The published **1.3.0-rc.2** adds managed defaults and optional settings UIs:
+**1.3 candidates** provide managed defaults and optional settings UIs:
 
-- [Install the matching RC2 components](#install-rc2-for-managed-settings) before
+- [Install the matching RC3 components](#install-rc3-for-managed-settings) before
   adding either editor.
 - [Desktop settings window and tray](CONFIGURATION.md#optional-desktop-settings):
-  install the matching RC2 tools and optional GTK frontend, then run
+  install the matching RC3 tools and optional GTK frontend, then run
   `crystalhd-settings`.
 - [Kodi settings add-on](addons/script.crystalhd.settings/README.md): install
-  the published ZIP and matching RC2 configuration tools, then open it from
+  the matching release ZIP and RC3 configuration tools, then open it from
   Kodi's Program add-ons. It edits defaults; it does not install a decoder.
 
 Restart the application after saving. Settings inspection does not certify
 which decoder a running application uses. Use the
 [configuration guide](CONFIGURATION.md) for installation, profiles and details.
 
-### Install RC2 for managed settings
+<a id="install-rc2-for-managed-settings"></a>
 
-Keep your stable source directory for rollback. Select the published RC2 core
-source in a **new directory**, rather than building current master. From the
-directory where you keep source checkouts:
+### Install RC3 for managed settings
+
+Keep your stable source directory for rollback. Select the RC3 core identified
+by its release receipt in a **new directory**. From the directory where you
+keep source checkouts:
 
 ```sh
 sudo apt install git
-git clone --branch v1.3.0-rc.2 --single-branch \
-  https://github.com/ahnhy1324/crystalhd.git crystalhd-1.3.0-rc.2
-cd crystalhd-1.3.0-rc.2
+git clone --branch v1.3.0-rc.3 --single-branch \
+  https://github.com/ahnhy1324/crystalhd.git crystalhd-1.3.0-rc.3
+cd crystalhd-1.3.0-rc.3
 ```
 
-Alternatively, extract the published core source
-[`crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz`](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.2/crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz)
-into a new directory and enter it. Use the core source `940cf357` / module
-`3.10.17`; the separate native-delivery tool source is for its companion,
-not this core installation.
+Alternatively, download the core source archive named in the
+[RC3 release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
+and qualification receipt, extract it into a new directory and enter it.
+It must be the `1.3.0-rc.3` core / module `3.10.18`; the separately identified
+native companion tool source is not a replacement core installation. The
+release receipt supplies the exact source/archive identity. RC2's source
+`940cf357` / module17 remains frozen for its own package and rollback.
 
 Install the [quick-start dependencies](#quick-start), then use the existing
 [direct install/update procedure](BRINGUP.md#direct-install-update-and-rollback)
 or [DKMS update procedure](README.dkms#update-an-existing-installation), according
 to how your current module is managed. A fresh DKMS installation uses
 [Install a new revision](README.dkms#install-a-new-revision). Follow that route
-from this RC2 source directory so the driver, library, GStreamer, VA and
+from this RC3 source directory so the driver, library, GStreamer, VA and
 configuration tools match. Close players before updating and verify with
 `crystalhd-check` afterward. Installing only an editor over stable 1.2 does not
 update its readers.
 
-For the optional desktop window, stay in the RC2 directory and run:
+For the optional desktop window, stay in the RC3 directory and run:
 
 ```sh
 sudo apt install gettext python3-gi gir1.2-gtk-3.0
@@ -207,6 +213,7 @@ does not establish Moonlight support at that rate.
 | BCM70015 local files | Recommended: `crystalhd-play` / GStreamer with audio, subtitles and controls. 720p30 is well tested; native 1080p30 works on the reference host with its qualified PCIe workaround. |
 | H.264, MPEG-2, MPEG-4 Part 2, VC-1 / WMV3 | Selected profiles work; see the [codec boundaries](USAGE.md#codec-boundaries). HEVC, VP8, VP9 and AV1 are unsupported. |
 | Optional development/RC2 MPEG-1 experiment | Experimental MPEG-1 decoding via the MPEG-2 algorithm-1 path, natural-content hardware qualified on BCM70015 at progressive 352x288/25. Select the separately built rank-NONE `crystalhdmpeg1experimentaldec` explicitly. This is outside stable 1.2 and distinct from official/vendor support, generalized conformance and the ordinary decoder. See [setup and limitations](filters/gst/gst-plugin-1.0/MPEG1-EXPERIMENTAL.md). |
+| Centered card output (1.3 experiment) | Already included in RC2 and retained in RC3, default off. Selected BCM70015 H.264 paths return a smaller picture inside a full readable NV12 canvas; Kodi zoom can enlarge it for display. Follow the [explicit geometry/range setup and limits](filters/vaapi/README.md#development-experiment-centered-card-output). It is separate from the private diagnostic observers and does not add hardware deinterlacing or native Full-HD detail. |
 | Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s with the qualified L0s workaround active; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
 | Sunshine / Moonlight | Default frame-matching mode works at 720p30; with V-sync/pacing off, an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. These are measured rates, not a matched speedup over default matching. Physical streaming A/V offset and forced-loss recovery remain unverified. |
 | BCM70012 / older CPUs | Legacy BCM70012 compatibility and x86-64/i686 builds are retained. Recent BCM70012 and physical no-SSE hardware tests remain outstanding. |
@@ -229,8 +236,8 @@ use, then lists component references and development records.
 | Local playback, controls, codecs, scaling, Kodi/VLC | [USAGE.md](USAGE.md) |
 | Installation recovery, update and rollback | [BRINGUP.md](BRINGUP.md) |
 | DKMS ownership and kernel updates | [README.dkms](README.dkms) |
-| Optional RC2 desktop settings and profiles | [CONFIGURATION.md](CONFIGURATION.md#optional-desktop-settings) |
-| Optional RC2 Kodi settings add-on | [Add-on guide](addons/script.crystalhd.settings/README.md) |
+| Optional 1.3 desktop settings and profiles | [CONFIGURATION.md](CONFIGURATION.md#optional-desktop-settings) |
+| Optional 1.3 Kodi settings add-on | [Add-on guide](addons/script.crystalhd.settings/README.md) |
 | Sunshine/Moonlight streaming | [MOONLIGHT.md](MOONLIGHT.md) |
 
 Component references, qualification evidence, the work queue and contributor
@@ -241,7 +248,8 @@ rules are listed under [Development and project records](#development-and-projec
 | Release | Status |
 | --- | --- |
 | [Stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module-DKMS `3.10.13` | Recommended for the quick start above. [Final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23) and [change summary](HISTORY.md#120). |
-| [Complete 1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), module-DKMS `3.10.17` | Published prerelease: current-equipment qualification and companion delivery are complete; its tag and 13 assets are frozen. **Stable 1.3 remains deferred.** |
+| [Complete 1.3.0-rc.3 candidate](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), module-DKMS `3.10.18` | Retains every RC2 feature plus integrated native range/multi-slice, Xv and field-output changes. Centered stays included and default off. See its separate qualification receipt for actual artifact/runtime results. |
+| [Complete 1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), module-DKMS `3.10.17` | Published prerelease: current-equipment qualification and companion delivery are complete; its tag and 13 assets are frozen, including the [core archive](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.2/crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz). **Stable 1.3 remains deferred.** |
 | Earlier 1.2 candidates | Immutable [RC1](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1) / `3.10.11` and [RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2) / `3.10.12`; RC2 completed bounded G0–G3 under [#473](https://github.com/ahnhy1324/crystalhd/issues/473). |
 
 Current master includes later research and is not a replacement for frozen RC2
@@ -260,11 +268,34 @@ separate Weave, application-side filtering and unqualified paths.
 For the older fixed baseline, clone with `--branch phase1-baseline-2026-09-29`
 and use the guide shipped with that version.
 
-The RC2 [native runtime companion](NATIVE-RUNTIME-DELIVERY.md) is an optional,
+The [native runtime companion](NATIVE-RUNTIME-DELIVERY.md) is an optional,
 experimental Kodi route for the measured Core2 T8100 / BCM70015 / Intel965
-cohort. Its frozen core source is `940cf357`; use its pinned package and
-prerequisites. The stable quick start above uses the ordinary GStreamer/VA
-stack and does not install that companion.
+cohort. Published RC2 uses frozen core `940cf357` / module17; the RC3 companion
+binds its new candidate core/module18 and fresh native result separately.
+Use the matching package and prerequisites. The stable quick start above uses
+the ordinary GStreamer/VA stack and does not install that companion.
+
+### RC3 candidate instructions
+
+RC3 retains the whole stack, optional settings UIs, Centered, MPEG-1 and all
+integrated output/native features. Use the source archive identified by its
+candidate manifest and qualification receipt; current master is not a replacement
+for a frozen candidate or an existing module registration.
+
+For ordinary playback/settings, install that matching core using the existing
+[direct update](BRINGUP.md#direct-install-update-and-rollback) or
+[DKMS route](README.dkms), with the [quick-start dependencies](#quick-start).
+Install the optional GTK frontend from the same source directory as described
+under [Settings](#settings), or use its matching Kodi settings ZIP. Keep the
+previous source and runtime available for rollback.
+
+For optional [Centered](filters/vaapi/README.md#development-experiment-centered-card-output),
+select its explicit geometry/range environment value; it remains off otherwise.
+For native V4L2/DRM_PRIME, follow the separate
+[RC3 companion preparation and instructions](NATIVE-RUNTIME-DELIVERY.md#rc3-candidate-preparation).
+That companion contains prebuilt unmodified FFmpeg; it does not require a
+patched Kodi/FFmpeg or a compiler just to select the runtime. Broader BWDIF,
+GPU-return and performance research keep their existing limits.
 
 ## Development and project records
 
