@@ -1453,7 +1453,8 @@
       "existing_optional_skips": 1,
       "status": "PASS"
     },
-    "source_equivalence": "Integration runtime sources equal552600f; client equals separately compiled2aa8aec. Integration ordinary build/CI belong to owning PR."
+    "source_equivalence": "Integration runtime sources equal552600f; client equals separately compiled2aa8aec. Integration ordinary build/CI belong to owning PR.",
+    "integration_strict_ordinary_build": "PASS; no private readback observer state in ordinary ELF"
   },
   "new_independent_reviews": {
     "centered-readback-product-review.json": {
@@ -2300,5 +2301,16 @@
     "Selected pixels only, not all post-copy/output pixels, GPU return or scanout.",
     "Earlier lost numeric exit/mapping records remain null; original failures/NOT_EXERCISED not relabeled.",
     "Heap538 remains excluded; broader538 open. Current T8100/BCM70015/965GM only."
-  ]
+  ],
+  "ci_legacy_link_repair": {
+    "original_run": 41878173553,
+    "original_failed_job": 126743410966,
+    "failure": "legacy-cpu-check scaling TU undefinedgbm_bo_import after new owned-alias control keeps CreateSurfaces2 linked",
+    "fix": "Add exact-signature abort-on-unexpected-GBM-import stub to existing CPU-only scaffold; no product or external code change",
+    "independent_review": "docs_evidence_release PASS",
+    "affected_legacy_build": 0,
+    "qemu_pentium2_full_scaling": 0,
+    "hardware_qualification": false,
+    "normal_and_legacy_import_coverage": "Preserved; unexpected graphics calls still abort"
+  }
 }

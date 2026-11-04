@@ -300,6 +300,7 @@ extern "C" int ioctl(int fd, unsigned long request, ...) noexcept {
 extern "C" gbm_device *gbm_create_device(int) { abort(); }
 extern "C" void gbm_device_destroy(gbm_device *) { abort(); }
 extern "C" gbm_bo *gbm_bo_create(gbm_device *, uint32_t, uint32_t, uint32_t, uint32_t) { abort(); }
+extern "C" gbm_bo *gbm_bo_import(gbm_device *, uint32_t, void *, uint32_t) { abort(); }
 extern "C" void *gbm_bo_map(gbm_bo *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **) { abort(); }
 extern "C" void gbm_bo_unmap(gbm_bo *, void *) { abort(); }
 extern "C" void gbm_bo_destroy(gbm_bo *) { abort(); }
