@@ -28,6 +28,10 @@ def main():
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--expected-plugin", type=Path, required=True)
     parser.add_argument("--expected-pictures", type=int, required=True)
+    parser.add_argument("--profile", choices=("native720", "packed-fhd"), default="native720",
+                        help="native720 output or the existing experimental packed FHD enlargement")
+    parser.add_argument("--expected-packed-plugin", type=Path,
+                        help="exact crystalhdpackedscale plugin required by packed-fhd")
     parser.add_argument("--observe-timing", action="store_true",
                         help="record opt-in local request/ACK and pending residence aggregates")
     args = parser.parse_args()
@@ -35,7 +39,13 @@ def main():
         parser.error("use a new results file in an existing directory")
     if args.expected_pictures <= 0 or not args.file.is_file():
         parser.error("a local fixture and positive expected picture count are required")
+    if args.profile == "packed-fhd" and args.expected_packed_plugin is None:
+        parser.error("packed-fhd requires --expected-packed-plugin")
+    if args.profile == "native720" and args.expected_packed_plugin is not None:
+        parser.error("--expected-packed-plugin requires --profile packed-fhd")
+    expected_size = (1920, 1080) if args.profile == "packed-fhd" else (1280, 720)
     report = dict(mode=args.mode, file=str(args.file.resolve()), eos=False, code=None,
+                  profile=args.profile, expected_output_size=list(expected_size), factories={},
                   observe_timing_requested=args.observe_timing,
                   audio_buffers=0, sink_buffers=0, clock_samples=0, audio_clock_mismatches=0,
                   same_audio_clock=False, audio_stream_muted=True, warnings=[], errors=[],
@@ -46,6 +56,8 @@ def main():
                            if args.observe_timing else
                            "No request/ACK timing observations requested; CPU is process-only."),
                           "Zero replacements means replacement behavior was not exercised; no gain is demonstrated."])
+    if args.observe_timing:
+        report["queue_samples"] = []
     player = window = sink = None
     cpu0 = resource.getrusage(resource.RUSAGE_SELF)
     begin = time.monotonic()
@@ -61,12 +73,20 @@ def main():
         if factory is None or Path(factory.get_plugin().get_filename()).resolve() != args.expected_plugin.resolve():
             raise RuntimeError("selected Xv plugin differs from --expected-plugin")
         report["plugin"] = str(args.expected_plugin.resolve())
+        if args.profile == "packed-fhd":
+            factory = Gst.ElementFactory.find("crystalhdpackedscale")
+            if (factory is None or Path(factory.get_plugin().get_filename()).resolve() !=
+                    args.expected_packed_plugin.resolve()):
+                raise RuntimeError("selected packed plugin differs from --expected-packed-plugin")
+            report["packed_plugin"] = str(args.expected_packed_plugin.resolve())
         root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location("xv_bench_player", root / "scripts/crystalhd-player.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         argv = ["--hardware", "--video-output", "xv-async", "--scale-width", "1280",
-                "--software-output-size", "native"]
+                "--software-output-size", "1920x1080" if args.profile == "packed-fhd" else "native"]
+        if args.profile == "packed-fhd":
+            argv.append("--packed-upscale")
         if args.mode == "latest":
             argv.append("--xv-latest-frame")
         options = module.arguments(argv + [str(args.file.resolve())], environment={})
@@ -91,6 +111,25 @@ def main():
         sink = player.pipeline.get_property("video-sink")
         if sink.get_factory().get_name() != "crystalhdxvsink":
             raise RuntimeError("Player did not select the expected Xv sink")
+
+        def record_factory(element):
+            factory = element.get_factory()
+            if factory is not None and factory.get_name() in (
+                    "crystalhddec", "crystalhdxvsink", "crystalhdpackedscale", "deinterlace", "pulsesink"):
+                plugin = factory.get_plugin()
+                report["factories"][element.get_name()] = dict(
+                    factory=factory.get_name(), plugin=plugin.get_filename() if plugin else None)
+
+        record_factory(sink)
+        record_factory(audio)
+        if args.profile == "packed-fhd":
+            packed = player.video_filter.get_by_name("crystalhd-packed-upscale")
+            if (packed is None or packed.get_factory().get_name() != "crystalhdpackedscale" or
+                    Path(packed.get_factory().get_plugin().get_filename()).resolve() !=
+                    args.expected_packed_plugin.resolve()):
+                raise RuntimeError("Player did not select the expected packed enlargement")
+            record_factory(packed)
+        player.pipeline.connect("element-setup", lambda _pipeline, element: record_factory(element))
         timing_property = sink.find_property("observe-timing")
         report["observe_timing_supported"] = timing_property is not None
         report["observe_timing_applied"] = False
@@ -133,6 +172,12 @@ def main():
                 report["native_progressive"] = (values.get_value("width") == 1280 and
                     values.get_value("height") == 720 and values.get_string("format") == "UYVY" and
                     values.get_string("interlace-mode") == "progressive")
+                report["profile_caps_valid"] = (
+                    (values.get_value("width"), values.get_value("height")) == expected_size and
+                    values.get_string("format") == "UYVY" and
+                    values.get_string("interlace-mode") == "progressive" and
+                    values.get_fraction("pixel-aspect-ratio") == (True, 1, 1) and
+                    values.get_fraction("framerate") == (True, 50, 1))
             return Gst.PadProbeReturn.OK
 
         audio.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, audio_probe)
@@ -156,7 +201,10 @@ def main():
 
         player.bus.connect("message", observe)
 
+        next_queue_sample = 0.0
+
         def tick():
+            nonlocal next_queue_sample
             try:
                 report["peak_mC"] = max(report["peak_mC"], temperature())
                 if report["peak_mC"] >= 75000:
@@ -171,6 +219,18 @@ def main():
                         report.update(clock=clock.get_name(), audio_clock=audio_clock.get_name(),
                                       same_audio_clock=clock == audio_clock)
                         report["audio_clock_mismatches"] += int(clock != audio_clock)
+                elapsed = time.monotonic() - begin
+                if (args.observe_timing and elapsed >= next_queue_sample and
+                        len(report["queue_samples"]) < 46):
+                    snapshot = sink.get_property("xv-stats")
+                    if snapshot is not None:
+                        stats = structure(snapshot)
+                        report["queue_samples"].append(dict(elapsed_s=elapsed, **{
+                            key: stats[key] for key in (
+                                "submitted", "acknowledged", "pending", "latest-queued",
+                                "latest-replaced", "latest-submitted", "latest-cancelled",
+                                "latest-residence-count", "latest-pending-age-us")}))
+                        next_queue_sample = elapsed + 1.0
             except Exception as error:
                 report["observation_error"] = str(error)
                 player.fail("benchmark observation failed")
@@ -240,7 +300,7 @@ def main():
             report.get("pipeline_null") is True and report.get("decoded") == args.expected_pictures and
             not report.get("health_error") and report["audio_buffers"] > 0 and
             report["same_audio_clock"] and report["audio_clock_mismatches"] == 0 and
-            report.get("native_progressive") is True and report["sizes"] == [[640, 360]] and
+            report.get("profile_caps_valid") is True and report["sizes"] == [[640, 360]] and
             report.get("peak_mC", 75000) < 75000 and not report["errors"] and
             not any(key in report for key in
                     ("exception", "cleanup_error", "snapshot_error", "observation_error", "timing_error")))
