@@ -266,6 +266,24 @@ python3 -B tests/vaapi-centered-payload-stock.py --execute \
   --case-root /absolute/existing-case-parent --case bwdif2997-new
 ```
 
+For a separate packet-admission investigation, explicitly build
+`packet-admission-observer` with the same `FFMPEG63_INCLUDE` and run
+`check-packet-admission-observer`. Add `--observe-packets` to **preparation
+only**; execution reads the frozen boolean from its new plan. It composes the
+metadata probe with the post-filter observer in a single preload value and
+verifies both probes and the unchanged original format63/codec63/util61 images
+at each held identity. Ordinary Off and BWDIF plans leave this mode disabled.
+
+The [packet observation protocol](vaapi-packet-admission-protocol.md) separates
+public demux reads, accepted codec sends, retries, entry skip state, successful
+frame returns and original drain/EOF. Select the source by its observed public
+open URL and stream metadata; never select a population because its count is
+near 900. Discovery and empty/NULL packets remain separate. Packet, frame,
+context and source clocks are raw distinct domains; this does not observe
+private Kodi start offsets or a packet-to-VA binding. Aggregate counts under a
+skip policy do not identify every discarded packet or its underlying latency
+cause. The exact 900-original and native ownership requirements remain intact.
+
 The ordinary build/install/package does not include these artifacts. The
 [observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded
 per-PID graph lifetime/API ledger and first3-input/first4-output active NV12

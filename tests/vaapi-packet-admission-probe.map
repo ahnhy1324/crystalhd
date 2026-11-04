@@ -1,0 +1,7 @@
+LIBAVFORMAT_63 {
+ global: avformat_open_input; avformat_find_stream_info; av_read_frame; avformat_close_input;
+ local: *;
+};
+LIBAVCODEC_63 {
+ global: avcodec_open2; avcodec_send_packet; avcodec_receive_frame; avcodec_flush_buffers; avcodec_free_context;
+};

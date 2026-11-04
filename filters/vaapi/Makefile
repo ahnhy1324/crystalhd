@@ -132,6 +132,25 @@ postfilter-observer-clean:
 	@rmdir postfilter-observer 2>/dev/null || true
 clean: postfilter-observer-clean
 
+# Metadata-only OWN demux/codec diagnosis; excluded from all/install/package.
+.PHONY: packet-admission-observer check-packet-admission-observer packet-admission-observer-clean
+packet-admission-observer: $(ROOTDIR)/tests/vaapi-packet-admission-probe.c \
+		$(ROOTDIR)/tests/vaapi-packet-admission-probe.map
+	@test -n "$(FFMPEG63_INCLUDE)" || { echo 'Set FFMPEG63_INCLUDE to unchanged format63/codec63/util61 headers' >&2; exit 1; }
+	mkdir -p packet-admission-observer
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
+		-I"$(FFMPEG63_INCLUDE)" $< -o packet-admission-observer/packet-admission-probe.so \
+		-Wl,--version-script=$(ROOTDIR)/tests/vaapi-packet-admission-probe.map -ldl -pthread
+
+check-packet-admission-observer:
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-packet-admission-probe.test.py
+	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-packet-admission-reader.test.py
+
+packet-admission-observer-clean:
+	rm -f packet-admission-observer/packet-admission-probe.so
+	@rmdir packet-admission-observer 2>/dev/null || true
+clean: packet-admission-observer-clean
+
 # Resolve the ordinary OWN DIL in its own build directory, including the linker
 # and SONAME links. This handles a clean tree without changing normal VA rules.
 # Command-line toolchain/CPU settings propagate through the recursive make.
