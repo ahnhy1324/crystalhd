@@ -375,6 +375,56 @@ class ReplayDispositionModeTests(unittest.TestCase):
         self.assertEqual(raised.exception.code,2)
 
 
+class I915WCModeTests(unittest.TestCase):
+    def test_wc_is_frozen_boolean_and_requires_the_complete_selected_diagnostic(self):
+        self.assertFalse(STOCK.i915_wc_mode(False, 'off750', False, False, False))
+        self.assertTrue(STOCK.i915_wc_mode(True, 'bwdif2997', True, True, True))
+        for args in ((1,'bwdif2997',True,True,True), ('true','bwdif2997',True,True,True),
+                     (True,'off750',True,True,True), (True,'bwdif2997',False,True,True),
+                     (True,'bwdif2997',True,False,True), (True,'bwdif2997',True,True,False),
+                     (True,'bwdif2997',True,True,1)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                STOCK.i915_wc_mode(*args)
+
+    def test_exact_namespace_arm_follows_environment_clear_and_preserves_other_options(self):
+        base=['bwrap','--clearenv','--setenv','UNCHANGED','value','--ro-bind','/original','/app',
+              '--','/app/original-client','--original-option']
+        old=list(base)
+        for enabled, expected in ((False,['--unsetenv',STOCK.I915_WC_ENV]),
+                                  (True,['--setenv',STOCK.I915_WC_ENV,'1'])):
+            with self.subTest(enabled=enabled):
+                result=STOCK.i915_wc_command(base,enabled)
+                at=base.index('--')
+                self.assertEqual(result[:at],base[:at])
+                self.assertEqual(result[at:at+len(expected)],expected)
+                self.assertEqual(result[at+len(expected):],base[at:])
+                self.assertGreater(result.index(STOCK.I915_WC_ENV),result.index('--clearenv'))
+                self.assertLess(result.index(STOCK.I915_WC_ENV),result.index('--'))
+        self.assertEqual(base,old)
+        # Old plans omit the field; they must explicitly unset, even when the
+        # controller is launched from a shell which exports the candidate.
+        legacy=json.loads('{}')
+        with patch.dict(STOCK.os.environ,{STOCK.I915_WC_ENV:'1'}):
+            enabled=STOCK.i915_wc_mode(legacy.get('experimental_i915_wc',False),'off750',False,False,False)
+            self.assertIn('--unsetenv',STOCK.i915_wc_command(base,enabled))
+        with self.assertRaises(ValueError):
+            STOCK.i915_wc_mode(json.loads('{"experimental_i915_wc":"false"}')['experimental_i915_wc'],
+                               'bwdif2997',True,True,True)
+
+    def test_wc_arm_rejects_missing_namespace_clear_or_conflicting_existing_assignment(self):
+        for command in (['bwrap','--','original-client'],
+                        ['bwrap','--clearenv','--setenv',STOCK.I915_WC_ENV,'1','--','original-client']):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                STOCK.i915_wc_command(command,True)
+        with self.assertRaises(ValueError):STOCK.i915_wc_options(1)
+
+    def test_wc_cannot_override_an_already_frozen_execution_plan(self):
+        with patch.object(sys,'argv',['controller','--execute','--plan','unused.json','--i915-wc']), \
+                patch.object(sys,'stderr',io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:STOCK.main()
+        self.assertEqual(raised.exception.code,2)
+
+
 class MaintainedCostModeTests(unittest.TestCase):
     def correlation_fixture(self):
         def event(identifier, parent, token, stage, kind='full'):

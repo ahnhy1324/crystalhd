@@ -49,6 +49,7 @@ BWDIF_FIXTURE = Path('/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/f
 BWDIF_FIXTURE_SHA = '2de3d510076f4037abcb56f84a7bfbb86caa66ae1bb9dc595c79b6e36b450905'
 CPU_COPY_PROVIDER = Path('lib/kodi/system/libsse4-x86_64-linux.so')
 CENTERED = '1280x720@1920x1080:limited'
+I915_WC_ENV = 'CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC'
 SOURCE_REF = 'https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/'
 SCOPE = ('Unchanged Kodi22RC1/App FFmpeg, method0 and actual hardware deinterlace none; '
          'two OWN small/composed/public NV12 checkpoints per normally retired decoder context. '
@@ -363,6 +364,33 @@ def replay_mode(value, scenario_name, observe_packets, observe_cost):
     require(not value or (scenario_name == 'bwdif2997' and observe_packets is True and observe_cost is True),
             'replay observation requires the explicit BWDIF packet/cost case')
     return value
+
+
+def i915_wc_mode(value, scenario_name, observe_packets, observe_cost, observe_replay):
+    require(type(value) is bool, 'i915 WC mode must be a frozen boolean')
+    require(not value or (scenario_name == 'bwdif2997' and observe_packets is True and
+                         observe_cost is True and observe_replay is True),
+            'i915 WC comparison requires the explicit BWDIF packet/cost/replay case')
+    return value
+
+
+def i915_wc_options(experimental_i915_wc=False):
+    """Requested arm only; actual allocation/WC/domain eligibility is observed.
+
+    Keep normal synchronization on ineligible allocations. This adds no
+    allocator/remapping override; the retained backend decides eligibility.
+    Insert after the existing namespace environment reset, before its command.
+    """
+    require(type(experimental_i915_wc) is bool, 'i915 WC mode must be a frozen boolean')
+    return (['--setenv', I915_WC_ENV, '1'] if experimental_i915_wc else
+            ['--unsetenv', I915_WC_ENV])
+
+
+def i915_wc_command(command, experimental_i915_wc=False):
+    at = command.index('--')
+    require('--clearenv' in command[:at] and I915_WC_ENV not in command[:at],
+            'i915 WC arm requires the existing clean namespace and no conflicting assignment')
+    return command[:at] + i915_wc_options(experimental_i915_wc) + command[at:]
 
 
 def backend_image(observe_cost=False, observe_replay=False):
@@ -685,15 +713,18 @@ def main():
                    help='prepare-only: select private OWN CPU/wall backend with BWDIF packet observation')
     p.add_argument('--observe-replay', action='store_const', const=True, default=None,
                    help='prepare-only: add exact replay/history/disposition observation to the BWDIF packet/cost case')
+    p.add_argument('--i915-wc', action='store_const', const=True, default=None,
+                   help='prepare-only: request the existing eligible i915 WC path for a frozen BWDIF packet/cost/replay comparison')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
-    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets, a.observe_cost, a.observe_replay)):
-        p.error('source/revision/probe/cycles/scenario/packet/cost/replay mode belong only to --prepare-plan')
+    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets, a.observe_cost, a.observe_replay, a.i915_wc)):
+        p.error('source/revision/probe/cycles/scenario/packet/cost/replay/i915-WC mode belong only to --prepare-plan')
     case = a.case_root.resolve() / a.case
     config = scenario(a.scenario or 'off750') if a.prepare_plan else None
     observe_packets = packet_mode(bool(a.observe_packets), config['name']) if a.prepare_plan else False
     observe_cost = cost_mode(bool(a.observe_cost), config['name'], observe_packets) if a.prepare_plan else False
     observe_replay = replay_mode(bool(a.observe_replay), config['name'], observe_packets, observe_cost) if a.prepare_plan else False
+    experimental_i915_wc = i915_wc_mode(bool(a.i915_wc), config['name'], observe_packets, observe_cost, observe_replay) if a.prepare_plan else False
     if a.prepare_plan:
         if a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '') or a.source_probe is None:
             p.error('prepare needs own source/full revision and independent packet/frame probe JSON')
@@ -787,6 +818,7 @@ def main():
             save(a.plan, {'schema': 1, 'status': 'FROZEN_SOURCE_PLAN', 'source_directory': str(source), 'revision': a.own_revision,
                           'case_directory': str(case), 'case': a.case, 'cycles': (2 if config['name'] == 'bwdif2997' else a.cycles or 1),
                           'scenario': config, 'observe_packets': observe_packets, 'observe_cost': observe_cost, 'observe_replay': observe_replay,
+                          'experimental_i915_wc': experimental_i915_wc,
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'pins': pins,
                           'source_probe': str(probe), 'fixture': config['fixture'], 'source_metadata': metadata,
                           'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': config['deintmethod'],
@@ -805,6 +837,7 @@ def main():
         observe_packets = packet_mode(plan.get('observe_packets', False), config['name'])
         observe_cost = cost_mode(plan.get('observe_cost', False), config['name'], observe_packets)
         observe_replay = replay_mode(plan.get('observe_replay', False), config['name'], observe_packets, observe_cost)
+        experimental_i915_wc = i915_wc_mode(plan.get('experimental_i915_wc', False), config['name'], observe_packets, observe_cost, observe_replay)
         require(plan.get('scenario', config) == config, 'frozen scenario differs')
         fixture = Path(config['fixture'])
         require(plan['schema'] == 1 and plan['status'] == 'FROZEN_SOURCE_PLAN' and plan['case'] == a.case and
@@ -844,6 +877,7 @@ def main():
         report.update(revision=G.REVISION, source_directory=str(G.SOURCE), plan=str(a.plan.resolve()), pins=plan['pins'],
                       source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config,
                       observe_packets=observe_packets, observe_cost=observe_cost, observe_replay=observe_replay,
+                      experimental_i915_wc=experimental_i915_wc,
                       scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
         if config['name'] == 'bwdif2997':
             for signum in (signal.SIGINT, signal.SIGTERM):
@@ -894,6 +928,7 @@ def main():
                          '--setenv', 'CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12', CENTERED]
         command[at:at] = observer_options(G.SOURCE, config['name'], observe_packets)
         command[at:at] = cost_options(observe_cost) + replay_options(observe_replay)
+        command = i915_wc_command(command, experimental_i915_wc)
         require('--die-with-parent' not in command, 'media runtime must survive operator handoff')
         save(case / 'command.json', command); log = (case / 'kodi.stdout').open('x'); files.append(log)
         kodi = subprocess.Popen(command, env=clean_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
