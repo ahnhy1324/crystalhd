@@ -2,7 +2,7 @@
 
 # Current work
 
-Updated **2026-11-04**, after stable 1.3 publication. This is the current work queue.
+Updated **2026-11-05**, after stable 1.3 publication. This is the current work queue.
 A packaged copy is a snapshot; subsequent completion belongs in the current
 repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
@@ -48,7 +48,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [replay-aware observer/census and full two-EOF diagnostic flow](tests/fixtures/issue477/replay-disposition-20261104.json) are complete. Original records balance at 690/694, but the unchanged 900-original criterion remains FAIL. Physical replay is NOT_EXERCISED; retired replay/lease handling is covered separately by actual maintained-path CPU controls. Next distinguish underlying NONREF/latency policy from measured OWN pixel/CPU-access costs before an own-code candidate comparison. Full-population/tail cadence, broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation stay open; do not repeat media merely to obtain replay. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [source 900 investigation](tests/fixtures/issue477/native900-20261104.json) implements immutable-pixel CPU readback and bounded retired-image reuse. Stock originals increase from 690/698 to 779/778 and then 804/805; **900 still FAILS**. Selected API bytes, ownership and native ledgers pass within their scopes. WC worsens the combined route and stays off; frontend-budget and generic-cache alternatives are not adopted. Natural completed replay is now observed. Continue sustained latency/notification attribution; full post-copy pixels, broader geometry/lifetime, GPU return and presentation remain open. The caller's missing filter EOF is a separate scoped known limitation. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Compare sized versus fixed allocation with 16/8 buffers on the current BCM70015 with paced input, then required native-planar, PM and format-change cases. Output-aware allocation is implemented. Preserve the conservative default and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -62,45 +62,91 @@ support scopes are not additional promotion gates. Nonblocking research continue
 
 <a id="packet-admission-and-next-decoder-attribution"></a>
 
-### Decoder admission, replay disposition and next cost attribution
+### Source 900 investigation and remaining real-time boundary
 
-The [replay-disposition case](tests/fixtures/issue477/replay-disposition-20261104.json)
-uses diagnostic source `42ab9ac` and the original Kodi/App/providers. Two
-same-PID natural EOFs, normal Quit, final native/packet/cost/post-filter analysis
-and both same-input prefix references complete. Controls and all four audits
-pass; application exit0, kernel check0, equal module13/runtime36 boundary,
-no handoff and maximum temperature 67C remain scoped cleanup/observation results.
+The [current receipt](tests/fixtures/issue477/native900-20261104.json) separates
+actual candidate failures from the no-clock counterfactual. All use the retained
+900-picture input, original App providers and maintained VA/DIL. Stock
+diagnostic arms preserve the external applications, discard policy and 900
+criterion. The separate no-clock OWN client explicitly uses DEFAULT discard.
 
-| Current measured stage | Play 1 | Play 2 |
-| --- | --- | --- |
-| Native original bindings / accepted logical inputs / public M | 690 / 690 / 690 | 694 / 694 / 694 |
-| Original fields / validated released pairs | 1,380 / 690 | 1,388 / 694 |
-| Successful restarts / completed replay inputs / replay fields | 0 / 0 / 0 | 0 / 0 / 0 |
-| BWDIF inputs / outputs before graph free | 690 / 1,378 | 694 / 1,386 |
+| Current case | First play | Reopen | Disposition |
+| --- | ---: | ---: | --- |
+| Default stock diagnostic | 690 | 698 | Source 900 FAIL |
+| Existing eligible i915 WC requested | 680 | 598 | Source 900 FAIL; default remains off |
+| H264 frontend harvest 64 → 1 candidate | 580 | 679 | Source 900 FAIL; candidate withdrawn from integration, branch retained |
+| Immutable centered CPU-image readback | 779 | 778 | Readback cost reduced; source 900 FAIL |
+| CPU-image readback plus existing WC option | 734 | 720 | Source 900 FAIL; WC stays off |
+| CPU-image readback plus Derive-only retired-buffer reuse | 804 | 805 | Further bounded improvement; source 900 FAIL |
+| Separate OWN no-clock/default-discard client | 900 | — | 900 actual VA returns/downloads and 900 native originals; not stock playback |
 
-The bounded 11,072-event replay ledger validates, but physical replay is
-**NOT_EXERCISED** in both plays. Separate actual maintained-path CPU controls
-exercise completed replay after backing retirement, raw zero tuples, correct
-pairs/releases and expected rejection; they do not turn that branch into a
-physical PASS. On the same retained-backing CPU records, the old census rejects
-missing live identity; the corrected census classifies two originals and one
-completed replay while the unchanged 900-original requirement still fails
-with two observed.
-No additional media run is required merely to obtain replay.
-Each play's first four filter outputs match the same-input original-App
-reference: eight outputs, 24,883,200 active NV12 bytes and captured raw metadata.
-Original filter source NULL/close and sink EOF remain absent; selected-prefix
-agreement does not qualify the whole tail or independent source pixels.
+WC activation is proved by every matched canvas's flags80 acquisition/completion
+and successful WC/GTT domain children, with no WRITE fallback and READ leases
+retained. Canvas WRITE-END median calling CPU falls from 1.927/1.932ms to
+0.021/0.021ms; the enclosing direct-public CPU also falls. This neither repairs
+source 900 nor measures total readback/BWDIF/presentation cost. DeriveImage's
+independent snapshot allocation/copy is outside that enclosing scope.
 
-The actual case remains **OBSERVED_SOURCE_QUALIFICATION_FAIL**: 690/694 is
-below the unchanged 900-original requirement. Fresh codec-label sets place all
-210/206 absent labels under accepted-call NONREF state; all 340/356 DEFAULT
-labels return. This is raw integer-label/state correspondence, not packet-to-VA
-identity or proof of the underlying NONREF/latency cause. Balanced records and
-completed controls do not repair that deficit. Next use the retained
-parent/direction analysis to design one bounded OWN cost/candidate comparison
-with unchanged inputs and ownership,
-without external product patches, weaker source criteria or a claimed speedup.
+The first default and WC plays each naturally exercise 10 completed replay
+inputs / 20 Duplicate fields and 20 successful releases, including two fields
+after old bindings retire. Their native ledgers balance without rematerializing
+replay or inventing live tuples. This completes that physical observation;
+earlier [#662 evidence](tests/fixtures/issue477/replay-disposition-20261104.json)
+keeps its original 690/694, 11,072-event ledger and NOT_EXERCISED result.
+
+The no-clock client uses original format 63 / codec 63 / util 61, DEFAULT discard,
+900 distinct equal accepted/returned raw-label sets and explicit decoder drain.
+Its independent native ledger records 900 submissions/inputs/materializations,
+1,800 validated/released fields and 900 binding ends. Its 22.010 s wall and 17.257 s
+main-thread CPU do not qualify stock real-time playback or total-process CPU.
+A post-exit wrapper error lost the saved numeric exit and individual mapping
+records: retain nulls and live stdout confirmation, with the separate follow-up
+kernel 0 / equal-boundary result. No successful rerun replaces that original record.
+
+The pinned, unmodified original Kodi BWDIF caller never supplies filter source EOF before
+freeing its graph. Its held final picture requires that EOF, so correct VA
+pixel output alone cannot repair the missing two filter outputs. This narrow
+[known limitation](USAGE.md#known-issues-and-deinterlacing-roadmap) is separate
+from source 900 loss under NONREF. It does not prove all OWN latency fixes
+impossible. Next distinguish readback/filter critical paths with the original
+providers; keep full post-copy pixels, GPU-reader return, presentation and
+broader lifetime/cadence qualification open.
+
+The no-clock BWDIF extension accepts all 900 originals, produces 1,798 outputs
+before filter EOF and 1,800 after an explicitly **OWN reference-only** EOF.
+This confirms the separate tail boundary; it does not fix stock playback.
+The isolated derived-only snapshot cache also fails stock source 900 (699/583); a
+generic zero-preserving cache and row-fenced SSE readback show no useful
+no-clock improvement. These candidates remain isolated and are not promoted.
+
+Source attribution is corrected: the App manifest supplies canonical FFmpeg
+9.0.2 (`946fcce`) plus two distribution patches; the retained `12cc1f4` source
+is an RPi SDK fork. The used public ABI/header closure is compatible, so actual
+binary observations remain valid. The original-provider, same-configuration
+CPU graph reports NV12 → YUV420P → BWDIF → NV12 with automatic conversions.
+This withdraws the earlier source inference of native NV12 BWDIF; it is not a
+live Kodi graph dump or proof that these conversions cause source loss.
+Actual stock sampling confirms `vaDeriveImage` canvas readback and hardware
+Intel 965GM rendering. The maintained implementation now reconstructs an
+independent full NV12 image from proven immutable centered pixels. It retains
+public READ leases, validates the current binding/geometry/write epochs and
+falls back after writes, retirement or export. Derive-only reuse retains one
+fully retired byte vector (size and capacity at most 8,355,840 bytes); generic
+CreateImage keeps fresh zero initialization and all snapshot bytes are written
+before publication. Source review, 39 scaling groups / 188,686 checks, buffer
+handles and 115 VPP regressions pass for the combined source.
+
+In the first readback case, the interval between positive public READ methods
+falls from 6.95/6.98ms to 1.68/1.68ms median calling CPU; the methods themselves
+remain about 0.019ms. This includes copy/dispatch/bookkeeping, not pure copy or
+whole AddPicture time. Both first API snapshots match all 3,133,440 public
+NV12 bytes but represent the **same** original, not two distinct pictures or
+all images. The combined case returns 804/805 originals and has clean native,
+selected-pixel and shutdown audits. Missing NONREF labels continue into the
+last 300 packets; they are not merely startup loss. A separate 49Hz whole-App
+profile is diagnostic, not a speed comparison or an impossibility proof.
+Continue the specific worker-notification handoff review without changing
+discard policy, surface semantics or the 900 criterion.
 
 <a id="maintained-code-costs-and-next-replay-attribution"></a>
 

@@ -1,0 +1,2304 @@
+{
+  "schema": 1,
+  "status": "OWN_READBACK_LATENCY_REDUCED_SOURCE900_STILL_FAIL",
+  "date": "2026-11-05",
+  "scope": "Private OWN current-equipment diagnostics; unchanged original providers; no stock/release qualification.",
+  "raw_cache_root": "/home/mache/.cache/crystalhd-native900-run-20261104",
+  "sources": {
+    "wc_execution": "d77944c8a0894e98f7e94d420d71a51da32b54e3",
+    "reused_runtime_build": "42ab9ac6365ec3b4848108b8c9c18475b9ca064d",
+    "kodi": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "ffmpeg": "946fcce07b6dcd0331c8cc609192aeff5e1924f8 (canonical n9.0.2 plus two App manifest patches)",
+    "ffmpeg_sdk_fork": "12cc1f42f06ff0e85633c2602c96786fbd280b70"
+  },
+  "wc_pair": {
+    "status": "EXERCISED_NO_900_FIX_OR_END_TO_END_BENEFIT",
+    "per_play_columns": [
+      "originals",
+      "total_input_commits",
+      "original_fields",
+      "replay_commits",
+      "replay_fields",
+      "public_M"
+    ],
+    "default": {
+      "pid": 2152058,
+      "plays": [
+        [
+          690,
+          700,
+          1380,
+          10,
+          20,
+          690
+        ],
+        [
+          698,
+          698,
+          1396,
+          0,
+          0,
+          698
+        ]
+      ],
+      "flags": 64,
+      "matched_domains": [
+        0,
+        0
+      ],
+      "raw": "wc-default-01/result.json"
+    },
+    "wc": {
+      "pid": 2152430,
+      "plays": [
+        [
+          680,
+          690,
+          1360,
+          10,
+          20,
+          680
+        ],
+        [
+          598,
+          598,
+          1196,
+          0,
+          0,
+          598
+        ]
+      ],
+      "flags": 80,
+      "wc_begins_and_gtt_ends_each": [
+        680,
+        598
+      ],
+      "matched_domains": [
+        1360,
+        1196
+      ],
+      "ordinary_WRITE_fallback": 0,
+      "source_READ_pairs": [
+        680,
+        598
+      ],
+      "raw": "wc-on-01/result.json"
+    },
+    "all_four_plays": {
+      "source900": "FAIL",
+      "native_subset_ledgers": "PASS",
+      "two_EOF_controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "boundary_equal": true,
+      "handoff": null
+    },
+    "native_M_subset_cpu_p50_ms": {
+      "destination_WRITE_END_default": [
+        1.92695,
+        1.932247
+      ],
+      "destination_WRITE_END_wc": [
+        0.020948,
+        0.020903
+      ],
+      "direct_public_conversion_plus_canvas_default": [
+        5.757362,
+        5.725596
+      ],
+      "direct_public_conversion_plus_canvas_wc": [
+        3.724248,
+        3.508691
+      ]
+    },
+    "limits": "Parent/TID/eight-scalar joins qualify observed M canvases only. CPU scopes decrease; originals decrease. No ioctl/coherency, causal NONREF, E2E gain, default change or global-impossibility proof.",
+    "raw": [
+      "wc-comparison.json",
+      "wc-eligibility-contract.md",
+      "after-wc-pair-boundary.json"
+    ]
+  },
+  "natural_replay": {
+    "status": "COMPLETED_SCOPED_PHYSICAL_OBSERVATION",
+    "new_cases": [
+      "wc-default-01/play1",
+      "wc-on-01/play1"
+    ],
+    "each": {
+      "successful_restart": 1,
+      "completed_replay_commits": 10,
+      "validated_Duplicate_pairs": 10,
+      "replay_fields": 20,
+      "release_status0": 20,
+      "fields_after_binding_end_with_incomplete_live_tuple": 2,
+      "replay_rematerialization": 0
+    },
+    "reopen_plays": "0 replay; NOT_EXERCISED",
+    "historical_record": "#662 replay2997-01 source42ab9ac remains NOT_EXERCISED; maintained2997-01 old untagged FAIL unchanged.",
+    "scope": "New WC cases exercise still-bound/retired replay; old captures unchanged; no replay-seeking repeat."
+  },
+  "no_clock": {
+    "client_source": "02778830b9421e4c5e2f53aaf1de292acc76603a",
+    "pid": 2154534,
+    "status": "PASS_DIAGNOSTIC_900_ORIGINALS",
+    "packet_admissions": 900,
+    "unique_accepted_and_returned_labels_each": 900,
+    "raw_label_sets_equal": true,
+    "VAAPI_returns": 900,
+    "successful_downloads": 900,
+    "corrupt_or_decode_error_frames": 0,
+    "native": {
+      "submit_input_M_binding_end_each": 900,
+      "original_fields_and_releases_each": 1800,
+      "validated_New_pairs": 900,
+      "replay": "NOT_EXERCISED",
+      "errors": []
+    },
+    "lifecycle": {
+      "demux_EOF": true,
+      "accepted_decoder_drain": true,
+      "decoder_EOF": true,
+      "decoder_closed_before_tail": true,
+      "downloads_after_decoder_close": 8,
+      "max_retained_frames": 9,
+      "reported_resources_released": true,
+      "signal": 0
+    },
+    "wall_seconds": 22.009961114,
+    "calling_thread_CPU_seconds": 17.25651544,
+    "process_exit_code": null,
+    "individual_live_mapping_records": null,
+    "live_identity_and_mapping_confirmed_in_stdout": true,
+    "launcher_reaped": true,
+    "executor_error": "Post-exit non-executable kernel checker raised PermissionError before saving executor.json: numeric exit/mapping details lost, not fabricated0.",
+    "followup_kernel_exit": 0,
+    "boundary_equal": true,
+    "handoff": null,
+    "selected_payload": "Two coded-height composed/public NV12 ROI/border samples pass; not all900 pixels or independent golden.",
+    "limits": "DEFAULT/no-clock/no-renderer/no-BWDIF OWN route preserves900. Not Kodi realtime/filter-tail/display proof; thread CPU excludes workers; labels are not Kodi timestamps.",
+    "raw": [
+      "no-clock-02/payload/decode900.jsonl",
+      "no-clock-02/native-audit.json",
+      "no-clock-02/payload-audit.json",
+      "no-clock-02/finalization.json",
+      "no-clock-02.executor.log",
+      "no-clock-02/finalization-kernel.log"
+    ],
+    "earlier_failure": {
+      "raw": "no-clock-01/prelaunch-failure.json",
+      "status": "PRELAUNCH_NAMESPACE_FAILURE",
+      "client_started": false,
+      "card_opened": false
+    }
+  },
+  "rx_budget": {
+    "candidate_build": "b8610c0af3ee7931c0257d9bfe2e934516456880",
+    "execution": "e5e4e6f7adc04e9dfa7e32481eb1348e0b496fd3",
+    "runtime_sources_equal": true,
+    "change": "H264 frontend ReceiveAvailable budget64 to1",
+    "originals": [
+      580,
+      679
+    ],
+    "fields": [
+      1160,
+      1358
+    ],
+    "source900": "FAIL",
+    "controls_and_subset_audits": "PASS",
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "boundary_equal": true,
+    "disposition": "CANDIDATE_NOT_PROMOTED",
+    "main_revert": "86e44534d9b7fba272d3245f7cbe69e343e3e2f6",
+    "retained_branch": "research/native900-rxbudget-20261104",
+    "raw": [
+      "rxbudget-01/result.json",
+      "rxbudget-artifacts.json",
+      "rxbudget-disposition.json",
+      "rxbudget-comparison.json"
+    ],
+    "foreground_public_send_max_RX_batch": {
+      "baseline": [
+        2,
+        3
+      ],
+      "candidate": [
+        1,
+        1
+      ]
+    }
+  },
+  "bwdif_tail_boundary": {
+    "raw": "bwdif-boundary-review.md",
+    "scope": "Fixed original caller sends no graph source NULL/close; codec EOF is separate. Reference3inputs yields4beforeEOF/6after reference-onlyEOF. Correct900 VA inputs alone cannot send EOF to that graph; fake901st frame/identity corruption is forbidden. Narrow unavailable VA-only repair, not a native900/global impossibility proof."
+  },
+  "independent_reviews": [
+    {
+      "reviewer": "docs_evidence_release",
+      "scope": "WC source eligibility, actual cost/native replay and no-clock raw ledgers",
+      "status": "PASS_WITH_RECORDED_LIMITS",
+      "evidence": "Read-only raw joins, releases, labels and lost-exit/error separation."
+    },
+    {
+      "reviewer": "rc3_release_review",
+      "scope": "WC eligibility contract/source and RX-budget source",
+      "status": "PASS",
+      "evidence": "Collaboration review; RX review recorded in rxbudget-artifacts.json."
+    },
+    {
+      "reviewer": "docs_evidence_release",
+      "scope": "Original client ABI/ownership/source",
+      "status": "PASS",
+      "addressed": [
+        "Distinct900 raw-label guards",
+        "Reject corrupt/decode-error frames"
+      ]
+    },
+    {
+      "reviewer": "docs_evidence_release",
+      "scope": "a162 optional BWDIF source and raw900/1798/1800 execution",
+      "status": "PASS_WITH_SCOPED_LIMITS"
+    }
+  ],
+  "optional_bwdif_client": {
+    "status": "PASS_SCOPED_OWN_900_REFERENCE_GRAPH",
+    "client_source": "a162d73489efe91a526cfdb80be991c7e193db12",
+    "pid": 2160806,
+    "accepted_VAAPI_returned_downloaded_each": 900,
+    "unique_equal_raw_labels": 900,
+    "native_submit_input_M_binding_end_each": 900,
+    "native_fields_releases_each": 1800,
+    "filter": {
+      "inputs": 900,
+      "before_source_EOF_outputs": 1798,
+      "reference_only_extra_outputs": 2,
+      "after_explicit_source_EOF_outputs": 1800,
+      "sink_EOF": true,
+      "unique_input_labels": 900,
+      "outputs_per_input_label": 2,
+      "corrupt_or_interlaced_outputs": 0,
+      "requested_threads": 0,
+      "configured_threads": 3,
+      "graph_time_base": [
+        1,
+        1
+      ],
+      "frame_time_base": [
+        1,
+        1000000
+      ]
+    },
+    "wall_seconds": 39.962076368,
+    "main_CPU_seconds": 27.71921017,
+    "process_CPU_seconds": 49.938339832,
+    "inclusive_call_seconds": {
+      "download_wall": 13.698655814,
+      "download_main_CPU": 13.15538769,
+      "filter_sink_wall": 16.790939781,
+      "filter_sink_main_CPU": 8.487607602
+    },
+    "application_exit": 0,
+    "saved_live_mapping_records": 6,
+    "kernel_exit": 0,
+    "boundary_equal": true,
+    "max_temperature_C": 60,
+    "handoff": null,
+    "selected_coded_canvas_payload_samples": 2,
+    "limits": "OWN visible-plane copy and explicit public90k-to-us props differ from Kodi SSE-copy/private timestamps. Seven inclusive API intervals and whole-process CPU mix native/filter workers; not pure filter CPU. No stock realtime, original-caller EOF repair, all-pixel golden, product fix or global impossibility.",
+    "raw": [
+      "no-clock-bwdif-01/payload/decode900.jsonl",
+      "no-clock-bwdif-01/executor.json",
+      "no-clock-bwdif-01/native-audit.json",
+      "no-clock-bwdif-01/payload-audit.json"
+    ]
+  },
+  "raw_files_modified": false,
+  "pending_own_candidate": "Worker notification handoff investigation; source900 remainsFAIL.",
+  "source_provenance_correction": {
+    "status": "PASS_SCOPED_SOURCE_AND_USED_PUBLIC_ABI_CORRECTION",
+    "reviewer": "rc3_release_review",
+    "date": "2026-11-05",
+    "historical_fields_preserved": "Original captures and draft preserved in raw_cache_root; current portable sources entry is corrected.",
+    "historical_sources_ffmpeg_interpretation": "Prior draft exact-App12cc inference withdrawn:12cc is the SDK fork; original-binary observations retained.",
+    "actual_supplier_app": {
+      "kodi_commit": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+      "ffmpeg_declared_source": "FFmpeg/FFmpeg n9.0.2",
+      "ffmpeg_tag_commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+      "supplier_patch_names": [
+        "001-ffmpeg-all-libpostproc-plugin.patch",
+        "008-ffmpeg-all-pgssubdec-use-caller-colorspace.patch"
+      ],
+      "archive_and_both_supplier_patch_manifest_pins": "PASS_ONCE",
+      "observed_public_version_info": "9.0.2",
+      "observed_configuration_matches_app_manifest": true,
+      "original_binaries_unchanged": true,
+      "bit_reproduced_build_claim": false
+    },
+    "distinct_sdk": {
+      "repository": "jc-kynesim/rpi-ffmpeg",
+      "commit": "12cc1f42f06ff0e85633c2602c96786fbd280b70",
+      "branch": "test/9.0.2/main",
+      "exact_original_app_source_claim": false
+    },
+    "used_header_abi": {
+      "status": "PASS_SCOPED_COMPATIBILITY_NOT_IDENTICAL_SOURCE",
+      "syntactic_public_header_closure": 41,
+      "archive_source_headers_compared": 40,
+      "pristine_tag_byte_identical": 37,
+      "unused_sdk_extension_headers": [
+        "libavfilter/buffersink.h",
+        "libavutil/frame.h",
+        "libavutil/pixfmt.h"
+      ],
+      "used_structure_declarations_signatures_and_earlier_enum_values_changed": false,
+      "supplier_avutil_header_patch": "Documentation-only extra libpostproc list item; no used ABI declaration change.",
+      "supplier_colorspace_macro": "Outside selected installed header closure; no structure or function signature change.",
+      "generated_avconfig_limit": "SDK0/1 endian/unaligned configuration is recorded; an original-App generated header was not obtained. This is no general cross-target ABI qualification."
+    },
+    "observed_effective_graph": {
+      "raw": "graph-metadata-01/metadata.jsonl",
+      "provider": "/app/lib/libavfilter.so.12.1.102",
+      "version_info": "9.0.2",
+      "scope": "CPU-only original-provider OWN graph construction, no frames or device; not a private stock Kodi graph dump.",
+      "nodes": [
+        "source NV12",
+        "auto_scale_1 YUV420P",
+        "bwdif YUV420P",
+        "auto_scale_0 NV12",
+        "sink NV12"
+      ],
+      "requested_threads": 0,
+      "configured_threads": 3,
+      "withdrawn_inference": "Numeric SDK/library ABI cannot establish original-App direct NV12 BWDIF support or absence of auto conversion."
+    },
+    "nv12_source_origin": "NV12 support was found in inherited rpi-ffmpeg fork history, not established as a canonical upstream post-n9.0.2 addition or an original-App bug/fix.",
+    "preserved_scope": "Actual unchanged-provider900/1798/1800 observations and all earlier source900 FAILs retain their original identities. Source-attribution correction does not grant stock/release qualification.",
+    "raw": [
+      "source-abi-correction-review.json",
+      "original-app-ffmpeg-provenance-review.json",
+      "nv12-upstream-source-review.json",
+      "/home/mache/.cache/crystalhd-original-app-ffmpeg-abi-20261105/public-header-abi-review.json"
+    ],
+    "withdrawn_draft_source_field": "12cc1f42f06ff0e85633c2602c96786fbd280b70"
+  },
+  "latest_completed_resource_image_cache_subset": {
+    "status": "CANDIDATE_NOT_PROMOTED_NO_MEANINGFUL_END_TO_END_BENEFIT",
+    "raw": "resource-image-cache-comparison.json",
+    "scope": "OWN no-clock original-provider default-discard comparison, not stock/release qualification",
+    "runs": [
+      {
+        "case": "resources-baseline-01",
+        "pid": 2175098,
+        "runtime_source": "f055553c9165ff0ca5034c70cc62b3216f20c05a",
+        "source_api_returns_and_downloads_each": 900,
+        "source_unique_equal_raw_labels": true,
+        "filter_inputs": 900,
+        "unflushed_outputs": 1798,
+        "reference_flushed_outputs": 1800,
+        "wall_seconds": 42.056061515,
+        "main_cpu_seconds": 27.756855802,
+        "process_cpu_seconds": 50.115419236,
+        "download_interval_minor_faults": 1332588,
+        "whole_self_minor_faults": 1386966,
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "boundary_equal": true,
+        "handoff": null
+      },
+      {
+        "case": "resources-image-cache-01",
+        "pid": 2178685,
+        "runtime_source": "00c5a27177a06ed1a2d5cf16b30697110f436045",
+        "source_api_returns_and_downloads_each": 900,
+        "source_unique_equal_raw_labels": true,
+        "filter_inputs": 900,
+        "unflushed_outputs": 1798,
+        "reference_flushed_outputs": 1800,
+        "wall_seconds": 42.887469839,
+        "main_cpu_seconds": 29.819184826,
+        "process_cpu_seconds": 52.122767592,
+        "download_interval_minor_faults": 653238,
+        "whole_self_minor_faults": 1386470,
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "boundary_equal": true,
+        "handoff": null
+      }
+    ],
+    "interpretation": "The measured download interval has fewer minor faults, but whole-process minor faults are essentially unchanged and wall/main/process CPU do not improve. Do not infer eliminated total allocation/zeroing cost or a native900/stock performance fix.",
+    "resource_limits": "Per-call RUSAGE_THREAD windows include measurement overhead and coarse CPU accounting, exclude other threads, and do not identify an allocator/copy alone. RUSAGE_SELF is the whole-process window; these scopes are not interchangeable.",
+    "preserves": "Raw inputs/results, the original draft historical fields and all failure records; no promotion, main-document edit or new execution by this review."
+  },
+  "current_result": {
+    "source_criterion": 900,
+    "stock_originals_per_play": [
+      804,
+      805
+    ],
+    "source_qualification": "FAIL",
+    "global_impossibility": "NOT_PROVED",
+    "external_filter_eof": "Narrow pinned, unmodified caller termination boundary established; separate from source shortage",
+    "release_qualification": false
+  },
+  "maintained_implementation": {
+    "product_source": "372c009 immutable CPU-pixel readback;552600f combined Derive-only retired image cache",
+    "scope": "Default-off Centered, pristine full-NV12 internal DUMB, exact binding/geometry/write epochs, ordinary fallback. External products unchanged.",
+    "weak_provenance": true,
+    "public_read_leases_preserved": true,
+    "export_latch": "Successful surface export including READ_ONLY permanently excludes that allocation.",
+    "snapshot_cache_max_size_and_capacity_bytes": 8355840,
+    "snapshot_cache_entries": 1,
+    "generic_create_image": "Fresh zero initialization; never consumes Derive-only cache.",
+    "all_snapshot_bytes_overwritten_before_publication": true
+  },
+  "actual_readback_cases": [
+    {
+      "case": "centered-readback-stock-01",
+      "source_directory": "/home/mache/.cache/crystalhd-native900-centered-readback-20261105",
+      "revision": "497da9f0b55c05f33384b475befe440238741e85",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "pid": 2186626,
+      "originals_per_play": {
+        "1": 779,
+        "2": 778
+      },
+      "native_ledger_status": {
+        "1": "PASS",
+        "2": "PASS"
+      },
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "controller_boundary_equal": true,
+      "handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 68000,
+      "audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION"
+      },
+      "boundary_scope": "Terminal ownership/lean fields equal initial projection. Four static pins captured before case; no retrospective full raw-dictionary equality claim.",
+      "api_readback": {
+        "status": "PASS_SELECTED_API_READBACK",
+        "successful_fast_api_read_calls": 1559,
+        "sample_api_calls": 2,
+        "distinct_sample_originals": 1,
+        "sample_bytes_each": [
+          3133440,
+          3133440
+        ],
+        "sample_statuses": [
+          "PASS_EXACT_SELECTED_PUBLIC_NV12",
+          "PASS_EXACT_SELECTED_PUBLIC_NV12"
+        ],
+        "source_M_count": false,
+        "limit": "Common CopySurfaceToImage calls, not measured per-API/cache hits. Both samples represent one first original, not all-output qualification."
+      }
+    },
+    {
+      "case": "centered-readback-wc-01",
+      "source_directory": "/home/mache/.cache/crystalhd-native900-centered-readback-20261105",
+      "revision": "61b970b38729a35d5f9cbb35d3d4fbd14fe5eab5",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "pid": 2187381,
+      "originals_per_play": {
+        "1": 734,
+        "2": 720
+      },
+      "native_ledger_status": {
+        "1": "PASS",
+        "2": "PASS"
+      },
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "controller_boundary_equal": true,
+      "handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 71000,
+      "audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION"
+      },
+      "boundary_scope": "Terminal ownership/lean fields equal initial projection. Four static pins captured before case; no retrospective full raw-dictionary equality claim.",
+      "api_readback": {
+        "status": "PASS_SELECTED_API_READBACK",
+        "successful_fast_api_read_calls": 1456,
+        "sample_api_calls": 2,
+        "distinct_sample_originals": 1,
+        "sample_bytes_each": [
+          3133440,
+          3133440
+        ],
+        "sample_statuses": [
+          "PASS_EXACT_SELECTED_PUBLIC_NV12",
+          "PASS_EXACT_SELECTED_PUBLIC_NV12"
+        ],
+        "source_M_count": false,
+        "limit": "Common CopySurfaceToImage calls, not measured per-API/cache hits. Both samples represent one first original, not all-output qualification."
+      }
+    },
+    {
+      "case": "centered-cache-stock-01",
+      "source_directory": "/home/mache/.cache/crystalhd-native900-centered-cache-20261105",
+      "revision": "552600f286d4653a8f3d3f10b269167ccf711bbf",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "pid": 2190775,
+      "originals_per_play": {
+        "1": 804,
+        "2": 805
+      },
+      "native_ledger_status": {
+        "1": "PASS",
+        "2": "PASS"
+      },
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "controller_boundary_equal": true,
+      "handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 73000,
+      "audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION"
+      },
+      "boundary_scope": "Terminal ownership/lean fields equal initial projection. Four static pins captured before case; no retrospective full raw-dictionary equality claim.",
+      "api_readback": {
+        "status": "PASS_SELECTED_API_READBACK",
+        "successful_fast_api_read_calls": 1611,
+        "sample_api_calls": 2,
+        "distinct_sample_originals": 1,
+        "sample_bytes_each": [
+          3133440,
+          3133440
+        ],
+        "sample_statuses": [
+          "PASS_EXACT_SELECTED_PUBLIC_NV12",
+          "PASS_EXACT_SELECTED_PUBLIC_NV12"
+        ],
+        "source_M_count": false,
+        "limit": "Common CopySurfaceToImage calls, not measured per-API/cache hits. Both samples represent one first original, not all-output qualification."
+      }
+    }
+  ],
+  "readback_cpu_result": {
+    "before_case": "wc-default-01",
+    "after_case": "centered-readback-stock-01",
+    "between_public_READ_median_thread_cpu_ms_before": [
+      6.9508,
+      6.9765
+    ],
+    "between_public_READ_median_thread_cpu_ms_after": [
+      1.6781,
+      1.6756
+    ],
+    "methods_median_thread_cpu_ms_before": [
+      0.01887,
+      0.01893
+    ],
+    "methods_median_thread_cpu_ms_after": [
+      0.01854,
+      0.01859
+    ],
+    "scope": "Between public methods includes copy/dispatch/bookkeeping and small CPU READ methods, not pure copy/whole AddPicture. Surface/owner0 heap excluded. Timing driver_instance0 retains partial-key limit."
+  },
+  "sustained_shortage": {
+    "schema": 1,
+    "status": "PASS_SCOPED_RAW_LABEL_AND_MONOTONIC_ONSET_REVIEW",
+    "reviewer": "/root/docs_evidence_release",
+    "cases": {
+      "wc-default-01": {
+        "result": "/home/mache/.cache/crystalhd-native900-run-20261104/wc-default-01/result.json",
+        "raw_packet_report": "/home/mache/.cache/crystalhd-native900-run-20261104/wc-default-01/payload/packet-admission-2152058.jsonl",
+        "revision": "d77944c8a0894e98f7e94d420d71a51da32b54e3",
+        "plays": {
+          "1": {
+            "selected_codec_instance_epoch": [
+              7,
+              1
+            ],
+            "accepted_unique_raw_labels": 900,
+            "unique_returned_labels": 690,
+            "missing_raw_labels": 210,
+            "entry_state_matrix": {
+              "DEFAULT": {
+                "accepted": 376,
+                "returned_labels_present": 376,
+                "absent_labels": 0
+              },
+              "NONREF": {
+                "accepted": 524,
+                "returned_labels_present": 314,
+                "absent_labels": 210
+              }
+            },
+            "first_nonref_accepted_call": {
+              "accepted_call_ordinal": 97,
+              "observer_seq": 1577,
+              "elapsed_seconds_since_first_accepted_entry": 6.380265909,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "first_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 98,
+              "observer_seq": 1588,
+              "elapsed_seconds_since_first_accepted_entry": 6.418176536,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "last_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 899,
+              "observer_seq": 9105,
+              "elapsed_seconds_since_first_accepted_entry": 31.792106355,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "missing_labels_in_last300_accepted_calls": 67,
+            "accepted_call_buckets100": [
+              {
+                "accepted_call_range": [
+                  1,
+                  100
+                ],
+                "nonref_entries": 4,
+                "absent_raw_labels": 2
+              },
+              {
+                "accepted_call_range": [
+                  101,
+                  200
+                ],
+                "nonref_entries": 100,
+                "absent_raw_labels": 40
+              },
+              {
+                "accepted_call_range": [
+                  201,
+                  300
+                ],
+                "nonref_entries": 76,
+                "absent_raw_labels": 31
+              },
+              {
+                "accepted_call_range": [
+                  301,
+                  400
+                ],
+                "nonref_entries": 53,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  401,
+                  500
+                ],
+                "nonref_entries": 58,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  501,
+                  600
+                ],
+                "nonref_entries": 68,
+                "absent_raw_labels": 26
+              },
+              {
+                "accepted_call_range": [
+                  601,
+                  700
+                ],
+                "nonref_entries": 55,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  701,
+                  800
+                ],
+                "nonref_entries": 52,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  801,
+                  900
+                ],
+                "nonref_entries": 58,
+                "absent_raw_labels": 23
+              }
+            ],
+            "observed_wall_buckets5_seconds": [
+              {
+                "elapsed_seconds_range": [
+                  0,
+                  5
+                ],
+                "accepted": 66,
+                "nonref": 0,
+                "absent_labels": 0
+              },
+              {
+                "elapsed_seconds_range": [
+                  5,
+                  10
+                ],
+                "accepted": 177,
+                "nonref": 147,
+                "absent_labels": 58
+              },
+              {
+                "elapsed_seconds_range": [
+                  10,
+                  15
+                ],
+                "accepted": 154,
+                "nonref": 86,
+                "absent_labels": 37
+              },
+              {
+                "elapsed_seconds_range": [
+                  15,
+                  20
+                ],
+                "accepted": 149,
+                "nonref": 86,
+                "absent_labels": 33
+              },
+              {
+                "elapsed_seconds_range": [
+                  20,
+                  25
+                ],
+                "accepted": 151,
+                "nonref": 95,
+                "absent_labels": 37
+              },
+              {
+                "elapsed_seconds_range": [
+                  25,
+                  30
+                ],
+                "accepted": 149,
+                "nonref": 79,
+                "absent_labels": 33
+              },
+              {
+                "elapsed_seconds_range": [
+                  30,
+                  35
+                ],
+                "accepted": 54,
+                "nonref": 31,
+                "absent_labels": 12
+              }
+            ],
+            "source900_status": "FAIL",
+            "late_absence_proved": true
+          },
+          "2": {
+            "selected_codec_instance_epoch": [
+              13,
+              1
+            ],
+            "accepted_unique_raw_labels": 900,
+            "unique_returned_labels": 698,
+            "missing_raw_labels": 202,
+            "entry_state_matrix": {
+              "DEFAULT": {
+                "accepted": 355,
+                "returned_labels_present": 355,
+                "absent_labels": 0
+              },
+              "NONREF": {
+                "accepted": 545,
+                "returned_labels_present": 343,
+                "absent_labels": 202
+              }
+            },
+            "first_nonref_accepted_call": {
+              "accepted_call_ordinal": 97,
+              "observer_seq": 10638,
+              "elapsed_seconds_since_first_accepted_entry": 5.669549288,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "first_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 98,
+              "observer_seq": 10652,
+              "elapsed_seconds_since_first_accepted_entry": 5.707452583,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "last_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 895,
+              "observer_seq": 18221,
+              "elapsed_seconds_since_first_accepted_entry": 31.391911097,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "missing_labels_in_last300_accepted_calls": 67,
+            "accepted_call_buckets100": [
+              {
+                "accepted_call_range": [
+                  1,
+                  100
+                ],
+                "nonref_entries": 4,
+                "absent_raw_labels": 2
+              },
+              {
+                "accepted_call_range": [
+                  101,
+                  200
+                ],
+                "nonref_entries": 100,
+                "absent_raw_labels": 40
+              },
+              {
+                "accepted_call_range": [
+                  201,
+                  300
+                ],
+                "nonref_entries": 66,
+                "absent_raw_labels": 24
+              },
+              {
+                "accepted_call_range": [
+                  301,
+                  400
+                ],
+                "nonref_entries": 59,
+                "absent_raw_labels": 23
+              },
+              {
+                "accepted_call_range": [
+                  401,
+                  500
+                ],
+                "nonref_entries": 62,
+                "absent_raw_labels": 20
+              },
+              {
+                "accepted_call_range": [
+                  501,
+                  600
+                ],
+                "nonref_entries": 68,
+                "absent_raw_labels": 26
+              },
+              {
+                "accepted_call_range": [
+                  601,
+                  700
+                ],
+                "nonref_entries": 61,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  701,
+                  800
+                ],
+                "nonref_entries": 63,
+                "absent_raw_labels": 24
+              },
+              {
+                "accepted_call_range": [
+                  801,
+                  900
+                ],
+                "nonref_entries": 62,
+                "absent_raw_labels": 21
+              }
+            ],
+            "observed_wall_buckets5_seconds": [
+              {
+                "elapsed_seconds_range": [
+                  0,
+                  5
+                ],
+                "accepted": 82,
+                "nonref": 0,
+                "absent_labels": 0
+              },
+              {
+                "elapsed_seconds_range": [
+                  5,
+                  10
+                ],
+                "accepted": 171,
+                "nonref": 136,
+                "absent_labels": 53
+              },
+              {
+                "elapsed_seconds_range": [
+                  10,
+                  15
+                ],
+                "accepted": 152,
+                "nonref": 94,
+                "absent_labels": 36
+              },
+              {
+                "elapsed_seconds_range": [
+                  15,
+                  20
+                ],
+                "accepted": 148,
+                "nonref": 99,
+                "absent_labels": 34
+              },
+              {
+                "elapsed_seconds_range": [
+                  20,
+                  25
+                ],
+                "accepted": 150,
+                "nonref": 93,
+                "absent_labels": 34
+              },
+              {
+                "elapsed_seconds_range": [
+                  25,
+                  30
+                ],
+                "accepted": 150,
+                "nonref": 92,
+                "absent_labels": 34
+              },
+              {
+                "elapsed_seconds_range": [
+                  30,
+                  35
+                ],
+                "accepted": 47,
+                "nonref": 31,
+                "absent_labels": 11
+              }
+            ],
+            "source900_status": "FAIL",
+            "late_absence_proved": true
+          }
+        }
+      },
+      "centered-readback-stock-01": {
+        "result": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/result.json",
+        "raw_packet_report": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/packet-admission-2186626.jsonl",
+        "revision": "497da9f0b55c05f33384b475befe440238741e85",
+        "plays": {
+          "1": {
+            "selected_codec_instance_epoch": [
+              7,
+              1
+            ],
+            "accepted_unique_raw_labels": 900,
+            "unique_returned_labels": 779,
+            "missing_raw_labels": 121,
+            "entry_state_matrix": {
+              "DEFAULT": {
+                "accepted": 593,
+                "returned_labels_present": 593,
+                "absent_labels": 0
+              },
+              "NONREF": {
+                "accepted": 307,
+                "returned_labels_present": 186,
+                "absent_labels": 121
+              }
+            },
+            "first_nonref_accepted_call": {
+              "accepted_call_ordinal": 99,
+              "observer_seq": 1496,
+              "elapsed_seconds_since_first_accepted_entry": 5.790468788,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "first_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 99,
+              "observer_seq": 1496,
+              "elapsed_seconds_since_first_accepted_entry": 5.790468788,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "last_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 899,
+              "observer_seq": 9196,
+              "elapsed_seconds_since_first_accepted_entry": 31.832990918,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "missing_labels_in_last300_accepted_calls": 35,
+            "accepted_call_buckets100": [
+              {
+                "accepted_call_range": [
+                  1,
+                  100
+                ],
+                "nonref_entries": 2,
+                "absent_raw_labels": 1
+              },
+              {
+                "accepted_call_range": [
+                  101,
+                  200
+                ],
+                "nonref_entries": 70,
+                "absent_raw_labels": 28
+              },
+              {
+                "accepted_call_range": [
+                  201,
+                  300
+                ],
+                "nonref_entries": 35,
+                "absent_raw_labels": 12
+              },
+              {
+                "accepted_call_range": [
+                  301,
+                  400
+                ],
+                "nonref_entries": 28,
+                "absent_raw_labels": 13
+              },
+              {
+                "accepted_call_range": [
+                  401,
+                  500
+                ],
+                "nonref_entries": 53,
+                "absent_raw_labels": 19
+              },
+              {
+                "accepted_call_range": [
+                  501,
+                  600
+                ],
+                "nonref_entries": 29,
+                "absent_raw_labels": 13
+              },
+              {
+                "accepted_call_range": [
+                  601,
+                  700
+                ],
+                "nonref_entries": 30,
+                "absent_raw_labels": 12
+              },
+              {
+                "accepted_call_range": [
+                  701,
+                  800
+                ],
+                "nonref_entries": 28,
+                "absent_raw_labels": 12
+              },
+              {
+                "accepted_call_range": [
+                  801,
+                  900
+                ],
+                "nonref_entries": 32,
+                "absent_raw_labels": 11
+              }
+            ],
+            "observed_wall_buckets5_seconds": [
+              {
+                "elapsed_seconds_range": [
+                  0,
+                  5
+                ],
+                "accepted": 78,
+                "nonref": 0,
+                "absent_labels": 0
+              },
+              {
+                "elapsed_seconds_range": [
+                  5,
+                  10
+                ],
+                "accepted": 167,
+                "nonref": 88,
+                "absent_labels": 35
+              },
+              {
+                "elapsed_seconds_range": [
+                  10,
+                  15
+                ],
+                "accepted": 149,
+                "nonref": 44,
+                "absent_labels": 17
+              },
+              {
+                "elapsed_seconds_range": [
+                  15,
+                  20
+                ],
+                "accepted": 148,
+                "nonref": 69,
+                "absent_labels": 25
+              },
+              {
+                "elapsed_seconds_range": [
+                  20,
+                  25
+                ],
+                "accepted": 151,
+                "nonref": 42,
+                "absent_labels": 19
+              },
+              {
+                "elapsed_seconds_range": [
+                  25,
+                  30
+                ],
+                "accepted": 150,
+                "nonref": 45,
+                "absent_labels": 17
+              },
+              {
+                "elapsed_seconds_range": [
+                  30,
+                  35
+                ],
+                "accepted": 57,
+                "nonref": 19,
+                "absent_labels": 8
+              }
+            ],
+            "source900_status": "FAIL",
+            "late_absence_proved": true
+          },
+          "2": {
+            "selected_codec_instance_epoch": [
+              13,
+              1
+            ],
+            "accepted_unique_raw_labels": 900,
+            "unique_returned_labels": 778,
+            "missing_raw_labels": 122,
+            "entry_state_matrix": {
+              "DEFAULT": {
+                "accepted": 580,
+                "returned_labels_present": 580,
+                "absent_labels": 0
+              },
+              "NONREF": {
+                "accepted": 320,
+                "returned_labels_present": 198,
+                "absent_labels": 122
+              }
+            },
+            "first_nonref_accepted_call": {
+              "accepted_call_ordinal": 97,
+              "observer_seq": 10654,
+              "elapsed_seconds_since_first_accepted_entry": 5.150234763,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "first_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 98,
+              "observer_seq": 10665,
+              "elapsed_seconds_since_first_accepted_entry": 5.187323901,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "last_absent_label_in_accepted_call_order": {
+              "accepted_call_ordinal": 887,
+              "observer_seq": 18362,
+              "elapsed_seconds_since_first_accepted_entry": 31.05625232,
+              "entry_skip_state": [
+                8,
+                8,
+                8
+              ]
+            },
+            "missing_labels_in_last300_accepted_calls": 40,
+            "accepted_call_buckets100": [
+              {
+                "accepted_call_range": [
+                  1,
+                  100
+                ],
+                "nonref_entries": 4,
+                "absent_raw_labels": 2
+              },
+              {
+                "accepted_call_range": [
+                  101,
+                  200
+                ],
+                "nonref_entries": 55,
+                "absent_raw_labels": 22
+              },
+              {
+                "accepted_call_range": [
+                  201,
+                  300
+                ],
+                "nonref_entries": 38,
+                "absent_raw_labels": 15
+              },
+              {
+                "accepted_call_range": [
+                  301,
+                  400
+                ],
+                "nonref_entries": 39,
+                "absent_raw_labels": 13
+              },
+              {
+                "accepted_call_range": [
+                  401,
+                  500
+                ],
+                "nonref_entries": 52,
+                "absent_raw_labels": 18
+              },
+              {
+                "accepted_call_range": [
+                  501,
+                  600
+                ],
+                "nonref_entries": 34,
+                "absent_raw_labels": 12
+              },
+              {
+                "accepted_call_range": [
+                  601,
+                  700
+                ],
+                "nonref_entries": 25,
+                "absent_raw_labels": 12
+              },
+              {
+                "accepted_call_range": [
+                  701,
+                  800
+                ],
+                "nonref_entries": 37,
+                "absent_raw_labels": 15
+              },
+              {
+                "accepted_call_range": [
+                  801,
+                  900
+                ],
+                "nonref_entries": 36,
+                "absent_raw_labels": 13
+              }
+            ],
+            "observed_wall_buckets5_seconds": [
+              {
+                "elapsed_seconds_range": [
+                  0,
+                  5
+                ],
+                "accepted": 93,
+                "nonref": 0,
+                "absent_labels": 0
+              },
+              {
+                "elapsed_seconds_range": [
+                  5,
+                  10
+                ],
+                "accepted": 161,
+                "nonref": 84,
+                "absent_labels": 33
+              },
+              {
+                "elapsed_seconds_range": [
+                  10,
+                  15
+                ],
+                "accepted": 150,
+                "nonref": 52,
+                "absent_labels": 19
+              },
+              {
+                "elapsed_seconds_range": [
+                  15,
+                  20
+                ],
+                "accepted": 150,
+                "nonref": 72,
+                "absent_labels": 24
+              },
+              {
+                "elapsed_seconds_range": [
+                  20,
+                  25
+                ],
+                "accepted": 148,
+                "nonref": 41,
+                "absent_labels": 18
+              },
+              {
+                "elapsed_seconds_range": [
+                  25,
+                  30
+                ],
+                "accepted": 151,
+                "nonref": 48,
+                "absent_labels": 19
+              },
+              {
+                "elapsed_seconds_range": [
+                  30,
+                  35
+                ],
+                "accepted": 47,
+                "nonref": 23,
+                "absent_labels": 9
+              }
+            ],
+            "source900_status": "FAIL",
+            "late_absence_proved": true
+          }
+        }
+      }
+    },
+    "conclusion": "Remaining absent rawlabels persist into late accepted-call population and observed wall time; this is not confined to initialwarmup. All absent labels were accepted with entryNONREF state. Own sustained latency/copy cost can still be a hypothesis, but callerpolicy/clock cause and exact perpacketVA identity remain unproved.",
+    "limits": [
+      "Selectedcodec/epoch and exact rawintegerlabels only; framePTS=bestEffort here, no source90k/privateoffset/timebase calibration.",
+      "Accepted-call order differs from numericPTS/presentation order. Wall time is observed monotonic API entry relative to first accepted entry, not media time.",
+      "All900 substantive packets are accepted; missing labels are only known after actual final decode drain. EntryNONREF association does not prove which internal policy branch discarded each picture or why NONREF was selected.",
+      "No inference that lower OWN scopeCPU causally repaired or increased sourcepopulation; runs differ in scheduling/thermal histories.",
+      "No sourcecriteria weakened and no physical/release/fullpixel qualification."
+    ],
+    "actions": "Finite offline originalJSONL metadata analysis; no probe, product edit, build, CPUtest or media."
+  },
+  "sampled_remaining_cpu": {
+    "case": "profile-centered-cache-stock-01",
+    "source": "552600f",
+    "sampling": "49Hz cpu-clock:u all App TIDs dwarf8192 lost0",
+    "normal_performance_comparison": false,
+    "sampled_originals": [
+      744,
+      796
+    ],
+    "profiler_exit": 0,
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "controller_boundary_equal": true,
+    "selected_API_bytes": "PASS_SELECTED_API_READBACK",
+    "overlapping_user_cpu_share_percent": {
+      "ReceiveOne_inclusive": 8.71,
+      "DeriveImage_inclusive": 3.92,
+      "CopySurfaceToImage_inclusive": 3.89,
+      "ComposeCenteredCanvas_inclusive": 3.58,
+      "CopyH264InterlacedToSurface_self": 3.18
+    },
+    "limits": "Whole App including nonplay phases/overlapping callers, not a budget/lower bound/impossibility proof/matched speed comparison. Field conversion already SSE2."
+  },
+  "affected_checks": {
+    "combined_source": "552600f286d4653a8f3d3f10b269167ccf711bbf",
+    "strict_private_driver_build": "PASS",
+    "scaling": {
+      "groups": 39,
+      "checks": 188686,
+      "failures": 0
+    },
+    "buffer_handles": "PASS",
+    "vpp": {
+      "regressions": 115,
+      "status": "PASS"
+    },
+    "wc_controller": {
+      "tests": 48,
+      "existing_optional_skips": 1,
+      "status": "PASS"
+    },
+    "source_equivalence": "Integration runtime sources equal552600f; client equals separately compiled2aa8aec. Integration ordinary build/CI belong to owning PR."
+  },
+  "new_independent_reviews": {
+    "centered-readback-product-review.json": {
+      "schema": 1,
+      "status": "PASS_SCOPED_PRODUCT_SOURCE_REVIEW",
+      "reviewer": "rc3_release_review",
+      "product_source": "372c0092cc8a8d5d7276d0461375193c730bba81",
+      "files": [
+        "filters/vaapi/crystalhd_drv_video.cpp",
+        "tests/vaapi-scaling.cpp"
+      ],
+      "mode": "READ_ONLY_SOURCE_REVIEW_NO_BUILD_TEST_OR_MEDIA_EXECUTION_BY_REVIEWER",
+      "qualification": "Not physical performance/pixel/stock/release acceptance.",
+      "accepted_contract": [
+        "Only canonical internally owned unexposed DUMB NV12 allocations with complete full-image geometry may reconstruct.",
+        "Current decoder, immutable decoded picture and weak CPU-small provenance must match token/context/generation/decode identity/submission ordinal, geometry and write epochs.",
+        "Small provenance is weak and cannot pin or revive the original picture/direct backing; expiration or any mismatch uses the ordinary public-copy path.",
+        "Generic and WC writes, BeginPicture, owner revocation/failure and cold-image write reservation invalidate before writing.",
+        "Surface exports permanently expose the backing, including READ_ONLY exports; imported aliases also revoke pristine eligibility and later Compose cannot clear the latch.",
+        "Both original public READ ownership and small READ ownership are retained; either END failure prevents successful API completion.",
+        "Successful reconstructed bytes reside in an independent VAImage Buffer; native source/M/ownership census and copy/publication rules are not replaced."
+      ],
+      "regression_source_scope": [
+        "Existing EndPicture/materialization/Compose paths with deterministic DIL and explicit file-backed DUMB lease scaffolds.",
+        "Visible1080/coded1088 and limited/full-range byte comparisons for complete GetImage/DeriveImage.",
+        "Read/write failures, private geometry/identity/epoch changes, weak expiry and partial-copy fallback.",
+        "Actual exported file-descriptor edits, new Compose after permanent exposure and imported-alias fallback."
+      ],
+      "intentional_fallbacks": [
+        "GBM/imports/aliases",
+        "Partial or incompatible geometry/image requests",
+        "Exposed or write-invalidated backing",
+        "Absent/closing/retired decoder or expired small/picture provenance"
+      ],
+      "retained_tail_scope": "The OWN no-clock client explicitly closes its decoder before downloading its retained tail. Those post-close image reads intentionally fail current-context admission and use ordinary copy; successful fast API-read count is an observed subset, never a900 source gate.",
+      "private_observer": "Separate497da9f records API-read count and at most first2 arbitrary full-binding NV12 Buffer snapshots at owner exit. Exact offline matching to existing selected payload/native records is mandatory; missing matches remain NOT_MATCHED. Observer publication does not prove driver retirement.",
+      "external_product_changes": false,
+      "raw_receipts_modified": false,
+      "physical_result": "NOT_REVIEWED_PENDING_ROOT_COMPLETED_CAPTURE"
+    },
+    "centered-readback-observer-review.json": {
+      "schema": 1,
+      "status": "PASS_SCOPED_SOURCE_REVIEW_NOT_RUNTIME_QUALIFICATION",
+      "reviewer": "/root/docs_evidence_release",
+      "source_revision": "497da9f0b55c05f33384b475befe440238741e85",
+      "files": [
+        "tests/vaapi-centered-readback-observer.h",
+        "tests/vaapi-replay-disposition-backend.cpp",
+        "filters/vaapi/Makefile"
+      ],
+      "reviewed_boundaries": [
+        "Private backend macro calls capture only after successful reconstructed copy and both CPU READ END operations.",
+        "Capture copies independently owned completed VAImage Buffer bytes under existing driver serialization; no surface/GTT reread after lease release.",
+        "Two preallocated bounded NV12 byte arrays; canonical geometry/size/pitches/offsets and eight nonzero provenance scalars checked before selection.",
+        "PID ownership initialized at private DSO load; inherited child calls return before object reads, mutex, ledger writes or publication. Parent fork flag remains descriptive.",
+        "Capture and publication gate serialize fixed-array ownership; producer result/errno preserved and no per-call file I/O.",
+        "Fresh no-follow/exclusive output files; failed/partial manifest remains .partial; final manifest published only after successful complete writes/close and link without replacement. Blob failures mark incomplete.",
+        "Ordinary backend has no observer state or knob; previous payload/replay/cost schemas unchanged; explicit private build dependency present."
+      ],
+      "required_result_limits": [
+        "A complete integrity footer with zero captures does not prove execution. Require nonzero successful-fast-read count and actual snapshots separately.",
+        "Selection is first two valid successful API reads, not compose slots or a promise of distinct source pictures; verify each captured identity rather than assuming uniqueness.",
+        "Require exact offline native binding joins before any selected picture/pixel identity claim. Do not fill missing scalars from guesses.",
+        "Successful-fast-API-read counts are not source-original, materialization, presentation or completed-picture counts.",
+        "Publication at owner DSO/process exit does not observe driver retirement; header driver_retirement_observed:false must remain.",
+        "This is source review only, not actual physical/census/pixel/release acceptance or a demonstrated speedup."
+      ],
+      "findings": [],
+      "actions": "Read-only source inspection and this cache receipt only. No source edits, compiler, tests, media, device, module, API mutation or commit."
+    },
+    "centered-cache-applied-source-review.json": {
+      "schema": 1,
+      "status": "PASS_APPLIED_CENTERED_DERIVE_CACHE_SOURCE_REVIEW",
+      "reviewer": "rc3_release_review",
+      "reviewed_at": "2026-11-04T17:01:38.185081+00:00",
+      "candidate": "552600f286d4653a8f3d3f10b269167ccf711bbf",
+      "base": "61b970b38729a35d5f9cbb35d3d4fbd14fe5eab5",
+      "worktree": "/home/mache/.cache/crystalhd-native900-centered-cache-20261105",
+      "scope": "Read-only review of the actual applied two-file diff and merged full-image reconstruction/public image lifecycle; no builds, tests or media execution by reviewer.",
+      "changed_files": [
+        "filters/vaapi/crystalhd_drv_video.cpp",
+        "tests/vaapi-buffer-handles.cpp"
+      ],
+      "findings": [],
+      "verified_contracts": [
+        "Only full DeriveImage snapshots consume exact-size retired vector storage; public CreateImage still zero-initializes and generic images cannot replace the spare.",
+        "Centered reconstruction writes every canonical NV12 image byte, including all inactive rows and borders. Ordinary full DeriveImage fallback also overwrites every active packed NV12/BGRA image byte.",
+        "Completed image buffer remains independent of the public surface and small CPU surface. Successful fast-path publication follows both READ END operations; failed copies erase unpublished image/buffer state.",
+        "One spare contains only vector bytes, not Buffer/surface/owner/lease/provenance metadata. DestroyImage guards require matching derived image, valid image buffer type/context, no borrower/map/write-active/failed state, matching extent, and capacity at most 8355840 bytes.",
+        "Cold writeback/source metadata belongs to the new Buffer and is erased normally on destruction. Weak provenance is never revived from cache bytes.",
+        "The applied diff retains allocation-fault controls for real reuse, full dirty overwrite, generic zeroing, odd geometry, source lifetime, map/export, capacity, cold writeback, read failures and OOM rollback.",
+        "Centered reconstruction, its private readback observer and the WC controller are unchanged by this applied cache diff."
+      ],
+      "limits": [
+        "This is an applied source review, distinct from the earlier prospective centered-snapshot interaction review.",
+        "No new performance or whole-source qualification is inferred. Prior source900 failures and original raw evidence remain unchanged.",
+        "The API fast-read observer counts successful reads, not cache hits, materializations or distinct original pictures; earlier first two snapshots describe the same picture.",
+        "The proposed next physical arm uses WC default OFF. Review does not modify or execute that plan.",
+        "The no-clock transfer_data CreateImage/GetImage route did not exercise the earlier Derive-only hot cache; its timing cannot establish this combined stock-Derive result."
+      ]
+    },
+    "centered-readback-stock-independent-review.json": {
+      "schema": 1,
+      "status": "PASS_SCOPED_INDEPENDENT_ACTUAL_REVIEW_SOURCE900_STILL_FAIL",
+      "reviewer": "/root/docs_evidence_release",
+      "current": {
+        "revision": "497da9f0b55c05f33384b475befe440238741e85",
+        "result": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/result.json",
+        "cost": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/maintained-cost-2186626.jsonl",
+        "pid": 2186626,
+        "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+        "controls_status": "PASS",
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "boundary_equal": true,
+        "handoff": null,
+        "audit_statuses": {
+          "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+          "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+          "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+          "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION"
+        },
+        "plays": {
+          "1": {
+            "pairs": 780,
+            "output_tids": [
+              2186744
+            ],
+            "raw_driver_values": [
+              0
+            ],
+            "distinct_partial7_bindings": 779,
+            "source_originals": 779,
+            "methods_cpu": {
+              "count": 780,
+              "sum_ns": 15778081,
+              "p50_ns": 18537.0,
+              "p95_ns": 31340,
+              "mean_ns": 20228.308974358974
+            },
+            "methods_wall": {
+              "count": 780,
+              "sum_ns": 24154368,
+              "p50_ns": 24096.5,
+              "p95_ns": 49798,
+              "mean_ns": 30967.138461538463
+            },
+            "between_cpu": {
+              "count": 780,
+              "sum_ns": 1446922085,
+              "p50_ns": 1678081.0,
+              "p95_ns": 3104508,
+              "mean_ns": 1855028.314102564
+            },
+            "between_wall": {
+              "count": 780,
+              "sum_ns": 1643219490,
+              "p50_ns": 1742271.5,
+              "p95_ns": 3807847,
+              "mean_ns": 2106691.653846154
+            },
+            "negative_between_wall_minus_cpu_samples": 339
+          },
+          "2": {
+            "pairs": 779,
+            "output_tids": [
+              2186793
+            ],
+            "raw_driver_values": [
+              0
+            ],
+            "distinct_partial7_bindings": 778,
+            "source_originals": 778,
+            "methods_cpu": {
+              "count": 779,
+              "sum_ns": 15907022,
+              "p50_ns": 18592,
+              "p95_ns": 32051,
+              "mean_ns": 20419.797175866497
+            },
+            "methods_wall": {
+              "count": 779,
+              "sum_ns": 24971016,
+              "p50_ns": 24375,
+              "p95_ns": 57342,
+              "mean_ns": 32055.219512195123
+            },
+            "between_cpu": {
+              "count": 779,
+              "sum_ns": 1450314489,
+              "p50_ns": 1675625,
+              "p95_ns": 3166695,
+              "mean_ns": 1861764.427471117
+            },
+            "between_wall": {
+              "count": 779,
+              "sum_ns": 1643309799,
+              "p50_ns": 1741119,
+              "p95_ns": 3863581,
+              "mean_ns": 2109511.9370988444
+            },
+            "negative_between_wall_minus_cpu_samples": 344
+          }
+        }
+      },
+      "retained_baseline": {
+        "revision": "d77944c8a0894e98f7e94d420d71a51da32b54e3",
+        "result": "/home/mache/.cache/crystalhd-native900-run-20261104/wc-default-01/result.json",
+        "cost": "/home/mache/.cache/crystalhd-native900-run-20261104/wc-default-01/payload/maintained-cost-2152058.jsonl",
+        "pid": 2152058,
+        "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+        "controls_status": "PASS",
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "boundary_equal": true,
+        "handoff": null,
+        "audit_statuses": {
+          "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+          "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+          "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+          "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION"
+        },
+        "plays": {
+          "1": {
+            "pairs": 691,
+            "output_tids": [
+              2152176
+            ],
+            "raw_driver_values": [
+              0
+            ],
+            "distinct_partial7_bindings": 690,
+            "source_originals": 690,
+            "methods_cpu": {
+              "count": 691,
+              "sum_ns": 13931059,
+              "p50_ns": 18868,
+              "p95_ns": 29244,
+              "mean_ns": 20160.722141823444
+            },
+            "methods_wall": {
+              "count": 691,
+              "sum_ns": 29918824,
+              "p50_ns": 26331,
+              "p95_ns": 63837,
+              "mean_ns": 43297.86396526773
+            },
+            "between_cpu": {
+              "count": 691,
+              "sum_ns": 5291848893,
+              "p50_ns": 6950750,
+              "p95_ns": 10503250,
+              "mean_ns": 7658247.312590448
+            },
+            "between_wall": {
+              "count": 691,
+              "sum_ns": 5652953077,
+              "p50_ns": 7351043,
+              "p95_ns": 11551539,
+              "mean_ns": 8180829.344428365
+            },
+            "negative_between_wall_minus_cpu_samples": 97
+          },
+          "2": {
+            "pairs": 699,
+            "output_tids": [
+              2152223
+            ],
+            "raw_driver_values": [
+              0
+            ],
+            "distinct_partial7_bindings": 698,
+            "source_originals": 698,
+            "methods_cpu": {
+              "count": 699,
+              "sum_ns": 14249517,
+              "p50_ns": 18928,
+              "p95_ns": 32273,
+              "mean_ns": 20385.575107296136
+            },
+            "methods_wall": {
+              "count": 699,
+              "sum_ns": 34778382,
+              "p50_ns": 26402,
+              "p95_ns": 95405,
+              "mean_ns": 49754.48068669528
+            },
+            "between_cpu": {
+              "count": 699,
+              "sum_ns": 5389631410,
+              "p50_ns": 6976497,
+              "p95_ns": 10633218,
+              "mean_ns": 7710488.426323319
+            },
+            "between_wall": {
+              "count": 699,
+              "sum_ns": 5743445857,
+              "p50_ns": 7335957,
+              "p95_ns": 11621872,
+              "mean_ns": 8216660.73962804
+            },
+            "negative_between_wall_minus_cpu_samples": 118
+          }
+        }
+      },
+      "comparison_old_to_candidate": {
+        "1": {
+          "source_originals": [
+            690,
+            779
+          ],
+          "public_api_read_pairs": [
+            691,
+            780
+          ],
+          "method_cpu_p50_ms": [
+            0.018868,
+            0.018537
+          ],
+          "between_cpu_p50_ms": [
+            6.95075,
+            1.678081
+          ],
+          "between_cpu_mean_ms": [
+            7.658247312590448,
+            1.855028314102564
+          ],
+          "between_wall_p50_ms": [
+            7.351043,
+            1.7422715
+          ]
+        },
+        "2": {
+          "source_originals": [
+            698,
+            778
+          ],
+          "public_api_read_pairs": [
+            699,
+            779
+          ],
+          "method_cpu_p50_ms": [
+            0.018928,
+            0.018592
+          ],
+          "between_cpu_p50_ms": [
+            6.976497,
+            1.675625
+          ],
+          "between_cpu_mean_ms": [
+            7.710488426323319,
+            1.861764427471117
+          ],
+          "between_wall_p50_ms": [
+            7.335957,
+            1.741119
+          ]
+        }
+      },
+      "api_observer_footer": {
+        "type": "footer",
+        "successful_fast_api_read_calls": 1559,
+        "valid_full_binding_calls": 1559,
+        "snapshots": 2,
+        "invalid_binding_or_layout": 0,
+        "clock_failures": 0,
+        "fork_seen": false,
+        "count_window": "BEFORE_OWNER_EXIT_CAPTURE_GATE_CLOSE",
+        "complete": true
+      },
+      "selected_pixel_checks": [
+        {
+          "call_ordinal": 1,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "api_file": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/centered-readback-2186626-s0.nv12",
+          "public_file": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/centered-payload-2186626-2-2-1-s0-public.nv12",
+          "native_submit_M_binding_end_records": [
+            1,
+            1,
+            1
+          ],
+          "capture_within_native_lifetime": true,
+          "exact_bytes_equal": true
+        },
+        {
+          "call_ordinal": 2,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "api_file": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/centered-readback-2186626-s1.nv12",
+          "public_file": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/centered-payload-2186626-2-2-1-s0-public.nv12",
+          "native_submit_M_binding_end_records": [
+            1,
+            1,
+            1
+          ],
+          "capture_within_native_lifetime": true,
+          "exact_bytes_equal": true
+        }
+      ],
+      "distinct_sample_bindings": 1,
+      "limits": [
+        "Exactly1559 successful fast API reads, not1559 source originals. Both samples cover the same first native original; no distinct-picture or play2 sample claim.",
+        "Snapshot eight-scalar native joins are exact. Public timing scopes retain driver_instance0; their seven observed scalars are descriptive partial correspondence, never upgraded into full native identity.",
+        "Between public Begin-end and End-begin includes reconstruction memset/memcpy, the extra small-heap READ methods, dispatch and observer bookkeeping; not pure instruction or complete download/GetImage cost.",
+        "Per-clock deltas stay raw. Negative wall-minusCPU samples do not imply negative wait and are not clamped.",
+        "Old and new are separate sequential instrumented runs with changed source populations/worker schedules; no causal NONREF, whole-application speedup, stock/release or900-picture fix follows.",
+        "New current source criterion remains779/778 of900 FAIL; all measured cleanup/audit PASS results have narrower scopes.",
+        "Selected capture and file equality do not establish all unselected API bytes, private clocks or physical presentation."
+      ],
+      "conclusion": "The candidate materially reduces the observed per-API public READ between-method CPU interval relative to retained wc-default, while both900-original criteria remainFAIL. This supports the narrow OWN readback-cost hypothesis, not a completed900 repair. Retained decoded-public WRITE cost remains a rational independent existing-option comparison, requiring actualWCflags/domain evidence and unchanged source criteria.",
+      "actions": "Finite offline JSON/native-log and exact selected-byte review only; no raw modification, source edit, build, CPU tests, media, device or module action."
+    },
+    "centered-readback-wc-independent-review.json": {
+      "schema": 1,
+      "status": "PASS_SCOPED_ACTUAL_WC_ACTIVATION_AND_SELECTED_API_READBACK_SOURCE900_FAIL",
+      "reviewer": "/root/docs_evidence_release",
+      "revision": "61b970b38729a35d5f9cbb35d3d4fbd14fe5eab5",
+      "result": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-wc-01/result.json",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "boundary_equal": true,
+      "handoff": null,
+      "controls_status": "PASS",
+      "audit_statuses": {
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION"
+      },
+      "plays": {
+        "1": {
+          "native_originals": 734,
+          "matched_canvases": 734,
+          "actual_wc_begin80_success": 734,
+          "actual_wc_end80_success": 734,
+          "successful_exact_child_domains": 1468,
+          "write_fallback_in_matched_canvases": 0,
+          "write_end_cpu_p50_ms": 0.0200135,
+          "source900_qualified": false,
+          "replay_status": "NOT_EXERCISED"
+        },
+        "2": {
+          "native_originals": 720,
+          "matched_canvases": 720,
+          "actual_wc_begin80_success": 720,
+          "actual_wc_end80_success": 720,
+          "successful_exact_child_domains": 1440,
+          "write_fallback_in_matched_canvases": 0,
+          "write_end_cpu_p50_ms": 0.0201915,
+          "source900_qualified": false,
+          "replay_status": "NOT_EXERCISED"
+        }
+      },
+      "api_footer": {
+        "type": "footer",
+        "successful_fast_api_read_calls": 1456,
+        "valid_full_binding_calls": 1456,
+        "snapshots": 2,
+        "invalid_binding_or_layout": 0,
+        "clock_failures": 0,
+        "fork_seen": false,
+        "count_window": "BEFORE_OWNER_EXIT_CAPTURE_GATE_CLOSE",
+        "complete": true
+      },
+      "selected_snapshots": [
+        {
+          "call": 1,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "exact_selected_public_match": true,
+          "exact_native_materialized_join": true
+        },
+        {
+          "call": 2,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "exact_selected_public_match": true,
+          "exact_native_materialized_join": true
+        }
+      ],
+      "distinct_selected_bindings": 1,
+      "limits": [
+        "WC is established by actual flags80 and exact successful domain-child lineage per matched canvas, not by the environment flag.",
+        "All selected snapshots cover the same first original; no two-distinct or all1456bytes/pixels qualification.",
+        "Fast API reads are734+720+2=1456, never a source/M count.",
+        "Compared to preceding non-WC same-candidate779/778, source counts fall to734/720; no900fix or end-to-end benefit is established.",
+        "Separate sequential runs retain scheduler/thermal/client-policy differences; no causal NONREF conclusion or global impossibility."
+      ],
+      "actions": "Finite offline raw ledger/native and selected byte comparisons only; no source edit, build, CPU tests, media or hardware.",
+      "runtime_reuse": {
+        "actual_binary_build_source_revision": "497da9f0b55c05f33384b475befe440238741e85",
+        "current_source_controller_revision": "61b970b38729a35d5f9cbb35d3d4fbd14fe5eab5",
+        "recorded_original_runtime_mapping_identities_equal": true,
+        "roles": [
+          "own-va",
+          "own-dil"
+        ],
+        "scope": "Existing497da9f ownVA/DIL artifacts unchanged;61b970b adds existing controllerWC option only. Compared existing captured mapping identities, no new artifact hashing or rebuild."
+      }
+    },
+    "centered-cache-stock-independent-review.json": {
+      "schema": 1,
+      "status": "PASS_SCOPED_INDEPENDENT_ACTUAL_REVIEW_SOURCE900_FAIL",
+      "reviewer": "/root/docs_evidence_release",
+      "revision": "552600f286d4653a8f3d3f10b269167ccf711bbf",
+      "result": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-cache-stock-01/result.json",
+      "status_original": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "controls_status": "PASS",
+      "errors": [],
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "boundary_equal": true,
+      "handoff": null,
+      "audit_statuses": {
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION"
+      },
+      "raw_native_counts_by_play": {
+        "1": {
+          "submit_bind": 804,
+          "input_sent": 804,
+          "output_dequeued": 1608,
+          "materialized": 804,
+          "binding_end": 804
+        },
+        "2": {
+          "submit_bind": 805,
+          "input_sent": 805,
+          "output_dequeued": 1610,
+          "materialized": 805,
+          "binding_end": 805
+        }
+      },
+      "source_population": {
+        "1": {
+          "originals": 804,
+          "criterion": 900,
+          "status": "FAIL",
+          "replay": "NOT_EXERCISED"
+        },
+        "2": {
+          "originals": 805,
+          "criterion": 900,
+          "status": "FAIL",
+          "replay": "NOT_EXERCISED"
+        }
+      },
+      "api_footer": {
+        "type": "footer",
+        "successful_fast_api_read_calls": 1611,
+        "valid_full_binding_calls": 1611,
+        "snapshots": 2,
+        "invalid_binding_or_layout": 0,
+        "clock_failures": 0,
+        "fork_seen": false,
+        "count_window": "BEFORE_OWNER_EXIT_CAPTURE_GATE_CLOSE",
+        "complete": true
+      },
+      "selected_pixels": [
+        {
+          "call": 1,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "exact_public_bytes_equal": true,
+          "exact_native_submit_M_binding_end_join": true,
+          "capture_within_observed_native_lifetime": true
+        },
+        {
+          "call": 2,
+          "binding": {
+            "driver_instance": 2,
+            "context": 2,
+            "generation": 1,
+            "token": 100000,
+            "decode_identity": 2,
+            "submission_ordinal": 1,
+            "surface": 1,
+            "owner": 1
+          },
+          "bytes": 3133440,
+          "exact_public_bytes_equal": true,
+          "exact_native_submit_M_binding_end_join": true,
+          "capture_within_observed_native_lifetime": true
+        }
+      ],
+      "distinct_sample_bindings": 1,
+      "public_send_wall_comparison": {
+        "centered-readback-stock-01": {
+          "revision": "497da9f0b55c05f33384b475befe440238741e85",
+          "raw_packet_report": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-readback-stock-01/payload/packet-admission-2186626.jsonl",
+          "plays": {
+            "1": {
+              "selected_codec_instance_epoch": [
+                7,
+                1
+              ],
+              "source_originals": 779,
+              "substantive_send_attempts": 900,
+              "accepted_substantive_send_wall": {
+                "calls": 900,
+                "sum_ns": 5852624185,
+                "p50_ns": 3728225.5,
+                "p95_ns": 17857837,
+                "p99_ns": 22243915,
+                "max_ns": 922781944
+              },
+              "all_substantive_attempt_wall": {
+                "calls": 900,
+                "sum_ns": 5852624185,
+                "p50_ns": 3728225.5,
+                "p95_ns": 17857837,
+                "p99_ns": 22243915,
+                "max_ns": 922781944
+              },
+              "return_histogram": {
+                "0": 900
+              },
+              "CPU": "NOT_OBSERVED_FOR_PUBLIC_SEND"
+            },
+            "2": {
+              "selected_codec_instance_epoch": [
+                13,
+                1
+              ],
+              "source_originals": 778,
+              "substantive_send_attempts": 900,
+              "accepted_substantive_send_wall": {
+                "calls": 900,
+                "sum_ns": 5506050746,
+                "p50_ns": 3678706.0,
+                "p95_ns": 17301187,
+                "p99_ns": 22504080,
+                "max_ns": 907942485
+              },
+              "all_substantive_attempt_wall": {
+                "calls": 900,
+                "sum_ns": 5506050746,
+                "p50_ns": 3678706.0,
+                "p95_ns": 17301187,
+                "p99_ns": 22504080,
+                "max_ns": 907942485
+              },
+              "return_histogram": {
+                "0": 900
+              },
+              "CPU": "NOT_OBSERVED_FOR_PUBLIC_SEND"
+            }
+          }
+        },
+        "centered-cache-stock-01": {
+          "revision": "552600f286d4653a8f3d3f10b269167ccf711bbf",
+          "raw_packet_report": "/home/mache/.cache/crystalhd-native900-run-20261104/centered-cache-stock-01/payload/packet-admission-2190775.jsonl",
+          "plays": {
+            "1": {
+              "selected_codec_instance_epoch": [
+                7,
+                1
+              ],
+              "source_originals": 804,
+              "substantive_send_attempts": 901,
+              "accepted_substantive_send_wall": {
+                "calls": 900,
+                "sum_ns": 5338019045,
+                "p50_ns": 3696061.0,
+                "p95_ns": 16889525,
+                "p99_ns": 20868346,
+                "max_ns": 925525541
+              },
+              "all_substantive_attempt_wall": {
+                "calls": 901,
+                "sum_ns": 5338030289,
+                "p50_ns": 3694280,
+                "p95_ns": 16889525,
+                "p99_ns": 20868346,
+                "max_ns": 925525541
+              },
+              "return_histogram": {
+                "0": 900,
+                "-11": 1
+              },
+              "CPU": "NOT_OBSERVED_FOR_PUBLIC_SEND"
+            },
+            "2": {
+              "selected_codec_instance_epoch": [
+                13,
+                1
+              ],
+              "source_originals": 805,
+              "substantive_send_attempts": 900,
+              "accepted_substantive_send_wall": {
+                "calls": 900,
+                "sum_ns": 5359565963,
+                "p50_ns": 3855687.5,
+                "p95_ns": 16236632,
+                "p99_ns": 22259132,
+                "max_ns": 922079825
+              },
+              "all_substantive_attempt_wall": {
+                "calls": 900,
+                "sum_ns": 5359565963,
+                "p50_ns": 3855687.5,
+                "p95_ns": 16236632,
+                "p99_ns": 22259132,
+                "max_ns": 922079825
+              },
+              "return_histogram": {
+                "0": 900
+              },
+              "CPU": "NOT_OBSERVED_FOR_PUBLIC_SEND"
+            }
+          }
+        }
+      },
+      "limits": [
+        "Normal unprofiled case552804/805 is separate from49Hz/all-App-TID profiling744/796 and its controller qualification failure. Profile samples are not a CPU/performance budget and are excluded from these normal-case distributions.",
+        "Selected2APIreadbacks cover the same first original; no two-distinct-picture/per-play/all1611byte claim.",
+        "1611 successful fast API reads equal804+805+2duplicatepreinitialization API reads, not1611source originals.",
+        "Wall spans are existing original outer avcodec_send_packet entry→return timestamps, not CPU or pure OWN-driver cost. Retries and empty drain are separate; no sendCPU fabricated.",
+        "Separate sequential runs have different source populations/scheduling/thermal histories; count increase and wall shift do not establish a causal repair, universal speedup, stock/release or full900acceptance.",
+        "Exact snapshot native8scalar joins do not upgrade other partial/public timing scopes into full identity.",
+        "900criteria remainFAIL despite clean controls/audits/process/kernel/guard results."
+      ],
+      "actions": "Finite offline originalresult/JSONL/native and selected byte checks only; no source edit, new observer, build, CPUtest, profiling, media or hardware.",
+      "terminal_boundary_review": {
+        "raw_full_before_equals_lean_after": false,
+        "every_terminal_lean_field_matches_before_projection": true,
+        "before_only_fields": [
+          "debug_rows",
+          "debug_sha256",
+          "firmware_sha256",
+          "installed_module_sha256"
+        ],
+        "controller_contract": "before is full boundary.guard(); terminal after is lean_snapshot(); reported boundary_equal compares actual POLL_KEYS projection, not full dictionary equality.",
+        "limits": "No claim that this child result alone remeasures the four baseline-only static fields at exit. Parent full-guard proof is separate; no added hardware/test requirement."
+      }
+    }
+  },
+  "unadopted_candidates": {
+    "rx_budget": "580/679 sourceFAIL, reverted86e4453, branch retained.",
+    "isolated_derived_cache": "699/583 stock; old no-clock39.962→40.426 usesCreate/Get and hot Derive cache NOT_EXERCISED. New combined804/805 separate.",
+    "generic_zero_cache": {
+      "status": "CANDIDATE_NOT_PROMOTED_NO_MEANINGFUL_END_TO_END_BENEFIT",
+      "raw": "resource-image-cache-comparison.json",
+      "scope": "OWN no-clock original-provider default-discard comparison, not stock/release qualification",
+      "runs": [
+        {
+          "case": "resources-baseline-01",
+          "pid": 2175098,
+          "runtime_source": "f055553c9165ff0ca5034c70cc62b3216f20c05a",
+          "source_api_returns_and_downloads_each": 900,
+          "source_unique_equal_raw_labels": true,
+          "filter_inputs": 900,
+          "unflushed_outputs": 1798,
+          "reference_flushed_outputs": 1800,
+          "wall_seconds": 42.056061515,
+          "main_cpu_seconds": 27.756855802,
+          "process_cpu_seconds": 50.115419236,
+          "download_interval_minor_faults": 1332588,
+          "whole_self_minor_faults": 1386966,
+          "application_exit": 0,
+          "kernel_exit": 0,
+          "boundary_equal": true,
+          "handoff": null
+        },
+        {
+          "case": "resources-image-cache-01",
+          "pid": 2178685,
+          "runtime_source": "00c5a27177a06ed1a2d5cf16b30697110f436045",
+          "source_api_returns_and_downloads_each": 900,
+          "source_unique_equal_raw_labels": true,
+          "filter_inputs": 900,
+          "unflushed_outputs": 1798,
+          "reference_flushed_outputs": 1800,
+          "wall_seconds": 42.887469839,
+          "main_cpu_seconds": 29.819184826,
+          "process_cpu_seconds": 52.122767592,
+          "download_interval_minor_faults": 653238,
+          "whole_self_minor_faults": 1386470,
+          "application_exit": 0,
+          "kernel_exit": 0,
+          "boundary_equal": true,
+          "handoff": null
+        }
+      ],
+      "interpretation": "The measured download interval has fewer minor faults, but whole-process minor faults are essentially unchanged and wall/main/process CPU do not improve. Do not infer eliminated total allocation/zeroing cost or a native900/stock performance fix.",
+      "resource_limits": "Per-call RUSAGE_THREAD windows include measurement overhead and coarse CPU accounting, exclude other threads, and do not identify an allocator/copy alone. RUSAGE_SELF is the whole-process window; these scopes are not interchangeable.",
+      "preserves": "Raw inputs/results, the original draft historical fields and all failure records; no promotion, main-document edit or new execution by this review."
+    },
+    "SSE_row": "900 diagnostic but wall42.498/main30.230/download15.833s worse than39.962/27.719/13.699; not adopted.",
+    "SSE_batch": "Original fullVPP FAIL retained; later diagnostic PASS not a repair. Not promoted or physically executed."
+  },
+  "limits": [
+    "Source900 remainsFAIL; global impossibility and an external FFmpeg fault are not established.",
+    "Stock diagnostic arms keep the original discard policy. The separate OWN no-clock client explicitly uses DEFAULT. No fabricated picture, missing ownership, external product change or replacement release artifact.",
+    "No-clock and reference-only EOF do not qualify stock real-time or original-client filter EOF.",
+    "Selected pixels only, not all post-copy/output pixels, GPU return or scanout.",
+    "Earlier lost numeric exit/mapping records remain null; original failures/NOT_EXERCISED not relabeled.",
+    "Heap538 remains excluded; broader538 open. Current T8100/BCM70015/965GM only."
+  ]
+}

@@ -706,6 +706,16 @@ Exact fixtures, rates, resource use and A/V qualifications remain in the
   The external patch has been removed under
   [project policy](EXTERNAL-CODE-POLICY.md); historical modified-Kodi results
   cannot qualify stock compatibility or a release.
+- **Known issue: Kodi 22 RC1 BWDIF filter tail.** The observed original method 7
+  route frees its software filter without sending the filter source EOF.
+  Consequently its last input picture's two progressive outputs remain held,
+  separately from any pictures skipped earlier under decoder load. Correct
+  CrystalHD pixels cannot flush an application-owned filter graph. The
+  [source and actual-call evidence](tests/fixtures/issue477/native900-20261104.json)
+  records this scoped limitation; a separate OWN client sending explicit EOF
+  does not qualify lossless stock Kodi EOF. The full 900-source investigation
+  remains open in [#477](https://github.com/ahnhy1324/crystalhd/issues/477) and
+  [#436](https://github.com/ahnhy1324/crystalhd/issues/436).
 - **Oversized H.264 rejection is containment, not general stream recovery.**
   Stable 1.2 includes the transport-specific headroom introduced in 1.1 RC5
   and rejects selected over-budget extended input
