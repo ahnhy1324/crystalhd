@@ -7533,6 +7533,32 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
   {
     MockNativeNodeScope scope(mock);
     auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
+    auto decoder = std::make_shared<DecodeContext>();
+    decoder->id = 53; decoder->width = 256; decoder->height = 32;
+    crystalhd_centered_output::Config config;
+    Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
+                crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder->centered_geometry),
+            "freeze exact Centered geometry for the CPU/GPU provenance transition");
+    fixture.driver.contexts[53] = decoder;
+    auto picture = std::make_shared<Surface>();
+    picture->id = 41; picture->width = 256; picture->height = 32;
+    picture->centered_geometry = decoder->centered_geometry;
+    picture->centered_pixels = std::make_shared<Surface>();
+    Require(picture->centered_pixels->AllocateCpuNv12(128, 16),
+            "allocate the exact private immutable small picture");
+    memset(picture->centered_pixels->storage.data(), 51, picture->centered_pixels->storage.size());
+    for (Surface *item : {surface.get(), picture.get(), picture->centered_pixels.get()}) {
+      item->expected_timestamp = item->frame_timestamp = 100000;
+      item->decode_identity = item->trace_decode_identity = 901;
+      item->trace_context = 53; item->trace_generation = 1; item->trace_submission_ordinal = 1;
+      item->ready = true;
+    }
+    picture->direct_backing = surface;
+    surface->decode_picture = picture;
+    surface->ready = false; surface->frame_timestamp = 0;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                CenteredReadbackSourceAllocation(*surface) && !surface->centered_readback.small.expired(),
+            "real full CPU Compose establishes immutable-small provenance before export");
     const auto expected = CpuPrimaryActiveBytes(*surface);
     const uint32_t charge = surface->cpu_primary_charge.bytes;
     const uint8_t *old_planes[2] = {surface->planes[0], surface->planes[1]};
@@ -7551,6 +7577,10 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
             "successful export commits a fully copied/registered DRM allocation while pinning charged old CPU bytes");
     Require(CpuPrimaryActiveBytes(*surface) == expected && CpuPrimaryActiveBytes(*view) == expected,
             "the new exported planes and an already captured CPU view both keep every exact pixel");
+    Require(!CenteredReadbackSourceAllocation(*surface) && surface->centered_readback.small.expired() &&
+                ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                surface->centered_readback.small.expired(),
+            "GPU export invalidates immutable-small provenance permanently even after another successful Compose");
     std::vector<uint8_t> exported(expected.size());
     Require(pread(prime.objects[0].fd, exported.data(), exported.size(), 0) ==
                 static_cast<ssize_t>(exported.size()) && exported == expected,
@@ -7583,6 +7613,7 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
     VASurfaceID id = 41;
     Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
             "remove the public ID after successful export");
+    picture.reset();
     surface.reset();
     Require(cpu_primary_live_bytes.load() == baseline + charge &&
                 CpuPrimaryActiveBytes(*view) == expected,

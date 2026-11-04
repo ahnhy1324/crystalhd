@@ -7,15 +7,17 @@
 // same-device channel negotiation is exercised by vaapi-replay.cpp instead.
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
 namespace centered_probe {
-unsigned calls = 0, width = 0, height = 0, readbacks = 0, cpu_readbacks = 0;
+unsigned calls = 0, width = 0, height = 0, readbacks = 0, cpu_readbacks = 0, cpu_small_readbacks = 0;
 bool compact = false;
 }
 #define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
   ++centered_probe::calls; centered_probe::width = (w); \
   centered_probe::height = (h); centered_probe::compact = (field); \
 } while (0)
-#define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) \
-  (++centered_probe::readbacks)
+#define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) do { \
+  ++centered_probe::readbacks; \
+  if ((surface).cpu_primary) ++centered_probe::cpu_small_readbacks; \
+} while (0)
 #define CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(surface, image, bytes) \
   (++centered_probe::cpu_readbacks)
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
@@ -3448,10 +3450,12 @@ void CenteredCpuPrimaryFullMaterialization() {
             "real full CPU canvas exists with exact identity before public READY/readback");
     const unsigned weak_reads = centered_probe::readbacks;
     const unsigned cpu_reads = centered_probe::cpu_readbacks;
+    const unsigned cpu_small_reads = centered_probe::cpu_small_readbacks;
     Require(f.Read(1) == expected && f.Read(1, true) == expected &&
-                centered_probe::cpu_readbacks == cpu_reads + 2 &&
-                centered_probe::readbacks == weak_reads,
-            "Get/Derive read the actual independently copied CPU public canvas, not weak-small reconstruction");
+                centered_probe::cpu_readbacks == cpu_reads &&
+                centered_probe::cpu_small_readbacks == cpu_small_reads + 2 &&
+                centered_probe::readbacks == weak_reads + 2,
+            "Get/Derive use qualified immutable small pixels only after full CPU public materialization");
     for (unsigned parity = 0; parity != 2; ++parity) {
       f.QueueBob(parity, false, full);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
@@ -3563,10 +3567,11 @@ void CenteredImageReadbackBytesAndReadFailures() {
 }
 
 void CenteredImageReadbackInvalidationAndFallback() {
-  for (unsigned mutation = 0; mutation != 12; ++mutation) {
+  for (bool cpu_primary : {false, true}) for (unsigned mutation = 0; mutation != 14; ++mutation) {
     CenteredDumbScope io;
     CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
     const auto surface = InstallCenteredDumb(&f, &io.state);
+    if (cpu_primary) RecreateCenteredContext(&f);
     f.Submit(); const auto packed = f.Packed(11); f.Complete(packed);
     auto picture = f.decode->decoded_frames.at(kTimestampStep);
     const auto small = picture->centered_pixels;
@@ -3580,10 +3585,11 @@ void CenteredImageReadbackInvalidationAndFallback() {
     } else if (mutation == 1) {
       surface->owned_i915_dumb = surface->experimental_i915_wc = true;
       bool used = false;
-      Require(surface->BeginDecodedCpuWrite(&used) && used, "WC WRITE really bypasses generic WRITE");
+      Require(surface->BeginDecodedCpuWrite(&used) && used == !cpu_primary,
+              "decoded WRITE uses WC only for the actual DUMB allocation");
       surface->planes[0][0] = 91;
-      Require(surface->EndDecodedCpuWrite(used) && io.state.domains == 2,
-              "WC WRITE retains its original domain transitions");
+      Require(surface->EndDecodedCpuWrite(used) && io.state.domains == (cpu_primary ? 0U : 2U),
+              "decoded CPU writes retain their real allocation-specific ownership protocol");
     } else if (mutation == 2) {
       RevokeDecodeOwner(&f.driver, surface.get());
       VppPixelView view; view.Capture(surface);
@@ -3604,6 +3610,8 @@ void CenteredImageReadbackInvalidationAndFallback() {
       }
       if (mutation == 10) surface->direct_decode_eligible = false;
       if (mutation == 11) surface->centered_readback.small.reset();
+      if (mutation == 12) surface->centered_allocation_exposed = true;
+      if (mutation == 13) surface->cpu_primary = !cpu_primary;
       surface->planes[0][0] = 91;
     }
     auto expected = f.Canvas(packed); expected[0] = 91;
@@ -3611,10 +3619,11 @@ void CenteredImageReadbackInvalidationAndFallback() {
     Require(f.Read(1) == expected && centered_probe::readbacks == before,
             "writes, expired provenance, foreign epochs/context/geometry and imports use actual public bytes");
   }
-  {
+  for (bool cpu_primary : {false, true}) {
     CenteredDumbScope io;
     CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
     const auto surface = InstallCenteredDumb(&f, &io.state);
+    if (cpu_primary) RecreateCenteredContext(&f);
     f.Submit(); const auto packed = f.Packed(17); f.Complete(packed);
     const std::weak_ptr<Surface> weak = surface->centered_readback.small;
     f.decode->decoded_frames.clear();

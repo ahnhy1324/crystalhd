@@ -6,7 +6,8 @@
 #include "vaapi-centered-readback-observer.h"
 #define CRYSTALHD_VAAPI_TEST_CENTERED_READBACK(surface, image, bytes) \
   crystalhd_test_centered_readback::Capture( \
-      driver->trace.session(), TraceFields(nullptr, &(surface)), (image), (bytes))
+      driver->trace.session(), TraceFields(nullptr, &(surface)), (image), (bytes), \
+      (surface).cpu_primary)
 #define CRYSTALHD_VAAPI_TEST_CPU_PUBLIC_READBACK(surface, image, bytes) \
   crystalhd_test_centered_readback::CaptureCpuPrimary( \
       driver->trace.session(), TraceFields(nullptr, &(surface)), (image), (bytes))

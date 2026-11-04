@@ -1540,6 +1540,8 @@ static bool SameCenteredGeometry(const crystalhd_centered_output::Geometry &a,
 static bool CenteredReadbackAllocation(const Surface &surface) {
   return surface.id != VA_INVALID_SURFACE &&
       surface.backing_owner == VA_INVALID_SURFACE &&
+      !surface.cpu_primary && !surface.cpu_primary_gpu_promoted &&
+      surface.cpu_primary_charge.bytes == 0 && surface.retired_cpu_primary_storage.empty() &&
       surface.direct_decode_eligible && !surface.centered_allocation_exposed &&
       !surface.layout.valid && surface.bo == nullptr && surface.storage.empty() &&
       surface.dumb_drm_fd >= 0 && surface.dumb_handle != 0 &&
@@ -1554,6 +1556,15 @@ static bool CenteredReadbackAllocation(const Surface &surface) {
                        surface.height + surface.height / 2U, surface.width) &&
       surface.planes[0] == surface.object_maps[0] &&
       surface.planes[1] == surface.planes[0] + size_t{surface.pitch[0]} * surface.height;
+}
+
+static bool CpuPrimaryStorageMatches(const Surface &surface);
+static bool CenteredReadbackSourceAllocation(const Surface &surface) {
+  // Both representations already contain the REAL full public canvas.
+  // CPU-primary must satisfy its charged, canonical, unexposed storage proof;
+  // no small-only/opaque/unmaterialized source enters this image shortcut.
+  return surface.direct_decode_eligible &&
+      (CenteredReadbackAllocation(surface) || CpuPrimaryStorageMatches(surface));
 }
 
 static bool CenteredReadbackCpuPixels(const Surface &small) {
@@ -1657,7 +1668,7 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
   canvas->ready = true;
   canvas->failed = false;
   canvas->frame_timestamp = small->frame_timestamp;
-  if (decoded_public && !compact && CenteredReadbackAllocation(*canvas) &&
+  if (decoded_public && !compact && CenteredReadbackSourceAllocation(*canvas) &&
       CenteredReadbackCpuPixels(*small) &&
       picture.trace_decode_identity != 0 &&
       picture.trace_decode_identity == picture.decode_identity &&
@@ -11441,7 +11452,7 @@ static bool ImageRectangleFits(const Surface &surface, const Image &image,
 static std::shared_ptr<Surface> CenteredImageReadback(
     const Driver *driver, const Surface &surface, const Image &image,
     unsigned int width, unsigned int height) {
-  if (!CenteredReadbackAllocation(surface) || !surface.ready || surface.failed ||
+  if (!CenteredReadbackSourceAllocation(surface) || !surface.ready || surface.failed ||
       surface.destroyed || surface.vpp_writers != 0 || surface.image_write_locked ||
       surface.export_waiters != 0 || width != surface.width || height != surface.height ||
       image.va.width != width || image.va.height != height ||

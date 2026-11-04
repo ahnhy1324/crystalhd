@@ -21,10 +21,14 @@
 namespace crystalhd_test_centered_readback {
 constexpr unsigned kSlots = 2, kWidth = 1920, kHeight = 1088;
 constexpr size_t kBytes = size_t{kWidth} * kHeight * 3 / 2;
-enum class Route : unsigned { ImmutableSmall, CpuPrimaryFullCanvas };
+enum class Route : unsigned { ImmutableSmall, CpuPrimaryFullCanvas, CpuPrimaryImmutableSmall };
 inline const char* RouteName(Route route) noexcept {
-  return route == Route::ImmutableSmall ? "IMMUTABLE_SMALL_RECONSTRUCTION"
-                                       : "CPU_PRIMARY_FULL_CANVAS";
+  switch (route) {
+    case Route::ImmutableSmall: return "IMMUTABLE_SMALL_RECONSTRUCTION";
+    case Route::CpuPrimaryFullCanvas: return "CPU_PRIMARY_FULL_CANVAS";
+    case Route::CpuPrimaryImmutableSmall: return "CPU_PRIMARY_IMMUTABLE_SMALL";
+  }
+  return "INVALID";
 }
 struct Slot {
   Route route = Route::ImmutableSmall;
@@ -43,7 +47,7 @@ class State {
   std::mutex gate;
   std::atomic<bool> fork_seen{false};
   uint64_t calls = 0, valid_calls = 0, invalid = 0, clock_failures = 0;
-  std::array<uint64_t, 2> route_calls{}, route_valid{}, route_unbound{};
+  std::array<uint64_t, 3> route_calls{}, route_valid{}, route_unbound{};
   unsigned captured = 0;
   pid_t pid = 0;
   bool enabled = false, publishing = false;
@@ -192,13 +196,17 @@ class State {
     n = std::snprintf(line, sizeof(line),
         "{\"type\":\"footer\",\"successful_api_read_calls\":%" PRIu64 ","
         "\"successful_fast_api_read_calls\":%" PRIu64 ",\"successful_cpu_primary_full_canvas_api_read_calls\":%" PRIu64 ","
+        "\"successful_cpu_primary_immutable_small_api_read_calls\":%" PRIu64 ","
         "\"valid_fast_full_binding_calls\":%" PRIu64 ",\"valid_cpu_primary_full_binding_calls\":%" PRIu64 ","
+        "\"valid_cpu_primary_immutable_small_full_binding_calls\":%" PRIu64 ","
         "\"unbound_fast_api_read_calls\":%" PRIu64 ",\"unbound_cpu_primary_api_read_calls\":%" PRIu64 ","
+        "\"unbound_cpu_primary_immutable_small_api_read_calls\":%" PRIu64 ","
         "\"valid_full_binding_calls\":%" PRIu64 ","
         "\"snapshots\":%u,\"invalid_binding_or_layout\":%" PRIu64 ",\"clock_failures\":%" PRIu64 ",\"fork_seen\":%s,"
         "\"count_window\":\"BEFORE_OWNER_EXIT_CAPTURE_GATE_CLOSE\",\"complete\":%s}\n",
-        calls, route_calls[0], route_calls[1], route_valid[0], route_valid[1],
-        route_unbound[0], route_unbound[1], valid_calls, captured, invalid,
+        calls, route_calls[0], route_calls[1], route_calls[2],
+        route_valid[0], route_valid[1], route_valid[2],
+        route_unbound[0], route_unbound[1], route_unbound[2], valid_calls, captured, invalid,
         clock_failures, fork_seen ? "true" : "false", complete ? "true" : "false");
     stream_ok = stream_ok && n > 0 && static_cast<size_t>(n) < sizeof(line) && WriteAll(fd, line, static_cast<size_t>(n));
     const bool closed = close(fd) == 0;
@@ -213,8 +221,9 @@ class State {
 inline State state;
 template<typename Fields>
 inline void Capture(uint64_t driver, const Fields& fields, const VAImage& image,
-                    const uint8_t* bytes) noexcept {
-  state.Capture(Route::ImmutableSmall, driver, fields, image, bytes);
+                    const uint8_t* bytes, bool cpu_primary = false) noexcept {
+  state.Capture(cpu_primary ? Route::CpuPrimaryImmutableSmall : Route::ImmutableSmall,
+                driver, fields, image, bytes);
 }
 template<typename Fields>
 inline void CaptureCpuPrimary(uint64_t driver, const Fields& fields,
