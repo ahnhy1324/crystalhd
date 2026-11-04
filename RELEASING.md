@@ -1,7 +1,7 @@
 # Releasing the maintained CrystalHD stack
 
-This guide separates current RC3 preparation and release policy
-from completed release campaigns. Installation belongs in [USAGE](USAGE.md)
+This guide records the published RC3 scope and release policy
+alongside completed release campaigns. Installation belongs in [USAGE](USAGE.md)
 and the [DKMS guide](README.dkms); the current native companion has its own
 [delivery guide](NATIVE-RUNTIME-DELIVERY.md). See [TODO](TODO.md) for the live
 work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
@@ -18,13 +18,17 @@ work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 
 ## RC3 complete scope and candidate preparation
 
-**RC3 candidate identity:** bundle `1.3.0-rc.3` / module-DKMS `3.10.18`
-contains the complete integrated source. Actual artifact, installation and
-native results belong in the separate candidate `release-qualification.json`
-and native receipts; source documentation and a version string do not assert
-PASS or publication. Use the release entry for public status. The published
-[RC2 baseline](#frozen-rc2-baseline) remains immutable. Stable 1.3 promotion
-is a separate decision.
+**Published RC3:** [bundle `1.3.0-rc.3`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3)
+/ module-DKMS `3.10.18`, frozen source `36ef4c681f49`, was published on
+2026-11-04 with 12 assets. The [qualification receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
+and [complete claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
+record completed archive/build, actual legacy/native/output, installed
+DKMS/direct lifecycle, stock Kodi/normal Centered, 30-minute Player and
+companion checks, with original failures and reuse scopes preserved.
+The preparation steps below document the packaging and qualification workflow;
+RC3 publication is complete. Source documentation and version strings alone
+do not qualify a candidate. Published RC3 and the [RC2 baseline](#frozen-rc2-baseline)
+remain immutable. Stable 1.3 promotion is a separate decision.
 
 RC3 retains every integrated feature and its existing opt-in/default boundary:
 
