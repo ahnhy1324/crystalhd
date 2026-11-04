@@ -2,7 +2,7 @@
 
 # Current work
 
-Updated **2026-11-04**, during stable 1.3 preparation. This is the current work queue.
+Updated **2026-11-04**, after stable 1.3 publication. This is the current work queue.
 A packaged copy is a snapshot; subsequent completion belongs in the current
 repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
@@ -18,20 +18,20 @@ maintained components; isolated diagnostic probes retain their own scope.
 
 | Scope | Current state |
 | --- | --- |
-| Stable release | [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module/DKMS `3.10.13`, is published. Earlier releases and RCs remain immutable; see [release history](HISTORY.md). |
-| Prepared stable 1.3 | `1.3.0` / module-DKMS `3.10.20`, based on frozen RC4 `1c8b045`, is **PREPARED_NOTQUALIFIED**. The maintainer authorized RC4 then stable promotion after candidate qualification and explicit GTK known-risk disposition. RC4 qualification and protected integration are complete through #654; its release entry defines publication. Fresh final archive/install/native/delivery/current-base CI/review must complete before final publication. All 17 feature groups, defaults and opt-ins remain. See [stable preparation](RELEASING.md#stable-13-promotion-preparation). |
-| Frozen RC4 candidate | `1.3.0-rc.4` / module-DKMS `3.10.19`, source `1c8b045`, has completed its source19 qualification and protected #654 integration. Its 12-asset release entry and receipts retain actual outcomes, publication and scoped reuse; these are not final20 results. Preserve its exact source, artifacts and registered payload. |
+| Stable release | [1.3.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0), frozen source `24a5182b988b` / module-DKMS `3.10.20`, is published with 12 downloaded-and-verified assets. All 17 feature groups/defaults remain; fresh final archive/settings/install/native/delivery, current-base CI and independent review pass with explicitly scoped reuse. See [actual qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json) and [release record](RELEASING.md#published-stable-13-qualification). |
+| Retained fallback | Published [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0) / module-DKMS `3.10.13` and its source remain immutable for fallback/rollback. |
+| Published RC4 candidate | [1.3.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4), frozen source `1c8b0451c631` / module-DKMS `3.10.19`, is published with 12 downloaded-and-verified assets after #654 qualification/integration. Its actual outcomes and scoped reuse remain candidate19 evidence, not final20 results. Preserve its artifacts and registered payload. |
 | Published RC3 candidate | [1.3.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), core `36ef4c681f49` / module-DKMS `3.10.18`, is published with 12 assets: complete core, settings ZIP and native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Current-equipment qualification is complete; see the [actual results](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json) and [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). RC4 and final20 promotion retain separate identities and qualification. |
 | Frozen published candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. Frozen RC2 does not qualify a later package identity or stable promotion. |
-| Development master | [#652 Player/Xv stabilization](https://github.com/ahnhy1324/crystalhd/pull/652) and [#653 documented installation/quality flows](https://github.com/ahnhy1324/crystalhd/pull/653) are merged at `3689eda`. Their affected userspace600/frozen-kernel18 quality campaign passed; it supplies scoped reuse, not a module19/20 or new archive result. |
+| Development master | Protected [#655 final1.3 integration](https://github.com/ahnhy1324/crystalhd/pull/655) follows RC4/#654. Published final source `24a5182b988b` stays immutable; later documentation/research does not replace its payload. The earlier #652/#653 source600/kernel18 quality results retain scoped reuse rather than new module20 attribution. |
 
-The [published RC3 claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
-binds every integrated feature group to fresh qualification or explicitly scoped
-reuse. The [earlier integration map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
+The [published stable claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
+binds all 17 feature groups to actual final20 checks or explicitly scoped reuse.
+RC4/RC3 receipts preserve their original source/module and failures. The [earlier integration map](tests/fixtures/issue510/v13-complete-claim-map-20261102.json)
 retains its historical attribution. Actual RC3 archive, installed/native,
 normal Centered and application checks are complete; older source or module13
 observations retain only their original scope.
-Do not replace frozen RC4/RC3/RC2 payloads or registered module19/18/17 source with master.
+Do not replace published final1.3 or RC4/RC3/RC2 payloads and registered module20/19/18/17 sources with master.
 
 <a id="current-priorities--2026-11-03"></a>
 <a id="tracked-work"></a>
@@ -41,12 +41,12 @@ Do not replace frozen RC4/RC3/RC2 payloads or registered module19/18/17 source w
 There are 13 open owning issues. The table identifies the next actions;
 completed subsets do not close their broader acceptance/research issues.
 Their full checklists remain in the linked owners and the archived technical
-plans. Nonblocking research continues alongside release work.
+plans. The agreed release criteria are complete; these remaining research and
+support scopes are not additional promotion gates. Nonblocking research continues.
 
 | Order | Owner | Remaining work and existing boundary |
 | --- | --- | --- |
-| 1, release | [#510 reliability](https://github.com/ahnhy1324/crystalhd/issues/510), [#91 application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91) | RC4/module19 qualification and protected integration are complete; finish its publication if still pending, then qualify final1.3/module20 archive, installed/native identity and delivery against the agreed criteria. Preserve every feature/opt-in and GTK known-risk disposition. Reuse only unchanged behavior with exact source/module attribution; unaffected long soaks do not restart for metadata alone. Final20 remains unqualified until actual checks and current-base CI/review complete. |
-| 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue authorized release work with the optional GTK risk explicit and no new recurrence gate. |
+| 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | Exercise representative congestion/pending residence and attribute latency, then broader formats, controls, interruption and endurance. Timing/latest-frame support is implemented; current-card runs showed no pending replacement or demonstrated gain. FIFO remains the default. |
 | 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Add the separate 29.97 fps/method 7 original-Kodi case and post-filter observation/reference. Off VA observations and progressive CPU-copy controls are complete within their private diagnostic scopes. Broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain separate. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
@@ -78,6 +78,7 @@ cannot substitute. See [#477's preparation record](https://github.com/ahnhy1324/
 
 | Work | Completion and retained evidence |
 | --- | --- |
+| Stable1.3 and RC4 publication | [#655](https://github.com/ahnhy1324/crystalhd/pull/655) final source24/module20 and [#654](https://github.com/ahnhy1324/crystalhd/pull/654) RC4/source1c8/module19 are separately qualified and published, each with 12 assets downloaded and verified. Final archive/settings binding, DKMS7/direct7/native5, companion2exports/13fileoperations, current-base CI/review and original host restoration pass. [Final qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json) retains every feature, fresh-versus-reused scope and original failure/known risk. |
 | Post-RC3 affected quality and documented flows | Userspace `6004636` with frozen RC3 kernel18/source36ef: ordinary and explicit own-FIFO Player each pass 30 minutes, 45,000 originals / 90,000 fields, natural EOS and 1,800/1,800 audio-clock matches. Settled RSS grows 1,122/1,168KiB; FD/thread growth is zero. Actual DKMS7/direct7 cases and staged/optional file journeys pass; original module13/runtime36/inventory/kernel state is restored. The initial pre-FIFO cooling-wait FAIL remains preserved and only the missing FIFO arm continued with unchanged media/thermal/resource rules. All 17 RC3 feature groups are covered by fresh evidence or scoped unchanged-component reuse; the three-hour VA/DIL Bob result remains original module16 evidence. [Current #510 summary](https://github.com/ahnhy1324/crystalhd/issues/510) retains the actual scope; these are not RC4/module19 or final20 results. |
 | Post-RC3 stability fixes | Player seek/resume grace survives delayed frame observations; Xv rejects replies observed after the original response deadline. Focused regressions retain the original failures and timeout/ownership rules. Strict private-CA HTTPS success and independent CA/hostname rejection are covered by software tests. See [RC4 changes](HISTORY.md#unreleased-stabilization-after-130-rc3); broader transport, X11 and GTK issues remain open. |
 | RC3 qualification and publication | [#650](https://github.com/ahnhy1324/crystalhd/pull/650) and the [published qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json): exact archive/build, actual legacy/native/output, DKMS/direct install and rollback, stock Kodi/normal Centered, 30-minute Player and companion delivery pass. All 12 uploaded assets were downloaded and matched before publication. Original failures, reuse limits and deferred stable promotion remain explicit. |

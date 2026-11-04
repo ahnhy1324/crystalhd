@@ -1,13 +1,13 @@
 # Releasing the maintained CrystalHD stack
 
-This guide records stable 1.3 preparation, frozen RC4 and published RC3 scope
+This guide records published stable 1.3, RC4 and RC3 scope
 alongside completed release campaigns. Installation belongs in [USAGE](USAGE.md)
 and the [DKMS guide](README.dkms); the current native companion has its own
 [delivery guide](NATIVE-RUNTIME-DELIVERY.md). See [TODO](TODO.md) for the live
 work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 
-- [Stable 1.3 promotion preparation](#stable-13-promotion-preparation)
-- [Frozen RC4 preparation record](#rc4-stabilization-candidate-preparation)
+- [Published stable 1.3 qualification](#published-stable-13-qualification)
+- [Published RC4 qualification record](#published-rc4-qualification-record)
 - [Current 1.3 quality test procedure](#current-13-quality-test-procedure)
 - [RC3 complete scope and candidate preparation](#rc3-complete-scope-and-candidate-preparation)
 - [Frozen RC2 baseline](#frozen-rc2-baseline)
@@ -16,78 +16,74 @@ work queue and [documentation map](DOCUMENTATION.md) for guide ownership.
 - [Branch and issue maintenance](#branch-and-issue-maintenance)
 - [Useful bug reports](#useful-bug-reports)
 
-## Stable 1.3 promotion preparation
+<a id="stable-13-promotion-preparation"></a>
 
-**PREPARED_NOTQUALIFIED:** bundle `1.3.0` / module-DKMS `3.10.20` is being
-prepared from frozen RC4 source `1c8b0451c631`. This is not a published stable
-download. Use the latest qualified published candidate or stable1.2 until
-the intended final artifacts are actually qualified and published.
+## Published stable 1.3 qualification
 
-All **17 integrated feature groups** in the
-[published RC3 claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
-remain supplied, including ordinary playback/settings, default-off Centered,
-optional Xv/field outputs, native V4L2 with the **unmodified** FFmpeg DRM_PRIME
-companion, MPEG-1/other opt-ins and diagnostic coverage. Final promotion adds
-no runtime feature, default change or broader support claim. Player seek/resume
-grace, Xv's original response deadline and documented installation-flow repairs
-are inherited from the frozen RC4 scope.
+[Stable `1.3.0`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0),
+frozen source `24a5182b988b` / module-DKMS `3.10.20`, is published with
+12 assets after protected [#655](https://github.com/ahnhy1324/crystalhd/pull/655)
+integration, current-base CI (15 successful jobs/two intended skips), final
+independent actual-evidence review and download/checksum verification.
+The [qualification receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json)
+and [complete claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
+are authoritative for the exact assets, actual outcomes and scoped reuse.
+Use the [ordinary installation guide](README.md#quick-start), matching settings
+and optional [native companion instructions](NATIVE-RUNTIME-DELIVERY.md).
+Published 1.2/module13 remains the immutable fallback.
 
-RC4's exact-source/module19 qualification and protected integration are
-complete through [#654](https://github.com/ahnhy1324/crystalhd/pull/654). Its
-release entry defines publication, which must complete before final promotion.
-The final source must include the merged RC4 base before its commit; do not
-commit or package an unintegrated or moving source. Freeze a distinct final20 commit and produce
-its Git-free archive, source/settings/native delivery and matching actual
-module19-to20 installation, identity, rollback/removal and native witnesses.
-The final bundle metadata is compiled into the kernel; an unchanged
-implementation does not make candidate19 binary/build/receipt identity final20.
-Keep the existing archive/build/install/native checks and current-base CI/review.
+All 17 integrated feature groups and defaults remain, including default-off
+Centered, optional Xv/field/MPEG-1 and the native V4L2/unmodified FFmpeg DRM_PRIME
+companion. Final qualification freshly binds the exact Git-free archive/build,
+new README-bearing settings ZIP, installed module20 DKMS7/direct7 lifecycle
+(including frozen RC4/module19 rollback), native5 API/ownership/original
+720p/FHD EOS/reopen checks, two reproducible outer exports and 13 file-tool
+operations. Original module13/runtime36, module/DKMS inventory, idle owners/pins
+and kernel state restore. Add-on code/manifest0.1.0/UI is unchanged; README-only
+ZIP bytes have a separately qualified artifact identity and scoped functional
+UI reuse. Metadata-only promotion adds no runtime feature or default change.
 
-Reuse affected userspace600/frozen-kernel18 ordinary/own-FIFO30-minute results,
-original RC3 stock-Kodi/Centered/native/other unchanged paths and actual RC4
-module19 results only within explicit source and implementation boundaries.
-The three-hour normal VA/DIL Bob remains original module16 evidence, not a new
-whole-kernel19/20 soak. Metadata-only promotion does not require repeating
-unaffected long soaks. Preserve original failures, the separate FIFO cooling
-continuation, known GL/native-range limits and unavailable-target dispositions.
-Final receipt/claim map must distinguish every actual final20 result from reuse.
-Reuse unmodified FFmpeg/provider/build materials with their original pins and
-notices; bind the new final core/module20 and own tools separately. Preserve
-RC4/RC3/RC2 tags, artifacts and registered source19/18/17 exactly.
+The source600/frozen-kernel18 ordinary and own-FIFO 30-minute results, actual
+RC4/module19 witnesses, original RC3 codec/native/stock-Kodi/Centered/field/UI
+and other unchanged components retain their original identities. Three-hour
+Bob reuse is unchanged normal VA/DIL on actual module16 with 540,000 ordered
+full-NV12 outputs, not a fresh whole-kernel20 soak. No original result is
+renamed final20. Original failures, the separate FIFO cooling continuation,
+accepted renderer/QoS policy, exact-route no-drift-log acceptance and
+unavailable-target/physical-presentation limits remain explicit. Reused FFmpeg,
+providers and source/build materials remain unmodified with original pins and
+notices; final own-core/module20 and tools have separate bindings.
 
 The [bounded GTK review](tests/fixtures/issue400/gtk-bounded-review-20261104.json)
-is complete: the optional GTK settings CSS assertion/SIGSEGV remains
-unreproduced and unfixed, with no demonstrated own-code cause or confirmed
-external GTK fault. Keep #623 open, existing capture diagnostic and the risk
-explicit in final known issues; a clean test is not repair and recurrence is
-not a new gate. The maintainer has already authorized RC4 then stable promotion
-if the agreed criteria are met. This conditional intent supersedes the earlier
-deferral; it does not turn preparation into a completed qualification or
-published stable release.
+found no demonstrated own-code cause or repair for the original optional-editor
+assertion/SIGSEGV. #623 stays open and unfixed; clean runs are not a repair.
+Known hardware-GL LSan and stock native RGB-range failures remain. The agreed
+release criteria are met with this explicit risk disposition; the 13 remaining
+research/support issues do not become new promotion gates. Frozen final1.3,
+RC4/RC3/RC2 artifacts and registered source20/19/18/17 remain immutable.
 
 <a id="rc4-stabilization-candidate-preparation"></a>
+<a id="frozen-rc4-preparation-record"></a>
 
-## Frozen RC4 preparation record
+## Published RC4 qualification record
 
-RC4 was frozen at `1c8b0451c631`, bundle `1.3.0-rc.4` / module-DKMS `3.10.19`,
-from master `3689eda`. Its source snapshot was **PREPARED_NOTQUALIFIED**;
-subsequent actual archive/build, native/installed, companion, current-base CI
-and publication results belong in its separate qualification receipts.
-That snapshot and later receipts remain immutable during final20 promotion.
-
-Its intended scope retains all 17 RC3 feature groups/defaults and adds the two
-Player/Xv reliability repairs, strict private-CA software HTTPS controls and
-documented installation/native-flow corrections. Userspace600/frozen-kernel18
-30-minute/installation results, RC3 unchanged paths and original module16 Bob
-remain explicitly scoped reuse, never module19 results by renaming. Only the
-new module19 actual campaign establishes RC4's new identity. No external
-product changes or research-feature omission is authorized.
+[RC4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4) is
+published from `1c8b0451c631`, bundle `1.3.0-rc.4` / module-DKMS `3.10.19`,
+with 12 downloaded-and-verified assets. Its exact archive/build, native/API and
+original-client, installed recovery, companion/tool lifecycle, current-base CI
+and independent review pass through [#654](https://github.com/ahnhy1324/crystalhd/pull/654).
+Its [actual receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.4/release-qualification.json)
+preserves source19 and scoped earlier reuse; none is relabeled final20.
+The frozen source's preparation checkpoint stays historical and its assets and
+registered sources remain unchanged after final promotion. The quality
+procedure below remains the maintained procedure for future affected changes;
+historical candidate sections retain their original source-specific scope.
 
 ## Current 1.3 quality test procedure
 
 Use this procedure to plan affected candidate checks and report their actual
-outcomes. The [published RC3 qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json)
-and [claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/complete-claim-map.json)
+outcomes. The [published stable qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json)
+and [claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
 identify the existing fresh/reused evidence. The [retained G2 definitions](HARDWARE-2026-09-13.md#120-rc2-qualification--2026-10-22)
 and owning issues [#91](https://github.com/ahnhy1324/crystalhd/issues/91) and
 [#510](https://github.com/ahnhy1324/crystalhd/issues/510) retain earlier failures
@@ -156,9 +152,9 @@ Its affected ordinary and own-FIFO 30-minute runs are complete with actual
 timing, clocks, resources and retirement results, on separately frozen RC3
 kernel18/source36ef. This scoped campaign is not an RC4/module19 or final20 result.
 Reuse unchanged VA/DIL/other-path evidence only with explicit source and
-implementation scope. Frozen RC4/RC3 assets and results stay unchanged; final20
-qualification and stable publication remain pending. Record each failure and
-any bounded continuation separately.
+implementation scope. Published final20 and RC4/RC3 assets and results stay
+unchanged. Record each failure and any bounded continuation separately; later
+publication never repairs or relabels an earlier failure.
 
 <a id="private-v13-candidate-preparation"></a>
 <a id="complete-rc2-and-future-candidate-preparation"></a>
@@ -309,13 +305,13 @@ checkout alone does not announce a published release.
 
 | Identity | Current value | Purpose |
 | --- | --- | --- |
-| Prepared final stable / new module package | `1.3.0` / `3.10.20` | PREPARED_NOTQUALIFIED; exact final archive/install/native/delivery/current-base CI/review and publication pending |
-| Frozen RC4 / module package | `1.3.0-rc.4` / `3.10.19` | Source1c8 candidate qualification and publication remain separately recorded; do not relabel as final20 |
+| Published stable / module package | `1.3.0` / `3.10.20` | Frozen source24, 12 verified public assets; actual final archive/install/native/delivery/CI/review and scoped reuse recorded separately |
+| Published RC4 / module package | `1.3.0-rc.4` / `3.10.19` | Frozen source1c8, 12 verified public assets; immutable candidate qualification, not final20 attribution |
 | Published complete RC3 / module package | `1.3.0-rc.3` / `3.10.18` | Immutable source36ef and 12 assets; actual qualification in its separate receipt/release entry |
 | Published complete RC2 / module package | `1.3.0-rc.2` / `3.10.17` | Current-cohort runtime/install/delivery complete; immutable registered payloads |
 | Historical partial RC1 / module package | `1.3.0-rc.1` / `3.10.15` | Retained draft release entry and unchanged artifacts; incomplete 1.3 scope |
 | Earlier development bundle / module package | `1.3.0-dev.1` / `3.10.14` | Historical private checkpoints |
-| Published stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
+| Previous stable bundle / module package | `1.2.0` / `3.10.13` | Immutable source `8132043`; qualified public source asset |
 | Published RC2 bundle / package | `1.2.0-rc.2` / `3.10.12` | Immutable qualified rollback source |
 | Published RC1 bundle / package | `1.2.0-rc.1` / `3.10.11` | Immutable earlier candidate |
 | Previous stable bundle | `1.1.0` | Immutable source `85f426d` |

@@ -6,39 +6,57 @@ statements under an older version describe that checkpoint; use
 [documentation index](DOCUMENTATION.md) for the evidence map. Published
 identities and historical failures retain their original qualification scope.
 
-## 1.3.0 — prepared stable promotion
+<a id="130--prepared-stable-promotion"></a>
 
-**PREPARED_NOTQUALIFIED:** bundle `1.3.0` / module-DKMS `3.10.20` is being
-prepared from frozen RC4 source `1c8b0451c631`. It is not a published stable
-release. RC4 has completed source19 qualification and protected integration
-through [#654](https://github.com/ahnhy1324/crystalhd/pull/654); its release entry
-records actual publication. Final20 archive, installed/native identity, companion
-delivery and current-base CI/review remain separate requirements; no candidate
-result is relabeled as final20 evidence.
+## 1.3.0 — published stable release
 
-The final package retains all 17 integrated feature groups and opt-ins,
-including default-off Centered and native V4L2 with the unmodified FFmpeg
-DRM_PRIME companion. This promotion changes release identity and documentation;
-it adds no runtime feature or default change. The Player/Xv corrections and
-installation-flow repairs are described under RC4 below. Reuse the completed
-userspace600/kernel18 quality and unchanged RC4 implementation evidence only
-with their original identities; fresh final metadata/build/install/native
-bindings are still required, without repeating unaffected long soaks.
+[Published on 2026-11-04](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
+from frozen source `24a5182b988b`, bundle `1.3.0` / module-DKMS `3.10.20`,
+with 12 assets. Protected integration through
+[#655](https://github.com/ahnhy1324/crystalhd/pull/655), current-base CI
+(15 successful jobs and two intended skips), independent actual-evidence review
+and downloaded-asset verification are complete. The
+[qualification receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json)
+and [complete claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
+separate fresh final20 results from scoped reuse and preserved failures.
+
+Fresh final qualification covers the exact Git-free archive/build/staging,
+matching settings ZIP, seven DKMS and seven direct install/recovery cases
+(including frozen RC4/module19 rollback), five native API/ownership/original
+Kodi cases with 720p/FHD 180-picture EOS/reopen twice each, and two reproducible
+companion exports with 13 extracted-tool operations. Original module13,
+36 runtime leaves, module/DKMS inventory, idle owners/pins and kernel boundary
+restore. All 17 integrated feature groups and existing defaults remain:
+ordinary playback/settings, default-off Centered, native V4L2 with unmodified
+FFmpeg DRM_PRIME, Xv/field outputs, MPEG-1 and other opt-ins, and diagnostics.
+The add-on code/UI stays 0.1.0; its README-only change gives the final ZIP new
+bytes and a separate artifact identity.
+
+Promotion changes package identity and documentation, without another runtime
+feature or default change after RC4. The completed source600/kernel18 ordinary
+and own-FIFO 30-minute Player/Xv runs, scoped RC3 codec/native/Centered/field/UI
+results and actual RC4/module19 witnesses keep their original attribution.
+Three-hour Bob reuse is only unchanged normal VA/DIL on actual module16,
+540,000 ordered full-NV12 outputs; it is not a fresh module20 kernel soak.
+Original FAILs, accepted renderer/QoS policy, exact-route no-drift-log acceptance
+and unavailable-target/physical-presentation limits remain unchanged.
 
 The [bounded GTK review](tests/fixtures/issue400/gtk-bounded-review-20261104.json)
-is complete. The original optional-editor CSS assertion/SIGSEGV remains
-unreproduced and unfixed, with no demonstrated own-code cause; keep #623 open
-and this known risk explicit. The maintainer authorized RC4 then stable
-promotion if the agreed criteria are met. Stable remains 1.2 until the final
-qualification and publication actually complete. See
-[stable preparation](RELEASING.md#stable-13-promotion-preparation).
+is complete, but #623's optional-editor CSS assertion/SIGSEGV remains
+unreproduced and unfixed. Hardware-GL LSan and stock native RGB-range limitations
+also remain known issues. Publication does not repair those failures or close
+the broader research issues. The 1.2/module13 fallback and frozen RC4/RC3/RC2
+packages, registered sources and upstream PR branches remain intact.
 
 <a id="unreleased-stabilization-after-130-rc3"></a>
 
-## 1.3.0-rc.4 — frozen stabilization candidate
+<a id="130-rc4--frozen-stabilization-candidate"></a>
 
-Frozen source `1c8b0451c631`, bundle `1.3.0-rc.4` / module-DKMS `3.10.19`,
-was prepared from master `3689eda` and qualified through
+## 1.3.0-rc.4 — published stabilization candidate
+
+[Published RC4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4)
+retains frozen source `1c8b0451c631`, bundle `1.3.0-rc.4` / module-DKMS `3.10.19`,
+with 12 downloaded-and-verified assets. It was prepared from master `3689eda` and qualified through
 [#654](https://github.com/ahnhy1324/crystalhd/pull/654): exact archive/build/staging,
 native19 API/ownership and original-client playback, DKMS/direct recovery,
 two reproducible companion exports and 13 extracted file-tool operations pass.
@@ -69,11 +87,9 @@ These are scoped reuse inputs, not RC4/module19 results. Exact-archive,
 installed/native identity and delivery outcomes belong to the separate RC4
 qualification. The bounded GTK #623 review preserves the unresolved crash risk.
 See [RC4 preparation](RELEASING.md#rc4-stabilization-candidate-preparation).
-The maintainer has authorized the next RC and conditional stable promotion
-after candidate qualification and an explicit GTK known-risk disposition;
-This authorization is conditional on actual qualification, not a result.
-Published tags/assets, registered source19/18 and earlier receipts remain
-unchanged; final20 requires its own identity and affected verification.
+RC4 publication and the later separately qualified final20 promotion are
+complete. RC4's tags/assets, registered source19/18 and earlier receipts remain
+unchanged; its results retain the candidate identity and measured limits.
 
 <a id="development-after-the-frozen-rc2"></a>
 <a id="130-rc3--complete-integration-candidate"></a>
