@@ -48,7 +48,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [packet observer/census](tests/fixtures/issue477/packet-admission-20261104.json) records 900 video demux returns and 900 accepted codec data sends per play; VAAPI/native originals are 677/684 and whole-source qualification remains FAIL. Codec drain/EOF and NONREF entry policy are observed; all 223/216 absent raw returned-PTS labels correspond to accepted labels under NONREF. Why that policy is selected, and source/payload/VA identity, remain unresolved. Full-population/tail cadence, broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain open. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [maintained-cost observer/analysis](tests/fixtures/issue477/maintained-cost-20261104.json) records complete paired CPU/wall scopes, while the actual case and strict native census remain FAIL (689/681 materializations of 900; second-play replay/history gaps). Next add explicit replay-aware historical-binding/disposition observation and ownership controls, then attribute measured pixel/CPU-sync costs without claiming the cause of NONREF policy. Full-population/tail cadence, broader geometry/lifetime, all post-copy pixels, GPU-reader return and physical presentation remain open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Compare sized versus fixed allocation with 16/8 buffers on the current BCM70015 with paced input, then required native-planar, PM and format-change cases. Output-aware allocation is implemented. Preserve the conservative default and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -60,7 +60,50 @@ support scopes are not additional promotion gates. Nonblocking research continue
 
 <a id="centeredbwdif-observation-and-next-attribution"></a>
 
-### Packet admission and next decoder attribution
+<a id="packet-admission-and-next-decoder-attribution"></a>
+
+### Maintained-code costs and next replay attribution
+
+The [maintained-cost case](tests/fixtures/issue477/maintained-cost-20261104.json)
+adds a private OWN backend, paired wall/thread-CPU scopes and an offline reader.
+Its 42,766-event timing ledger is complete. Exact materialized-key correlation
+covers 689/681 originals and one field-conversion/canvas pixel span for each;
+that bounded subset does not qualify the whole native ledger. Matched parent
+scopes can include still-bound replay work and are not a transport budget.
+
+| Native-correlated stage: p50 thread CPU (ms) | Play 1 | Play 2 |
+| --- | --- | --- |
+| First-field staging | 0.932 | 0.952 |
+| Field-conversion pixels | 1.668 | 1.697 |
+| Canvas pixels | 1.788 | 1.731 |
+
+These individual scope medians are not an additive playback budget or a proof
+of the skip-policy cause. Direct-public execution is observed for the 689/681
+correlated originals; public copy/promotion are unobserved in that subset,
+while the all-context ledger separately contains 11 unjoined copies and
+11 unjoined promotions per play. No global no-extra-copy claim follows. Independent-clock subtraction can make off-CPU unavailable; raw values
+are preserved.
+
+The actual `maintained2997-01` result and controls remain **FAIL**, despite both
+natural end callbacks, application exit0 and clean module13/runtime36/kernel
+restoration. Native materializations are 689/681 of 900. The second play records
+691 input sends and 1,382 dequeue events: 10 AU reinputs produce 20 replayed
+fields, including four after old full bindings retired. Existing one-input/
+two-field census cannot describe that replay history; it must not silently
+accept unknown bindings or reclassify the failed record. Raw post-filter
+inputs/outputs are689→1,376 and681→1,360, with no filter EOF; fresh selected-
+prefix reference was **NOT_RUN** after the census failure. Earlier source-population
+and clock-accounting FAILs retain their original outcomes.
+
+Next implement explicit replay/history disposition and ownership controls in
+our diagnostic observer/census, preserving the 900-original requirement.
+Then use the measured parent/direction scopes to distinguish pixel work from
+CPU-access/release costs before proposing an own-code optimization; first-field
+staging still needs its lease/ownership proof. These measurements establish no
+product defect, harmless replay, normal-backend performance benefit or release
+qualification.
+
+#### Retained packet-admission result
 
 The [packet-admission case](tests/fixtures/issue477/packet-admission-20261104.json)
 completes the separate metadata observer/reader census alongside the
@@ -68,7 +111,7 @@ completes the separate metadata observer/reader census alongside the
 Two natural EOFs occur in one original Kodi/App PID; the original providers and
 parent-PID/outer-public-call scope stay explicit.
 
-| Latest packet-admission stage | Play 1 | Play 2 |
+| Earlier packet-only stage | Play 1 | Play 2 |
 | --- | --- | --- |
 | Reviewed short source packets/software TFF frames | 900 | 900 |
 | Selected outer H264/video demux returns | 900 | 900 |
@@ -89,9 +132,9 @@ Each selected codec/epoch has 900 unique accepted nonempty-packet PTS labels;
 returned frame PTS labels form exact integer subsets. All 223/216 absent labels
 were accepted with NONREF skip_frame/skip_idct/skip_loop_filter `8/8/8`;
 all 332/330 default-state labels appear. This establishes raw label/state
-correspondence, not payload/source/VA identity. Next determine why the original
-caller selects that skip/latency policy; the underlying CPU/latency cause is
-unmeasured. Whole-population, full-tail cadence and unselected pixels remain open.
+correspondence, not payload/source/VA identity. That packet-only result does not
+establish why the original caller selects the skip/latency policy.
+Whole-population, full-tail cadence and unselected pixels remain open.
 
 Each play's first four post-filter outputs match its same-input original-App
 reference in active NV12 bytes and raw metadata. This selected prefix does not
@@ -127,6 +170,7 @@ unrelated 720-line references remain different inputs/scopes.
 | Progressive Off CPU-copy | [#648 receipt](tests/fixtures/issue477/centered-cpu-copy-20261103.json): 211 raw-frame joins (31 interrupted + 180 natural), four pre-copy NV12 targets and downstream BGRA 12→90; original per-play selection/SSE4 provider, Stop/reopen and normal retirement. The earlier flush-oracle FAIL remains unchanged. This is not all post-copy YUV or BWDIF/GPU/release qualification. |
 | Method7/BWDIF diagnostic implementation | [Bounded observation/reference](tests/fixtures/issue477/bwdif-postfilter-20261104.json): separate transparent observer/reader, same-input filter12 reference and two original-App natural EOFs are complete; selected prefixes match. Original case01 FAIL and case02 whole-source `OBSERVED_SOURCE_QUALIFICATION_FAIL` remain failures, not release or lossless-cadence qualification. |
 | Packet-admission diagnostic implementation | [Actual two-EOF census](tests/fixtures/issue477/packet-admission-20261104.json): metadata-only public format/codec observer and reader are complete; 900 video demux returns and 900 accepted codec data sends per play, NONREF states and codec drain/EOF are measured. Native originals remain 677/684 of 900; absent raw-PTS labels associate with NONREF state, while its underlying selection cause, payload/VA identity and full-source qualification remain open. |
+| Maintained-cost diagnostic implementation | [CPU/wall observation](tests/fixtures/issue477/maintained-cost-20261104.json): private backend/collector/reader and actual pixel/CPU-access/DIL/Sync scopes are complete; 42,766 scalar events and the materialized 689/681-key timing subset pass offline validation. The actual case/controls, strict native census and 900-original criteria remain FAIL; replay-aware history/disposition is the next bounded diagnostic work. |
 | Field-window handoff | [#530 receipt](tests/fixtures/issue530/field-window-handoff-20261103.json): shared response deadline and checked geometry/ancestry/completion; scoped actual reopen and retained NV12 regressions. Broader field-GPU work stays in the queue. |
 | Xv latest-frame/timing | [Current-card comparison](tests/fixtures/issue513/latest-card-abba-20261103.json), [timing receipt](tests/fixtures/issue513/xv-timing-20261103.json) and the [natural FHD50 load point](tests/fixtures/issue513/natural-fhd-20261104.json). FIFO/latest each complete 750 decoded originals/1,500 rendered fields, natural EOS and clean resources; no source is queued/replaced and no pending residence is observed. The module13/runtime36/kernel boundary is preserved without installation or module changes. This bounded negative result leaves representative congestion and benefit unproved; FIFO stays default. Local request/ACK observations do not measure server/GPU/scanout latency. |
 | Native source range/association | [POC0](tests/fixtures/issue538/poc0-multislice-range-20261102.json), [POC2](tests/fixtures/issue538/progressive-multislice-range-20261102.json) and [same-size range staging](tests/fixtures/issue538/same-size-range-staging-20261102.json) retain their exact source/pixel/PTS/ownership scopes and earlier failures. |

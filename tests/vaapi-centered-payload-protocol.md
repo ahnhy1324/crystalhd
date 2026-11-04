@@ -293,6 +293,31 @@ latency cause. A separate exact raw-label set comparison may establish label/sta
 correspondence inside a codec/epoch without supplying payload or source identity.
 The exact 900-original and native ownership requirements remain intact.
 
+For maintained-code timing, build the separate private backend and its CPU
+collector/reader/pixel controls:
+
+```sh
+make -C filters/vaapi maintained-cost-observer
+make -C filters/vaapi check-maintained-cost-observer
+```
+
+Add **both** `--observe-packets --observe-cost` to preparation of a fresh
+`bwdif2997` plan. `--observe-cost` requires packet observation; neither option is
+an execution-time override. The frozen cost plan selects only
+`maintained-cost-observer/crystalhd_drv_video.so`, with existing original App
+packet/post-filter probes and provider guards. Off, ordinary BWDIF and
+packet-only plans retain their existing backend. This artifact, its timing
+state and its runtime marker are excluded from ordinary/default/package paths.
+The [maintained-cost protocol](vaapi-maintained-cost-protocol.md) specifies
+bounded same-thread parent IDs, paired raw wall/thread-CPU endpoints, actual
+DIL/pixel/CPU-access branches and late-resolved scalar identity. Publication is
+after normal retirement; no locks, leases, copies, scheduling or EOF are changed.
+Wall-minus-CPU includes waits/preemption, and independent-clock subtraction may
+be unavailable; raw values are not clamped. A Sync body may release its mutex,
+so it is not an uninterrupted mutex-holder measurement. These diagnostic costs
+do not by themselves establish the cause of Kodi's skip policy or a performance
+fix; exact native ownership and the unchanged 900-original criterion remain.
+
 The ordinary build/install/package does not include these artifacts. The
 [observer wire protocol](vaapi-postfilter-protocol.md) defines the bounded
 per-PID graph lifetime/API ledger and first3-input/first4-output active NV12
@@ -319,7 +344,67 @@ codec/scaler correctness, physical presentation, normal-backend compatibility
 or release qualification. The system codec62/filter11 input census and native
 field-weave reference cannot substitute for this original-App filter12 replay.
 
-### Current packet-admission observation
+### Current maintained-cost observation
+
+The [maintained2997-01 receipt](fixtures/issue477/maintained-cost-20261104.json)
+uses diagnostic source `8cdbc62` and the original App/providers, leaving the
+host module13/runtime36 baseline unchanged. Its 42,766-event cost ledger validates offline;
+correlation by actual materialized six-scalar native keys covers 689/681
+originals, with field-conversion/canvas pixel coverage for every such key.
+Unjoined/partial observations remain visible separately. Matched execution-
+parent timing can include still-bound replay work; it is not a replay-free or
+whole-transport budget. This subset validation is not a strict native-ledger or
+source-population PASS.
+
+| Correlated pixel stage | Play 1 CPU / wall p50 (ms) | Play 2 CPU / wall p50 (ms) |
+| --- | --- | --- |
+| First-field staging | 0.932 / 1.084 | 0.952 / 1.149 |
+| Field-conversion pixels | 1.668 / 2.472 | 1.697 / 2.500 |
+| Canvas pixels | 1.788 / 2.325 | 1.731 / 2.213 |
+
+These scopes exclude selected payload capture and separate CPU-access begin/
+end from pixel loops. They are not summed medians or overlapping playback
+budgets. CPU-access-end p95 thread CPU is2.869/2.706ms in the correlated
+population; parent/direction attribution is still needed before interpreting
+that tail. Wall-minus-thread-CPU mixes waits and preemption, with negative
+independent-clock differences retained as unavailable derived off-CPU rather
+than clamped. The initial active-pixel clock-accounting FAIL is preserved.
+
+The correlated subset records 689/681 direct-public events, with public copy/
+promotion unobserved there. All-context observations still contain 11 public
+copies and 11 promotions per play outside that subset; no global zero-copy
+claim follows. Within the correlated subset, diagnostic callback events
+are1,378/1,362, but selected-capture flags occur only twice per play: callbacks
+are not a pixel-snapshot count.
+Sync body spans may condition-wait/unlock and do not measure uninterrupted
+mutex ownership.
+
+The original actual case and controls remain **FAIL**. Both natural end callbacks
+occur, application exit is0, kernel checking is0, the original runtime/boundary
+is retained, no handoff remains and maximum temperature is73C. Materializations
+are 689/681 against the unchanged900 criterion. In the second play, 691 input
+sends and1,382 dequeue events include10 replayed AUs/20 fields; four dequeue
+records arrive after their old full bindings retired. Source review explains
+how completed transport AUs can be resent and duplicate outputs return before
+copy/materialization, but the current strict census lacks explicit replay/
+historical-binding disposition. That is a concrete own diagnostic coverage gap,
+not proof of a product defect or harmlessness. The retired raw post-filter
+report records689→1,376 and681→1,360 inputs/outputs, with no source NULL/close
+or sink EOF. No fresh original-App selected-prefix reference ran after the
+native-census failure; previous prefix PASS
+receipts retain their earlier source/case identities. Separate offline packet
+metadata still records900 video demux returns and900 accepted codec data sends
+per play; it does not repair the native ledger.
+
+Next add replay-aware history/disposition observation and ownership controls,
+then use the measured OWN pixel/CPU-access/DIL scopes for a bounded attribution
+comparison. Preserve first-field staging and every original lease/copy unless
+an ownership proof supports a maintained-code change. No external code change,
+normal-backend speedup, underlying NONREF cause or release result is established.
+
+<a id="current-packet-admission-observation"></a>
+
+### Retained packet-admission observation
 
 The [packet2997-01 receipt](fixtures/issue477/packet-admission-20261104.json)
 records two same-PID natural EOFs with the metadata probe enabled:
