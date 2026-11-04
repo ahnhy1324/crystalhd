@@ -171,6 +171,12 @@ static gpointer checked_reply_locked(XvContext *c, guint sequence, gboolean targ
     gpointer reply = NULL;
     xcb_generic_error_t *error = NULL;
     if (xcb_poll_for_reply(c->connection, sequence, &reply, &error)) {
+      /* A ready reply can be observed after poll/processing was delayed.
+       * Its arrival does not renew the original response deadline. */
+      if (g_get_monotonic_time() >= end) {
+        free(error); free(reply);
+        context_error(c, "X11 reply unavailable or timed out"); return NULL;
+      }
       if (error || !reply) {
         gboolean rejected = error != NULL;
         free(error); free(reply);

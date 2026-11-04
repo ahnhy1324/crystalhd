@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import re
+import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -80,8 +82,32 @@ class HealthTests(unittest.TestCase):
     def test_seek_grace_is_not_new_frame_evidence(self):
         health = player.PlaybackHealth("hardware", 0)
         health.seeking(19)
-        self.assertIsNone(health.tick(21))
+        self.assertIsNone(health.tick(39))
+        self.assertEqual((health.frames, health.active_frames), (0, 0))
+        self.assertIn("no decoded", health.tick(39.1))
         self.assertEqual(health.finish(), 1)
+
+    def test_delayed_frame_after_seek_keeps_the_fresh_stall_grace(self):
+        health = player.PlaybackHealth("software", 0)
+        health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+        health.seeking(19)
+        # The pad observation precedes the seek, but its bus message arrives later.
+        self.assertFalse(health.frame(1, "theoradec", SOFTWARE, True, 512, 2))
+        self.assertEqual((health.frames, health.active_frames), (2, 2))
+        self.assertIsNone(health.tick(20))
+        self.assertIsNone(health.tick(34))
+        self.assertIn("stalled", health.tick(34.1))
+
+    def test_delayed_frame_after_resume_keeps_the_fresh_stall_grace(self):
+        health = player.PlaybackHealth("software", 0)
+        health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+        health.pause(True, 2)
+        health.pause(False, 1000)
+        self.assertFalse(health.frame(1, "theoradec", SOFTWARE, True, 512, 3))
+        self.assertEqual((health.frames, health.active_frames), (2, 2))
+        self.assertIsNone(health.tick(1001))
+        self.assertIsNone(health.tick(1015))
+        self.assertIn("stalled", health.tick(1015.1))
 
     def test_late_error_cannot_be_overwritten(self):
         health = player.PlaybackHealth("software", 0)
@@ -1491,6 +1517,41 @@ class ManagedDefaultsTests(unittest.TestCase):
 
 
 class GStreamerApiTests(unittest.TestCase):
+    def test_queued_frame_keeps_seek_and_resume_grace_and_raw_observation(self):
+        for action in ("seek", "resume"):
+            with self.subTest(control=action):
+                result = self.make_player()
+                result.health = player.PlaybackHealth("software", 0)
+                result.health.frame(1, "theoradec", SOFTWARE, True, 512, 1)
+                result.decoders[object()] = 1
+                observed = []
+
+                def inspect_message(_bus, message):
+                    fields = message.get_structure()
+                    if fields.get_name() == "crystalhd-player-frame":
+                        observed.append(fields.get_value("observed"))
+
+                result.bus.connect("message::application", inspect_message)
+                result.post_observation("crystalhd-player-frame", {
+                    "token": 1, "name": "theoradec", "klass": SOFTWARE,
+                    "raw": True, "size": 512, "observed": 2.0})
+                self.assertEqual(result.health.frames, 1)  # Bus message is still queued.
+                if action == "seek":
+                    result.health.seeking(19)
+                    fresh = 19
+                else:
+                    result.health.pause(True, 3)
+                    result.health.pause(False, 1000)
+                    fresh = 1000
+                context = self.GLib.MainContext.default()
+                while context.pending():
+                    context.iteration(False)
+                self.assertEqual(observed, [2.0])
+                self.assertEqual((result.health.frames, result.health.active_frames), (2, 2))
+                self.assertIsNone(result.health.tick(fresh + 1))
+                self.assertIsNone(result.health.tick(fresh + 15))
+                self.assertIn("stalled", result.health.tick(fresh + 15.1))
+
     def test_video_qos_drop_is_visible_once_without_changing_playback_policy(self):
         control = self.make_player()
         Gst = self.Gst
@@ -1670,7 +1731,8 @@ class GStreamerApiTests(unittest.TestCase):
         return path.read_bytes()
 
     @contextlib.contextmanager
-    def http_server(self, data, *, missing=False, stalled=False, ranges=False):
+    def http_server(self, data, *, missing=False, stalled=False, ranges=False,
+                    tls_context=None):
         release = threading.Event()
 
         class Handler(BaseHTTPRequestHandler):
@@ -1709,11 +1771,14 @@ class GStreamerApiTests(unittest.TestCase):
                     pass
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if tls_context is not None:
+            server.socket = tls_context.wrap_socket(server.socket, server_side=True)
         thread = threading.Thread(target=server.serve_forever,
                                   kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         try:
-            yield f"http://127.0.0.1:{server.server_port}/video.ogg?token=private-test-token"
+            scheme = "https" if tls_context is not None else "http"
+            yield f"{scheme}://127.0.0.1:{server.server_port}/video.ogg?token=private-test-token"
         finally:
             release.set()
             server.shutdown()
@@ -1795,6 +1860,116 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertIn((2.0, self.Gst.SECOND // 2), segments)
         self.assertIsNone(result.seek_target)
         self.assertGreater(result.health.frames, 0)
+
+    def tls_fixture(self):
+        """Private local CA only; no system trust, Internet or hardware qualification."""
+        openssl = shutil.which("openssl")
+        if openssl is None:
+            self.skipTest("optional HTTPS fixture needs openssl")
+        temporary = tempfile.TemporaryDirectory(prefix="https-", dir=self.temp.name)
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name)
+
+        def certificate(*arguments):
+            completed = subprocess.run([openssl] + list(arguments), cwd=directory,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode(errors="replace"))
+
+        for name in ("ca", "untrusted"):
+            certificate("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                        "-subj", "/CN=CrystalHD private " + name,
+                        "-addext", "basicConstraints=critical,CA:TRUE",
+                        "-keyout", name + ".key", "-out", name + ".pem")
+        certificate("req", "-new", "-newkey", "rsa:2048", "-nodes",
+                    "-subj", "/CN=127.0.0.1", "-keyout", "server.key", "-out", "server.csr")
+        (directory / "server.ext").write_text(
+            "subjectAltName=IP:127.0.0.1\n"
+            "basicConstraints=critical,CA:FALSE\n"
+            "extendedKeyUsage=serverAuth\n"
+            "keyUsage=digitalSignature,keyEncipherment\n", encoding="ascii")
+        certificate("x509", "-req", "-in", "server.csr", "-CA", "ca.pem",
+                    "-CAkey", "ca.key", "-CAcreateserial", "-days", "1",
+                    "-extfile", "server.ext", "-out", "server.pem")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(directory / "server.pem", directory / "server.key")
+        return context, directory / "ca.pem", directory / "untrusted.pem"
+
+    def tls_player(self, url, ca):
+        from gi.repository import Gio, GObject
+        source = self.Gst.ElementFactory.make("souphttpsrc")
+        if not GObject.signal_lookup("accept-certificate", source.__gtype__):
+            self.skipTest("HTTPS certificate observations need GStreamer 1.24/libsoup 3")
+        if source.find_property("tls-database") is not None:
+            trust_property, trust = "tls-database", Gio.TlsFileDatabase.new(str(ca))
+        elif source.find_property("ssl-ca-file") is not None:
+            trust_property, trust = "ssl-ca-file", str(ca)
+        else:
+            self.skipTest("HTTPS source has no public private-CA property")
+        result = self.make_player(source=url)
+        observed, setup_errors, certificate_errors = [], [], []
+
+        def reject_certificate(_source, _certificate, errors):
+            # Observe the real verifier's reason while preserving strict rejection.
+            certificate_errors.append(int(errors))
+            return False
+
+        def source_setup(_pipeline, created):
+            try:
+                created.set_property(trust_property, trust)
+                created.connect("accept-certificate", reject_certificate)
+                observed.append((created.get_factory().get_name(),
+                                 created.get_property("ssl-strict"),
+                                 created.get_property(trust_property) == trust))
+            except (TypeError, ValueError) as error:
+                setup_errors.append(str(error))
+
+        result.pipeline.connect("source-setup", source_setup)
+        return result, observed, setup_errors, certificate_errors
+
+    def test_https_private_ca_keeps_strict_tls_and_decodes_to_eos(self):
+        data = self.http_fixture()
+        context, ca, _untrusted = self.tls_fixture()
+        with self.http_server(data, tls_context=context) as url:
+            result, sources, setup_errors, certificate_errors = self.tls_player(url, ca)
+            eos = []
+            result.bus.connect("message::eos", lambda *_args: eos.append(True))
+            code, output, error = self.run_player(result)
+        self.assertEqual(setup_errors, [])
+        self.assertTrue(sources)
+        self.assertTrue(all(row == ("souphttpsrc", True, True) for row in sources), sources)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(result.health.frames, 12)
+        self.assertEqual(certificate_errors, [])
+        self.assertEqual(eos, [True])
+        self.assertIsNone(result.health.error)
+        self.assertTrue(result.done)
+        self.assertNotIn("private-test-token", output + error)
+
+    def test_https_untrusted_ca_and_wrong_hostname_reject_before_frames(self):
+        from gi.repository import Gio
+        data = self.http_fixture()
+        context, ca, untrusted = self.tls_fixture()
+        for invalid in ("untrusted-ca", "wrong-hostname"):
+            with self.subTest(certificate_error=invalid):
+                with self.http_server(data, tls_context=context) as url:
+                    if invalid == "wrong-hostname":
+                        url = url.replace("127.0.0.1", "localhost", 1)
+                    result, sources, setup_errors, certificate_errors = self.tls_player(
+                        url, untrusted if invalid == "untrusted-ca" else ca)
+                    code, output, error = self.run_player(result)
+                self.assertEqual(setup_errors, [])
+                self.assertTrue(sources)
+                self.assertTrue(all(row == ("souphttpsrc", True, True) for row in sources), sources)
+                self.assertEqual(code, 1, error)
+                self.assertEqual(result.health.frames, 0)
+                self.assertIsNotNone(result.health.error)
+                expected = (Gio.TlsCertificateFlags.UNKNOWN_CA if invalid == "untrusted-ca"
+                            else Gio.TlsCertificateFlags.BAD_IDENTITY)
+                self.assertTrue(certificate_errors)
+                self.assertTrue(all(flags & int(expected) for flags in certificate_errors),
+                                certificate_errors)
+                self.assertNotIn("private-test-token", output + error)
+                self.assertNotIn(url, output + error)
 
     def test_http_404_fails_without_frames_or_query_disclosure(self):
         data = self.http_fixture()

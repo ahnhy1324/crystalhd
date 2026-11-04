@@ -29,6 +29,16 @@ static GQueue latest_events = G_QUEUE_INIT;
 static guint latest_release_budget;
 static gint drop_type;
 static gint force_setup_pipe, observed_setup_pipe;
+/* Faults are local to the reply-deadline controls, after a real XCB reply was
+ * obtained from the owned socket peer. Existing X11/media cases are unchanged. */
+static gpointer deadline_reply_connection;
+static gint deadline_reply_delay_us;
+static gboolean deadline_clock_active;
+static gint64 deadline_clock_value;
+static gint64 test_monotonic_time(void)
+{
+  return deadline_clock_active ? deadline_clock_value : g_get_monotonic_time();
+}
 static xcb_connection_t *test_setup_connect(int fd, xcb_auth_info_t *auth)
 {
   if (force_setup_pipe) {
@@ -60,6 +70,11 @@ static int test_poll_reply(xcb_connection_t *connection, guint sequence,
   if (ready && *reply && mismatch_port && sequence == mismatch_sequence) {
     ((xcb_xv_query_image_attributes_reply_t *)*reply)->data_size += 4;
     mismatch_sequence = 0;
+  }
+  if (ready && (*reply || *error) &&
+      g_atomic_pointer_compare_and_exchange(&deadline_reply_connection, connection, NULL)) {
+    if (deadline_reply_delay_us) g_usleep(deadline_reply_delay_us);
+    if (deadline_clock_active) deadline_clock_value += G_USEC_PER_SEC;
   }
   return ready;
 }
@@ -126,7 +141,9 @@ static xcb_generic_event_t *test_poll_event(xcb_connection_t *connection)
 #define xcb_poll_for_reply test_poll_reply
 #define xcb_xv_query_image_attributes test_image_attributes
 #define xcb_connect_to_fd test_setup_connect
+#define g_get_monotonic_time test_monotonic_time
 #include "../filters/gst/xv-output/gstcrystalhdxv.c"
+#undef g_get_monotonic_time
 #undef xcb_connect_to_fd
 #undef shmget
 #undef shmat
@@ -1722,6 +1739,103 @@ static void test_native_error_reopen_default(void) { native_error_reopen(TRUE, T
 static void test_native_error_reopen_mp4(void) { native_error_reopen(TRUE, TRUE, TRUE, FALSE); }
 static void test_native_error_reopen_parser_policy(void) { native_error_reopen(TRUE, TRUE, FALSE, TRUE); }
 #include "xv-setup-fixture.h"
+typedef struct {
+  int fd;
+  guint mode;
+  gboolean valid, eof;
+  pid_t caller;
+} ReplyPeer;
+static gpointer reply_peer(gpointer data)
+{
+  ReplyPeer *peer = data;
+  gint64 end = g_get_monotonic_time() + 4 * G_USEC_PER_SEC;
+  struct ucred credentials = {0}; socklen_t size = sizeof(credentials);
+  if (!getsockopt(peer->fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size))
+    peer->caller = credentials.pid;
+  guint8 header[12] = {0};
+  if (!setup_read(peer->fd, header, sizeof(header), end) ||
+      header[0] != (G_BYTE_ORDER == G_LITTLE_ENDIAN ? 'l' : 'B') ||
+      setup_u16(header + 6, G_BYTE_ORDER == G_LITTLE_ENDIAN) ||
+      setup_u16(header + 8, G_BYTE_ORDER == G_LITTLE_ENDIAN)) goto done;
+  xcb_setup_t setup = {0};
+  setup.status = 1; setup.protocol_major_version = 11;
+  setup.length = (sizeof(setup) - 8) / 4; setup.resource_id_base = 0x200000;
+  setup.resource_id_mask = 0x1fffff; setup.maximum_request_length = 65535;
+  if (send(peer->fd, &setup, sizeof(setup), MSG_NOSIGNAL) != sizeof(setup)) goto done;
+  xcb_get_geometry_request_t request = {0};
+  if (!setup_read(peer->fd, &request, sizeof(request), end) ||
+      request.major_opcode != XCB_GET_GEOMETRY || request.length != sizeof(request) / 4 ||
+      request.drawable != 0x200101) goto done;
+  peer->valid = TRUE;
+  if (peer->mode == 1 || peer->mode == 4) {
+    xcb_generic_error_t error = {0};
+    error.error_code = XCB_DRAWABLE; error.sequence = 1; error.major_code = XCB_GET_GEOMETRY;
+    if (send(peer->fd, &error, 32, MSG_NOSIGNAL) != 32) goto done;
+  } else if (peer->mode != 5) {
+    xcb_get_geometry_reply_t reply = {0}; guint8 wire[32] = {0};
+    reply.response_type = 1; reply.sequence = 1; reply.root = 0x100;
+    reply.depth = 24; reply.width = 640; reply.height = 360;
+    memcpy(wire, &reply, sizeof(reply));
+    if (send(peer->fd, wire, sizeof(wire), MSG_NOSIGNAL) != sizeof(wire)) goto done;
+  }
+  while (g_get_monotonic_time() < end) {
+    struct pollfd event = {peer->fd, POLLIN, 0};
+    int available = poll(&event, 1, 20);
+    if (available < 0 && errno == EINTR) continue;
+    if (available > 0) {
+      guint8 byte; ssize_t count = recv(peer->fd, &byte, 1, 0);
+      if (!count) { peer->eof = TRUE; break; }
+      if (count < 0) break;
+    }
+  }
+done:
+  close(peer->fd); return NULL;
+}
+static void test_reply_deadline(gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT(data);
+  guint before = setup_fd_count(); int sockets[2];
+  g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets), ==, 0);
+  ReplyPeer peer = {.fd = sockets[1], .mode = mode};
+  GThread *server = g_thread_new("owned-xv-reply", reply_peer, &peer);
+  xcb_connection_t *connection = xcb_connect_to_fd(sockets[0], NULL);
+  g_assert_cmpint(xcb_connection_has_error(connection), ==, 0);
+  XvContext context = {0};
+  context.connection = connection; context.wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  g_assert_cmpint(context.wake_fd, >=, 0);
+  g_mutex_init(&context.lock); g_cond_init(&context.changed);
+  /* The exact edge is a timestamp-only boundary control. The late modes
+   * instead delay the real caller after actual reply retrieval; neither
+   * counterfactual claims that a system X server stalled. */
+  deadline_clock_active = mode == 2;
+  deadline_clock_value = g_get_monotonic_time();
+  deadline_reply_delay_us = mode == 3 || mode == 4 ? 1100 * 1000 : 0;
+  g_atomic_pointer_set(&deadline_reply_connection, connection);
+  gint64 start = g_get_monotonic_time();
+  g_mutex_lock(&context.lock);
+  xcb_get_geometry_reply_t *reply = checked_reply_locked(&context,
+      xcb_get_geometry(connection, 0x200101).sequence, TRUE);
+  g_mutex_unlock(&context.lock);
+  gint64 elapsed = g_get_monotonic_time() - start;
+  deadline_clock_active = FALSE;
+  deadline_reply_delay_us = 0; g_atomic_pointer_set(&deadline_reply_connection, NULL);
+  gboolean accepted = reply != NULL;
+  if (reply) {
+    g_assert_cmpuint(reply->width, ==, 640); g_assert_cmpuint(reply->height, ==, 360);
+    g_assert_cmpuint(reply->root, ==, 0x100); free(reply);
+  }
+  xcb_disconnect(connection); close(context.wake_fd);
+  g_cond_clear(&context.changed); g_mutex_clear(&context.lock); g_thread_join(server);
+  g_assert_true(peer.valid); g_assert_true(peer.eof);
+  g_assert_cmpint(peer.caller, ==, getpid()); g_assert_cmpuint(setup_fd_count(), ==, before);
+  g_test_message("reply mode=%u accepted=%d failed=%d elapsed_us=%" G_GINT64_FORMAT
+      " own-peer/FD-retirement=PASS", mode, accepted, context.failed, elapsed);
+  g_assert_cmpint(accepted, ==, mode == 0);
+  g_assert_cmpint(context.failed, ==, mode >= 2);
+  if (mode >= 2) g_assert_cmpstr(context.failure, ==, "X11 reply unavailable or timed out");
+  if (mode == 3 || mode == 4 || mode == 5) g_assert_cmpint(elapsed, >=, G_USEC_PER_SEC);
+  g_assert_cmpint(elapsed, <, 2 * G_USEC_PER_SEC);
+}
 static void test_setup_timeout(void)
 {
   gchar *args[] = {(gchar *)self_path, "--setup-deadline-child", NULL};
@@ -1750,6 +1864,12 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/identity", test_identity);
   g_test_add_func("/xv/setup-failure", test_setup_failure);
   g_test_add_func("/xv/setup-timeout", test_setup_timeout);
+  const char *reply_cases[] = {"on-time", "protocol-error", "exact-deadline",
+      "late-reply", "late-error", "missing-reply"};
+  for (guint i = 0; i < G_N_ELEMENTS(reply_cases); i++) {
+    gchar *path = g_strdup_printf("/xv/reply-deadline/%s", reply_cases[i]);
+    g_test_add_data_func(path, GUINT_TO_POINTER(i), test_reply_deadline); g_free(path);
+  }
   g_test_add_func("/xv/color-admission", test_color_admission);
   g_test_add_func("/xv/unspecified-color-pixels", test_unspecified_color_pixels);
   g_test_add_func("/xv/x11/reopen", test_reopen);

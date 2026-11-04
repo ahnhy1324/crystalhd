@@ -24,6 +24,7 @@ check: all gst-xv-output-test
 	./gst-xv-output-test -p /xv/identity
 	./gst-xv-output-test -p /xv/setup-failure
 	./gst-xv-output-test -p /xv/setup-timeout
+	./gst-xv-output-test -p /xv/reply-deadline
 	./gst-xv-output-test -p /xv/color-admission
 	./gst-xv-output-test -p /xv/unspecified-color-pixels
 
