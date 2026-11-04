@@ -7158,13 +7158,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         !decode->mpeg4_draining_epochs.empty())
       status = SealDecodeBatch(driver, decode);
   } else {
-    // EndPicture runs on the frontend's submission thread. Do not make one
-    // H.264 input pay for an entire ready-output backlog before pumping it:
-    // the autonomous worker and exact Sync already take one-output turns.
-    // Remapping keeps its established harvest/selection boundary.
-    const unsigned int receive_budget =
-        IsH264Profile(profile) && !decode->experimental_ready_remap ? 1 : 64;
-    status = ReceiveAvailable(driver, decode, receive_budget);
+    status = ReceiveAvailable(driver, decode);
     if (status == VA_STATUS_SUCCESS)
       status = PumpDecodeInput(driver, decode);
   }
