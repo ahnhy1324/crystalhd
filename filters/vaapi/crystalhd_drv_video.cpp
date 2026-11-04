@@ -98,6 +98,37 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #include "../../tests/vaapi-centered-payload-observer.h"
 #endif
 
+#if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST)
+#include "../../tests/vaapi-maintained-cost-observer.h"
+#define CH_COST_SCOPE(name, stage, identity) \
+  crystalhd_test_maintained_cost::Scope name( \
+      crystalhd_test_maintained_cost::Stage::stage, (identity))
+#define CH_COST_SCOPE_FLAGS(name, stage, identity, flags, detail) \
+  crystalhd_test_maintained_cost::Scope name( \
+      crystalhd_test_maintained_cost::Stage::stage, (identity), (flags), (detail))
+#define CH_COST_RESULT(name, value) (name).Result(static_cast<int64_t>(value))
+#define CH_COST_FLAGS(name, value) (name).Flags(value)
+#define CH_COST_BIND(name, identity, phase) \
+  (name).Bind((identity), crystalhd_test_maintained_cost::Phase::phase)
+#define CH_COST_FINISH(name) (name).Finish()
+#define CH_COST_RETURN(name, value) return (name).Return(value)
+#define CH_COST_CALL(stage, identity, flags, detail, expression) \
+  crystalhd_test_maintained_cost::Call( \
+      crystalhd_test_maintained_cost::Stage::stage, (identity), \
+      [&]() { return (expression); }, (flags), (detail))
+#else
+// No timing state, identity evaluation, clock calls or runtime knob in ordinary
+// builds. Existing operations and their return values execute exactly once.
+#define CH_COST_SCOPE(name, stage, identity) do {} while (false)
+#define CH_COST_SCOPE_FLAGS(name, stage, identity, flags, detail) do {} while (false)
+#define CH_COST_RESULT(name, value) do {} while (false)
+#define CH_COST_FLAGS(name, value) do {} while (false)
+#define CH_COST_BIND(name, identity, phase) do {} while (false)
+#define CH_COST_FINISH(name) do {} while (false)
+#define CH_COST_RETURN(name, value) return (value)
+#define CH_COST_CALL(stage, identity, flags, detail, expression) (expression)
+#endif
+
 #if defined(__GNUC__)
 // Keep the plugin loadable with an older libcrystalhd.so.3. The optional
 // output-event API is negotiated only when the symbol is present.
@@ -990,6 +1021,10 @@ struct Surface {
   }
 
   bool BeginCpuAccess(uint64_t direction) const {
+    CH_COST_SCOPE_FLAGS(cost_scope, CpuAccessBegin,
+        crystalhd_test_maintained_cost::SurfaceIdentity(this),
+        ((direction & DMA_BUF_SYNC_READ) ? 32U : 0U) |
+            ((direction & DMA_BUF_SYNC_WRITE) ? 64U : 0U), direction);
     for (size_t object = 0; object < object_fds.size(); ++object) {
       if (!SyncDmaBuf(object_fds[object], DMA_BUF_SYNC_START | direction)) {
         const int saved_errno = errno;
@@ -1006,13 +1041,17 @@ struct Surface {
         Debug("DMA-BUF CPU sync failed stage=start fd=%d object=%zu direction=%#llx errno=%d",
               object_fds[failed_object], failed_object,
               static_cast<unsigned long long>(direction), saved_errno);
-        return false;
+        CH_COST_RETURN(cost_scope, false);
       }
     }
-    return true;
+    CH_COST_RETURN(cost_scope, true);
   }
 
   bool EndCpuAccess(uint64_t direction) const {
+    CH_COST_SCOPE_FLAGS(cost_scope, CpuAccessEnd,
+        crystalhd_test_maintained_cost::SurfaceIdentity(this),
+        ((direction & DMA_BUF_SYNC_READ) ? 32U : 0U) |
+            ((direction & DMA_BUF_SYNC_WRITE) ? 64U : 0U), direction);
     bool success = true;
     for (size_t object = 0; object < object_fds.size(); ++object) {
       const int fd = object_fds[object];
@@ -1022,7 +1061,7 @@ struct Surface {
         success = false;
       }
     }
-    return success;
+    CH_COST_RETURN(cost_scope, success);
   }
 
   bool BeginCpuRead() const { return BeginCpuAccess(DMA_BUF_SYNC_READ); }
@@ -1031,8 +1070,10 @@ struct Surface {
   bool EndCpuWrite() const { return EndCpuAccess(DMA_BUF_SYNC_WRITE); }
 
   bool SetI915Domain(uint32_t read_domains, uint32_t write_domain) const {
+    CH_COST_SCOPE_FLAGS(cost_scope, I915Domain,
+        crystalhd_test_maintained_cost::SurfaceIdentity(this), 0, 0);
     if (!owned_i915_dumb || dumb_drm_fd < 0 || dumb_handle == 0)
-      return false;
+      CH_COST_RETURN(cost_scope, false);
     drm_i915_gem_set_domain domain = {};
     domain.handle = dumb_handle;
     domain.read_domains = read_domains;
@@ -1041,34 +1082,39 @@ struct Surface {
     do {
       result = ioctl(dumb_drm_fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &domain);
     } while (result != 0 && errno == EINTR);
-    return result == 0;
+    CH_COST_RETURN(cost_scope, result == 0);
   }
 
   // The experiment is deliberately limited to synchronous decoded-pixel
   // writes. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
   // imported surfaces and VPP never inherit this i915-specific policy.
   bool BeginDecodedCpuWrite(bool *used_i915_wc) {
+    CH_COST_SCOPE_FLAGS(cost_scope, DecodedCpuBegin,
+        crystalhd_test_maintained_cost::SurfaceIdentity(this), 64, 0);
     if (used_i915_wc == nullptr)
-      return false;
+      CH_COST_RETURN(cost_scope, false);
     *used_i915_wc = false;
     if (experimental_i915_wc) {
       if (SetI915Domain(I915_GEM_DOMAIN_WC, I915_GEM_DOMAIN_WC)) {
         *used_i915_wc = true;
-        return true;
+        CH_COST_FLAGS(cost_scope, 64U | 16U);
+        CH_COST_RETURN(cost_scope, true);
       }
       const int error = errno;
       experimental_i915_wc = false;
       Debug("experimental i915 WC domain failed; using DMA-BUF sync: %s",
             strerror(error));
     }
-    return BeginCpuWrite();
+    CH_COST_RETURN(cost_scope, BeginCpuWrite());
   }
 
   bool EndDecodedCpuWrite(bool used_i915_wc) {
+    CH_COST_SCOPE_FLAGS(cost_scope, DecodedCpuEnd,
+        crystalhd_test_maintained_cost::SurfaceIdentity(this), 64U | (used_i915_wc ? 16U : 0U), 0);
     if (!used_i915_wc)
-      return EndCpuWrite();
+      CH_COST_RETURN(cost_scope, EndCpuWrite());
     if (SetI915Domain(I915_GEM_DOMAIN_GTT, 0))
-      return true;
+      CH_COST_RETURN(cost_scope, true);
 
     // DMA_BUF_SYNC START must precede CPU access, so a rejected post-copy
     // domain transition cannot safely recover this frame by bracketing the
@@ -1078,7 +1124,7 @@ struct Surface {
     experimental_i915_wc = false;
     Debug("experimental i915 GTT domain failed; disabling experiment: %s",
           strerror(error));
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   }
 
   // The asynchronous path cannot call DMA_BUF_IOCTL_SYNC END while its own
@@ -1418,12 +1464,15 @@ static bool CenteredStorageMatches(const Surface &canvas, bool compact = false) 
 static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
                                   bool compact = false,
                                   bool decoded_public = false) {
+  CH_COST_SCOPE_FLAGS(cost_scope, CanvasCompose,
+      crystalhd_test_maintained_cost::SurfaceIdentity(&picture),
+      (compact ? 1U : 0U) | (decoded_public ? 2U : 0U), 0);
   if (canvas == nullptr || !CenteredStorageMatches(picture, compact) ||
       canvas->fourcc != VA_FOURCC_NV12 || canvas->width != picture.width ||
       canvas->height != picture.height ||
       canvas->expected_timestamp != picture.expected_timestamp ||
       canvas->decode_identity != picture.decode_identity)
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   const auto &g = picture.centered_geometry;
   const auto &small = picture.centered_pixels;
   if (!small->ready || small->failed || small->destroyed ||
@@ -1431,11 +1480,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       small->frame_timestamp != small->expected_timestamp ||
       small->expected_timestamp != canvas->expected_timestamp ||
       small->decode_identity != canvas->decode_identity)
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   for (unsigned plane = 0; plane != 2; ++plane) {
     if (!canvas->planes[plane] || !small->planes[plane] ||
         canvas->pitch[plane] < canvas->width || small->pitch[plane] < small->width)
-      return false;
+      CH_COST_RETURN(cost_scope, false);
   }
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   auto *centered_observer = crystalhd_test_centered_payload::active;
@@ -1444,14 +1493,16 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       : nullptr;
 #endif
   if (!small->BeginCpuRead())
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   bool used_i915_wc = false;
   const bool acquired = decoded_public
       ? canvas->BeginDecodedCpuWrite(&used_i915_wc) : canvas->BeginCpuWrite();
   if (!acquired) {
     small->EndCpuRead();
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   }
+  CH_COST_SCOPE_FLAGS(cost_pixels, CanvasPixels, crystalhd_test_maintained_cost::SurfaceIdentity(&picture),
+                      (compact ? 1U : 0U) | (decoded_public ? 2U : 0U), 0);
   const unsigned top = g.y / (compact ? 2U : 1U);
   for (unsigned plane = 0; plane != 2; ++plane) {
     const unsigned rows = plane == 0 ? canvas->height : canvas->height / 2U;
@@ -1472,10 +1523,15 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       }
     }
   }
+  CH_COST_RESULT(cost_pixels, true);
+  CH_COST_FINISH(cost_pixels);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   if (centered_observer) {
+    CH_COST_SCOPE_FLAGS(cost_capture, DiagnosticCapture,
+                       crystalhd_test_maintained_cost::SurfaceIdentity(&picture), 0, 1);
     centered_slot = centered_observer->SelectComposedTarget(
         centered_slot, picture, *canvas, *small, compact, decoded_public);
+    CH_COST_FLAGS(cost_capture, centered_slot ? 8U : 0U);
     centered_observer->CaptureCompose(centered_slot, *small, *canvas);
   }
 #endif
@@ -1487,11 +1543,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     centered_observer->EndCompose(centered_slot, committed, released);
 #endif
   if (!committed || !released)
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   canvas->ready = true;
   canvas->failed = false;
   canvas->frame_timestamp = small->frame_timestamp;
-  return true;
+  CH_COST_RETURN(cost_scope, true);
 }
 
 static bool ComposeCenteredCanvas(Surface *canvas, bool compact = false) {
@@ -2979,6 +3035,27 @@ static crystalhd_vaapi_trace::Fields TraceDecodeTokenFields(
   return TraceFields(decode, nullptr, token);
 }
 
+#if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST)
+static crystalhd_test_maintained_cost::Identity CostTraceIdentity(
+    Driver *driver, const crystalhd_vaapi_trace::Fields &fields) {
+  return crystalhd_test_maintained_cost::TraceIdentity(driver->trace.session(), fields);
+}
+static crystalhd_test_maintained_cost::Identity CostDecode(
+    Driver *driver, DecodeContext *decode) {
+  return CostTraceIdentity(driver, TraceFields(decode, nullptr));
+}
+static crystalhd_test_maintained_cost::Identity CostOutput(
+    Driver *driver, DecodeContext *decode, uint64_t actual_token) {
+  return CostTraceIdentity(driver,
+      TraceDecodeTokenFields(driver, decode, actual_token));
+}
+static crystalhd_test_maintained_cost::Identity CostDriver(Driver *driver) {
+  crystalhd_test_maintained_cost::Identity i;
+  i.driver = driver->trace.session();
+  return i;
+}
+#endif
+
 static crystalhd_vaapi_trace::Fields TraceRequestedOwnerFields(
     const Surface *requested, const Surface *owner) {
   crystalhd_vaapi_trace::Fields fields = TraceFields(nullptr, owner);
@@ -3807,6 +3884,9 @@ static bool CopyH264InterlacedToSurface(
     Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
     unsigned int source_height, size_t field_pitch, uint64_t timestamp,
     unsigned int field_mask = 3, bool compact_field = false) {
+  CH_COST_SCOPE_FLAGS(cost_scope, FieldConvert,
+      crystalhd_test_maintained_cost::SurfaceIdentity(surface),
+      (compact_field ? 1U : 0U), field_mask);
   // A single parity is used only by the operation-private Bob view below.
   // Public decode surfaces always use both fields and complete as before.
   if (surface == nullptr || field_mask == 0 || field_mask > 3 ||
@@ -3816,7 +3896,7 @@ static bool CopyH264InterlacedToSurface(
       (compact_field && (field_mask == 3 || surface->fourcc != VA_FOURCC_NV12)) ||
       source_width == 0 || (source_width & 1U) != 0 || source_height == 0 ||
       source_height % 4U != 0 || field_pitch < source_width * 2U)
-    return false;
+    CH_COST_RETURN(cost_scope, false);
 
   const unsigned int width =
       std::min<unsigned int>(source_width, surface->width);
@@ -3827,7 +3907,9 @@ static bool CopyH264InterlacedToSurface(
 
   bool used_i915_wc = false;
   if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
-    return false;
+    CH_COST_RETURN(cost_scope, false);
+  CH_COST_SCOPE_FLAGS(cost_pixels, FieldConvertPixels, crystalhd_test_maintained_cost::SurfaceIdentity(surface),
+                      (compact_field ? 1U : 0U), field_mask);
   if (IsBgraStorageFormat(surface->fourcc)) {
     for (unsigned int row = 0; row < surface->height; ++row) {
       uint8_t *line = surface->planes[0] +
@@ -3854,16 +3936,20 @@ static bool CopyH264InterlacedToSurface(
         }
       }
     }
+    CH_COST_RESULT(cost_pixels, true);
+    CH_COST_FINISH(cost_pixels);
     if (!surface->EndDecodedCpuWrite(used_i915_wc))
-      return false;
+      CH_COST_RETURN(cost_scope, false);
     surface->ready = true;
     surface->frame_timestamp = timestamp;
-    return true;
+    CH_COST_RETURN(cost_scope, true);
   }
 
   if (surface->fourcc != VA_FOURCC_NV12 || (width & 1U) != 0) {
+    CH_COST_RESULT(cost_pixels, false);
+    CH_COST_FINISH(cost_pixels);
     surface->EndDecodedCpuWrite(used_i915_wc);
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   }
   for (unsigned int row = 0; row < height; ++row) {
     if (width < surface->width)
@@ -4039,11 +4125,13 @@ static bool CopyH264InterlacedToSurface(
     }
 #endif
   }
+  CH_COST_RESULT(cost_pixels, true);
+  CH_COST_FINISH(cost_pixels);
   if (!surface->EndDecodedCpuWrite(used_i915_wc))
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   surface->ready = true;
   surface->frame_timestamp = timestamp;
-  return true;
+  CH_COST_RETURN(cost_scope, true);
 }
 
 static bool CopyH264FieldPairToSurface(
@@ -4077,26 +4165,31 @@ enum class CopyPurpose { Generic, DecodedPublic };
 
 static bool CopyNv12Pixels(const Surface &source, Surface *destination,
                            CopyPurpose purpose = CopyPurpose::Generic) {
+  CH_COST_SCOPE_FLAGS(cost_scope, PublicCopy,
+      crystalhd_test_maintained_cost::SurfaceIdentity(&source),
+      purpose == CopyPurpose::DecodedPublic ? 2U : 0U, 0);
   if (destination == nullptr || source.fourcc != VA_FOURCC_NV12 ||
       destination->fourcc != VA_FOURCC_NV12)
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   const unsigned int width = std::min(source.width, destination->width);
   const unsigned int height = std::min(source.height, destination->height);
   if (!source.BeginCpuRead())
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   bool used_i915_wc = false;
   const bool acquired = purpose == CopyPurpose::DecodedPublic
       ? destination->BeginDecodedCpuWrite(&used_i915_wc)
       : destination->BeginCpuWrite();
   if (!acquired) {
     source.EndCpuRead();
-    return false;
+    CH_COST_RETURN(cost_scope, false);
   }
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   auto *centered_observer = crystalhd_test_centered_payload::active;
   auto *centered_slot = centered_observer && purpose == CopyPurpose::DecodedPublic
       ? centered_observer->SelectPublic(source, *destination) : nullptr;
 #endif
+  CH_COST_SCOPE_FLAGS(cost_pixels, PublicCopyPixels, crystalhd_test_maintained_cost::SurfaceIdentity(&source),
+                      purpose == CopyPurpose::DecodedPublic ? 2U : 0U, 0);
   if (width < destination->width)
     for (unsigned int row = 0; row < height; ++row)
       memset(destination->planes[0] + static_cast<size_t>(row) * destination->pitch[0] + width,
@@ -4126,9 +4219,13 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination,
            source.planes[1] + static_cast<size_t>(row) * source.pitch[1],
            width);
   }
+  CH_COST_RESULT(cost_pixels, true);
+  CH_COST_FINISH(cost_pixels);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   if (centered_observer)
-    centered_observer->CapturePublic(centered_slot, *destination);
+    CH_COST_CALL(DiagnosticCapture, crystalhd_test_maintained_cost::SurfaceIdentity(&source),
+                 centered_slot ? 8U : 0U, 2,
+                 centered_observer->CapturePublic(centered_slot, *destination));
 #endif
   const bool committed = purpose == CopyPurpose::DecodedPublic
       ? destination->EndDecodedCpuWrite(used_i915_wc)
@@ -4139,8 +4236,8 @@ static bool CopyNv12Pixels(const Surface &source, Surface *destination,
     centered_observer->EndPublic(centered_slot, committed, released);
 #endif
   if (!committed || !released)
-    return false;
-  return true;
+    CH_COST_RETURN(cost_scope, false);
+  CH_COST_RETURN(cost_scope, true);
 }
 
 static bool CopyNv12Surface(const Surface &source, Surface *destination,
@@ -4206,6 +4303,7 @@ static VAStatus SnapshotCompletedVppPicture(
 static bool PromoteDecodedPicture(Surface *picture) {
   if (!picture || !picture->direct_backing)
     return true;
+  CH_COST_SCOPE(cost_promote, PublicPromote, crystalhd_test_maintained_cost::SurfaceIdentity(picture));
   const auto backing = picture->direct_backing;
   if (!picture->AllocateInternal(nullptr, -1, picture->width, picture->height,
                                   VA_FOURCC_NV12))
@@ -4630,6 +4728,7 @@ static CrystalHDDecodeReplay::Output InspectInterlacedOutput(
 static VAStatus ProcessDecodedOutputImpl(
     Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &reported,
     OutputProcessingState *processing) {
+  CH_COST_SCOPE(cost_process, ProcessOutput, CostDecode(driver, decode));
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   crystalhd_test_centered_payload::Scope centered_scope(
       driver->centered_payload_observer.get());
@@ -4678,6 +4777,7 @@ static VAStatus ProcessDecodedOutputImpl(
             static_cast<unsigned long long>(first.timestamp));
     }
   }
+  CH_COST_BIND(cost_process, CostOutput(driver, decode, output.PicInfo.timeStamp), Output);
   if (driver->trace.enabled()) {
     driver->trace.Emit(crystalhd_vaapi_trace::Event::OutputDequeued,
                        TraceDecodeTokenFields(driver, decode,
@@ -4784,9 +4884,12 @@ static VAStatus ProcessDecodedOutputImpl(
       // Reference replay retires a duplicate only after its validated pair;
       // neither field's pixels may replace an already completed picture.
       if (!replay_duplicate) {
+        CH_COST_SCOPE(cost_stage, FirstFieldStage,
+                      CostOutput(driver, decode, output.PicInfo.timeStamp));
         pixels.swap(decode->h264_first_field.pixels);
         pixels.assign(output.Ybuff,
                       output.Ybuff + static_cast<size_t>(field_bytes));
+        CH_COST_RESULT(cost_stage, true);
       }
       H264FirstField &first = decode->h264_first_field;
       first.replay_duplicate = replay_duplicate;
@@ -4809,6 +4912,8 @@ static VAStatus ProcessDecodedOutputImpl(
       return VA_STATUS_SUCCESS;
     }
 
+    CH_COST_SCOPE(cost_second, SecondFieldProcess,
+                  CostOutput(driver, decode, output.PicInfo.timeStamp));
     const H264FirstField &first = decode->h264_first_field;
     if (first.timestamp != output.PicInfo.timeStamp ||
         first.replay_duplicate != replay_duplicate ||
@@ -4999,7 +5104,10 @@ static VAStatus ProcessDecodedOutputImpl(
   if (decoded != decode->decoded_frames.end()) {
     if (complete && !discard_pixels) {
       if (direct) {
+        CH_COST_SCOPE_FLAGS(cost_direct, DirectPublic,
+                            CostOutput(driver, decode, output.PicInfo.timeStamp), 4, 0);
         complete = copy_output(surface->second.get(), decoded->second.get(), true);
+        CH_COST_RESULT(cost_direct, complete);
         wrote_pixels = complete;
         decoded->second->ready = complete;
         decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
@@ -5061,8 +5169,10 @@ static VAStatus ProcessDecodedOutputImpl(
                                    output.PicInfo.timeStamp));
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
     if (driver->centered_payload_observer)
-      driver->centered_payload_observer->Materialized(
-          TraceFields(decode, materialized, output.PicInfo.timeStamp));
+      CH_COST_CALL(DiagnosticCapture,
+                   CostOutput(driver, decode, output.PicInfo.timeStamp), 0, 3,
+                   driver->centered_payload_observer->Materialized(
+                       TraceFields(decode, materialized, output.PicInfo.timeStamp)));
 #endif
   }
   if (!current_picture) {
@@ -5106,12 +5216,17 @@ static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
 
 static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
                            unsigned int timeout_ms, bool *activity) {
+  CH_COST_SCOPE(cost_receive, ReceiveOne, CostDecode(driver, decode));
   BC_DTS_PROC_OUT output = {};
   output.PicInfo.width = decode->CaptureWidth();
   output.PicInfo.height = decode->CaptureHeight();
   *activity = false;
 
-  BC_STATUS status = DtsProcOutputNoCopy(decode->device, timeout_ms, &output);
+  BC_STATUS status = CH_COST_CALL(DilAcquire, CostDecode(driver, decode), 0, 0,
+      DtsProcOutputNoCopy(decode->device, timeout_ms, &output));
+  if (status == BC_STS_SUCCESS)
+    CH_COST_BIND(cost_receive,
+                 CostOutput(driver, decode, output.PicInfo.timeStamp), Output);
   Debug("DtsProcOutputNoCopy: status=%d flags=%#x ts=%llu ordinal=%u session=%u output=%ux%u context=%ux%u picture_flags=%#x y_words=%u", status,
         output.PoutFlags,
         static_cast<unsigned long long>(output.PicInfo.timeStamp),
@@ -5121,7 +5236,9 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   if ((output.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0) {
     if (status == BC_STS_SUCCESS) {
       *activity = true;
-      if (DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
+      if (CH_COST_CALL(DilRelease,
+          CostOutput(driver, decode, output.PicInfo.timeStamp), 0, 0,
+          DtsReleaseOutputBuffs(decode->device, nullptr, FALSE)) != BC_STS_SUCCESS)
         return FailDecode(driver, decode, "encrypted output release failed");
     }
     return FailDecode(driver, decode, "encrypted output is unsupported");
@@ -5131,7 +5248,9 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     // counters are not evidence that every submitted picture was produced.
     *activity = true;
     if (status == BC_STS_SUCCESS &&
-        DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
+        CH_COST_CALL(DilRelease,
+          CostOutput(driver, decode, output.PicInfo.timeStamp), 0, 0,
+          DtsReleaseOutputBuffs(decode->device, nullptr, FALSE)) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "EOS output release failed");
     if (decode->auxiliary.pending)
       return FailDecode(driver, decode, "EOS before H.264 auxiliary output retired");
@@ -5206,7 +5325,9 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
       : auxiliary
       ? ValidateH264AuxiliaryOutput(driver, decode, output)
       : ProcessDecodedOutput(driver, decode, output);
-  status = DtsReleaseOutputBuffs(decode->device, nullptr, FALSE);
+  status = CH_COST_CALL(DilRelease,
+          CostOutput(driver, decode, output.PicInfo.timeStamp), 0, 0,
+          DtsReleaseOutputBuffs(decode->device, nullptr, FALSE));
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
   if (mpeg2_auxiliary && result == VA_STATUS_SUCCESS) {
@@ -10588,16 +10709,20 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
 #if defined(CRYSTALHD_VAAPI_TEST_CALL_ENTRY)
   CRYSTALHD_VAAPI_TEST_CALL_ENTRY();
 #endif
+  CH_COST_SCOPE(cost_admission, SyncAdmission, CostDriver(driver));
   std::unique_lock<std::mutex> lock(driver->mutex, std::defer_lock);
   if (timeout_ns == 0) {
     // A passive readiness query must not wait behind conversion or another
     // API call. Surface validity/state cannot be inspected without the lock;
     // report retryable admission contention, not hardware completion/failure.
     if (!lock.try_lock())
-      return VA_STATUS_ERROR_TIMEDOUT;
+      CH_COST_RETURN(cost_admission, VA_STATUS_ERROR_TIMEDOUT);
   } else {
     lock.lock();
   }
+  CH_COST_RESULT(cost_admission, VA_STATUS_SUCCESS);
+  CH_COST_FINISH(cost_admission);
+  CH_COST_SCOPE(cost_body, SyncBody, CostDriver(driver));
   const auto trace_start = trace_enabled ? std::chrono::steady_clock::now()
                                          : std::chrono::steady_clock::time_point{};
   auto surface = driver->surfaces.find(surface_id);
@@ -10614,6 +10739,9 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
     if (owner != driver->surfaces.end())
       synchronized_surface = owner->second;
   }
+  CH_COST_BIND(cost_body,
+      CostTraceIdentity(driver, TraceRequestedOwnerFields(
+          requested_surface.get(), synchronized_surface.get())), Admission);
   if (synchronized_surface->image_write_locked)
     return VA_STATUS_ERROR_SURFACE_BUSY;
   crystalhd_vaapi_trace::Fields trace_fields;
@@ -10628,6 +10756,7 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
     driver->trace.Emit(crystalhd_vaapi_trace::Event::SyncEnter, trace_fields);
   }
   const auto finish = [&](VAStatus status) {
+    CH_COST_RESULT(cost_body, status);
     if (trace_enabled) {
       const crystalhd_vaapi_trace::Fields current =
           TraceRequestedOwnerFields(requested_surface.get(),
