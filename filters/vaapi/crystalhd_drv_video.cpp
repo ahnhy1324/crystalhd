@@ -634,6 +634,16 @@ struct CenteredBorder {
   uint64_t epoch = 0;
 };
 
+struct CenteredMirror {
+  std::weak_ptr<Surface> target, small;
+  std::weak_ptr<crystalhd_cow_snapshot::Canvas> backing;
+  crystalhd_centered_output::Geometry geometry;
+  uint64_t epoch = 0, small_epoch = 0;
+  uint64_t timestamp = 0, identity = 0, context = 0, generation = 0, ordinal = 0;
+  VASurfaceID surface = VA_INVALID_SURFACE;
+  unsigned int fields = 0;
+};
+
 // Published CPU-primary storage, including bytes retained by a promoted
 // Surface, has one process-wide budget. Use native 32-bit atomics on i686.
 static constexpr uint32_t kCpuPrimaryBytes = 64U * 1024U * 1024U;
@@ -740,6 +750,7 @@ struct Surface {
   std::shared_ptr<Surface> centered_pixels;
   mutable CenteredReadback centered_readback;
   CenteredBorder centered_border;
+  CenteredMirror centered_mirror;
   mutable uint64_t centered_write_epoch = 0;
   // An exported fd may outlive every VA call, including READ_ONLY exports.
   // No subsequent Compose may recertify this allocation as private/pristine.
@@ -1641,6 +1652,59 @@ static bool CenteredReadbackCpuPixels(const Surface &small) {
       small.planes[1] == small.planes[0] + size_t{small.pitch[0]} * small.height;
 }
 
+static bool CenteredMirrorDestination(const Surface &canvas, const Surface &small,
+    const crystalhd_centered_output::Geometry &g) {
+  const auto picture = canvas.decode_picture.lock();
+  return CpuPrimaryStorageMatches(canvas) && canvas.direct_decode_eligible &&
+      !canvas.ready && canvas.frame_timestamp == 0 && !canvas.failed && !canvas.destroyed &&
+      !canvas.opaque_reference && canvas.vpp_readers == 0 && canvas.vpp_writers == 0 &&
+      !canvas.image_write_locked && canvas.export_waiters == 0 &&
+      !canvas.experimental_write_lease && !canvas.experimental_read_export_armed &&
+      !canvas.experimental_presentation &&
+      !(canvas.picture_transaction != 0 &&
+        canvas.rejected_picture_transaction == canvas.picture_transaction) &&
+      picture && picture->direct_backing.get() == &canvas &&
+      picture->centered_pixels.get() == &small && CenteredStorageMatches(*picture) &&
+      picture->expected_timestamp == small.expected_timestamp &&
+      picture->decode_identity == small.decode_identity &&
+      picture->trace_decode_identity == small.trace_decode_identity &&
+      picture->trace_context == small.trace_context &&
+      picture->trace_generation == small.trace_generation &&
+      picture->trace_submission_ordinal == small.trace_submission_ordinal &&
+      SameCenteredGeometry(picture->centered_geometry, g) &&
+      CenteredReadbackCpuPixels(small) && g.enabled &&
+      g.canvas_width == canvas.width && g.canvas_height == canvas.height &&
+      g.capture_width == small.width && g.capture_height == small.height &&
+      (g.x & 1U) == 0 && (g.y & 3U) == 0 &&
+      g.x <= canvas.width && small.width <= canvas.width - g.x &&
+      g.y <= canvas.height && small.height <= canvas.height - g.y &&
+      canvas.expected_timestamp != 0 && canvas.expected_timestamp == small.expected_timestamp &&
+      canvas.decode_identity != 0 && canvas.decode_identity == small.decode_identity &&
+      canvas.trace_decode_identity == canvas.decode_identity &&
+      small.trace_decode_identity == canvas.decode_identity &&
+      canvas.trace_context != 0 && canvas.trace_context == small.trace_context &&
+      canvas.trace_generation != 0 && canvas.trace_generation == small.trace_generation &&
+      canvas.trace_submission_ordinal != 0 &&
+      canvas.trace_submission_ordinal == small.trace_submission_ordinal;
+}
+
+static bool CenteredMirrorMatches(const Surface &canvas, const Surface &small,
+    const crystalhd_centered_output::Geometry &g, unsigned int fields) {
+  const auto &m = canvas.centered_mirror;
+  const auto backing = m.backing.lock();
+  return CenteredMirrorDestination(canvas, small, g) && backing &&
+      m.target.lock().get() == &canvas && m.small.lock().get() == &small &&
+      backing.get() == canvas.cpu_primary_canvas.get() &&
+      !backing.owner_before(canvas.cpu_primary_canvas) &&
+      !canvas.cpu_primary_canvas.owner_before(backing) &&
+      m.epoch != 0 && m.epoch == backing->WriteEpoch() &&
+      m.small_epoch == small.centered_write_epoch && m.fields == fields &&
+      m.surface == canvas.id && m.timestamp == canvas.expected_timestamp &&
+      m.identity == canvas.decode_identity && m.context == canvas.trace_context &&
+      m.generation == canvas.trace_generation && m.ordinal == canvas.trace_submission_ordinal &&
+      SameCenteredGeometry(m.geometry, g);
+}
+
 // Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
 // Compact storage is private to the already-existing first-field Bob route.
 static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
@@ -1684,6 +1748,8 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       !border_backing.owner_before(previous_backing) &&
       canvas->centered_border.epoch == before_epoch &&
       SameCenteredGeometry(canvas->centered_border.geometry, g);
+  bool mirrored_roi = decoded_public && !compact &&
+      CenteredMirrorMatches(*canvas, *small, g, 3U);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   auto *centered_observer = crystalhd_test_centered_payload::active;
   auto *centered_slot = centered_observer
@@ -1704,8 +1770,11 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
   const uint64_t acquired_epoch = border_backing ? border_backing->WriteEpoch() : 0;
   if (acquired_epoch == 0)
     reused_border = false;
+  if (acquired_epoch == 0)
+    mirrored_roi = false;
   CH_COST_SCOPE_FLAGS(cost_pixels, CanvasPixels, crystalhd_test_maintained_cost::SurfaceIdentity(&picture),
-                      (compact ? 1U : 0U) | (decoded_public ? 2U : 0U), 0);
+                      (compact ? 1U : 0U) | (decoded_public ? 2U : 0U) |
+                          (mirrored_roi ? 4U : 0U), 0);
   const unsigned top = g.y / (compact ? 2U : 1U);
   for (unsigned plane = 0; plane != 2; ++plane) {
     const unsigned rows = plane == 0 ? canvas->height : canvas->height / 2U;
@@ -1713,9 +1782,14 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     const unsigned active_rows = plane == 0 ? small->height : small->height / 2U;
     const uint8_t black = plane == 0 ? (g.full_range ? 0 : 16) : 128;
     if (reused_border) {
-      for (unsigned row = 0; row != active_rows; ++row) {
-        memcpy(canvas->planes[plane] + size_t{row + first} * canvas->pitch[plane] + g.x,
-               small->planes[plane] + size_t{row} * small->pitch[plane], small->width);
+      if (!mirrored_roi) {
+        for (unsigned row = 0; row != active_rows; ++row) {
+          memcpy(canvas->planes[plane] + size_t{row + first} * canvas->pitch[plane] + g.x,
+                 small->planes[plane] + size_t{row} * small->pitch[plane], small->width);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_ROI_COPY_BYTES)
+          CRYSTALHD_VAAPI_TEST_CENTERED_ROI_COPY_BYTES(small->width);
+#endif
+        }
       }
       continue;
     }
@@ -1731,9 +1805,14 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES)
         CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(g.x);
 #endif
-        memcpy(line + g.x,
-               small->planes[plane] + size_t{row - first} * small->pitch[plane],
-               small->width);
+        if (!mirrored_roi) {
+          memcpy(line + g.x,
+                 small->planes[plane] + size_t{row - first} * small->pitch[plane],
+                 small->width);
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_ROI_COPY_BYTES)
+          CRYSTALHD_VAAPI_TEST_CENTERED_ROI_COPY_BYTES(small->width);
+#endif
+        }
         memset(line + g.x + small->width, black,
                canvas->width - g.x - small->width);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES)
@@ -4168,7 +4247,9 @@ static bool CopyH264InterlacedToSurface(
     Surface *surface, const uint8_t *const fields[2], unsigned int source_width,
     unsigned int source_height, size_t field_pitch, uint64_t timestamp,
     unsigned int field_mask = 3, bool compact_field = false,
-    bool publish_complete = true) {
+    bool publish_complete = true,
+    const std::shared_ptr<Surface> &mirror = {},
+    const crystalhd_centered_output::Geometry *mirror_geometry = nullptr) {
   CH_COST_SCOPE_FLAGS(cost_scope, FieldConvert,
       crystalhd_test_maintained_cost::SurfaceIdentity(surface),
       (compact_field ? 1U : 0U), field_mask);
@@ -4193,9 +4274,43 @@ static bool CopyH264InterlacedToSurface(
                              surface->height);
   const unsigned int field_rows = source_height / 2U;
 
+  const bool mirror_candidate = mirror && mirror_geometry && !compact_field &&
+      (field_mask == 1U || field_mask == 2U) &&
+      source_width == surface->width && source_height == surface->height &&
+      CenteredMirrorDestination(*mirror, *surface, *mirror_geometry) &&
+      (publish_complete
+          ? CenteredMirrorMatches(*mirror, *surface, *mirror_geometry, field_mask ^ 3U)
+          : (!surface->ready && surface->frame_timestamp == 0));
+  const auto mirror_backing = mirror_candidate ? mirror->cpu_primary_canvas : nullptr;
+  const uint64_t mirror_before = mirror_backing ? mirror_backing->WriteEpoch() : 0;
+  const auto border_backing = mirror_candidate ? mirror->centered_border.backing.lock() : nullptr;
+  const bool mirrored_border_known = mirror_before != 0 && border_backing &&
+      border_backing.get() == mirror_backing.get() &&
+      !border_backing.owner_before(mirror_backing) && !mirror_backing.owner_before(border_backing) &&
+      mirror->centered_border.epoch == mirror_before &&
+      SameCenteredGeometry(mirror->centered_border.geometry, *mirror_geometry);
+
   bool used_i915_wc = false;
   if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
     CH_COST_RETURN(cost_scope, false);
+  bool mirror_wc = false;
+  bool mirror_active = mirror_candidate && mirror_before != 0 &&
+      mirror->BeginDecodedCpuWrite(&mirror_wc);
+  uint64_t mirror_acquired = mirror_active ? mirror_backing->WriteEpoch() : 0;
+  if (mirror_active && mirror_acquired == 0) {
+    if (!mirror->EndDecodedCpuWrite(mirror_wc)) {
+      surface->EndDecodedCpuWrite(used_i915_wc);
+      mirror->centered_mirror = {};
+      CH_COST_RETURN(cost_scope, false);
+    }
+    mirror_active = false;
+  }
+  if (mirror && !mirror_active)
+    mirror->centered_mirror = {};
+  uint8_t *mirror_y = mirror_active ? mirror->planes[0] +
+      size_t{mirror_geometry->y} * mirror->pitch[0] + mirror_geometry->x : nullptr;
+  uint8_t *mirror_uv = mirror_active ? mirror->planes[1] +
+      size_t{mirror_geometry->y / 2U} * mirror->pitch[1] + mirror_geometry->x : nullptr;
   CH_COST_SCOPE_FLAGS(cost_pixels, FieldConvertPixels, crystalhd_test_maintained_cost::SurfaceIdentity(surface),
                       (compact_field ? 1U : 0U), field_mask);
   if (IsBgraStorageFormat(surface->fourcc)) {
@@ -4237,6 +4352,7 @@ static bool CopyH264InterlacedToSurface(
     CH_COST_RESULT(cost_pixels, false);
     CH_COST_FINISH(cost_pixels);
     surface->EndDecodedCpuWrite(used_i915_wc);
+    if (mirror_active) mirror->EndDecodedCpuWrite(mirror_wc);
     CH_COST_RETURN(cost_scope, false);
   }
   for (unsigned int row = 0; row < height; ++row) {
@@ -4301,28 +4417,45 @@ static bool CopyH264InterlacedToSurface(
             reinterpret_cast<const __m128i *>(second + column * 2));
         const __m128i second1 = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(second + column * 2 + 16));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column),
-            _mm_packus_epi16(_mm_and_si128(first0, luma_mask),
-                             _mm_and_si128(first1, luma_mask)));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column),
-            _mm_packus_epi16(_mm_and_si128(second0, luma_mask),
-                             _mm_and_si128(second1, luma_mask)));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column),
-            _mm_packus_epi16(
-                _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
-                _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8)));
+        const __m128i y0 = _mm_packus_epi16(_mm_and_si128(first0, luma_mask),
+                                           _mm_and_si128(first1, luma_mask));
+        const __m128i y1 = _mm_packus_epi16(_mm_and_si128(second0, luma_mask),
+                                           _mm_and_si128(second1, luma_mask));
+        const __m128i uv = _mm_packus_epi16(
+            _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
+            _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column), y0);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
+        if (mirror_active) {
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
+              size_t{first_y} * mirror->pitch[0] + column), y0);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
+              size_t{second_y} * mirror->pitch[0] + column), y1);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_uv +
+              size_t{uv_row} * mirror->pitch[1] + column), uv);
+        }
       }
       for (; column + 1U < width; column += 2U) {
-        first_luma[column] = first[column * 2U];
-        first_luma[column + 1U] = first[column * 2U + 2U];
-        second_luma[column] = second[column * 2U];
-        second_luma[column + 1U] = second[column * 2U + 2U];
-        chroma[column] = static_cast<uint8_t>(
+        const uint8_t y00 = first[column * 2U], y01 = first[column * 2U + 2U];
+        const uint8_t y10 = second[column * 2U], y11 = second[column * 2U + 2U];
+        const uint8_t c0 = static_cast<uint8_t>(
             (static_cast<unsigned int>(first[column * 2U + 1U]) +
              second[column * 2U + 1U] + 1U) / 2U);
-        chroma[column + 1U] = static_cast<uint8_t>(
+        const uint8_t c1 = static_cast<uint8_t>(
             (static_cast<unsigned int>(first[column * 2U + 3U]) +
              second[column * 2U + 3U] + 1U) / 2U);
+        first_luma[column] = y00; first_luma[column + 1U] = y01;
+        second_luma[column] = y10; second_luma[column + 1U] = y11;
+        chroma[column] = c0; chroma[column + 1U] = c1;
+        if (mirror_active) {
+          uint8_t *my0 = mirror_y + size_t{first_y} * mirror->pitch[0];
+          uint8_t *my1 = mirror_y + size_t{second_y} * mirror->pitch[0];
+          uint8_t *muv = mirror_uv + size_t{uv_row} * mirror->pitch[1];
+          my0[column] = y00; my0[column + 1U] = y01;
+          my1[column] = y10; my1[column + 1U] = y11;
+          muv[column] = c0; muv[column + 1U] = c1;
+        }
       }
     }
 #endif
@@ -4354,14 +4487,21 @@ static bool CopyH264InterlacedToSurface(
             reinterpret_cast<const __m128i *>(source + column * 2));
         const __m128i packed1 = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(source + column * 2 + 16));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column),
-            _mm_packus_epi16(_mm_and_si128(packed0, luma_mask),
-                             _mm_and_si128(packed1, luma_mask)));
+        const __m128i y = _mm_packus_epi16(_mm_and_si128(packed0, luma_mask),
+                                          _mm_and_si128(packed1, luma_mask));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), y);
+        if (mirror_active)
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_y +
+              size_t{destination_row} * mirror->pitch[0] + column), y);
       }
 #endif
       for (; column + 1 < width; column += 2) {
-        destination[column] = source[column * 2];
-        destination[column + 1] = source[column * 2 + 2];
+        const uint8_t y0 = source[column * 2], y1 = source[column * 2 + 2];
+        destination[column] = y0; destination[column + 1] = y1;
+        if (mirror_active) {
+          uint8_t *my = mirror_y + size_t{destination_row} * mirror->pitch[0];
+          my[column] = y0; my[column + 1U] = y1;
+        }
       }
     }
 
@@ -4392,31 +4532,66 @@ static bool CopyH264InterlacedToSurface(
             reinterpret_cast<const __m128i *>(second_row + column * 2));
         const __m128i second1 = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(second_row + column * 2 + 16));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column),
-            _mm_packus_epi16(
-                _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
-                _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8)));
+        const __m128i uv = _mm_packus_epi16(
+            _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
+            _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8));
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), uv);
+        if (mirror_active)
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_uv +
+              size_t{destination_row} * mirror->pitch[1] + column), uv);
       }
 #endif
       for (; column + 1 < width; column += 2) {
-        destination[column] = static_cast<uint8_t>(
+        const uint8_t c0 = static_cast<uint8_t>(
             (static_cast<unsigned int>(first_row[column * 2 + 1]) +
              second_row[column * 2 + 1] + 1U) /
             2U);
-        destination[column + 1] = static_cast<uint8_t>(
+        const uint8_t c1 = static_cast<uint8_t>(
             (static_cast<unsigned int>(first_row[column * 2 + 3]) +
              second_row[column * 2 + 3] + 1U) /
             2U);
+        destination[column] = c0; destination[column + 1] = c1;
+        if (mirror_active) {
+          uint8_t *muv = mirror_uv + size_t{destination_row} * mirror->pitch[1];
+          muv[column] = c0; muv[column + 1U] = c1;
+        }
       }
     }
 #if !defined(__SSE2__)
     }
 #endif
   }
+  if (mirror_active) {
+    CH_COST_FLAGS(cost_scope, 4U);
+    CH_COST_FLAGS(cost_pixels, 4U);
+  }
   CH_COST_RESULT(cost_pixels, true);
   CH_COST_FINISH(cost_pixels);
-  if (!surface->EndDecodedCpuWrite(used_i915_wc))
+  const bool small_released = surface->EndDecodedCpuWrite(used_i915_wc);
+  const bool mirror_released = !mirror_active || mirror->EndDecodedCpuWrite(mirror_wc);
+  if (!small_released || !mirror_released) {
+    if (mirror) mirror->centered_mirror = {};
     CH_COST_RETURN(cost_scope, false);
+  }
+  if (mirror_active && mirror_released && mirror_acquired != 0 &&
+      mirror_backing->WriteEpoch() == mirror_acquired &&
+      CenteredMirrorDestination(*mirror, *surface, *mirror_geometry)) {
+    const auto picture = mirror->decode_picture.lock();
+    auto &m = mirror->centered_mirror;
+    m.target = mirror; m.small = picture->centered_pixels; m.backing = mirror_backing;
+    m.geometry = *mirror_geometry;
+    m.epoch = mirror_acquired; m.small_epoch = surface->centered_write_epoch;
+    m.timestamp = mirror->expected_timestamp; m.identity = mirror->decode_identity;
+    m.context = mirror->trace_context; m.generation = mirror->trace_generation;
+    m.ordinal = mirror->trace_submission_ordinal; m.surface = mirror->id;
+    m.fields = publish_complete ? 3U : field_mask;
+    // These bounded own writes touched ONLY the ROI. Carry a previously
+    // verified black border, never invent one for an uninitialized canvas.
+    if (mirrored_border_known)
+      mirror->centered_border.epoch = mirror_acquired;
+  } else if (mirror) {
+    mirror->centered_mirror = {};
+  }
   surface->ready = publish_complete;
   surface->frame_timestamp = publish_complete ? timestamp : 0;
   CH_COST_RETURN(cost_scope, true);
@@ -4437,7 +4612,9 @@ static std::shared_ptr<Surface> StagedFirstFieldNv12(const H264FirstField &first
 
 static bool CopyH264FieldPairToSurface(
     Surface *surface, const H264FirstField &first,
-    const BC_DTS_PROC_OUT &second) {
+    const BC_DTS_PROC_OUT &second,
+    const std::shared_ptr<Surface> &mirror = {},
+    const crystalhd_centered_output::Geometry *geometry = nullptr) {
   if (!first.valid || second.Ybuff == nullptr ||
       first.width != second.PicInfo.width ||
       first.height != second.PicInfo.height)
@@ -4451,7 +4628,8 @@ static bool CopyH264FieldPairToSurface(
     // rounding. Convert only the complement, then publish the private pair.
     fields[first.bottom ? 0 : 1] = second.Ybuff;
     return CopyH264InterlacedToSurface(surface, fields, first.width, first.height,
-        first.source_pitch, first.timestamp, first.bottom ? 1U : 2U);
+        first.source_pitch, first.timestamp, first.bottom ? 1U : 2U, false, true,
+        mirror, geometry);
   }
   if (first.pixels.size() != static_cast<size_t>(first.source_pitch) *
                                   (first.height / 2U))
@@ -5124,6 +5302,32 @@ static CrystalHDDecodeReplay::Output InspectInterlacedOutput(
 
 // No hardware calls: tests exercise the same exact-once/immutable-picture
 // processing used for both normal decoding and IDR-prefix replay.
+static std::shared_ptr<Surface> PendingCenteredMirrorTarget(
+    Driver *driver, DecodeContext *decode, const std::shared_ptr<Surface> &picture,
+    uint64_t timestamp) {
+  if (!picture || !IsH264Profile(decode->profile) || decode->is_70012 ||
+      !decode->centered_geometry.enabled || decode->decode_processing ||
+      decode->video_process || decode->experimental_ready_remap ||
+      decode->closing || decode->retired || decode->destroy_prepared ||
+      picture->expected_timestamp != timestamp ||
+      picture->trace_context != TraceId(decode->id, VA_INVALID_ID) ||
+      picture->trace_generation != decode->generation)
+    return {};
+  const auto pending = decode->pending.find(timestamp);
+  if (pending == decode->pending.end())
+    return {};
+  const auto found = driver->surfaces.find(pending->second);
+  if (found == driver->surfaces.end() || found->second->expected_timestamp != timestamp ||
+      found->second->decode_picture.lock() != picture ||
+      picture->direct_backing != found->second ||
+      (picture->direct_picture && picture->decode_target.lock() != found->second) ||
+      !picture->centered_pixels ||
+      !CenteredMirrorDestination(*found->second, *picture->centered_pixels,
+                                 picture->centered_geometry))
+    return {};
+  return found->second;
+}
+
 static VAStatus ProcessDecodedOutputImpl(
     Driver *driver, DecodeContext *decode, const BC_DTS_PROC_OUT &reported,
     OutputProcessingState *processing) {
@@ -5314,9 +5518,12 @@ static VAStatus ProcessDecodedOutputImpl(
           InheritTraceIdentity(small.get(), *picture);
           const uint8_t *fields[2] = {};
           fields[bottom ? 1 : 0] = output.Ybuff;
+          const auto mirror = PendingCenteredMirrorTarget(driver, decode, picture,
+                                                          output.PicInfo.timeStamp);
           if (!CopyH264InterlacedToSurface(small.get(), fields, width, height,
                   padded_width * 2U, output.PicInfo.timeStamp,
-                  bottom ? 2U : 1U, false, false)) {
+                  bottom ? 2U : 1U, false, false, mirror,
+                  mirror ? &picture->centered_geometry : nullptr)) {
             small->failed = true;
             return FailDecode(driver, decode, "first-field NV12 staging failed");
           }
@@ -5524,8 +5731,15 @@ static VAStatus ProcessDecodedOutputImpl(
       decoded != decode->decoded_frames.end() &&
       decoded->second->direct_backing == surface->second;
   const auto copy_raw_output = [&](Surface *target) {
-    if (h264_field_pair)
-      return CopyH264FieldPairToSurface(target, paired_first_field, output);
+    if (h264_field_pair) {
+      const bool mirror = direct && !decode->is_70012 && IsH264Profile(decode->profile) &&
+          !decode->experimental_ready_remap && decode->centered_geometry.enabled &&
+          decoded != decode->decoded_frames.end() &&
+          decoded->second->centered_pixels.get() == target;
+      return CopyH264FieldPairToSurface(target, paired_first_field, output,
+          mirror ? surface->second : std::shared_ptr<Surface>{},
+          mirror ? &decoded->second->centered_geometry : nullptr);
+    }
     if (h264_weave)
       return CopyH264WeaveToSurface(target, output);
     return CopyYuy2ToSurface(target, output, decode->is_70012);

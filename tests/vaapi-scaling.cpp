@@ -10,7 +10,7 @@
 namespace centered_probe {
 unsigned calls = 0, width = 0, height = 0, readbacks = 0, cpu_readbacks = 0, cpu_small_readbacks = 0;
 bool compact = false;
-uint64_t clear_bytes = 0, border_reuses = 0, border_clears = 0;
+uint64_t clear_bytes = 0, border_reuses = 0, border_clears = 0, roi_copy_bytes = 0;
 }
 #define CRYSTALHD_VAAPI_TEST_CENTERED_BOB(w, h, field) do { \
   ++centered_probe::calls; centered_probe::width = (w); \
@@ -24,6 +24,8 @@ uint64_t clear_bytes = 0, border_reuses = 0, border_clears = 0;
   (++centered_probe::cpu_readbacks)
 #define CRYSTALHD_VAAPI_TEST_CENTERED_CLEAR_BYTES(bytes) \
   (centered_probe::clear_bytes += (bytes))
+#define CRYSTALHD_VAAPI_TEST_CENTERED_ROI_COPY_BYTES(bytes) \
+  (centered_probe::roi_copy_bytes += (bytes))
 #define CRYSTALHD_VAAPI_TEST_COW_BORDER_COMPOSE(reused) do { \
   if (reused) ++centered_probe::border_reuses; else ++centered_probe::border_clears; \
 } while (0)
@@ -3040,7 +3042,8 @@ struct CenteredFixture : Fixture {
     Require(ProcessDecodedOutput(&driver, decode.get(), output) == VA_STATUS_SUCCESS,
             "complete actual centered output processing with a full woven card record");
   }
-  void Field(const std::vector<uint8_t> &pixels, bool bottom, bool bottom_first) {
+  void Field(const std::vector<uint8_t> &pixels, bool bottom, bool bottom_first,
+             uint64_t token = kTimestampStep) {
     std::vector<uint8_t> selected(pixels.size() / 2);
     for (unsigned row = 0; row < capture_height / 2; ++row)
       memcpy(selected.data() + size_t{row} * capture_width * 2,
@@ -3050,9 +3053,9 @@ struct CenteredFixture : Fixture {
     output.Ybuff = selected.data(); output.YBuffDoneSz = selected.size() / 4;
     output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
     output.b422Mode = OUTPUT_MODE422_YUY2;
-    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.timeStamp = token;
     output.PicInfo.width = capture_width; output.PicInfo.height = capture_height;
-    output.PicInfo.picture_number = 1;
+    output.PicInfo.picture_number = token / kTimestampStep;
     output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
         (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
         (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
@@ -3988,6 +3991,143 @@ void CenteredCowBorderEndFailureAndEpochWrap() {
   }
 }
 
+void CenteredMirroredFieldsPreservePartialAndRetainedPixels() {
+  RequireCowAvailable();
+  for (bool full : {false, true})
+    for (bool bottom_first : {false, true}) {
+      CenteredDumbScope io;
+      CenteredFixture f(256, 32, 32, 128, 16, 32, full, true);
+      const auto surface = InstallCenteredDumb(&f, &io.state);
+      RecreateCenteredContext(&f);
+      const auto old_packed = f.Packed(17), next_packed = f.Packed(91);
+      const auto old_canvas = f.Canvas(old_packed), next_canvas = f.Canvas(next_packed);
+      f.Submit(); f.Complete(old_packed);
+      VAImage old_image{}; void *mapped = nullptr;
+      Require(DeriveImage(&f.context, 1, &old_image) == VA_STATUS_SUCCESS &&
+                  MapBuffer(&f.context, old_image.buf, &mapped) == VA_STATUS_SUCCESS,
+              "retain an actual writable COW image before a new mirrored pair");
+      auto retained = old_canvas; retained[0] ^= 0x5a;
+      static_cast<uint8_t *>(mapped)[0] = retained[0];
+      f.Submit(1, false);
+      f.Field(next_packed, bottom_first, bottom_first, 2 * kTimestampStep);
+      const auto &first = f.decode->h264_first_field;
+      const auto small = first.nv12_small.lock();
+      Require(first.valid && first.nv12_staged && small && !small->ready &&
+                  !surface->ready && surface->frame_timestamp == 0 &&
+                  !memcmp(mapped, retained.data(), retained.size()) &&
+                  SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+              "actual first mirror preserves old private edits and cannot publish a public picture");
+      // The public ROI really changes BEFORE Compose, but only the arriving
+      // field's Y/UV rows. Compare it to independent old/new packed oracles.
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const size_t base = plane ? size_t{f.coded_width} * f.canvas_height : 0;
+        const unsigned rows = plane ? f.canvas_height / 2 : f.canvas_height;
+        const unsigned top = plane ? 4 : 8;
+        const unsigned active = plane ? f.capture_height / 2 : f.capture_height;
+        for (unsigned row = 0; row != rows; ++row)
+          for (unsigned x = 0; x != f.coded_width; ++x) {
+            const size_t at = base + size_t{row} * f.coded_width + x;
+            const bool arriving = row >= top && row < top + active &&
+                ((row - top) & 1U) == unsigned(bottom_first) && x >= 64 && x < 192;
+            Require(surface->planes[plane][size_t{row} * surface->pitch[plane] + x] ==
+                        (arriving ? next_canvas[at] : old_canvas[at]),
+                    "partial mirror updates only exact arriving rows and leaves opposite field/borders intact");
+            if (arriving)
+              Require(small->planes[plane][size_t{row - top} * small->pitch[plane] + x - 64] == next_canvas[at],
+                      "private small and public ROI have independently stored matching first-parity bytes");
+          }
+      }
+      const uint64_t roi_before = centered_probe::roi_copy_bytes;
+      f.Field(next_packed, !bottom_first, bottom_first, 2 * kTimestampStep);
+      Require(surface->ready && surface->frame_timestamp == 2 * kTimestampStep &&
+                  !f.decode->h264_first_field.valid &&
+                  centered_probe::roi_copy_bytes == roi_before &&
+                  f.PrivatePixels(*surface) == next_canvas &&
+                  TestCowImageBytes(&f.context, old_image) == retained &&
+                  !memcmp(mapped, retained.data(), retained.size()),
+              "both mirrored fields avoid every final ROI-copy byte while full canvas and retained COW edits remain exact");
+      Require(UnmapBuffer(&f.context, old_image.buf) == VA_STATUS_SUCCESS &&
+                  DestroyImage(&f.context, old_image.image_id) == VA_STATUS_SUCCESS,
+              "mirroring adds no retained-image mapping or lifetime restriction");
+    }
+}
+
+void CenteredMirrorInvalidationUsesFullSmallFallback() {
+  RequireCowAvailable();
+  for (unsigned mode = 0; mode != 8; ++mode) {
+    cow_write_fault::Reset reset;
+    CenteredDumbScope io;
+    CenteredFixture f(256, 32, 32, 128, 16, 32, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    const auto old_packed = f.Packed(23), next_packed = f.Packed(71);
+    f.Submit(); f.Complete(old_packed);
+    std::shared_ptr<crystalhd_cow_snapshot::Snapshot> failure_view;
+    std::vector<uint8_t> failure_view_bytes;
+    if (mode == 7) {
+      const auto old = surface->cpu_primary_canvas;
+      auto replacement = crystalhd_cow_snapshot::Canvas::Create(old->Size(), cow_write_fault::Advice);
+      Require(bool(replacement), "allocate failure-injectable real primary before publication");
+      memcpy(replacement->Data(), old->Data(), old->Size());
+      surface->cpu_primary_canvas = replacement;
+      surface->planes[0] = replacement->Data();
+      surface->planes[1] = replacement->Data() + size_t{surface->pitch[0]} * surface->height;
+      failure_view = replacement->CreateSnapshot();
+      Require(bool(failure_view), "a real private view makes optional mirror preparation exercise advice");
+      failure_view_bytes.assign(failure_view->Data(), failure_view->Data() + failure_view->Size());
+    }
+    f.Submit(1, false);
+    if (mode == 7) { cow_write_fault::calls = 0; cow_write_fault::fail_on = 1; }
+    f.Field(next_packed, false, false, 2 * kTimestampStep);
+    Require(!surface->ready && surface->frame_timestamp == 0 &&
+                f.decode->h264_first_field.valid,
+            "first mirror or optional mirror rejection never completes an original");
+    const auto picture = f.decode->decoded_frames.at(2 * kTimestampStep);
+    if (mode == 0) {
+      Require(surface->BeginCpuWrite(), "obtain an actual generic primary WRITE lease between fields");
+      memset(surface->planes[0], 0xa1, surface->cpu_primary_canvas->Size());
+      Require(surface->EndCpuWrite(), "release the intervening generic writer");
+    } else if (mode == 1) {
+      const auto old = surface->cpu_primary_canvas;
+      auto replacement = crystalhd_cow_snapshot::Canvas::Create(old->Size());
+      Require(bool(replacement), "allocate a different actual Canvas with the same scalar epoch");
+      memcpy(replacement->Data(), old->Data(), old->Size());
+      replacement->TestSetWriteEpoch(old->WriteEpoch());
+      surface->cpu_primary_canvas = replacement;
+      surface->planes[0] = replacement->Data();
+      surface->planes[1] = replacement->Data() + size_t{surface->pitch[0]} * surface->height;
+    } else if (mode == 2) {
+      ++surface->centered_mirror.ordinal;
+    } else if (mode == 3) {
+      picture->centered_geometry.x += 2;
+      picture->centered_geometry.y += 4;
+    } else if (mode == 4) {
+      picture->centered_geometry.full_range = true;
+    } else if (mode == 5) {
+      surface->centered_allocation_exposed = true;
+    } else if (mode == 6) {
+      VppPixelView view; view.Capture(surface);
+      Require(view.BeginCpuWrite(), "obtain the actual frozen-allocation WRITE lease between fields");
+      memset(view.planes[0], 0xa2, surface->cpu_primary_canvas->Size());
+      Require(view.EndCpuWrite(), "release the captured allocation writer");
+    } else {
+      Require(cow_write_fault::calls == 1,
+              "first optional public mirror really attempted and rejected its own PrepareWrite");
+      cow_write_fault::fail_on = 0;
+    }
+    const uint64_t roi_before = centered_probe::roi_copy_bytes;
+    f.Field(next_packed, true, false, 2 * kTimestampStep);
+    Require(surface->ready && surface->frame_timestamp == 2 * kTimestampStep &&
+                centered_probe::roi_copy_bytes - roi_before ==
+                    uint64_t{f.capture_width} * f.capture_height * 3U / 2U &&
+                f.PrivatePixels(*surface) == TestCanvasForGeometry(f, next_packed, picture->centered_geometry),
+            "stale epoch/backing/tag/geometry/range/exposure or rejected mirror uses the complete old small-copy fallback");
+    if (failure_view)
+      Require(!memcmp(failure_view->Data(), failure_view_bytes.data(), failure_view_bytes.size()),
+              "optional public Prepare failure and later retry preserve the original private view bytes");
+  }
+}
+
 void CenteredImageReadbackBytesAndReadFailures() {
   for (unsigned height : {1080U, 1088U}) for (bool full : {false, true}) {
     CenteredDumbScope io;
@@ -4168,6 +4308,8 @@ int main(int argc, char **argv) {
       CenteredCowBorderReusePreservesPixelsAndPrivateImages();
       CenteredCowBorderInvalidatesForRealWritersAndAllocations();
       CenteredCowBorderEndFailureAndEpochWrap();
+      CenteredMirroredFieldsPreservePartialAndRetainedPixels();
+      CenteredMirrorInvalidationUsesFullSmallFallback();
       std::printf("PASS centered full CPU-primary canvases: %u checks\n", checks);
       return 0;
     } catch (const CowUnavailable &) {
@@ -4191,6 +4333,8 @@ int main(int argc, char **argv) {
       CenteredCowBorderReusePreservesPixelsAndPrivateImages();
       CenteredCowBorderInvalidatesForRealWritersAndAllocations();
       CenteredCowBorderEndFailureAndEpochWrap();
+      CenteredMirroredFieldsPreservePartialAndRetainedPixels();
+      CenteredMirrorInvalidationUsesFullSmallFallback();
       std::printf("PASS centered independent image readback: %u checks\n", checks);
       return 0;
     } catch (const CowUnavailable &) {
@@ -4251,6 +4395,8 @@ int main(int argc, char **argv) {
     {"COW border reuse preserves full bytes and private images", CenteredCowBorderReusePreservesPixelsAndPrivateImages},
     {"COW border real-writer and allocation invalidation", CenteredCowBorderInvalidatesForRealWritersAndAllocations},
     {"COW border END failure and uint64 wrap", CenteredCowBorderEndFailureAndEpochWrap},
+    {"mirrored fields preserve partial public and retained COW pixels", CenteredMirroredFieldsPreservePartialAndRetainedPixels},
+    {"stale or rejected field mirrors use full small-copy fallback", CenteredMirrorInvalidationUsesFullSmallFallback},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},
     {"rejected H.264 target readback", RejectedH264TargetReadback},

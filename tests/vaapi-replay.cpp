@@ -1371,7 +1371,7 @@ static void EncryptedReceiveReleasesOnlyAcquiredOutput() {
 }
 
 struct H264FieldFixture {
-  Driver driver{-1};
+  Driver driver;
   DecodeContext decoder;
   std::shared_ptr<Surface> private_frame = std::make_shared<Surface>();
   std::shared_ptr<Surface> public_frame = std::make_shared<Surface>();
@@ -1380,8 +1380,9 @@ struct H264FieldFixture {
 
   explicit H264FieldFixture(bool direct = false, bool is_70012 = false,
                             uint32_t fourcc = VA_FOURCC_NV12,
-                            unsigned int width = 16, uint64_t token = 1)
-      : top((is_70012 ? 720 : width) * 16 * 2),
+                            unsigned int width = 16, uint64_t token = 1,
+                            int trace_fd = STDERR_FILENO)
+      : driver(-1, trace_fd), top((is_70012 ? 720 : width) * 16 * 2),
         bottom((is_70012 ? 720 : width) * 16 * 2) {
     decoder.id = 7;
     decoder.generation = 3;
@@ -2396,6 +2397,139 @@ static void CenteredNv12FirstFieldReceiveOwnership() {
             }
         }
       }
+}
+
+static void CenteredMirroredFieldsReceiveAndRelease() {
+  // Capability failure is explicit and leaves the existing ordinary field
+  // controls above active on kernels/emulators without real MADV COW.
+  auto probe = crystalhd_cow_snapshot::Canvas::Create(4096);
+  if (!probe) {
+    const int error = errno;
+    Require(error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP,
+            "only explicit COW unavailability may omit new memfd field controls");
+    std::puts("Centered mirrored-field COW controls NOT_EXERCISED: unsupported capability");
+    return;
+  }
+  probe.reset();
+  TraceEnvironment trace_environment;
+  for (bool bottom_first : {false, true})
+    for (unsigned fault = 0; fault != 3; ++fault) {
+      struct TraceSink {
+        int fd = memfd_create("centered-mirror-fields-trace", MFD_CLOEXEC);
+        TraceSink() { Require(fd >= 0, "allocate native mirrored-field trace sink"); }
+        ~TraceSink() { close(fd); }
+      } trace;
+      DecodeIoMock io;
+      H264FieldFixture fixture(true, false, VA_FOURCC_NV12, 128, 1, trace.fd);
+      auto &d = fixture.decoder;
+      d.width = 256; d.height = 64;
+      crystalhd_centered_output::Config config;
+      config.enabled = true; config.capture_width = 128; config.capture_height = 32;
+      config.visible_width = 256; config.visible_height = 64;
+      Require(crystalhd_centered_output::BuildGeometry(config, 256, 64, 4,
+                                                      &d.centered_geometry),
+              "select real Centered separate-field geometry");
+      auto &target = *fixture.public_frame;
+      Require(target.AllocateCpuNv12(256, 64), "size the full public canonical image");
+      target.cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(256 * 64 * 3 / 2);
+      Require(bool(target.cpu_primary_canvas), "allocate actual memfd full public storage");
+      target.cpu_primary = true;
+      std::vector<uint8_t>().swap(target.storage);
+      target.planes[0] = target.cpu_primary_canvas->Data();
+      target.planes[1] = target.planes[0] + 256 * 64;
+      memset(target.planes[0], 0xa5, target.cpu_primary_canvas->Size());
+      Require(CpuPrimaryStorageMatches(target), "real CPU canvas satisfies production eligibility");
+      fixture.private_frame->width = 256; fixture.private_frame->height = 64;
+      fixture.private_frame->centered_geometry = d.centered_geometry;
+      fixture.private_frame->centered_pixels = std::make_shared<Surface>();
+      const auto small = fixture.private_frame->centered_pixels;
+      Require(small->AllocateCpuNv12(128, 32), "allocate independent small field storage");
+      auto first = fixture.Output(bottom_first, bottom_first,
+                                   bottom_first ? &fixture.bottom : &fixture.top);
+      auto second = fixture.Output(!bottom_first, bottom_first,
+                                    bottom_first ? &fixture.top : &fixture.bottom);
+      first.PicInfo.width = second.PicInfo.width = 128;
+      io.override_output = true; io.overridden_output = first;
+      io.events.reserve(8);
+      MockDecodeScope scope(io); d.device = io.handle();
+      if (fault == 1) io.output_release_status = BC_STS_ERROR;
+      bool activity = false;
+      const VAStatus first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+      Require(activity && io.released_outputs == 1 && !target.ready &&
+                  target.frame_timestamp == 0 && CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 0,
+              "first mirrored field is released once with no public READY, timestamp or native M");
+      if (fault == 1) {
+        Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    !d.h264_first_field.valid && target.failed && !io.invalid,
+                "failed first release cannot turn partial mirrored bytes into a completed original");
+        continue;
+      }
+      Require(first_status == VA_STATUS_SUCCESS && d.h264_first_field.nv12_staged &&
+                  !small->ready && small->frame_timestamp == 0,
+              "actual ReceiveOne keeps the independent small first parity unpublished");
+      PendingVpp bob;
+      bob.source = fixture.private_frame;
+      bob.decoder = std::shared_ptr<DecodeContext>(&d, [](DecodeContext *) {});
+      bob.source_timestamp = 1; bob.decoder_generation = 3;
+      bob.deinterlace.bob = true;
+      bob.deinterlace.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
+                                          : crystalhd_vpp_bob::FieldParity::kTop;
+      std::shared_ptr<Surface> compact;
+      Require(PrepareFirstFieldBob(bob, &compact) == VA_STATUS_SUCCESS && compact &&
+                  compact->centered_pixels && compact->centered_pixels != small,
+              "early Bob retains independent compact small pixels even while public ROI is mirrored");
+      const auto bob_pixels = compact->centered_pixels->storage;
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane ? 16 : 32;
+        const unsigned top = plane ? 8 : 16;
+        for (unsigned row = 0; row < rows; ++row) {
+          if ((row & 1U) != unsigned(bottom_first)) continue;
+          for (unsigned x = 0; x != 128; ++x) {
+            const uint8_t expected = plane
+                ? uint8_t((bottom_first ? ((x & 1U) ? 160 : 140)
+                                       : ((x & 1U) ? 60 : 40)) + (row & ~1U) + 1U)
+                : uint8_t((bottom_first ? 100 : 20) + row / 2U);
+            Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] == expected &&
+                        target.planes[plane][size_t{row + top} * target.pitch[plane] + 64 + x] == expected,
+                    "actual first conversion writes exact Y/UV to two independent destinations");
+          }
+        }
+      }
+      if (fault == 2) small->InvalidateCenteredReadback();
+      io.overridden_output = second; activity = false;
+      const VAStatus second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+      Require(activity && io.released_outputs == 2 && !d.h264_first_field.valid && !io.invalid,
+              "second mirrored output preserves exactly-once hardware release and latch clearing");
+      Require(compact->centered_pixels->storage == bob_pixels,
+              "complement/failure never aliases or rewrites an already owned first-field Bob");
+      if (fault == 2) {
+        Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    !target.ready && CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 0,
+                "stale private-small pair cannot publish partial public mirrors or native M");
+        continue;
+      }
+      Require(second_status == VA_STATUS_SUCCESS && target.ready &&
+                  target.frame_timestamp == 1 && d.replay.outstanding() == 0 &&
+                  CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+              "only the validated pair produces one M before its original successful release");
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane ? 32 : 64, top = plane ? 8 : 16;
+        const unsigned active_rows = plane ? 16 : 32;
+        for (unsigned row = 0; row != rows; ++row)
+          for (unsigned x = 0; x != 256; ++x) {
+            uint8_t expected = plane ? 128 : 16;
+            if (row >= top && row < top + active_rows && x >= 64 && x < 192) {
+              const unsigned y = row - top;
+              expected = plane
+                  ? uint8_t(((y & 1U) ? ((x & 1U) ? 160 : 140)
+                                      : ((x & 1U) ? 60 : 40)) + (y & ~1U) + 1U)
+                  : uint8_t(((y & 1U) ? 100 : 20) + y / 2U);
+            }
+            Require(target.planes[plane][size_t{row} * target.pitch[plane] + x] == expected,
+                    "actual release path retains every packed-oracle ROI and black-border byte");
+          }
+      }
+    }
 }
 
 static void H264FirstFieldAllocationFailureReleasesOutput() {
@@ -12834,6 +12968,7 @@ int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--centered-firstfield") == 0) {
       CenteredNv12FirstFieldReceiveOwnership();
+      CenteredMirroredFieldsReceiveAndRelease();
       std::puts("VA-API centered NV12 first-field staging: exact bytes, release and stale-write ownership PASS");
       return 0;
     }
@@ -12954,6 +13089,7 @@ int main(int argc, char **argv) {
     H264FieldPartialStateClearsAtTeardownAndEos();
     H264FirstFieldAllocationFailureReleasesOutput();
     CenteredNv12FirstFieldReceiveOwnership();
+    CenteredMirroredFieldsReceiveAndRelease();
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();

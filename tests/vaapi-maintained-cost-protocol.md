@@ -68,6 +68,13 @@ unsigned field mask may lie outside1..3 only when result is0 (the original call
 rejected it). Successful field_convert and every field_convert_pixels span
 require1..3; an invalid mask never qualifies converted pixels.
 `flags` is the header bitmask, with bits set only on actual branches.
+For `field_convert` and `field_convert_pixels`, `direct_public` marks the
+dual-destination path that stores the converted field in both private Small
+and the exact pending public ROI. For `canvas_pixels`, it marks a validated
+complete mirrored ROI whose final copy is omitted; unknown borders are still
+cleared. A successful first field alone never qualifies a complete ROI or M.
+Use successful results and the exact execution/binding lineage together;
+these flags do not count source originals or establish a speedup.
 
 The collector takes wall then threadCPU at entry, threadCPU then wall at finish.
 Both endpoint TIDs must match. Records publish in entry-sequence order after

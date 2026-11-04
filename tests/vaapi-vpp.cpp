@@ -7705,6 +7705,115 @@ void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
   }
 }
 
+// OWN admitted-token scaffold exercises actual ProcessDecodedOutput and real
+// ExportSurfaceHandle/DRM memfd bytes. It does NOT execute ReceiveOne or prove
+// DIL lease/release order; the replay fixture supplies that separate coverage.
+void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
+  if (!TestCowAvailable()) {
+    std::puts("pending-mirror WRITE_ONLY export NOT_EXERCISED: unsupported COW capability");
+    return;
+  }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (bool bottom_first : {false, true}) {
+    NativeNodeMock mock; mock.real_prime_files = true;
+    Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
+    {
+      MockNativeNodeScope scope(mock);
+      auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
+      auto decoder = std::make_shared<DecodeContext>();
+      decoder->id = 53; decoder->generation = 1;
+      decoder->width = 256; decoder->height = 32; decoder->profile = VAProfileH264Main;
+      crystalhd_centered_output::Config config;
+      Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
+                  crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder->centered_geometry),
+              "known admitted fixture has the actual canonical Centered geometry");
+      auto picture = std::make_shared<Surface>();
+      picture->id = 41; picture->width = 256; picture->height = 32;
+      picture->centered_geometry = decoder->centered_geometry;
+      picture->centered_pixels = std::make_shared<Surface>();
+      auto small = picture->centered_pixels;
+      Require(small->AllocateCpuNv12(128, 16), "allocate the unchanged independent private Small");
+      for (Surface *item : {surface.get(), picture.get(), small.get()}) {
+        item->expected_timestamp = 100000; item->frame_timestamp = 0;
+        item->decode_identity = item->trace_decode_identity = 901;
+        item->trace_context = 53; item->trace_generation = item->trace_submission_ordinal = 1;
+        item->ready = item->failed = false;
+      }
+      picture->direct_picture = true; picture->direct_backing = surface;
+      picture->decode_target = surface; surface->decode_picture = picture;
+      fixture.driver.contexts[53] = decoder;
+      decoder->decoded_frames[100000] = picture; decoder->pending[100000] = 41;
+      decoder->surface_timestamps[surface.get()] = 100000;
+      Require(decoder->replay.Append(100000, true, {1}) && decoder->replay.InputSent(),
+              "scaffold admits one actual New token without a device call");
+      std::vector<uint8_t> fields[2];
+      for (unsigned parity = 0; parity != 2; ++parity) {
+        fields[parity].resize(128U * 8U * 2U);
+        for (size_t i = 0; i != fields[parity].size(); ++i)
+          fields[parity][i] = static_cast<uint8_t>((i * 13U + parity * 47U + 23U) & 255U);
+      }
+      const auto process = [&](unsigned parity) {
+        BC_DTS_PROC_OUT output{}; output.Ybuff = fields[parity].data();
+        output.YBuffDoneSz = fields[parity].size() / 4U;
+        output.PoutFlags = BC_POUT_FLAGS_PIB_VALID; output.b422Mode = OUTPUT_MODE422_YUY2;
+        output.PicInfo.timeStamp = 100000; output.PicInfo.width = 128; output.PicInfo.height = 16;
+        output.PicInfo.picture_number = 1; output.PicInfo.sess_num = 7;
+        output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+            (parity ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+            (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+        return ProcessDecodedOutput(&fixture.driver, decoder.get(), output);
+      };
+      const unsigned first = bottom_first ? 1U : 0U;
+      Require(process(first) == VA_STATUS_SUCCESS && decoder->h264_first_field.valid &&
+                  surface->centered_mirror.fields == (1U << first) &&
+                  CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first) &&
+                  !surface->ready && surface->frame_timestamp == 0 && !small->ready,
+              "actual first-field producer establishes pending mirror without public/private completion");
+      const auto pending_small = small->storage;
+      VADRMPRIMESurfaceDescriptor prime{};
+      Require(ExportSurfaceHandle(&fixture.context, 41, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_WRITE_ONLY, &prime) == VA_STATUS_SUCCESS &&
+                  prime.num_objects == 1 && !surface->cpu_primary && surface->cpu_primary_gpu_promoted &&
+                  !surface->ready && surface->frame_timestamp == 0 && small->storage == pending_small &&
+                  !CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first),
+              "real WRITE_ONLY export stays allowed while pending and GPU promotion invalidates only mirror reuse");
+      Require(process(first ^ 1U) == VA_STATUS_SUCCESS && !decoder->h264_first_field.valid &&
+                  surface->ready && !surface->failed && surface->frame_timestamp == 100000 && small->ready &&
+                  decoder->replay.outstanding() == 0,
+              "matching complement completes normally through the full-Small fallback after actual export");
+      std::vector<uint8_t> expected(256U * 32U * 3U / 2U, 128);
+      std::fill_n(expected.data(), 256U * 32U, 16);
+      for (unsigned row = 0; row != 16; ++row)
+        for (unsigned x = 0; x != 128; ++x)
+          expected[size_t{row + 8U} * 256U + 64U + x] =
+              fields[row & 1U][(size_t{row / 2U} * 128U + x) * 2U];
+      for (unsigned row = 0; row != 8; ++row)
+        for (unsigned x = 0; x != 128; x += 2)
+          for (unsigned component = 0; component != 2; ++component) {
+            const auto &field = fields[row & 1U];
+            const size_t at = (size_t{(row / 2U) * 2U} * 128U + x) * 2U + 1U + component * 2U;
+            expected[256U * 32U + size_t{row + 4U} * 256U + 64U + x + component] =
+                static_cast<uint8_t>((unsigned(field[at]) + field[at + 256U] + 1U) / 2U);
+          }
+      std::vector<uint8_t> actual(expected.size());
+      Require(CpuPrimaryActiveBytes(*surface) == expected &&
+                  pread(prime.objects[0].fd, actual.data(), actual.size(), 0) ==
+                      static_cast<ssize_t>(actual.size()) && actual == expected,
+              "actual exported GPU allocation contains every scalar-oracle Y/UV/black byte after fallback");
+      close(prime.objects[0].fd);
+      surface->completed_decode_picture = {}; picture->direct_backing.reset();
+      decoder->decoded_frames.clear(); decoder->surface_timestamps.clear();
+      fixture.driver.contexts.erase(53);
+      VASurfaceID id = 41;
+      Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+              "exported pending-mirror fixture retires the actual public surface");
+    }
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
+                mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
+            "WRITE_ONLY mirror withdrawal leaves no backing, registration or primary charge behind");
+  }
+}
+
 void CpuPrimaryExportFailuresAreTransactional() {
   if (!TestCowAvailable()) { std::puts("COW CPU-primary export NOT_EXERCISED: explicit unsupported capability"); return; }
   const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
@@ -8800,6 +8909,7 @@ int VppFullTestEntry(int argc, char **argv) {
       CpuPrimaryExportPreservesRetainedPixelsAndAliases();
       CpuPrimaryExportFailuresAreTransactional();
       CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+      CpuPrimaryWriteOnlyExportBetweenMirroredFields();
       puts("VA-API CPU-primary export/alias/retained-storage and failure rollback PASS");
       return 0;
     } catch (const std::exception &error) {
@@ -9073,6 +9183,7 @@ int VppFullTestEntry(int argc, char **argv) {
     CpuPrimaryExportPreservesRetainedPixelsAndAliases();
     CpuPrimaryExportFailuresAreTransactional();
     CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+    CpuPrimaryWriteOnlyExportBetweenMirroredFields();
     ImageCopiesRejectInvalidAndBusyRectangles();
     PutImageCannotOverwriteRetainedDecodeIdentity();
     PutImageOwnershipFailuresCannotComplete();
