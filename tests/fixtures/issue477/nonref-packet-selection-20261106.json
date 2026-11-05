@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "SCOPED_SOURCE_SUPPORTED_NONREF_OMISSION_OBSERVED_SOURCE900_SECOND_PLAY_FAIL",
+  "owning_issues": [477, 436],
+  "actual_source": {
+    "revision": "5bc5d7ba62878b4d883f2e259bf5333ec5434da4",
+    "branch": "research/packet-nal-ref-20261106",
+    "directory": "/home/mache/.cache/crystalhd-packet-nal-ref-current-20261106",
+    "scope": "Isolated own diagnostic extension over current maintained c1096a0: #675 finite deadline fix06f on mergedfe0/#674 full port. Product is unchanged by this diagnostic; original named probe, v1 reader/protocol, external applications and runtime input remain unchanged. Source43 names the original probe derivation only.",
+    "later_evidence_only_commits": "This receipt records the frozen source5bc run; a later JSON-only commit is not a new test or playback run."
+  },
+  "finding": "In the second play, exactly two accepted non-reference payloads under NONREF entry policy have closed public-call windows with no selected-context VA admission or native submission. Their raw labels are exactly the two absent public return labels. The pinned source rule supports policy-selected omission for these observed windows; private branch execution is not directly traced.",
+  "original_application_observation": {
+    "case": "packet-nal-ref22-fixed-private-01",
+    "pid": 2516530,
+    "expected_payloads_per_play": 900,
+    "accepted_nonempty_payloads": [900, 900],
+    "unique_raw_send_labels": [900, 900],
+    "unique_raw_return_labels": [900, 898],
+    "native_originals": [900, 898],
+    "validated_original_fields_and_successful_releases": [1800, 1796],
+    "materialized_originals": [900, 898],
+    "originals_without_public_materialization": [0, 0],
+    "completed_replay_inputs": [0, 0],
+    "strict_native_ledgers": ["PASS", "PASS"],
+    "strict_source900": ["PASS", "FAIL"],
+    "second_play_failure_retained": "Exactly900 distinct originals are still required by that research criterion; the source-supported omission evidence does not upgrade898 to PASS.",
+    "four_scoped_audits": "Packet admission, postfilter, maintained cost and replay disposition PASS with their original limits.",
+    "controls": "PASS",
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "errors": [],
+    "max_temperature_mC": 61000,
+    "AC_present_throughout": true,
+    "full_boundary_equal": true,
+    "live_resource_handoff": null,
+    "normal_full_official20_restoration": "PASS"
+  },
+  "NAL_census": {
+    "accepted_payloads": 1800,
+    "ALL_VCL_REF": 1080,
+    "ALL_VCL_ZERO": 720,
+    "separate_UNKNOWN_NO_DATA_send_events": 14,
+    "NO_DATA_not_counted_as_payload": true,
+    "authority": "Known successful-open and current Annex B SPS/PPS extradata, no observed sticky framing transition, exact util-provider public getter statuses0 and actual is_avc0/nal_length_size0, tracked nonconcurrent codec with thread_count1/active_thread_type0.",
+    "limits": "Header/framing census only. No AVCC guessing, B-picture-to-reference assumption, entropy/slice/access-unit validity or source/native-picture identity claim."
+  },
+  "closed_window_accounting": {
+    "reader_status": "PASS_SCOPED_SOURCE_SUPPORTED_NONREF_NO_VA",
+    "per_play": [
+      {"play": 1, "codec_instance": 7, "accepted_payloads": 900, "REFERENCE_WITH_VA_CONTROL": 511, "DEFAULT_NONREF_WITH_VA_CONTROL": 335, "SOURCE_SUPPORTED_NONREF_NO_VA_WINDOW": 0, "UNKNOWN": 54},
+      {"play": 2, "codec_instance": 13, "accepted_payloads": 900, "REFERENCE_WITH_VA_CONTROL": 513, "DEFAULT_NONREF_WITH_VA_CONTROL": 331, "SOURCE_SUPPORTED_NONREF_NO_VA_WINDOW": 2, "UNKNOWN": 54}
+    ],
+    "controls": "Both reference-with-VA and DEFAULT-nonref-with-VA controls exist in each play. Positive controls require decoder-TID VA admissions and native activity; any selected-context TID admission blocks no-VA proof.",
+    "unknowns": "All accepted payloads remain in proof/control/UNKNOWN accounting;54 per play are not silently classified. Multiple/failed sends, buffering, lifecycle/thread/entry-policy changes or incomplete boundaries stay UNKNOWN.",
+    "boundary_scope": "Preceding receive EAGAIN closes the prior window. For each proof, that prior entry was DEFAULT0; the accepted SEND and subsequent drain EAGAIN both enter with NONREF8. No constant NONREF state before the preceding boundary is claimed."
+  },
+  "two_observed_windows": [
+    {
+      "play": 2,
+      "codec_instance": 13,
+      "codec_epoch": 1,
+      "tid": 2516691,
+      "send_seq": 13631,
+      "raw_packet_pts": 12779434,
+      "raw_packet_dts": 12746067,
+      "packet_bytes": 43086,
+      "preceding_EAGAIN": {"seq": 13630, "ret": -11, "entry_skip_frame_idct_loop": [0, 0, 0]},
+      "accepted_SEND": {"ret": 0, "entry_skip_frame_idct_loop": [8, 8, 8]},
+      "following_EAGAIN": {"seq": 13632, "ret": -11, "entry_skip_frame_idct_loop": [8, 8, 8]},
+      "classification": "ALL_VCL_ZERO",
+      "vcl_count": 1,
+      "vcl_ref_idc_counts": [1, 0, 0, 0],
+      "framing_origin": "CONTEXT_OPEN_AND_CURRENT_ANNEX_B_OPTIONS_ZERO",
+      "public_getters": {"is_avc_query_status": 0, "is_avc": 0, "nal_length_size_query_status": 0, "nal_length_size": 0},
+      "selected_context_API_entries_any_TID": {"BeginPicture": 0, "RenderPicture": 0, "EndPicture": 0},
+      "native_submit_bindings_in_context_window": 0,
+      "raw_label_absent_from_selected_codec_returns": true
+    },
+    {
+      "play": 2,
+      "codec_instance": 13,
+      "codec_epoch": 1,
+      "tid": 2516691,
+      "send_seq": 18619,
+      "raw_packet_pts": 29996634,
+      "raw_packet_dts": 29963267,
+      "packet_bytes": 44280,
+      "preceding_EAGAIN": {"seq": 18618, "ret": -11, "entry_skip_frame_idct_loop": [0, 0, 0]},
+      "accepted_SEND": {"ret": 0, "entry_skip_frame_idct_loop": [8, 8, 8]},
+      "following_EAGAIN": {"seq": 18620, "ret": -11, "entry_skip_frame_idct_loop": [8, 8, 8]},
+      "classification": "ALL_VCL_ZERO",
+      "vcl_count": 1,
+      "vcl_ref_idc_counts": [1, 0, 0, 0],
+      "framing_origin": "CONTEXT_OPEN_AND_CURRENT_ANNEX_B_OPTIONS_ZERO",
+      "public_getters": {"is_avc_query_status": 0, "is_avc": 0, "nal_length_size_query_status": 0, "nal_length_size": 0},
+      "selected_context_API_entries_any_TID": {"BeginPicture": 0, "RenderPicture": 0, "EndPicture": 0},
+      "native_submit_bindings_in_context_window": 0,
+      "raw_label_absent_from_selected_codec_returns": true
+    }
+  ],
+  "source_basis": {
+    "frozen_App_manifest": "/home/mache/.cache/crystalhd-player-accounting-20261025-6o89Y6yE/issue531/flatpak-user/app/tv.kodi.Kodi/x86_64/beta/0a381e42781914ae76ed338d3aa11f9403c55c57f5c9c194e1f4fb437cf71630/files/manifest.json",
+    "manifest_lines": "52-117: frozen FFmpeg n9.0.2 source and original x86_64 patch scope; no separate source-proof receipt is invented.",
+    "FFmpeg": "Pinned original App source manifest identifies n9.0.2; its retained build patches do not change H.264 decoding.",
+    "NONREF_rule": "The pinned H.264 source applies non-reference discard before hardware slice submission. The observed entry policy and NAL header satisfy that source-supported condition; this is not a branch trace.",
+    "buffering": "Public send acceptance alone is not a decode/return oracle. The bounded EAGAIN windows, single accepted send, threading and positive controls constrain this observation; they do not establish global decoder behavior.",
+    "primary_links": [
+      "https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavcodec/h264dec.c#L582-L584",
+      "https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavcodec/decode.c#L691-L705",
+      "https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavcodec/decode.c#L758-L768"
+    ]
+  },
+  "limits": [
+    "The numeric raw-label comparison is within each selected public codec instance/epoch only. There is no packet-to-native-picture mapping, source90k calibration or media/native clock join.",
+    "All898 observed second-play VA originals have complete validated field pairs, successful releases and exactly one public materialization. Their census is not independent pixel correctness or GPU-return qualification.",
+    "The extra read-only NAL/option observation adds overhead.900/898 is diagnostic evidence, not a natural-play performance comparison, speedup, stock compatibility or release qualification.",
+    "Earlier source16/48 runs did not capture these packet NAL summaries; no retrospective classification, cause transfer or population comparison is justified.",
+    "No external bug, global impossibility or universal zero-loss rule follows. Keep the strict second-play Source900 FAIL, broader owning acceptance and all original failed records."
+  ],
+  "persistent_host": {"release": "1.3.0", "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d", "module": "3.10.20", "temporary_experiment": "Reviewed module3.10.22; normal full official20 restore after owned retirement"},
+  "artifact_root": "/home/mache/.cache/crystalhd-source900-current-20261105",
+  "original_artifacts_relative_to_root": {
+    "plan": "packet-nal-ref22-fixed-private-01.plan.json",
+    "result": "packet-nal-ref22-fixed-private-01/result.json",
+    "raw_packet_entry_report": "packet-nal-ref22-fixed-private-01/payload/packet-admission-2516530.jsonl",
+    "closed_window_reader": "review-packet-nal-ref-windows.py",
+    "closed_window_result": "packet-nal-ref-closed-windows-01.json",
+    "raw_label_population": "packet-nal-ref-raw-label-population-01.json",
+    "restore": "module22-packet-nal-ref-transition-restore20.json"
+  },
+  "variant_sources": [
+    "tests/vaapi-packet-admission-nal-ref-probe.c",
+    "tests/vaapi-packet-admission-nal-ref.h",
+    "tests/vaapi-packet-admission-nal-ref.test.c",
+    "tests/vaapi-packet-admission-nal-ref-protocol.md"
+  ]
+}
