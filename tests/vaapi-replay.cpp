@@ -2324,7 +2324,16 @@ static void CenteredNv12FirstFieldReceiveOwnership() {
         fixture.private_frame->centered_geometry = d.centered_geometry;
         fixture.private_frame->centered_pixels = std::make_shared<Surface>();
         const auto small = fixture.private_frame->centered_pixels;
-        Require(small->AllocateCpuNv12(128, 32), "allocate private small NV12 storage");
+        auto pool = std::make_shared<CrystalHDPrivateBackingPool>();
+        std::vector<uint8_t> dirty(size_t{128} * (32U + 16U), 0xa5);
+        uint8_t *const retired = dirty.data();
+        pool->Recycle(std::move(dirty));
+        Require(small->AllocateCpuNv12(128, 32, pool,
+                    CrystalHDPrivateBackingPool::ReuseInitialization::OverwriteBeforeRead) &&
+                    small->storage.data() == retired &&
+                    std::all_of(small->storage.begin(), small->storage.end(),
+                                [](uint8_t byte) { return byte == 0xa5; }),
+                "reuse real retired dirty privateSmall bytes for actual field/release controls");
         auto first = fixture.Output(bottom_first, bottom_first,
                                      bottom_first ? &fixture.bottom : &fixture.top);
         auto second = fixture.Output(!bottom_first, bottom_first,
@@ -2340,6 +2349,11 @@ static void CenteredNv12FirstFieldReceiveOwnership() {
         const auto first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
         Require(activity && io.released_outputs == 1 && !io.invalid,
                 "first actual output lease returns exactly once");
+        for (unsigned plane = 0; plane != 2; ++plane)
+          for (unsigned row = unsigned(!bottom_first); row < (plane ? 16U : 32U); row += 2)
+            for (unsigned column = 0; column != 128; ++column)
+              Require(small->planes[plane][size_t{row} * small->pitch[plane] + column] == 0xa5,
+                      "opposite dirty parity remains unconsumed even when the first DIL release fails");
         if (fault == 1) {
           Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
                       !d.h264_first_field.valid && !fixture.public_frame->ready &&
