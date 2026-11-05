@@ -2697,6 +2697,7 @@ struct H264Auxiliary {
   uint64_t candidate_timestamp = 0, generation = 0, timestamp = 0;
   HANDLE device = nullptr;
   bool ever = false, pending = false, needs_eos = false;
+  bool output_released = false;
   bool eos_only = false, ended = false;
 };
 
@@ -5426,6 +5427,7 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
   decode->auxiliary.candidate_timestamp = 0;
   decode->auxiliary.syntax.clear();
   decode->auxiliary.pending = decode->auxiliary.needs_eos = false;
+  decode->auxiliary.output_released = false;
   decode->CancelPendingPrefeed();
   decode->h264_first_field = H264FirstField();
   decode->partial_input_timestamp = 0;
@@ -6260,6 +6262,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return VA_STATUS_SUCCESS;
   }
   if (auxiliary && result == VA_STATUS_SUCCESS) {
+    decode->auxiliary.output_released = true;
     decode->auxiliary.pending = false;
     decode->RecordTransportProgress();
     Debug("H.264 auxiliary output_released token=%llu ordinal=%u session=%u meta=%u flags=%u layout=full_height",
@@ -8331,6 +8334,7 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "H.264 auxiliary input failed (no retry)");
   aux.timestamp = token; aux.ever = aux.pending = aux.needs_eos = true;
+  aux.output_released = false;
   aux.generation = decode->generation;
   aux.device = decode->device;
   aux.eos_only = aux.ended = false;
@@ -8893,7 +8897,7 @@ static std::shared_ptr<Surface> CenteredWorkerFirstTarget(
       decode->experimental_ready_remap || decode->closing || decode->retired ||
       decode->destroy_prepared || decode->destroy_in_progress ||
       decode->hardware_close_pending || decode->ReplayFailed() ||
-      decode->ReplaySealed() || decode->replay.NeedsRestart() || decode->auxiliary.ever)
+      decode->ReplaySealed() || decode->replay.NeedsRestart())
     return {};
   const auto context = driver->contexts.find(decode->id);
   const auto &first = decode->h264_first_field;
@@ -8902,6 +8906,14 @@ static std::shared_ptr<Surface> CenteredWorkerFirstTarget(
       first.timestamp == 0 || first.decode_identity == 0 || first.generation != decode->generation ||
       first.width != decode->CaptureWidth() || first.height != decode->CaptureHeight() ||
       !decode->replay.IsOutstanding(first.timestamp))
+    return {};
+  const auto &aux = decode->auxiliary;
+  // A released private payload permits later originals to use this turn;
+  // the separate actual-EOS debt remains owned until normal drain/close.
+  if (aux.ever && (!aux.output_released || aux.pending || !aux.needs_eos ||
+      aux.eos_only || aux.ended || aux.timestamp == 0 || first.timestamp <= aux.timestamp ||
+      aux.generation != decode->generation || aux.device == nullptr || aux.device != decode->device ||
+      decode->retained_close_status != BC_STS_SUCCESS))
     return {};
   const auto frame = decode->decoded_frames.find(first.timestamp);
   const auto pending = decode->pending.find(first.timestamp);
