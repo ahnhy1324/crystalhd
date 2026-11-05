@@ -8781,7 +8781,16 @@ static VAStatus SyncDecodeSurface(
     // With negotiated RX polling, the sole hardware waiter publishes output
     // through this condition; retain the old 1 ms sleep for older stacks.
     if (decode->output_poll && driver->decode_control_fd >= 0) {
-      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+      uint64_t wait_ns = 10ULL * 1000 * 1000;
+      if (timeout_ns != VA_TIMEOUT_INFINITE) {
+        const uint64_t wait_elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count();
+        wait_ns = std::min(wait_ns, wait_elapsed < timeout_ns
+            ? timeout_ns - wait_elapsed : 0);
+      }
+      driver->condition.wait_for(*driver_lock,
+          std::chrono::nanoseconds(static_cast<int64_t>(wait_ns)));
     } else {
       driver_lock->unlock();
       usleep(1000);
@@ -8807,6 +8816,25 @@ static VAStatus SyncDecodeSurface(
         return presentation;
       if (presentation_ready())
         return VA_STATUS_SUCCESS;
+      if (timeout_ns != VA_TIMEOUT_INFINITE) {
+        if (driver->stopping)
+          return VA_STATUS_ERROR_OPERATION_FAILED;
+        if (private_vpp_ready) {
+          bool ready = false;
+          const VAStatus private_status = private_vpp_ready(&ready);
+          if (private_status != VA_STATUS_SUCCESS || ready)
+            return private_status;
+        }
+        // An expired pending caller must not consume new output on its next
+        // turn. Exact pictures/private views completed during the wait retain
+        // their existing success and cancellation/identity checks above.
+        const uint64_t resumed_elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count();
+        const VAStatus resumed_wait_status = DecodeWaitStatus(timeout_ns, resumed_elapsed);
+        if (resumed_wait_status != VA_STATUS_SUCCESS)
+          return resumed_wait_status;
+      }
     }
   }
   const VAStatus binding_state = wait_binding_status();

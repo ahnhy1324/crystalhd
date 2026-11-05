@@ -13914,6 +13914,62 @@ static void CenteredAuxiliaryIdleGrace() {
           "the idle guard probe consumes its mock channel without fabricating output or EOS");
 }
 
+static void CenteredSyncDeadlineLeavesQueuedComplement() {
+  H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+  ConfigureCenteredAdmission(f);
+  auto &d = *f.decoder;
+  d.auto_h264_prefeed = true;
+  f.Prepare(1);
+  d.picture = NeutralPicture(256, 64);
+  d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+  Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+          "finite deadline regression genuinely admits and submits its original");
+  f.io.outputs.push_back(kTimestampStep);
+  f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+  bool empty = true;
+  Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && !empty &&
+              d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+          "finite deadline starts with one validated and released genuine original field");
+  Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && empty,
+          "the pending original has an actual successful empty RX turn");
+  const auto pixels = f.held[0]->storage;
+  const auto calls = f.io.input_calls.size();
+  const auto ordinal = d.next_submission_ordinal;
+  unsigned callbacks = 0;
+  f.io.on_sleep = [&] {
+    ++callbacks;
+    // A real lower-bound wait, not a fake clock or a short upper-latency
+    // assertion. Only after the caller's budget expires is output queued.
+    std::this_thread::sleep_for(std::chrono::milliseconds(510));
+    f.io.outputs.push_back(kTimestampStep);
+    f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_BOTTOMFIELD);
+  };
+  const VAStatus expired = SyncSurface2(&f.context, 1, UINT64_C(500000000));
+  const bool pending_after_deadline = expired == VA_STATUS_ERROR_TIMEDOUT &&
+      callbacks == 1 && f.io.outputs.size() == 1 && f.io.released_outputs == 1 &&
+      f.io.input_calls.size() == calls && !d.auxiliary.ever && !f.held[0]->ready &&
+      !f.held[0]->failed && f.held[0]->storage == pixels && d.h264_first_field.valid &&
+      d.next_submission_ordinal == ordinal && d.replay.outstanding() == 1 &&
+      !d.ReplayFailed() && !d.replay.sealed();
+  bool completed_by_fresh_call = false;
+  if (pending_after_deadline) {
+    completed_by_fresh_call =
+        SyncSurface2(&f.context, 1, 2ULL * 1000 * 1000 * 1000) == VA_STATUS_SUCCESS &&
+        f.held[0]->ready && f.io.released_outputs == 2 && f.io.outputs.empty() &&
+        f.io.input_calls.size() == calls && !d.auxiliary.ever &&
+        !d.h264_first_field.valid && d.replay.outstanding() == 0 && !f.io.invalid;
+    if (completed_by_fresh_call) CheckCenteredAdmissionPicture(f, 0);
+  }
+  Require(d.Close(0) == BC_STS_SUCCESS && !d.device && f.io.device_close_calls == 1 &&
+              !f.io.invalid && std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 &&
+              std::count(f.io.events.begin(), f.io.events.end(), "eos") == 0,
+          "both literal-old and fixed deadline probes close before the pending-timeout verdict");
+  Require(pending_after_deadline,
+          "expired finite Sync must leave the newly queued genuine complement unacquired and the original unpublished");
+  Require(completed_by_fresh_call,
+          "a fresh Sync completes that same original from the genuine queued complement with correct pixels");
+}
+
 static void CenteredAuxiliaryFieldLayout() {
   // Real own admission, neutral-byte generation, field validation and release;
   // the mock supplies scalar output and never decodes H.264 or models its DPB.
@@ -14630,6 +14686,7 @@ static void NeutralAuxiliaryContracts() {
   CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
   CenteredAuxiliaryIdleGrace();
+  CenteredSyncDeadlineLeavesQueuedComplement();
   CenteredAuxiliaryFieldLayout();
   CenteredAuxiliaryFieldFaults();
   CenteredWorkerPairsAfterReleasedAuxiliary();
@@ -14649,6 +14706,13 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (const char *focus = std::getenv("CRYSTALHD_TEST_SYNC_DEADLINE_FOCUS")) {
+      Require(argc == 1 && std::strcmp(focus, "1") == 0,
+              "Sync-deadline focus requires its exact test-only marker and no arguments");
+      CenteredSyncDeadlineLeavesQueuedComplement();
+      std::puts("VA-API finite Sync deadline: pending complement retained at expiry and completed by a fresh caller PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--centered-aux-idle-grace") == 0) {
       CenteredAuxiliaryIdleGrace();
       std::puts("VA-API Centered exact auxiliary: deterministic ten-ms idle guard and unchanged field-pair ownership PASS");
