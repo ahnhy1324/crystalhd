@@ -386,6 +386,7 @@ struct DecodeIoMock {
   unsigned int scale_calls = 0;
   BC_STATUS scale_status = BC_STS_SUCCESS;
   std::function<void()> on_sleep;
+  std::function<void()> on_output_release;
   std::function<void(const char *)> on_close;
   bool early_eos = false;
   bool zero_timestamp_picture = false;
@@ -758,6 +759,10 @@ extern "C" BC_STATUS __wrap_DtsReleaseOutputBuffs(HANDLE device, PVOID reserved,
                              reserved != nullptr || change;
   decode_io_mock->events.push_back("release");
   ++decode_io_mock->released_outputs;
+  if (decode_io_mock->on_output_release) {
+    auto callback = std::move(decode_io_mock->on_output_release);
+    callback();
+  }
   return decode_io_mock->output_release_status;
 }
 
@@ -6124,13 +6129,16 @@ static void DrainExactReadyEos(TeardownFixture &fixture) {
 
 struct H264AdmissionFixture : TeardownFixture {
   explicit H264AdmissionFixture(size_t pictures = 2,
-                                size_t bytes = 1024 * 1024)
+                                size_t bytes = 1024 * 1024,
+                                unsigned int width = 16,
+                                unsigned int height = 32)
       : TeardownFixture(0) {
     driver.StopWorkers();
     driver.stopping = false;
     decoder->id = decoder->config = 1;
     decoder->profile = VAProfileH264Main;
-    decoder->height = io.output_height = 32;
+    decoder->width = io.output_width = width;
+    decoder->height = io.output_height = height;
     decoder->live_h264 = true;
     decoder->live_h264_fast_path = decoder->live_h264_gap_tolerant = false;
     decoder->auto_h264_prefeed = false;
@@ -6144,7 +6152,8 @@ struct H264AdmissionFixture : TeardownFixture {
   void Prepare(VASurfaceID target, VAContextID owner = 1) {
     if (driver.surfaces.count(target) == 0) {
       auto surface = std::make_shared<Surface>();
-      Require(surface->AllocateInternal(nullptr, -1, 16, 32, VA_FOURCC_NV12),
+      Require(surface->AllocateInternal(nullptr, -1, decoder->width,
+                                        decoder->height, VA_FOURCC_NV12),
               "allocate a public no-consumer admission target");
       surface->id = target;
       memset(surface->storage.data(), 99, surface->storage.size());
@@ -6156,7 +6165,8 @@ struct H264AdmissionFixture : TeardownFixture {
     auto &decode = *driver.contexts.at(owner);
     decode.have_picture = true;
     decode.picture = {};
-    decode.picture.picture_height_in_mbs_minus1 = 1;
+    decode.picture.picture_width_in_mbs_minus1 = decode.width / 16U - 1U;
+    decode.picture.picture_height_in_mbs_minus1 = decode.height / 16U - 1U;
     decode.picture.num_ref_frames = 1;
     decode.picture.seq_fields.bits.chroma_format_idc = 1;
     decode.picture.seq_fields.bits.frame_mbs_only_flag = 1;
@@ -6180,6 +6190,147 @@ struct H264AdmissionFixture : TeardownFixture {
             "full cache contains exactly the genuinely submitted pending inputs");
   }
 };
+
+static void ConfigureCenteredAdmission(H264AdmissionFixture &fixture) {
+  crystalhd_centered_output::Config config;
+  config.enabled = true;
+  config.capture_width = fixture.decoder->width / 2U;
+  config.capture_height = fixture.decoder->height / 2U;
+  config.visible_width = fixture.decoder->width;
+  config.visible_height = fixture.decoder->height;
+  Require(crystalhd_centered_output::BuildGeometry(
+              config, fixture.decoder->width, fixture.decoder->height, 2,
+              &fixture.decoder->centered_geometry),
+          "use a valid Centered canvas/capture configuration for public admission");
+  fixture.io.output_width = config.capture_width;
+  fixture.io.output_height = config.capture_height;
+}
+
+static void CheckCenteredAdmissionPicture(H264AdmissionFixture &fixture,
+                                          unsigned int index) {
+  const auto &surface = fixture.held.at(index);
+  const auto &g = fixture.decoder->centered_geometry;
+  const uint64_t timestamp = (index + 1U) * kTimestampStep;
+  Require(surface->ready && !surface->failed &&
+              surface->frame_timestamp == timestamp &&
+              surface->expected_timestamp == timestamp,
+          "Centered admission publishes only the exact accepted picture");
+  for (unsigned int row = 0; row < surface->height; ++row)
+    for (unsigned int column = 0; column < surface->width; ++column) {
+      const bool roi = row >= g.y && row < g.y + g.capture_height &&
+                       column >= g.x && column < g.x + g.capture_width;
+      Require(surface->planes[0][row * surface->pitch[0] + column] ==
+                  (roi ? DecodeIoMock::Luma(timestamp) : 16),
+              "Centered admission keeps scalar Y ROI and black-border bytes");
+    }
+  for (unsigned int row = 0; row < surface->height / 2U; ++row)
+    for (unsigned int column = 0; column < surface->width; ++column)
+      Require(surface->planes[1][row * surface->pitch[1] + column] == 128,
+              "Centered admission keeps every active neutral UV byte");
+  Require(SyncSurface(&fixture.context, index + 1U) == VA_STATUS_SUCCESS,
+          "completed Centered pictures remain downloadable");
+}
+
+static void CenteredAdmissionSubmitsBeforeReadyOutput() {
+  // Use the actual public BeginPicture/EndPicture path, with spare replay
+  // capacity so the separate cache-full admission wait cannot consume RX.
+  for (unsigned int old_pictures : {2U, 65U}) {
+    H264AdmissionFixture fixture(128, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(fixture);
+    fixture.Fill(old_pictures);
+    for (unsigned int picture = 1; picture <= old_pictures; ++picture)
+      fixture.io.outputs.push_back(picture * kTimestampStep);
+    fixture.Prepare(old_pictures + 1U);
+    fixture.io.events.clear();
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                !fixture.io.events.empty() && fixture.io.events.front() == "input" &&
+                fixture.io.inputs.size() == old_pictures + 1U &&
+                fixture.io.inputs.back() == (old_pictures + 1U) * kTimestampStep,
+            "new Centered input reaches DIL before converting any older READY output");
+    const unsigned int received = std::min(old_pictures, 64U);
+    Require(fixture.io.released_outputs == received &&
+                fixture.io.outputs.size() == old_pictures - received &&
+                fixture.decoder->replay.outstanding() == old_pictures + 1U - received &&
+                !fixture.decoder->replay.failed() && fixture.io.open_attempts == 0 &&
+                !fixture.io.invalid,
+            "TX preflight preserves the full existing RX64 harvest budget and ownership");
+    fixture.io.early_eos = true;
+    Require(SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+            "only explicit final drain seals the genuine accepted input");
+    fixture.io.outputs.insert(fixture.io.outputs.end() - 1,
+                              (old_pictures + 1U) * kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+                fixture.io.outputs.empty() && fixture.decoder->pending.empty() &&
+                fixture.decoder->replay.outstanding() == 0 &&
+                fixture.io.released_outputs == old_pictures + 2U &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+                !fixture.io.invalid,
+            "every picture and the actual explicit EOS retain exactly one release");
+    for (unsigned int picture = 0; picture <= old_pictures; ++picture) {
+      Require(fixture.io.inputs[picture] == (picture + 1U) * kTimestampStep,
+              "early input keeps exact unique original tokens");
+      CheckCenteredAdmissionPicture(fixture, picture);
+    }
+  }
+
+  {
+    H264AdmissionFixture fixture(8, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(fixture);
+    fixture.Fill(2);
+    fixture.io.outputs = {kTimestampStep, 2 * kTimestampStep};
+    fixture.Prepare(3);
+    const size_t previous_calls = fixture.io.input_calls.size();
+    fixture.io.input_busy = true;
+    fixture.io.on_output_release = [&] {
+      Require(fixture.io.input_calls.size() == previous_calls + 1U &&
+                  !fixture.io.input_calls.back().accepted &&
+                  fixture.io.input_calls.back().timestamp == 3 * kTimestampStep,
+              "one genuine BUSY input attempt occurs before old RX frees transport space");
+      fixture.io.input_busy = false;
+    };
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.io.input_calls.size() == previous_calls + 2U &&
+                !fixture.io.input_calls[previous_calls].accepted &&
+                fixture.io.input_calls.back().accepted &&
+                fixture.io.input_calls[previous_calls].timestamp ==
+                    fixture.io.input_calls.back().timestamp &&
+                fixture.io.input_calls[previous_calls].bytes ==
+                    fixture.io.input_calls.back().bytes &&
+                fixture.io.inputs == std::vector<uint64_t>{
+                    kTimestampStep, 2 * kTimestampStep, 3 * kTimestampStep} &&
+                fixture.io.released_outputs == 2 &&
+                fixture.decoder->replay.outstanding() == 1 && !fixture.io.invalid,
+            "post-RX Pump retries the unchanged BUSY AU exactly once after real release");
+    fixture.io.early_eos = true;
+    Require(SealDecodeBatch(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+            "explicit drain follows the successfully retried input");
+    fixture.io.outputs.insert(fixture.io.outputs.end() - 1, 3 * kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+                fixture.io.outputs.empty() && fixture.decoder->pending.empty() &&
+                fixture.decoder->replay.outstanding() == 0 &&
+                fixture.io.released_outputs == 4 && !fixture.io.invalid,
+            "BUSY retry retains the complete picture/EOS release census");
+    for (unsigned int picture = 0; picture != 3; ++picture)
+      CheckCenteredAdmissionPicture(fixture, picture);
+  }
+
+  {
+    H264AdmissionFixture fixture(8);
+    fixture.Fill(2);
+    fixture.io.outputs = {kTimestampStep, 2 * kTimestampStep};
+    fixture.Prepare(3);
+    fixture.io.events.clear();
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                fixture.io.events.front() == "picture" &&
+                fixture.io.events.back() == "input" &&
+                fixture.io.released_outputs == 2 && fixture.io.inputs.size() == 3 &&
+                !fixture.io.invalid,
+            "ordinary non-Centered H.264 preserves its receive-before-input order");
+    fixture.CheckPicture(0);
+    fixture.CheckPicture(1);
+  }
+}
 
 static void H264AdmissionHarvestsBeforeRejecting() {
   // The byte boundary uses actual valid assembled input lengths, while the
@@ -12727,6 +12878,7 @@ static void NeutralAuxiliaryContracts() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
+      CenteredAdmissionSubmitsBeforeReadyOutput();
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
       H264AdmissionJoinsPublicLifecycleChanges();
@@ -12856,6 +13008,7 @@ int main(int argc, char **argv) {
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
     DefaultH264TransportIsBounded();
+    CenteredAdmissionSubmitsBeforeReadyOutput();
     H264AdmissionHarvestsBeforeRejecting();
     H264AdmissionCancellationPreservesOtherOwners();
     H264AdmissionJoinsPublicLifecycleChanges();
