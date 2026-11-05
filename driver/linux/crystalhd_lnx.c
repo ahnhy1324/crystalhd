@@ -51,6 +51,8 @@ static u64 chd_device_generation;
  * and one PCI reference here, with the session's existing module pin.
  */
 static struct crystalhd_adp *chd_dma_quarantine;
+static DEFINE_SPINLOCK(chd_file_epoch_lock);
+static u64 chd_file_epoch;
 
 struct crystalhd_file {
 	struct crystalhd_user *user;
@@ -58,7 +60,20 @@ struct crystalhd_file {
 	struct mutex release_lock;
 	uint32_t tx_stopping;
 	u64 generation;
+	u64 owner_epoch;
 };
+
+static bool crystalhd_file_reserve_epoch(u64 *epoch)
+{
+	unsigned long flags;
+	bool available;
+
+	spin_lock_irqsave(&chd_file_epoch_lock, flags);
+	available = chd_file_epoch != U64_MAX;
+	*epoch = available ? ++chd_file_epoch : 0;
+	spin_unlock_irqrestore(&chd_file_epoch_lock, flags);
+	return available;
+}
 
 void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, __poll_t events)
 {
@@ -456,6 +471,12 @@ static int crystalhd_compat_user_data(unsigned long ua, BC_IOCTL_DATA *native,
 			crystalhd_dec_out_to_compat(&compat.u.dec_out,
 						    &native->u.DecOutData);
 			break;
+		case BCM_IOC_RETAINED_RX:
+			memcpy(compat.u.retained_rx.registration,
+			       &native->u.RetainedRx.registration, 64);
+			crystalhd_dec_out_to_compat(&compat.u.retained_rx.frame,
+						    &native->u.RetainedRx.frame);
+			break;
 		default:
 			break;
 		}
@@ -513,6 +534,14 @@ static int crystalhd_compat_user_data(unsigned long ua, BC_IOCTL_DATA *native,
 		case BCM_IOC_FETCH_RXBUFF_NOWAIT:
 			memset(&native->u.DecOutData, 0,
 			       sizeof(native->u.DecOutData));
+			break;
+		case BCM_IOC_RETAINED_RX:
+			memset(&native->u.RetainedRx, 0, sizeof(native->u.RetainedRx));
+			memcpy(&native->u.RetainedRx.registration,
+			       compat.u.retained_rx.registration, 64);
+			/* Reject addresses that compat cannot represent; never truncate. */
+			if (native->u.RetainedRx.registration.user_address > U32_MAX)
+				return -EINVAL;
 			break;
 		default:
 			break;
@@ -708,7 +737,8 @@ static bool crystalhd_rawio_command(unsigned int cmd);
 static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func,
 			   bool compat, crystalhd_ioctl_data *prepared,
-			   const uint32_t *tx_stopping)
+			   const uint32_t *tx_stopping, const void *file_owner,
+			   u64 file_epoch)
 {
 	int rc;
 	crystalhd_ioctl_data *temp;
@@ -725,6 +755,8 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	temp->u_id = uid;
 	temp->cmd  = cmd;
 	temp->tx_stopping = tx_stopping;
+	temp->file_owner = file_owner;
+	temp->file_epoch = file_epoch;
 
 	rc = prepared ? 0 : chd_dec_proc_user_data(adp, temp, ua, false, compat);
 	/* Old libraries discover the PCI identity before opening a session. */
@@ -940,7 +972,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 
 	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat,
 			      prepared, cmd == BCM_IOC_PROC_INPUT ?
-			      &binding->tx_stopping : NULL);
+			      &binding->tx_stopping : NULL, binding, binding->owner_epoch);
 	prepared = NULL; /* chd_dec_api_cmd consumed the private envelope. */
 	if (cmd == BCM_IOC_RELEASE && !uc->in_use) {
 		binding->user = NULL;
@@ -1012,6 +1044,10 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	binding = kzalloc(sizeof(*binding), GFP_KERNEL);
 	if (!binding)
 		return -ENOMEM;
+	if (!crystalhd_file_reserve_epoch(&binding->owner_epoch)) {
+		kfree(binding);
+		return -EOVERFLOW;
+	}
 	mutex_init(&binding->release_lock);
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);

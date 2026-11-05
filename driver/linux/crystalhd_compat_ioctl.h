@@ -105,6 +105,11 @@ struct crystalhd_proc_input32 {
 	u32 dram_offset;
 };
 
+struct crystalhd_retained_rx32 {
+	u8 registration[64]; /* Same fixed-width key, without changing union alignment. */
+	struct crystalhd_dec_out32 frame;
+};
+
 struct crystalhd_ioctl_data32 {
 	s32 ret_status;
 	u32 ioctl_data_size;
@@ -114,6 +119,7 @@ struct crystalhd_ioctl_data32 {
 		struct crystalhd_proc_input32 proc_input;
 		struct crystalhd_yuv_bufs32 rx_bufs;
 		struct crystalhd_dec_out32 dec_out;
+		struct crystalhd_retained_rx32 retained_rx;
 	} u;
 	compat_uptr_t next;
 };
@@ -126,6 +132,9 @@ static_assert(sizeof(struct crystalhd_pib32) == 264);
 static_assert(sizeof(struct crystalhd_yuv_bufs32) == 28);
 static_assert(sizeof(struct crystalhd_dec_out32) == 300);
 static_assert(sizeof(struct crystalhd_proc_input32) == 16);
+static_assert(sizeof(BC_RX_REGISTRATION) == 64);
+static_assert(sizeof(BC_RETAINED_RX) <= sizeof(BC_FW_CMD));
+static_assert(offsetof(struct crystalhd_retained_rx32, frame) == 64);
 static_assert(offsetof(struct crystalhd_ioctl_data32, u) == 12);
 static_assert(offsetof(struct crystalhd_ioctl_data32, next) == 532);
 static_assert(sizeof(struct crystalhd_ioctl_data32) == 536);

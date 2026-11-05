@@ -98,7 +98,15 @@ struct crystalhd_hw {
 	void (*pfnStopRXDMAEngines)(struct crystalhd_hw *);
 	bool (*pfnNotifyHardware)(struct crystalhd_hw *, int);
 };
-struct crystalhd_cmd { struct crystalhd_hw *hw_ctx; unsigned int state; };
+/* Legacy DMA-stop fixture only. The actual retained registry cleanup is
+ * exercised by rx-ownership; this fixture must never stub a live registry. */
+struct crystalhd_retained_rx_registry { bool stale; };
+struct crystalhd_cmd {
+	struct crystalhd_hw *hw_ctx;
+	unsigned int state;
+	int retained_rx_lock;
+	struct crystalhd_retained_rx_registry *retained_rx;
+};
 typedef struct {
 	struct { union { struct { uint32_t bDiscardOnly; } FlushRxCap; } u; } udata;
 } crystalhd_ioctl_data;
@@ -139,6 +147,14 @@ static int down_interruptible(int *sem)
 	return 0;
 }
 static void up(int *sem) { assert(*sem == 1); *sem = 0; }
+static void mutex_lock(int *lock) { assert(!*lock); *lock = 1; }
+static void mutex_unlock(int *lock) { assert(*lock == 1); *lock = 0; }
+static bool crystalhd_retained_cleanup(struct crystalhd_cmd *ctx, bool destroy)
+{
+	assert(ctx && !ctx->retained_rx && !destroy);
+	assert(ctx->retained_rx_lock == 1 && ctx->hw_ctx->fetch_sem == 1);
+	return true;
+}
 static void disable_irq(int irq) { (void)irq; irq_depth++; }
 static void enable_irq(int irq) { (void)irq; assert(irq_depth); irq_depth--; }
 static void msleep(unsigned int delay) { stop_elapsed_ms += delay; }

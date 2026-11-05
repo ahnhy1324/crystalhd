@@ -80,6 +80,8 @@ enum crystalhd_decoder_codec {
 	CRYSTALHD_DECODER_CODEC_INVALID = -1,
 	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
+/* Typed for the temporary issue92 actual-suspend excerpt; never populated. */
+struct crystalhd_retained_rx_registry { bool stale; };
 struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
@@ -94,6 +96,7 @@ struct crystalhd_cmd {
 	uint32_t cin_wait_exit, pwr_state_change, state;
 	bool retain_rx_on_suspend;
 	bool session_module_pinned;
+	struct crystalhd_retained_rx_registry *retained_rx;
 };
 typedef struct crystalhd_ioctl_data {
 	struct crystalhd_ioctl_data *next;
@@ -598,6 +601,14 @@ static int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
 {
 	assert(adp == g_adp_info);
 	return 0;
+}
+static bool crystalhd_retained_cleanup(struct crystalhd_cmd *cmd, bool destroy)
+{
+	(void)destroy;
+	/* Real retained inventory/terminal retirement is covered by rx-ownership.
+	 * Never make this legacy-only leaf accept a live registry. */
+	assert(cmd && !cmd->retained_rx);
+	return true;
 }
 static void crystalhd_rx_receipt_cleanup(struct crystalhd_adp *adp)
 {

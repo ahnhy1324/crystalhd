@@ -2341,6 +2341,8 @@ BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, uint8_t *buff, uint32_t BuffSz, ui
 	BC_IOCTL_DATA	*pIocData = NULL;
 	BC_STATUS sts;
 
+	if (Ctx && Ctx->retainedRxMode)
+		return BC_STS_BUSY; /* Do not mix legacy admission into this owner set. */
 	sts = DtsValidateRxBuffer(Ctx, buff, BuffSz, &layout);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
@@ -2361,6 +2363,113 @@ BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, uint8_t *buff, uint32_t BuffSz, ui
 // Name: DtsRelRxBuff
 // Description: Release Rx buffers back to driver.
 //------------------------------------------------------------------------
+static BC_STATUS DtsOutputDriverCaps(DTS_LIB_CONTEXT *Ctx);
+
+static bool DtsRxReservedClear(const BC_RX_REGISTRATION &key)
+{
+	return !key.flags && !key.reserved[0] && !key.reserved[1];
+}
+
+static bool DtsRxIdentityMatches(const BC_RX_REGISTRATION &a,
+	const BC_RX_REGISTRATION &b)
+{
+	return a.registration_id == b.registration_id &&
+		a.capture_generation == b.capture_generation &&
+		a.user_address == b.user_address && a.capacity == b.capacity &&
+		a.uv_offset == b.uv_offset && a.output_format == b.output_format;
+}
+
+static bool DtsRxEmptyKey(const BC_RX_REGISTRATION &key, uint32_t operation,
+	uint32_t state = 0)
+{
+	return key.operation == operation && key.state == state &&
+		!key.registration_id && !key.capture_generation &&
+		!key.borrow_sequence && !key.user_address && !key.capacity &&
+		!key.uv_offset && !key.output_format && DtsRxReservedClear(key);
+}
+
+/* Even an ioctl copy-out failure may follow a committed registration or
+ * borrow. Keep the shared output admission closed until RETIRE_ALL ACKs. */
+static void DtsPoisonRetainedRx(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	Ctx->retainedRxPoisoned = true;
+	Ctx->bMapOutBufDirty = true;
+	Ctx->bMapOutBufDone = false;
+	Ctx->ProcOutPending = 1;
+	if (Ctx->outputPhase == DTS_OUTPUT_IDLE)
+		Ctx->outputPhase = DTS_OUTPUT_RETIRE_ONLY;
+	DtsUnLock(Ctx);
+}
+
+static BC_STATUS DtsRegisterRetainedRx(DTS_LIB_CONTEXT *Ctx,
+	DTS_MPOOL_TYPE *mp, const DTS_RX_BUFFER_LAYOUT &layout)
+{
+	BC_IOCTL_DATA io = {};
+	io.IoctlDataSz = sizeof(io);
+	BC_RX_REGISTRATION &key = io.u.RetainedRx.registration;
+	key.operation = BC_RX_REGISTER;
+	key.user_address = (uint64_t)(uintptr_t)mp->buff;
+	key.capacity = layout.registeredBytes;
+	key.uv_offset = layout.uvOffset;
+	key.output_format = layout.outputFormat;
+	const BC_RX_REGISTRATION requested = key;
+	Ctx->bMapOutBufDirty = true;
+	BC_STATUS status = DtsDrvCmd(Ctx, BCM_IOC_RETAINED_RX, 0, &io, FALSE);
+	if (status == BC_STS_SUCCESS &&
+	    (!key.registration_id || !key.capture_generation || key.borrow_sequence ||
+	     key.operation != BC_RX_REGISTER || key.state != BC_RX_QUEUED ||
+	     key.user_address != requested.user_address ||
+	     key.capacity != requested.capacity || key.uv_offset != requested.uv_offset ||
+	     key.output_format != requested.output_format || !DtsRxReservedClear(key)))
+		status = BC_STS_IO_XFR_ERROR;
+	if (status == BC_STS_SUCCESS) {
+		for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i) {
+			const BC_RX_REGISTRATION &prior = Ctx->Mpools[i].rxRegistration;
+			if (prior.registration_id &&
+			    (prior.registration_id == key.registration_id ||
+			     prior.capture_generation != key.capture_generation)) {
+				status = BC_STS_IO_XFR_ERROR;
+				break;
+			}
+		}
+	}
+	if (status != BC_STS_SUCCESS)
+		DtsPoisonRetainedRx(Ctx);
+	else
+		mp->rxRegistration = key;
+	return status;
+}
+
+static BC_STATUS DtsRepostRetainedRx(DTS_LIB_CONTEXT *Ctx)
+{
+	if (Ctx->retainedRxPoisoned || !Ctx->retainedRxBorrow.registration_id)
+		return BC_STS_BUSY;
+	BC_IOCTL_DATA io = {};
+	io.IoctlDataSz = sizeof(io);
+	io.u.RetainedRx.registration = Ctx->retainedRxBorrow;
+	io.u.RetainedRx.registration.operation = BC_RX_REPOST;
+	const BC_RX_REGISTRATION request = io.u.RetainedRx.registration;
+	BC_STATUS status = DtsDrvCmd(Ctx, BCM_IOC_RETAINED_RX, 0, &io, FALSE);
+	const BC_RX_REGISTRATION &key = io.u.RetainedRx.registration;
+	if (status == BC_STS_SUCCESS &&
+	    (!DtsRxIdentityMatches(key, request) ||
+	     key.borrow_sequence != request.borrow_sequence ||
+	     key.operation != BC_RX_REPOST || key.state != BC_RX_QUEUED ||
+	     !DtsRxReservedClear(key)))
+		status = BC_STS_IO_XFR_ERROR;
+	if (status != BC_STS_SUCCESS)
+		DtsPoisonRetainedRx(Ctx);
+	else {
+		for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i)
+			if (Ctx->Mpools[i].rxRegistration.registration_id == key.registration_id)
+				Ctx->Mpools[i].rxRegistration = key;
+		memset(&Ctx->retainedRxBorrow, 0, sizeof(Ctx->retainedRxBorrow));
+		DtsDecPend(Ctx);
+	}
+	return status;
+}
+
 BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff, BOOL SkipAddBuff)
 {
 	BC_STATUS	sts;
@@ -2375,6 +2484,14 @@ BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff, BOOL SkipAd
 	DtsUnLock(Ctx);
 	if (residual)
 		return BC_STS_BUSY;
+	if (Ctx->retainedRxMode) {
+		if (SkipAddBuff && !Ctx->retainedRxBorrow.registration_id &&
+		    !Ctx->retainedRxPoisoned) {
+			DtsDecPend(Ctx); /* FORMAT was acknowledged inside the kernel. */
+			return BC_STS_SUCCESS;
+		}
+		return DtsRepostRetainedRx(Ctx);
+	}
 
 	if(SkipAddBuff){
 		DtsDecPend(Ctx);
@@ -2473,25 +2590,95 @@ static BC_STATUS DtsOutputDriverCaps(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 	if (!DtsContextIsCurrentProcess(Ctx))
 		return BC_STS_ERROR;
-	if (Ctx->driverCapsQueried)
+	DtsLock(Ctx);
+	if (Ctx->driverCapsQueried) {
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
-	/* The caller already owns DtsAcquireOutput/its whole output-call phase.
-	 * Never overwrite the shared pOutData or use its buffer as a cap query. */
+	}
+	/* This metadata-only query has no firmware or picture-arrival wait. Its
+	 * short lock serializes map with an earlier admitted output caller; no
+	 * shared output union is used. A successful cache remains immutable. */
 	BC_IOCTL_DATA query = {};
 	query.IoctlDataSz = sizeof(query);
 	if (ioctl(Ctx->DevHandle, BCM_IOC_QUERY_CAPS, &query) < 0) {
-		if (errno != ENOTTY)
+		if (errno != ENOTTY) {
+			DtsUnLock(Ctx);
 			return BC_STS_IO_ERROR;
+		}
 		Ctx->driverCapsFlags = 0;
 	} else if (query.RetSts == BC_STS_NOT_IMPL) {
 		Ctx->driverCapsFlags = 0;
 	} else if (query.RetSts != BC_STS_SUCCESS) {
+		DtsUnLock(Ctx);
 		return query.RetSts;
 	} else {
 		Ctx->driverCapsFlags = query.u.DriverCaps.abi_version >= BC_DRIVER_CAPS_ABI_VERSION
 			? query.u.DriverCaps.flags : 0;
 	}
 	Ctx->driverCapsQueried = true;
+	DtsUnLock(Ctx);
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS DtsFetchRetainedRx(DTS_LIB_CONTEXT *Ctx, uint32_t timeout)
+{
+	if (Ctx->retainedRxPoisoned || !Ctx->bMapOutBufDone ||
+	    Ctx->retainedRxBorrow.registration_id)
+		return BC_STS_BUSY;
+	BC_IOCTL_DATA io = {};
+	io.IoctlDataSz = sizeof(io);
+	io.Timeout = timeout;
+	io.u.RetainedRx.registration.operation = BC_RX_FETCH;
+	BC_STATUS status = DtsDrvCmd(Ctx, BCM_IOC_RETAINED_RX, 0, &io, FALSE);
+	const BC_RX_REGISTRATION &key = io.u.RetainedRx.registration;
+	if (status == BC_STS_NO_DATA || status == BC_STS_TIMEOUT ||
+	    status == BC_STS_BUSY) {
+		if (!DtsRxEmptyKey(key, BC_RX_FETCH)) {
+			DtsPoisonRetainedRx(Ctx);
+			return BC_STS_IO_XFR_ERROR;
+		}
+		return status;
+	}
+	if (status != BC_STS_SUCCESS) {
+		DtsPoisonRetainedRx(Ctx);
+		return status;
+	}
+	const BC_DEC_OUT_BUFF &frame = io.u.RetainedRx.frame;
+	if (frame.Flags & COMP_FLAG_FMT_CHANGE) {
+		if ((frame.Flags & COMP_FLAG_DATA_VALID) ||
+		    !DtsRxEmptyKey(key, BC_RX_FETCH)) {
+			DtsPoisonRetainedRx(Ctx);
+			return BC_STS_IO_XFR_ERROR;
+		}
+	} else {
+		DTS_MPOOL_TYPE *matched = NULL;
+		for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i)
+			if (Ctx->Mpools[i].rxRegistration.registration_id == key.registration_id) {
+				matched = &Ctx->Mpools[i];
+				break;
+			}
+		const BC_DEC_YUV_BUFFS &buffer = frame.OutPutBuffs;
+		if (!matched || !(matched->type & BC_MEM_DEC_YUVBUFF) ||
+		    !key.registration_id || !key.capture_generation || !key.borrow_sequence ||
+		    key.operation != BC_RX_FETCH || key.state != BC_RX_BORROWED ||
+		    !DtsRxReservedClear(key) ||
+		    !DtsRxIdentityMatches(key, matched->rxRegistration) ||
+		    key.borrow_sequence <= matched->rxRegistration.borrow_sequence ||
+		    matched->rxRegistration.state != BC_RX_QUEUED ||
+		    !(frame.Flags & COMP_FLAG_DATA_VALID) ||
+		    (uint64_t)(uintptr_t)buffer.YuvBuff != key.user_address ||
+		    buffer.YuvBuffSz != key.capacity || buffer.UVbuffOffset != key.uv_offset ||
+		    buffer.b422Mode != key.output_format) {
+			DtsPoisonRetainedRx(Ctx);
+			return BC_STS_IO_XFR_ERROR;
+		}
+		matched->rxRegistration = key;
+		Ctx->retainedRxBorrow = key;
+	}
+	/* Existing PIB/copy/callback code continues to use only the legacy frame
+	 * layout. The opaque lease never aliases that shared union. */
+	Ctx->pOutData->u.DecOutData = frame;
+	Ctx->pOutData->RetSts = BC_STS_SUCCESS;
 	return BC_STS_SUCCESS;
 }
 
@@ -2509,7 +2696,7 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 	uint32_t fetch_command = BCM_IOC_FETCH_RXBUFF;
 	/* LINK's legacy copy API advances its established EOS fallback on a
 	 * TIMEOUT. Keep that path unchanged; Flea uses actual firmware markers. */
-	if (dwTimeout == 0 && Ctx->DevId == BC_PCI_DEVID_FLEA) {
+	if (!Ctx->retainedRxMode && dwTimeout == 0 && Ctx->DevId == BC_PCI_DEVID_FLEA) {
 		sts = DtsOutputDriverCaps(Ctx);
 		if (sts != BC_STS_SUCCESS) {
 			DtsDecPend(Ctx);
@@ -2521,9 +2708,11 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 	}
 	memset(Ctx->pOutData,0,sizeof(*Ctx->pOutData));
 
-	/* Positive waits and unsupported drivers retain the legacy wait. Never
-	 * retry an advertised NOWAIT command as a legacy blocking FETCH. */
-	sts=DtsDrvCmd(Ctx,fetch_command,0,Ctx->pOutData,FALSE);
+	/* Unsupported pairs retain the legacy command. Retained FETCH carries
+	 * the caller's wait explicitly; never retry either negotiated command as
+	 * a legacy FETCH after an error. */
+	sts = Ctx->retainedRxMode ? DtsFetchRetainedRx(Ctx, dwTimeout) :
+		DtsDrvCmd(Ctx,fetch_command,0,Ctx->pOutData,FALSE);
 
 	if(sts == BC_STS_SUCCESS)
 	{
@@ -2570,11 +2759,12 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 				 * to userspace even when embedded PIB validation rejected the
 				 * picture.  Return malformed picture buffers to the driver so a
 				 * bad receipt cannot silently shrink the capture pool.  The EOS
-				 * sentinel, including a rejected one, remains a control output with
-				 * its established no-repost
-				 * semantics.  If retirement itself fails, retain pending ownership
+				 * sentinel keeps its established metadata/control API; the retained
+				 * protocol additionally returns its explicit borrowed lease here.
+				 * Legacy EOS keeps its no-repost semantics. If retirement fails, retain pending ownership
 				 * and report that failure just like the public output paths do. */
-				if (sts == BC_STS_IO_XFR_ERROR && !controlOutput) {
+				if ((Ctx->retainedRxMode && Ctx->retainedRxBorrow.registration_id) ||
+				    (sts == BC_STS_IO_XFR_ERROR && !controlOutput)) {
 					const BC_STATUS released = DtsRelRxBuff(Ctx,
 						&Ctx->pOutData->u.RxBuffs, FALSE);
 					if (released != BC_STS_SUCCESS)
@@ -2587,7 +2777,8 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 
 	}else{
 		DebugLog_Trace(LDIL_DBG,"DtsFetchOutInterruptible: Failed:%x\n",sts);
-		DtsDecPend(Ctx);
+		if (!Ctx->retainedRxPoisoned)
+			DtsDecPend(Ctx);
 	}
 
 	if (sts != BC_STS_SUCCESS)
@@ -2698,11 +2889,30 @@ BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 	 * tell whether the complete set still exists. Require a cleanup/re-map
 	 * before treating it as complete again. */
 	Ctx->bMapOutBufDone = false;
-	pIocData->u.FlushRxCap.bDiscardOnly = FALSE;
-	sts = DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIocData, TRUE);
+	if (Ctx->retainedRxMode) {
+		memset(pIocData, 0, sizeof(*pIocData));
+		pIocData->IoctlDataSz = sizeof(*pIocData);
+		pIocData->u.RetainedRx.registration.operation = BC_RX_RETIRE;
+		sts = DtsDrvCmd(Ctx, BCM_IOC_RETAINED_RX, 0, pIocData, FALSE);
+		if (sts == BC_STS_SUCCESS &&
+		    !DtsRxEmptyKey(pIocData->u.RetainedRx.registration,
+		                   BC_RX_RETIRE, BC_RX_RETIRED))
+			sts = BC_STS_IO_XFR_ERROR;
+		DtsRelIoctlData(Ctx, pIocData);
+		if (sts != BC_STS_SUCCESS)
+			DtsPoisonRetainedRx(Ctx);
+	} else {
+		pIocData->u.FlushRxCap.bDiscardOnly = FALSE;
+		sts = DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIocData, TRUE);
+	}
 	if (sts == BC_STS_SUCCESS) {
 		Ctx->bMapOutBufDone = false;
 		Ctx->bMapOutBufDirty = false;
+		Ctx->retainedRxPoisoned = false;
+		memset(&Ctx->retainedRxBorrow, 0, sizeof(Ctx->retainedRxBorrow));
+		for (uint32_t i = 0; i < Ctx->MpoolCnt; ++i)
+			memset(&Ctx->Mpools[i].rxRegistration, 0,
+			       sizeof(Ctx->Mpools[i].rxRegistration));
 		if (Ctx->outputPhase == DTS_OUTPUT_RETIRE_ONLY) {
 			Ctx->ProcOutPending = 0;
 			Ctx->outputPhase = DTS_OUTPUT_IDLE;
@@ -2747,7 +2957,6 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 
 	if (!Ctx->Mpools || !(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS))
 		goto done;
-
 #ifdef CRYSTALHD_EXPERIMENTAL_SCALED_RX
 	sts = DtsEnsureRxBufferLayout(Ctx);
 	if (sts != BC_STS_SUCCESS)
@@ -2765,6 +2974,43 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 		if (sts != BC_STS_SUCCESS)
 			goto done;
 	}
+	/* Negotiate before registration. Old drivers keep their original ADD
+	 * ordering even if a positive-wait output call was admitted earlier. */
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA) {
+		sts = DtsOutputDriverCaps(Ctx);
+		if (sts != BC_STS_SUCCESS)
+			goto done;
+		if (Ctx->driverCapsFlags & BC_DRIVER_CAP_RX_RETAINED) {
+			/* The lifecycle lease blocks new output calls, not an earlier
+			 * ACTIVE/callback/NoCopy owner. Do not change its legacy mode.
+			 * Dirty RETIRE_ONLY cleanup above must establish IDLE first. */
+			if (Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->ProcOutPending ||
+			    Ctx->CancelWaiting) {
+				sts = BC_STS_BUSY;
+				goto done;
+			}
+			Ctx->retainedRxMode = true;
+		}
+	}
+	if (Ctx->retainedRxMode) {
+		uint32_t outputCount = 0;
+		for (i = 0; i < Ctx->MpoolCnt; ++i) {
+			mp = &Ctx->Mpools[i];
+			if (!(mp->type & BC_MEM_DEC_YUVBUFF))
+				continue;
+			++outputCount;
+			for (uint32_t prior = 0; prior < i; ++prior)
+				if ((Ctx->Mpools[prior].type & BC_MEM_DEC_YUVBUFF) &&
+				    Ctx->Mpools[prior].buff == mp->buff) {
+					sts = BC_STS_INV_ARG;
+					goto done;
+				}
+		}
+		if (!outputCount) {
+			sts = BC_STS_INV_ARG;
+			goto done;
+		}
+	}
 
 	for (i = 0; i < Ctx->MpoolCnt; i++) {
 		mp = &Ctx->Mpools[i];
@@ -2772,7 +3018,9 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 			/* A negative ioctl result can follow successful driver admission,
 			 * so ownership becomes dirty before entering the kernel. */
 			Ctx->bMapOutBufDirty = true;
-			sts = DtsAddOutBuff(Ctx, mp->buff, mp->sz, mp->type);
+			sts = Ctx->retainedRxMode ?
+				DtsRegisterRetainedRx(Ctx, mp, layout) :
+				DtsAddOutBuff(Ctx, mp->buff, mp->sz, mp->type);
 			if (sts != BC_STS_SUCCESS) {
 				BC_STATUS rollback_sts;
 
