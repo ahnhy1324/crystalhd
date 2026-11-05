@@ -70,6 +70,15 @@ not every decode/access attempt. It does not expand normal-backend or release
 qualification. Default pre-BEGIN selection retains its original failed-slot
 semantics.
 
+After both default FirstTwo slots have genuinely completed, later canonical
+Centered fields may defer their independent Small copy. The additive status
+counter `deferred_unobserved` records those original consideration points;
+`candidates` still includes each default consideration. They add no selected
+slot, eligible Small observation, rejection or pixel evidence. Selected payloads
+and qualification gates retain their independent Small oracle. Special selectors,
+including `case2-90-91`, always keep eager Small pixels and their original
+content-based candidate accounting.
+
 The independent content reader must decode exactly90/91 from each actual
 small/composed/public payload and retain all existing full-NV12 gates. For the
 interrupted play, each target's matching submission, materialization and
@@ -146,6 +155,9 @@ Each slot carries:
   Existing extra allocation metadata is allowed. `copy_source` must identify
   the composed storage view; on the direct route all three canvas descriptors
   describe the same view. Public and private canvas pitches/addresses can differ.
+  When present, `storage_bytes` is the current owned CPU logical extent,
+  including a memfd canvas; it excludes retired backing and page capacity.
+  Vector-backed historical values and captured-view metadata are unchanged.
 - `small_file`, `composed_file`, `public_file` basenames and respective
   `small_bytes`, `composed_bytes`, `public_bytes` lengths.
 
