@@ -195,6 +195,7 @@ static bool IsH264Profile(VAProfile profile);
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+constexpr uint64_t kCenteredExactAuxiliaryGraceNs = 10ULL * 1000 * 1000;
 constexpr uint64_t kBoundedH264InactivityGraceNs =
     1ULL * 1000 * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
@@ -2271,6 +2272,11 @@ struct H264Auxiliary {
     HANDLE device = nullptr;
     bool prefeed = false;
   };
+  struct Output {
+    bool field_pairs = false, bottom_first = false;
+    unsigned int width = 0, height = 0, fields = 0;
+    uint32_t picture_number = 0, sess_num = 0, picture_meta_payload = 0;
+  } output;
   std::map<uint64_t, Syntax> syntax;
   Syntax candidate{};
   uint64_t candidate_timestamp = 0, generation = 0, timestamp = 0;
@@ -4715,6 +4721,7 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
   decode->auxiliary.candidate_timestamp = 0;
   decode->auxiliary.syntax.clear();
   decode->auxiliary.pending = decode->auxiliary.needs_eos = false;
+  decode->auxiliary.output = H264Auxiliary::Output();
   decode->CancelPendingPrefeed();
   decode->h264_first_field = H264FirstField();
   decode->partial_input_timestamp = 0;
@@ -4752,7 +4759,8 @@ static H264InterlacedPayload ClassifyH264InterlacedPayload(
 }
 
 static VAStatus ValidateH264AuxiliaryOutput(Driver *driver, DecodeContext *decode,
-                                          const BC_DTS_PROC_OUT &out) {
+                                          const BC_DTS_PROC_OUT &out,
+                                          H264Auxiliary::Output *next) {
   const auto &aux = decode->auxiliary;
   const uint64_t extent = static_cast<uint64_t>(out.PicInfo.width) * 2U *
                           out.PicInfo.height;
@@ -4760,15 +4768,46 @@ static VAStatus ValidateH264AuxiliaryOutput(Driver *driver, DecodeContext *decod
       aux.generation != decode->generation || aux.device != decode->device ||
       decode->is_70012 || !(out.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) ||
       (out.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) != 0 ||
-      ClassifyH264InterlacedPayload(out) != H264InterlacedPayload::Weave ||
       out.PicInfo.width != decode->CaptureWidth() ||
       out.PicInfo.height != decode->CaptureHeight() ||
       (out.PicInfo.height & 3U) != 0 || !out.Ybuff ||
-      !(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID) ||
-      extent > static_cast<uint64_t>(out.YBuffDoneSz) * 4U)
+      !(out.PoutFlags & BC_POUT_FLAGS_PIB_VALID))
     return FailDecode(driver, decode, "H.264 auxiliary full-height ownership/extent");
-  // Known synthetic frame-coded MBAFF output is one full-height record;
-  // metadata still carries INTERLACED_SRC. No public pixels or pair are made.
+  const auto layout = ClassifyH264InterlacedPayload(out);
+  const uint64_t transferred = static_cast<uint64_t>(out.YBuffDoneSz) * 4U;
+  if (!aux.output.field_pairs) {
+    if (layout != H264InterlacedPayload::Weave || transferred < extent)
+      return FailDecode(driver, decode, "H.264 auxiliary full-height ownership/extent");
+    // Legacy frame-coded MBAFF output is one full-height record. It never
+    // owns public pixels, even though metadata carries INTERLACED_SRC.
+    *next = aux.output;
+    return VA_STATUS_SUCCESS;
+  }
+  const auto &owned = aux.output;
+  const uint32_t field = out.PicInfo.flags & VDEC_FLAG_BOTTOMFIELD;
+  const bool bottom = field == VDEC_FLAG_BOTTOMFIELD;
+  const bool bottom_first = (out.PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+  const unsigned int bit = bottom ? 2U : 1U;
+  if (!owned.width || !owned.height ||
+      out.PicInfo.width != owned.width || out.PicInfo.height != owned.height ||
+      out.b422Mode != OUTPUT_MODE422_YUY2 ||
+      layout != H264InterlacedPayload::Field || transferred < extent / 2U ||
+      (field != VDEC_FLAG_TOPFIELD && field != VDEC_FLAG_BOTTOMFIELD) ||
+      (owned.fields & ~3U) || (owned.fields & bit) ||
+      (owned.fields && (owned.bottom_first != bottom_first ||
+                        owned.picture_number != out.PicInfo.picture_number ||
+                        owned.sess_num != out.PicInfo.sess_num ||
+                        owned.picture_meta_payload != out.PicInfo.picture_meta_payload)))
+    return FailDecode(driver, decode, "H.264 auxiliary field identity/parity/extent");
+  // A padded transfer can exceed the tight full-picture size; the classifier
+  // then proves its half-height layout from the embedded PIB. Commit this
+  // private debt only after the real NoCopy release, never to h264_first_field.
+  *next = owned;
+  next->fields |= bit;
+  next->bottom_first = bottom_first;
+  next->picture_number = out.PicInfo.picture_number;
+  next->sess_num = out.PicInfo.sess_num;
+  next->picture_meta_payload = out.PicInfo.picture_meta_payload;
   return VA_STATUS_SUCCESS;
 }
 
@@ -5453,6 +5492,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   const bool auxiliary = decode->auxiliary.ever &&
       output.PicInfo.timeStamp == decode->auxiliary.timestamp;
   auto *mpeg2_auxiliary = FindMpeg2Auxiliary(decode, output.PicInfo.timeStamp);
+  H264Auxiliary::Output next_h264_auxiliary;
   Mpeg2Auxiliary::Output next_mpeg2_auxiliary;
   const bool unknown_mpeg2 = decode->IsMpeg2() && decode->mpeg2_auxiliary.ever &&
       !mpeg2_auxiliary && !decode->mpeg2_replay.Find(output.PicInfo.timeStamp);
@@ -5466,7 +5506,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
       : unknown_mpeg2
       ? FailDecode(driver, decode, "unexpected MPEG-2 auxiliary/unknown timestamp")
       : auxiliary
-      ? ValidateH264AuxiliaryOutput(driver, decode, output)
+      ? ValidateH264AuxiliaryOutput(driver, decode, output, &next_h264_auxiliary)
       : ProcessDecodedOutput(driver, decode, output);
   CH_REPLAY_ONLY(replay_receive.Disposition(result));
   status = CH_COST_CALL(DilRelease,
@@ -5485,12 +5525,16 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return VA_STATUS_SUCCESS;
   }
   if (auxiliary && result == VA_STATUS_SUCCESS) {
-    decode->auxiliary.pending = false;
+    decode->auxiliary.output = next_h264_auxiliary;
+    decode->auxiliary.pending = next_h264_auxiliary.field_pairs &&
+                                next_h264_auxiliary.fields != 3U;
     decode->RecordTransportProgress();
-    Debug("H.264 auxiliary output_released token=%llu ordinal=%u session=%u meta=%u flags=%u layout=full_height",
+    Debug("H.264 auxiliary output_released token=%llu ordinal=%u session=%u meta=%u flags=%u layout=%s fields=%u pending=%d",
                  static_cast<unsigned long long>(output.PicInfo.timeStamp),
                  output.PicInfo.picture_number, output.PicInfo.sess_num,
-                 output.PicInfo.picture_meta_payload, output.PicInfo.flags);
+                 output.PicInfo.picture_meta_payload, output.PicInfo.flags,
+                 next_h264_auxiliary.field_pairs ? "field_pair" : "full_height",
+                 next_h264_auxiliary.fields, decode->auxiliary.pending);
     driver->condition.notify_all();
     return VA_STATUS_SUCCESS;
   }
@@ -5665,7 +5709,8 @@ static bool H264HeadroomDeescapedFits(const std::vector<uint8_t> &bytes) {
 // Neutral I16x16/DC CAVLC picture. Never emits SPS or
 // replaces PPS0; immutable accepted-AU syntax supplies frame_num and POC.
 static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
-                                std::vector<uint8_t> *bytes) {
+                                std::vector<uint8_t> *bytes,
+                                bool field_pairs = false) {
   const auto &s = p.seq_fields.bits;
   const unsigned frame_bits = s.log2_max_frame_num_minus4 + 4;
   const unsigned poc_bits = s.log2_max_pic_order_cnt_lsb_minus4 + 4;
@@ -5679,11 +5724,17 @@ static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
       frame_bits > 16 || poc_bits > 16 ||
       p.frame_num >= (1U << frame_bits) || p.CurrPic.TopFieldOrderCnt < 0)
     return false;
+  const int64_t bottom_delta = static_cast<int64_t>(p.CurrPic.BottomFieldOrderCnt) -
+                               static_cast<int64_t>(p.CurrPic.TopFieldOrderCnt);
+  if (field_pairs &&
+      (bottom_delta < -std::numeric_limits<int32_t>::max() ||
+       bottom_delta > std::numeric_limits<int32_t>::max()))
+    return false;
   bytes->clear();
   AppendNal(bytes, 9, 0, std::vector<uint8_t>{0x10});
   BitWriter pps;
   pps.PutUE(254); pps.PutUE(0);
-  pps.PutBit(false); pps.PutBit(false);
+  pps.PutBit(false); pps.PutBit(field_pairs);
   pps.PutUE(0); pps.PutUE(0); pps.PutUE(0);
   pps.PutBit(false); pps.PutBits(2, 0);
   pps.PutSE(0); pps.PutSE(0); pps.PutSE(0);
@@ -5692,12 +5743,13 @@ static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
   BitWriter slice;
   slice.PutUE(0); slice.PutUE(2); slice.PutUE(254);
   slice.PutBits(frame_bits, p.frame_num);
-  slice.PutBit(false); // frame-coded MBAFF slice
+  slice.PutBit(false); // One frame picture; MBAFF pair mode is selected below.
   slice.PutBits(poc_bits, static_cast<uint32_t>(p.CurrPic.TopFieldOrderCnt) &
                              ((1U << poc_bits) - 1));
+  if (field_pairs) slice.PutSE(static_cast<int32_t>(bottom_delta));
   slice.PutSE(0); slice.PutUE(1); // default QP, deblocking disabled
   for (unsigned mb = 0; mb < (width / 16U) * (height / 16U); ++mb) {
-    if ((mb & 1U) == 0) slice.PutBit(false);
+    if ((mb & 1U) == 0) slice.PutBit(field_pairs);
     slice.PutUE(3); slice.PutUE(0); slice.PutSE(0);
     slice.PutBit(true); // luma DC coeff_token TotalCoeff=0, nC=0
   }
@@ -7455,10 +7507,11 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       surface->trace_generation == decode->generation &&
       surface->trace_submission_ordinal == first.picture->trace_submission_ordinal &&
       (!first.picture->direct_backing || first.picture->direct_backing == surface);
-  // Exact Sync already demands this genuine complement. Keep the progress
-  // turn passive (idle0), then let its existing empty RX turn provide bounded
-  // lookahead without the Bob/EOS inactivity delay. No output is fabricated.
-  if ((!bob && !exact) || (exact ? idle == 0 : idle < kDecodeBatchGraceNs) || aux.pending ||
+  // Exact Sync requires ten milliseconds without real transport progress and
+  // the caller's successful empty RX turn. Bob retains its existing grace;
+  // neither path fabricates output or completes the original picture.
+  if ((!bob && !exact) ||
+      idle < (exact ? kCenteredExactAuxiliaryGraceNs : kDecodeBatchGraceNs) || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.timestamp != surface->expected_timestamp ||
@@ -7497,7 +7550,7 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
     return FailDecode(driver, decode, "H.264 auxiliary timestamp reservation");
   std::vector<uint8_t> payload;
   try {
-    if (!BuildH264NeutralIntra(aux.candidate.picture, &payload))
+    if (!BuildH264NeutralIntra(aux.candidate.picture, &payload, exact))
       return VA_STATUS_SUCCESS;
   } catch (const std::bad_alloc &) {
     return FailDecode(driver, decode, "neutral picture allocation");
@@ -7520,6 +7573,10 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "H.264 auxiliary input failed (no retry)");
   aux.timestamp = token; aux.ever = aux.pending = aux.needs_eos = true;
+  aux.output = H264Auxiliary::Output();
+  aux.output.field_pairs = exact;
+  aux.output.width = decode->CaptureWidth();
+  aux.output.height = decode->CaptureHeight();
   aux.generation = decode->generation;
   aux.device = decode->device;
   aux.eos_only = aux.ended = false;
@@ -7528,9 +7585,10 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   decode->CancelPendingPrefeed();
   if (consume) decode->prefed_timestamp = 0;
   decode->RecordTransportProgress();
-  Debug("H.264 auxiliary input_sent token=%llu transport_timestamp=%llu bytes=%zu public_picture=0 public_ordinal_advanced=0",
+  Debug("H.264 auxiliary input_sent token=%llu transport_timestamp=%llu bytes=%zu public_picture=0 public_ordinal_advanced=0 layout=%s",
                static_cast<unsigned long long>(token),
-               static_cast<unsigned long long>(consume ? 0 : token), bytes);
+               static_cast<unsigned long long>(consume ? 0 : token), bytes,
+               exact ? "field_pair" : "full_height");
   // Delimit the synthetic slice with the ordinary next-AU prefix. The next
   // original AU consumes this prefix without acquiring an auxiliary identity.
   decode->pending_prefeed_timestamp = decode->next_timestamp;
