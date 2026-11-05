@@ -20,9 +20,10 @@ For the separately characterized live-stream integration, see the top-level
 [Moonlight/Sunshine guide](../../MOONLIGHT.md).
 
 This guide describes current maintained source, with version boundaries called
-out below. Stable 1.2.0 uses module 3.10.13; the frozen complete 1.3.0-rc.2
-candidate uses module 3.10.17. Later diagnostic receipts on master do not
-requalify that candidate. See [release identities](../../RELEASING.md).
+out below. Official 1.3.0 is frozen at source `24a5182b988b` / module `3.10.20`.
+Development changes below, including Centered CPU storage, postdate that release
+and are not part of its package or qualification. Earlier release and candidate
+identities remain documented in [release identities](../../RELEASING.md).
 
 - [Decode subset](#supported-decode-subset), [Bob](#v12-cpu-va-vpp-bob) and
   [replay/EOS](#replay-and-end-of-stream) define the client contract.
@@ -592,6 +593,13 @@ while writable access is active; stale sources and failed commits report errors.
 Images derived from retained decode pictures remain independent readback
 snapshots and cannot overwrite decoder references.
 
+Development Centered builds may automatically use CPU storage for eligible,
+unexported decode targets. Image access still returns complete NV12 pixels,
+and retained derived images keep their own pixels when decoding reuses a
+surface. A successful DRM PRIME export supplies real DRM-backed storage.
+If the CPU-storage path is unavailable at context creation, the target keeps
+its existing backing. No additional setting is required.
+
 NV12 PRIME2 exports default to separate R8 and GR88 layers. Request
 `VA_EXPORT_SURFACE_COMPOSED_LAYERS` for one two-plane NV12 layer. Read/default
 exports and derived snapshots wait for picture completion; cancellation or an
@@ -686,9 +694,9 @@ while the card returns a smaller picture. Compatible full-canvas NV12 Bob
 requests process that small picture and place it at 1:1 size inside black
 borders. This reduces visible picture size, **not** the negotiated surface
 size; it does not enlarge 720 back to FHD or provide hardware deinterlacing.
-It is a development experiment, absent from stable v1.2.0.
+It is included in 1.3 and remains an opt-in experiment.
 
-With the development driver selected, an example for a known 1920×1080
+With the CrystalHD VA driver selected, an example for a known 1920×1080
 visible source, including a coded 1920×1088 source, is:
 
 ```sh
@@ -699,18 +707,6 @@ CRYSTALHD_VAAPI_EXPERIMENTAL_CENTERED_NV12=1280x720@1920x1080:limited \
 For display enlargement, Kodi's Video settings → Zoom can apply `1.5` to this
 720-in-1080 picture on the GPU. Source-encoded black bars remain; return Zoom
 to `1.0` for the native centered size. Selected playback results are in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
-
-On the reference T8100/BCM70015 host, a new L0s-ON progressive 30p comparison
-selects all 9,001 pictures over five minutes with centered 720, while native FHD
-selects 8,506. Centered Bob at 50 outputs/s also completes the selected five-minute BFF case;
-the TFF case skips 3/15,000 outputs. The selected no-B 60p OFF case skips
-3/18,000 over five minutes; B-reference and ON controls retain further misses.
-These are source/VA-canvas results on a 60-Hz 1024×768 panel,
-not native FHD detail or a power measurement. See the
-[matched measurements and remaining cadence limits](../../HARDWARE-2026-09-13.md#stock-kodi-centered-output-with-l0s-2026-10-24).
-Keep L0s policy changes separate from normal playback; the existing default
-workaround remains unchanged. The selected centered Bob/zoom 1.5 dialogue also
-has qualitative maintainer A/V and control confirmation in this new ON condition.
 
 The value specifies `capture-width×height@visible-width×height:limited|full`
 using ASCII `x`. Crop and black range must be supplied explicitly; coded1088
@@ -727,9 +723,26 @@ selection, READY remapping and BCM70012 cannot be combined with this mode.
 
 Original GetImage, DeriveImage and export still expose actual full-canvas
 pixels. Requests incompatible with the small Bob path use that real canvas.
-Full-size allocation, composition and presentation costs remain, so smaller
-card transfers do not establish a playback speedup. Stock-client performance,
+Development builds can reuse unchanged borders and avoid repeated pixel copies
+on eligible driver-owned targets while retaining the full readable canvas.
+This is automatic within Centered mode; its geometry/range setting is unchanged.
+Smaller card transfers alone do not establish a playback speedup. Stock-client performance,
 field delivery and presentation acceptance remain tracked in [#477](https://github.com/ahnhy1324/crystalhd/issues/477).
+
+<details>
+<summary>Source-pinned playback and diagnostic observations</summary>
+
+On the reference T8100/BCM70015 host, the retained L0s-ON progressive 30p comparison
+selects all 9,001 pictures over five minutes with centered 720, while native FHD
+selects 8,506. Centered Bob at 50 outputs/s also completes the selected five-minute BFF case;
+the TFF case skips 3/15,000 outputs. The selected no-B 60p OFF case skips
+3/18,000 over five minutes; B-reference and ON controls retain further misses.
+These are source/VA-canvas results on a 60-Hz 1024×768 panel,
+not native FHD detail or a power measurement. See the
+[matched measurements and remaining cadence limits](../../HARDWARE-2026-09-13.md#stock-kodi-centered-output-with-l0s-2026-10-24).
+Keep L0s policy changes separate from normal playback; the existing default
+workaround remains unchanged. The selected centered Bob/zoom 1.5 dialogue also
+has qualitative maintainer A/V and control confirmation in that ON condition.
 
 The explicit test-only [centered payload observer](../../tests/vaapi-centered-payload-protocol.md)
 has a separate build/output and never replaces the installed backend.
@@ -764,6 +777,8 @@ pre-copy NV12 and downstream content barcodes across seek/Stop/reopen.
 All post-copy YUV bytes, 1080i29.97 BWDIF, GPU return and normal-backend/release
 acceptance remain unqualified. The [protocol](../../tests/vaapi-centered-payload-protocol.md)
 keeps these observation boundaries separate.
+
+</details>
 
 <a id="development-decode-integrated-card-scaling"></a>
 
