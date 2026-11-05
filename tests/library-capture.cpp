@@ -91,6 +91,7 @@ struct IoctlEvent {
 	uint32_t pause_threshold;
 	uint32_t resume_threshold;
 	uint32_t discard_only;
+	BC_RX_REGISTRATION registration;
 };
 
 static const size_t kEventCapacity = 4096;
@@ -103,6 +104,9 @@ static size_t active_pool_count;
 static bool driver_owned[BC_RX_LIST_CNT];
 static bool duplicate_add;
 static unsigned add_calls;
+static unsigned capability_queries;
+static uint32_t capability_flags;
+static int capability_errno;
 static unsigned flush_calls;
 static unsigned start_calls;
 static unsigned release_calls;
@@ -114,6 +118,12 @@ static FailureKind flush_failure;
 static FailureKind start_failure;
 static FailureKind release_failure;
 static int close_error;
+static BC_RX_REGISTRATION retained_keys[BC_RX_LIST_CNT];
+static unsigned retained_register_calls, retained_retire_calls;
+static int fail_register_at, fail_retire_at;
+static FailureKind register_failure, retire_failure;
+static bool corrupt_register_receipt;
+static uint64_t retained_generation;
 
 static bool release_seen;
 static bool close_seen;
@@ -196,6 +206,17 @@ static void ResetMock(bool clear_ownership)
 	event_overflow = false;
 	duplicate_add = false;
 	add_calls = flush_calls = start_calls = release_calls = 0;
+	capability_queries = 0;
+	capability_flags = 0;
+	capability_errno = 0;
+	retained_register_calls = retained_retire_calls = 0;
+	fail_register_at = fail_retire_at = -1;
+	register_failure = retire_failure = FAIL_NONE;
+	corrupt_register_receipt = false;
+	if (clear_ownership) {
+		std::memset(retained_keys, 0, sizeof(retained_keys));
+		retained_generation = 71;
+	}
 	fail_add_at = fail_flush_at = fail_start_at = -1;
 	add_failure = flush_failure = start_failure = release_failure = FAIL_NONE;
 	close_error = 0;
@@ -314,11 +335,68 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 	Check(data != nullptr, "capture ioctl supplies an envelope");
 	if (!data)
 		return -1;
+	if (command == BCM_IOC_QUERY_CAPS) {
+		++capability_queries;
+		if (capability_errno) {
+			errno = capability_errno;
+			return -1;
+		}
+		data->RetSts = BC_STS_SUCCESS;
+		std::memset(&data->u.DriverCaps, 0, sizeof(data->u.DriverCaps));
+		data->u.DriverCaps.abi_version = BC_DRIVER_CAPS_ABI_VERSION;
+		data->u.DriverCaps.flags = capability_flags;
+		return 0;
+	}
 
 	IoctlEvent *event = RecordEvent(command);
 	data->RetSts = BC_STS_SUCCESS;
 
 	switch (command) {
+	case BCM_IOC_RETAINED_RX: {
+		BC_RX_REGISTRATION &key = data->u.RetainedRx.registration;
+		if (event)
+			event->registration = key;
+		if (key.operation == BC_RX_REGISTER) {
+			const unsigned call = retained_register_calls++;
+			const int index = PoolIndex(reinterpret_cast<void *>(static_cast<uintptr_t>(key.user_address)));
+			Check(index >= 0 && !key.registration_id && !key.capture_generation &&
+			      !key.borrow_sequence && !key.state && !key.flags &&
+			      !key.reserved[0] && !key.reserved[1],
+			      "REGISTER supplies a configured pointer and no invented authority");
+			if (static_cast<int>(call) == fail_register_at && register_failure == FAIL_STATUS)
+				return ApplyFailure(register_failure, data, BC_STS_INSUFF_RES);
+			if (index >= 0) {
+				Check(!driver_owned[index], "retained registration is not duplicated");
+				key.registration_id = 500 + static_cast<unsigned>(index);
+				key.capture_generation = retained_generation;
+				key.state = BC_RX_QUEUED;
+				retained_keys[index] = key;
+				driver_owned[index] = true;
+			}
+			if (corrupt_register_receipt)
+				++key.capacity; // The kernel admitted the real extent before bad copy-out.
+			if (static_cast<int>(call) == fail_register_at)
+				return ApplyFailure(register_failure, data, BC_STS_INSUFF_RES);
+			return 0;
+		}
+		Check(key.operation == BC_RX_RETIRE && !key.registration_id &&
+		      !key.capture_generation && !key.borrow_sequence && !key.user_address &&
+		      !key.capacity && !key.uv_offset && !key.output_format && !key.state &&
+		      !key.flags && !key.reserved[0] && !key.reserved[1],
+		      "cleanup uses exact owner-wide RETIRE, not guessed registration IDs");
+		const unsigned call = retained_retire_calls++;
+		if (static_cast<int>(call) == fail_retire_at && retire_failure == FAIL_STATUS)
+			return ApplyFailure(retire_failure, data, BC_STS_IO_ERROR);
+		ClearOwnership();
+		std::memset(retained_keys, 0, sizeof(retained_keys));
+		++retained_generation;
+		std::memset(&key, 0, sizeof(key));
+		key.operation = BC_RX_RETIRE;
+		key.state = BC_RX_RETIRED;
+		if (static_cast<int>(call) == fail_retire_at)
+			return ApplyFailure(retire_failure, data, BC_STS_IO_ERROR);
+		return 0;
+	}
 	case BCM_IOC_ADD_RXBUFFS: {
 		const unsigned call = add_calls++;
 		const int index = PoolIndex(data->u.RxBuffs.YuvBuff);
@@ -2318,6 +2396,141 @@ static void TestStartFailuresAndRetry()
 	}
 }
 
+static void TestRetainedCapabilityAdmission()
+{
+	for (uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA}) {
+		for (DTS_OUTPUT_PHASE phase : {DTS_OUTPUT_ACTIVE, DTS_OUTPUT_DELIVERING,
+		                                DTS_OUTPUT_RETURNED}) {
+			case_name = "legacy fresh-map output overlap remains compatible";
+			Fixture fixture(device);
+			fixture.context.outputPhase = phase;
+			fixture.context.ProcOutPending = 1;
+			Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+			      add_calls == BC_RX_LIST_CNT && !fixture.context.retainedRxMode,
+			      "LINK and no-capability Flea retain their legacy ADD sequence");
+			Check(capability_queries == (device == BC_PCI_DEVID_FLEA ? 1U : 0U),
+			      "only Flea performs the local metadata capability negotiation");
+		}
+	}
+	{
+		case_name = "older driver ENOTTY uses unchanged legacy mapping";
+		Fixture fixture(BC_PCI_DEVID_FLEA);
+		capability_errno = ENOTTY;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+		      add_calls == BC_RX_LIST_CNT && !fixture.context.retainedRxMode &&
+		      fixture.context.driverCapsQueried && !fixture.context.driverCapsFlags,
+		      "unsupported metadata query never enables retained RX or blocks old drivers");
+	}
+	for (DTS_OUTPUT_PHASE phase : {DTS_OUTPUT_ACTIVE, DTS_OUTPUT_DELIVERING,
+	                                DTS_OUTPUT_RETURNED}) {
+		case_name = "retained fresh map excludes an admitted output caller";
+		Fixture fixture(BC_PCI_DEVID_FLEA);
+		capability_flags = BC_DRIVER_CAP_RX_RETAINED;
+		fixture.context.outputPhase = phase;
+		fixture.context.ProcOutPending = 1;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_BUSY &&
+		      capability_queries == 1 && !event_count && !add_calls &&
+		      !fixture.context.retainedRxMode && !fixture.context.bMapOutBufDirty &&
+		      fixture.context.outputPhase == phase && fixture.context.ProcOutPending == 1,
+		      "capable map queries metadata but registers nothing and preserves the live output lease");
+	}
+}
+
+
+static void TestRetainedRegistrationOwnership()
+{
+	for (bool immediate : {false, true}) {
+		case_name = "retained complete capture set";
+		Fixture fixture(BC_PCI_DEVID_FLEA, 3);
+		capability_flags = BC_DRIVER_CAP_RX_RETAINED;
+		Check(StartCapture(fixture, immediate) == BC_STS_SUCCESS,
+		      "actual StartCapture registers the complete retained pool");
+		Check(capability_queries == 1 && retained_register_calls == 3 &&
+		      !add_calls && start_calls == 1 && OwnedCount() == 3 &&
+		      fixture.context.retainedRxMode && fixture.context.bMapOutBufDone &&
+		      fixture.context.bMapOutBufDirty,
+		      "negotiated pool uses REGISTER only, then starts capture once");
+		for (unsigned i = 0; i < 3; ++i) {
+			const BC_RX_REGISTRATION &key = fixture.pools[i].rxRegistration;
+			Check(key.registration_id == 500U + i && key.capture_generation == 71 &&
+			      !key.borrow_sequence && key.state == BC_RX_QUEUED &&
+			      key.user_address == reinterpret_cast<uintptr_t>(fixture.pools[i].buff) &&
+			      key.capacity == kLegacyNv12Bytes && key.uv_offset == kLegacyYBytes &&
+			      key.output_format == OUTPUT_MODE420,
+			      "DIL retains each exact opaque identity and registered planar extent");
+		}
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+		      retained_retire_calls == 1 && !flush_calls && !OwnedCount() &&
+		      !fixture.context.bMapOutBufDirty,
+		      "only successful owner-wide RETIRE clears the mapped set");
+	}
+}
+
+static void TestRetainedRegistrationFailures()
+{
+	for (FailureKind kind : {FAIL_STATUS, FAIL_SYSCALL}) {
+		for (int failure : {0, 1, 2}) {
+			for (bool retire_fails : {false, true}) {
+				case_name = "partial retained registration cannot fall back";
+				Fixture fixture(BC_PCI_DEVID_FLEA, 3);
+				capability_flags = BC_DRIVER_CAP_RX_RETAINED;
+				fail_register_at = failure;
+				register_failure = kind;
+				if (retire_fails) {
+					fail_retire_at = 0;
+					retire_failure = FAIL_STATUS;
+				}
+				Check(StartCapture(fixture, false) != BC_STS_SUCCESS &&
+				      retained_register_calls == static_cast<unsigned>(failure + 1) &&
+				      retained_retire_calls == 1 && !add_calls && !flush_calls && !start_calls,
+				      "registration failure triggers one owner-wide cleanup and no retry/legacy command");
+				Check(!fixture.context.bMapOutBufDone,
+				      "partial admission cannot publish a complete capture set");
+				if (retire_fails) {
+					Check(fixture.context.retainedRxPoisoned && fixture.context.bMapOutBufDirty &&
+					      fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+					      fixture.context.ProcOutPending == 1,
+					      "unacknowledged cleanup retains all ambiguous backing in RetireOnly");
+					Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+					      "a later explicit owner-wide cleanup may positively retire the set");
+				}
+				Check(!fixture.context.bMapOutBufDirty && !fixture.context.retainedRxPoisoned &&
+				      fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+				      !fixture.context.ProcOutPending && !OwnedCount(),
+				      "positive RETIRE acknowledges even an empty first-register failure");
+			}
+		}
+	}
+	{
+		case_name = "registered but malformed receipt";
+		Fixture fixture(BC_PCI_DEVID_FLEA, 2);
+		capability_flags = BC_DRIVER_CAP_RX_RETAINED;
+		corrupt_register_receipt = true;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_IO_XFR_ERROR &&
+		      retained_register_calls == 1 && retained_retire_calls == 1 &&
+		      !OwnedCount() && !add_calls && !fixture.context.bMapOutBufDirty,
+		      "an admitted wrong-extent receipt is retired rather than trusted or retried");
+	}
+	{
+		case_name = "paused owner loses successful retirement copy-out";
+		Fixture fixture(BC_PCI_DEVID_FLEA, 2);
+		capability_flags = BC_DRIVER_CAP_RX_RETAINED;
+		Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS, "map paused-retirement fixture");
+		fixture.context.State = BC_DEC_STATE_PAUSE;
+		fail_retire_at = 0;
+		retire_failure = FAIL_SYSCALL;
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_ERROR && !OwnedCount() &&
+		      fixture.context.bMapOutBufDirty && fixture.context.retainedRxPoisoned &&
+		      fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+		      "lost copy-out remains ambiguous although the mock kernel retired every mapping");
+		Check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS &&
+		      retained_retire_calls == 2 && retained_register_calls == 2 && !add_calls &&
+		      !fixture.context.bMapOutBufDirty && fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+		      "repeatable owner-wide ACK recovers without re-registering or changing pause state");
+		Check(fixture.context.State == BC_DEC_STATE_PAUSE, "retirement does not invent a decoder state change");
+	}
+}
+
 static void TestFlushSemantics()
 {
 	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
@@ -2631,6 +2844,9 @@ int main()
 	TestRollbackFailureAndRetry();
 	TestRepeatedStartMappingFailures();
 	TestSuccessfulStarts();
+	TestRetainedCapabilityAdmission();
+	TestRetainedRegistrationOwnership();
+	TestRetainedRegistrationFailures();
 	TestConcurrentStarts();
 	TestCaptureLifecycleStates();
 	TestShutdownWinsCaptureRace();

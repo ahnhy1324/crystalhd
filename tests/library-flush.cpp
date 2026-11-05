@@ -76,6 +76,16 @@ static bool cancel_releases_publish;
 static thread_local bool pause_cancel_owner;
 static bool cancel_owner_reached, resume_cancel_owner;
 static unsigned unmap_fail_once_at;
+static bool retained_io_mode, retained_probe_callback;
+static BC_RX_REGISTRATION retained_driver_keys[BC_RX_LIST_CNT];
+static unsigned retained_registers, retained_fetches, retained_reposts, retained_retires;
+static uint64_t retained_generation;
+enum RetainedFault { RETAINED_OK, RETAINED_FETCH_SYSCALL, RETAINED_FETCH_ID,
+                     RETAINED_FETCH_SEQUENCE, RETAINED_FETCH_POINTER,
+                     RETAINED_FETCH_RESERVED, RETAINED_REPOST_SYSCALL,
+                     RETAINED_REPOST_SEQUENCE, RETAINED_REPOST_STATUS };
+static RetainedFault retained_fault;
+static std::vector<BC_RX_REGISTRATION> retained_requests;
 
 static void wait_phase_window()
 {
@@ -223,6 +233,97 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
     return 0;
 }
 
+
+static int retained_ioctl(BC_IOCTL_DATA *data)
+{
+    BC_RX_REGISTRATION &key = data->u.RetainedRx.registration;
+    retained_requests.push_back(key);
+    data->RetSts = BC_STS_SUCCESS;
+    if (key.operation == BC_RX_REGISTER) {
+        const unsigned slot = retained_registers++;
+        check(slot < observed->MpoolCnt && !key.registration_id &&
+              !key.capture_generation && !key.borrow_sequence && !key.state &&
+              key.user_address == reinterpret_cast<uintptr_t>(observed->Mpools[slot].buff),
+              "actual map registers each configured host pointer with zero authority");
+        if (slot >= BC_RX_LIST_CNT) std::abort();
+        key.registration_id = 1000 + slot;
+        key.capture_generation = retained_generation;
+        key.state = BC_RX_QUEUED;
+        retained_driver_keys[slot] = key;
+        return 0;
+    }
+    if (key.operation == BC_RX_RETIRE) {
+        ++retained_retires;
+        check(!key.registration_id && !key.capture_generation && !key.borrow_sequence &&
+              !key.user_address && !key.capacity && !key.uv_offset &&
+              !key.output_format && !key.state,
+              "cleanup explicitly retires the complete opaque owner inventory");
+        std::memset(retained_driver_keys, 0, sizeof(retained_driver_keys));
+        std::memset(&key, 0, sizeof(key));
+        key.operation = BC_RX_RETIRE;
+        key.state = BC_RX_RETIRED;
+        ++retained_generation;
+        return 0;
+    }
+    if (key.operation == BC_RX_FETCH) {
+        const unsigned call = retained_fetches++;
+        ++fetch_calls;
+        const FetchReply reply = call < fetch_replies.size() ? fetch_replies[call] :
+            FetchReply{mock_fetch_status, {}};
+        std::memset(&data->u.RetainedRx, 0, sizeof(data->u.RetainedRx));
+        key.operation = BC_RX_FETCH;
+        data->RetSts = reply.status;
+        if (reply.status != BC_STS_SUCCESS) return 0;
+        data->u.RetainedRx.frame = reply.output;
+        if (!(reply.output.Flags & COMP_FLAG_FMT_CHANGE)) {
+            unsigned slot = observed->MpoolCnt;
+            for (unsigned i = 0; i < observed->MpoolCnt; ++i)
+                if (observed->Mpools[i].buff == reply.output.OutPutBuffs.YuvBuff)
+                    slot = i;
+            check(slot < observed->MpoolCnt, "FETCH uses one registered fixture buffer");
+            if (slot >= observed->MpoolCnt) std::abort();
+            BC_RX_REGISTRATION &owner = retained_driver_keys[slot];
+            check(owner.state == BC_RX_QUEUED, "kernel mock cannot reborrow an outstanding registration");
+            ++owner.borrow_sequence;
+            owner.operation = BC_RX_FETCH;
+            owner.state = BC_RX_BORROWED;
+            key = owner;
+            BC_DEC_YUV_BUFFS &buffer = data->u.RetainedRx.frame.OutPutBuffs;
+            buffer.YuvBuff = observed->Mpools[slot].buff;
+            buffer.YuvBuffSz = key.capacity;
+            buffer.UVbuffOffset = key.uv_offset;
+            buffer.b422Mode = static_cast<BC_OUTPUT_FORMAT>(key.output_format);
+            if (retained_fault == RETAINED_FETCH_ID) ++key.registration_id;
+            if (retained_fault == RETAINED_FETCH_SEQUENCE) --key.borrow_sequence;
+            if (retained_fault == RETAINED_FETCH_POINTER) ++buffer.YuvBuff;
+            if (retained_fault == RETAINED_FETCH_RESERVED) key.reserved[0] = 1;
+        }
+        if (cancel_after_fetch) observed->CancelWaiting = 1;
+        if (retained_fault == RETAINED_FETCH_SYSCALL) { errno = EFAULT; return -1; }
+        return 0;
+    }
+    check(key.operation == BC_RX_REPOST, "borrow is returned only by negotiated REPOST");
+    ++retained_reposts;
+    unsigned slot = observed->MpoolCnt;
+    for (unsigned i = 0; i < observed->MpoolCnt; ++i)
+        if (retained_driver_keys[i].registration_id == key.registration_id) slot = i;
+    check(slot < observed->MpoolCnt, "REPOST identifies the actual registered owner");
+    if (slot >= observed->MpoolCnt) std::abort();
+    BC_RX_REGISTRATION expected = retained_driver_keys[slot];
+    expected.operation = BC_RX_REPOST;
+    check(std::memcmp(&key, &expected, sizeof(key)) == 0,
+          "REPOST returns the exact opaque generation/borrow sequence and layout");
+    if (retained_fault == RETAINED_REPOST_STATUS) {
+        data->RetSts = BC_STS_IO_ERROR;
+        return 0;
+    }
+    key.state = BC_RX_QUEUED;
+    retained_driver_keys[slot] = key;
+    if (retained_fault == RETAINED_REPOST_SEQUENCE) ++key.borrow_sequence;
+    if (retained_fault == RETAINED_REPOST_SYSCALL) { errno = EFAULT; return -1; }
+    return 0;
+}
+
 extern "C" int __wrap_ioctl(int, unsigned long code, ...)
 {
     if (allow_output_io && code == BCM_IOC_QUERY_CAPS) {
@@ -232,13 +333,22 @@ extern "C" int __wrap_ioctl(int, unsigned long code, ...)
         va_end(args);
         ++caps_calls;
         check(data != observed->pOutData && data->IoctlDataSz == sizeof(*data) &&
-              observed->ProcOutPending == 1 && observed->outputPhase == DTS_OUTPUT_ACTIVE,
-              "caps use a local envelope inside the admitted whole output call");
+              ((observed->ProcOutPending == 1 && observed->outputPhase == DTS_OUTPUT_ACTIVE) ||
+               (retained_io_mode && !observed->ProcOutPending &&
+                observed->outputPhase == DTS_OUTPUT_IDLE)),
+              "caps use a local envelope inside exclusive output or fresh lifecycle mapping");
         if (caps_errno) { errno = caps_errno; return -1; }
         data->RetSts = caps_status;
         data->u.DriverCaps.abi_version = caps_abi;
         data->u.DriverCaps.flags = caps_flags;
         return 0;
+    }
+    if (retained_io_mode && code == BCM_IOC_RETAINED_RX) {
+        va_list args;
+        va_start(args, code);
+        BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
+        va_end(args);
+        return retained_ioctl(data);
     }
     if (held_owner_case && code == BCM_IOC_FLUSH_RX_CAP) {
         va_list args;
@@ -399,11 +509,24 @@ static BC_STATUS output_callback(void *, uint32_t, uint32_t, uint32_t, void *opa
 
     ++callback_calls;
     callback_buffers.push_back(output->Ybuff);
+    if (retained_probe_callback) {
+        const unsigned before = retained_retires;
+        check(observed->outputPhase == DTS_OUTPUT_DELIVERING &&
+              observed->ProcOutPending == 1 &&
+              DtsUnmapYUVBuffs(observed) == BC_STS_BUSY && retained_retires == before,
+              "actual copy callback excludes positive retirement through its final pixel use");
+    }
     return BC_STS_SUCCESS;
 }
 
 static void reset_output_mocks()
 {
+    retained_io_mode = retained_probe_callback = false;
+    retained_registers = retained_fetches = retained_reposts = retained_retires = 0;
+    retained_generation = 91;
+    retained_fault = RETAINED_OK;
+    std::memset(retained_driver_keys, 0, sizeof(retained_driver_keys));
+    retained_requests.clear();
     caps_errno = ENOTTY; fetch_errno = 0;
     caps_status = BC_STS_SUCCESS;
     caps_abi = BC_DRIVER_CAPS_ABI_VERSION;
@@ -627,6 +750,183 @@ static bool reposts_match(unsigned count)
             return false;
     }
     return true;
+}
+
+
+/* Metadata retains the production 1920-wide registration extent; the mock
+ * never DMA-writes and copies only metadata/pointers, except bounded EOS PIB.
+ * This exercises actual map/fetch/publish/release, not a kernel simulation. */
+struct RetainedOutputContext : OutputContext {
+    DTS_MPOOL_TYPE pools[2] = {};
+    BC_IOCTL_DATA ioctl_pool[BC_IOCTL_DATA_POOL_SIZE] = {};
+    uint8_t buffers[2][sizeof(BC_PIC_INFO_BLOCK) + 64] = {};
+    RetainedOutputContext()
+    {
+        prepare_scripted_output(*this, BC_PCI_DEVID_FLEA);
+        retained_io_mode = true;
+        caps_errno = 0;
+        caps_flags = BC_DRIVER_CAP_RX_RETAINED | BC_DRIVER_CAP_RX_NOWAIT;
+        context.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
+        context.Mpools = pools;
+        context.MpoolCnt = 2;
+        context.b422Mode = OUTPUT_MODE422_YUY2;
+        context.rxBufferWidth = 1920;
+        for (unsigned i = 0; i < 2; ++i) {
+            pools[i].type = BC_MEM_DEC_YUVBUFF | BC_MEM_USER_MODE_ALLOC;
+            pools[i].sz = 1920U * 1090U * 2U;
+            pools[i].buff = buffers[i];
+            std::memset(buffers[i], 0x20 + i, sizeof(buffers[i]));
+        }
+        for (unsigned i = 0; i < BC_IOCTL_DATA_POOL_SIZE; ++i) {
+            ioctl_pool[i].next = context.pIoDataFreeHd;
+            context.pIoDataFreeHd = &ioctl_pool[i];
+        }
+        check(DtsMapYUVBuffs(&context) == BC_STS_SUCCESS && retained_registers == 2 &&
+              caps_calls == 1 && context.retainedRxMode && !add_calls,
+              "real DIL map negotiates and registers both retained buffers before output");
+    }
+    ~RetainedOutputContext()
+    {
+        if (context.bMapOutBufDirty)
+            check(DtsUnmapYUVBuffs(&context) == BC_STS_SUCCESS,
+                  "retained fixture finishes with a positively acknowledged inventory");
+    }
+    FetchReply Frame(unsigned slot, uint32_t number = 10)
+    {
+        FetchReply reply = make_frame(0, number, 4);
+        reply.output.OutPutBuffs.YuvBuff = buffers[slot];
+        return reply;
+    }
+};
+
+static void test_retained_output_delivery(bool no_copy)
+{
+    RetainedOutputContext fixture;
+    fetch_replies.push_back(fixture.Frame(0));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    retained_probe_callback = !no_copy;
+    const BC_STATUS result = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                                      DtsProcOutput(&fixture.context, 0, &output);
+    check(result == BC_STS_SUCCESS && retained_fetches == 1 && !add_calls &&
+          !legacy_fetches && !nowait_fetches && caps_calls == 1,
+          "both public APIs fetch through the negotiated retained command without another cap query");
+    if (no_copy) {
+        check(output.Ybuff == fixture.buffers[0] && fixture.context.ProcOutPending == 1 &&
+              fixture.context.outputPhase == DTS_OUTPUT_RETURNED && retained_reposts == 0,
+              "NoCopy returns the real pointer with one continuing opaque borrow");
+        check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_BUSY && !retained_retires,
+              "a held successful NoCopy borrow prevents owner-wide retirement");
+        check(DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS,
+              "the actual public release surrenders the exact opaque borrowed receipt");
+    } else {
+        check(copy_calls == 1 && callback_calls == 1 &&
+              copied_buffers[0] == fixture.buffers[0] && callback_buffers[0] == fixture.buffers[0],
+              "copy/callback receives only the validated actual registered pointer");
+    }
+    check(retained_reposts == 1 && !fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          fixture.pools[0].rxRegistration.borrow_sequence == 1 &&
+          fixture.pools[0].rxRegistration.state == BC_RX_QUEUED,
+          "successful delivery returns exactly one lease and restores the common phase");
+    fetch_replies.push_back(fixture.Frame(0, 11));
+    output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&
+          fixture.context.retainedRxBorrow.borrow_sequence == 2 &&
+          DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS,
+          "reborrowing the same registered pointer requires the next exact sequence");
+}
+
+static void test_retained_receipt_failures(bool no_copy)
+{
+    for (RetainedFault fault : {RETAINED_FETCH_SYSCALL, RETAINED_FETCH_ID,
+                               RETAINED_FETCH_SEQUENCE, RETAINED_FETCH_POINTER,
+                               RETAINED_FETCH_RESERVED, RETAINED_REPOST_SYSCALL,
+                               RETAINED_REPOST_SEQUENCE, RETAINED_REPOST_STATUS}) {
+        RetainedOutputContext fixture;
+        if (fault == RETAINED_FETCH_SEQUENCE) {
+            fetch_replies.push_back(fixture.Frame(0, 9));
+            BC_DTS_PROC_OUT previous = {};
+            check(DtsProcOutputNoCopy(&fixture.context, 0, &previous) == BC_STS_SUCCESS &&
+                  DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS &&
+                  fixture.pools[0].rxRegistration.borrow_sequence == 1,
+                  "stale-sequence control first commits and returns a genuine sequence-one borrow");
+        }
+        retained_fault = fault;
+        fetch_replies.push_back(fixture.Frame(0));
+        BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+        BC_STATUS result = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                                    DtsProcOutput(&fixture.context, 0, &output);
+        if (no_copy && fault >= RETAINED_REPOST_SYSCALL) {
+            check(result == BC_STS_SUCCESS, "NoCopy acquisition precedes the injected release failure");
+            result = DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE);
+        }
+        check(result != BC_STS_SUCCESS && fixture.context.retainedRxPoisoned &&
+              fixture.context.bMapOutBufDirty && !fixture.context.bMapOutBufDone &&
+              fixture.context.ProcOutPending == 1 &&
+              fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+              "failed/foreign/ambiguous receipt preserves RetireOnly ownership");
+        check(!legacy_fetches && !nowait_fetches && !add_calls,
+              "a negotiated failure never falls back to legacy FETCH or ADD");
+        const unsigned old_fetch = retained_fetches, old_repost = retained_reposts;
+        BC_DTS_PROC_OUT rejected = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &rejected) == BC_STS_BUSY &&
+              DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_BUSY &&
+              retained_fetches == old_fetch && retained_reposts == old_repost,
+              "no rejected caller can retry an ambiguous borrow or repost");
+        check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS && retained_retires == 1 &&
+              !fixture.context.retainedRxPoisoned && !fixture.context.ProcOutPending &&
+              fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "positive owner-wide RETIRE alone recovers the ambiguous inventory");
+    }
+}
+
+static void test_retained_control_and_cancel()
+{
+    {
+        RetainedOutputContext fixture;
+        FetchReply format = fixture.Frame(0);
+        format.output.Flags = COMP_FLAG_FMT_CHANGE | COMP_FLAG_PIB_VALID;
+        fetch_replies.push_back(format);
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_FMT_CHANGE &&
+              !output.Ybuff && !output.UVbuff && !fixture.context.ProcOutPending &&
+              !retained_reposts && !fixture.context.retainedRxBorrow.registration_id,
+              "autoacknowledged FORMAT exposes metadata without inventing a borrowed key");
+    }
+    {
+        RetainedOutputContext fixture;
+        fixture.context.FixFlags = DTS_LOAD_FILE_PLAY_FW;
+        fixture.context.bEOSCheck = true;
+        const uint32_t marker = 0xffffffffU;
+        BC_PIC_INFO_BLOCK pib = {};
+        pib.flags = VDEC_FLAG_EOS;
+        std::memcpy(fixture.buffers[0], &marker, sizeof(marker));
+        std::memcpy(fixture.buffers[0] + sizeof(marker), &pib, sizeof(pib));
+        FetchReply eos = fixture.Frame(0);
+        eos.output.Flags = COMP_FLAG_DATA_VALID;
+        eos.output.OutPutBuffs.YBuffDoneSz = (sizeof(marker) + sizeof(pib) + 3) / 4;
+        fetch_replies.push_back(eos);
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              (output.PicInfo.flags & VDEC_FLAG_EOS) && !output.Ybuff && !output.UVbuff &&
+              retained_reposts == 1 && !fixture.context.ProcOutPending &&
+              fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "embedded EOS retains its control API while returning its actual retained borrow");
+    }
+    for (bool failed_repost : {false, true}) {
+        RetainedOutputContext fixture;
+        fetch_replies.push_back(fixture.Frame(0));
+        cancel_after_fetch = true;
+        if (failed_repost) retained_fault = RETAINED_REPOST_SYSCALL;
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_IO_USER_ABORT &&
+              !output.Ybuff && !output.UVbuff && retained_reposts == 1 &&
+              fixture.context.ProcOutPending == (failed_repost ? 1 : 0),
+              "cancellation tries the exact fetched borrow once and never publishes its pointer");
+        check(fixture.context.outputPhase == (failed_repost ? DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE),
+              "failed cancellation repost remains a teardown-only residual");
+        fixture.context.CancelWaiting = 0; // The simulated cancellation publisher retires.
+    }
 }
 
 static void test_late_output(unsigned mode, bool no_copy, bool during_stop)
@@ -2291,6 +2591,11 @@ int main()
     if (setrlimit(RLIMIT_CORE, &no_core) != 0)
         return 2;
     test_negotiated_zero_wait();
+    test_retained_output_delivery(false);
+    test_retained_output_delivery(true);
+    test_retained_receipt_failures(false);
+    test_retained_receipt_failures(true);
+    test_retained_control_and_cancel();
     test_flush(2, true);
     test_flush(4, true);
     test_flush(2, false);

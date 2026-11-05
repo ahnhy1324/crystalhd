@@ -83,6 +83,7 @@ struct crystalhd_session_owner_ops {
 };
 
 struct crystalhd_stream;
+struct crystalhd_retained_rx_registry;
 
 struct crystalhd_user {
 	uint32_t	uid;
@@ -110,6 +111,11 @@ struct crystalhd_cmd {
 	bool			session_module_pinned;
 	/* Only the legacy adapter retains RX registrations across successful PM. */
 	bool			retain_rx_on_suspend;
+	/* RX mode admission only; never held while waiting for legacy output. */
+	struct mutex		retained_rx_lock;
+	struct crystalhd_retained_rx_registry *retained_rx;
+	u64			retained_rx_serial;
+	unsigned int		legacy_rx_active;
 	enum crystalhd_decoder_phase decoder_phase;
 	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t		fw_sequence;

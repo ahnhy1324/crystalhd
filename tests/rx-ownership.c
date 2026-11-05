@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,8 @@ struct _BC_DTS_PROC_OUT;
 typedef struct C011_PIB C011_PIB;
 #include "bc_dts_glob_lnx.h"
 typedef uint64_t dma_addr_t;
+typedef uint64_t u64;
+typedef uint32_t u32;
 struct crystalhd_adp;
 struct scatterlist;
 #include "rx-types.h"
@@ -39,6 +42,10 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define EPOLLRDNORM 0x040U
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define BUILD_BUG_ON(condition) _Static_assert(!(condition), "BUILD_BUG_ON")
+#define U64_MAX UINT64_MAX
+struct mutex { unsigned locked; };
+static void mutex_lock(struct mutex *lock) { assert(!lock->locked); lock->locked = 1; }
+static void mutex_unlock(struct mutex *lock) { assert(lock->locked); lock->locked = 0; }
 static void test_rx_lock(int *lock);
 #define spin_lock_irqsave(lock, flags) \
     (test_rx_lock(lock), (flags) = 0)
@@ -86,10 +93,22 @@ struct crystalhd_cmd {
     struct crystalhd_hw *hw_ctx;
     uint32_t state;
     uint32_t cin_wait_exit;
+    int ctx_lock;
+    struct mutex retained_rx_lock;
+    struct crystalhd_retained_rx_registry *retained_rx;
+    uint64_t retained_rx_serial;
+    unsigned legacy_rx_active;
+    struct crystalhd_user user[BC_LINK_MAX_OPENS];
+    const void *session_owner;
+    bool retain_rx_on_suspend;
+    uint32_t pwr_state_change, decoder_channel_id;
+    enum crystalhd_decoder_phase decoder_phase;
+    enum crystalhd_decoder_codec decoder_codec;
 };
 struct crystalhd_adp {
     struct pci_dev *pdev;
     unsigned present;
+    bool dma_terminal_quiesced;
     struct crystalhd_cmd cmds;
 };
 struct crystalhd_rx_receipt_key {
@@ -100,7 +119,7 @@ static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
                                    unsigned int events)
 {
     (void)adp;
-    if (events != (EPOLLERR | EPOLLHUP) &&
+    if (events != EPOLLERR && events != (EPOLLERR | EPOLLHUP) &&
         events != (EPOLLIN | EPOLLRDNORM))
         abort();
 }
@@ -144,6 +163,7 @@ static unsigned rx_pause_calls;
 static BC_STATUS pause_status;
 static bool last_pause_direction;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
+static uint32_t done_y_words, done_uv_words;
 static unsigned fetch_wait_calls;
 static unsigned fetch_try_calls, try_mutation_at;
 static unsigned try_sem_mutation, try_fetch_mutation;
@@ -166,6 +186,10 @@ static bool interrupt_lock, wait_signal, wait_suspend, wait_full_flush;
 static bool wait_restart_fresh, wait_restart_mode422;
 static enum FLEA_POWER_STATES wait_restart_power;
 static bool stop_fault, notify_ok;
+static unsigned alloc_calls, alloc_live, alloc_fail_at;
+static unsigned unmap_fail_mask, unmap_attempts[BC_RX_LIST_CNT];
+static unsigned cpu_syncs[BC_RX_LIST_CNT], device_syncs[BC_RX_LIST_CNT];
+static BC_STATUS pm_tx_status, pm_suspend_status, pm_resume_status;
 static bool local_pending, master_enabled;
 static unsigned master_clears, pending_waits;
 static unsigned chip_masks;
@@ -191,6 +215,7 @@ static int start_post_sem;
 static struct crystalhd_dioq *fail_queue;
 static const struct crystalhd_rx_buffer_ops legacy_buffer_ops;
 static const struct crystalhd_rx_buffer_ops direct_buffer_ops;
+static const struct crystalhd_rx_buffer_ops crystalhd_retained_ops;
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 
 static void check(bool condition, const char *message)
@@ -240,7 +265,9 @@ static size_t buffer_index(const struct crystalhd_rx_buffer *buffer)
     size_t i;
 
     for (i = 0; i < BC_RX_LIST_CNT; i++)
-        if (buffer == &direct_buffers[i] || buffer == &requests[i].rx_buffer)
+        if (buffer == &direct_buffers[i] || buffer == &requests[i].rx_buffer ||
+            (buffer && buffer->ops == &crystalhd_retained_ops &&
+             buffer->sgl == (struct scatterlist *)buffers[i]))
             return i;
     abort();
 }
@@ -481,19 +508,23 @@ static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd
 {
     size_t i = request_index(request);
     assert(adp == &adapter);
+    unmap_attempts[i]++;
+    if (unmap_fail_mask & (1U << i)) return BC_STS_IO_ERROR;
     observe_quiesced_release();
     if (checking_try_release)
         check(hardware.fetch_sem == 1,
               "cancelled try completion releases backing only after dropping fetch semaphore");
     check(mapped[i] && !unmaps[i] &&
-          registered_buffers[i] == &request->rx_buffer &&
-          registered_cookies[i] == request &&
+          ((registered_buffers[i] == &request->rx_buffer &&
+            registered_cookies[i] == request) ||
+           (registered_buffers[i] && registered_buffers[i]->ops == &crystalhd_retained_ops &&
+            ((struct crystalhd_retained_rx_entry *)registered_cookies[i])->dio == request)) &&
           request->rx_buffer.cookie == request &&
-          !queued_buffer(&request->rx_buffer),
+          !queued_buffer(registered_buffers[i]),
           "legacy unmap occurs once after all queue ownership is released");
     for (size_t p = 0; p < BC_RX_LIST_CNT; p++)
-        check(packets[p].buffer != &request->rx_buffer &&
-              packets[p].cookie != request->rx_buffer.cookie,
+        check(packets[p].buffer != registered_buffers[i] &&
+              packets[p].cookie != registered_cookies[i],
               "legacy release observes a packet detached from buffer and cookie");
     mapped[i] = false; unmaps[i]++;
     return BC_STS_SUCCESS;
@@ -533,11 +564,13 @@ static void sync_for_cpu(struct crystalhd_adp *adp,
                          struct crystalhd_rx_buffer *buffer)
 {
     assert(adp == &adapter && mapped[buffer_index(buffer)]);
+    cpu_syncs[buffer_index(buffer)]++;
 }
 static void sync_for_device(struct crystalhd_adp *adp,
                             struct crystalhd_rx_buffer *buffer)
 {
     assert(adp == &adapter && mapped[buffer_index(buffer)]);
+    device_syncs[buffer_index(buffer)]++;
 }
 static BC_STATUS unused_read(struct crystalhd_rx_buffer *buffer, uint32_t offset,
                              void *destination, size_t size)
@@ -581,6 +614,18 @@ static void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,
 {
     buffer->ops->release(adp, buffer);
 }
+static void crystalhd_rx_buffer_sync_for_cpu(struct crystalhd_adp *adp,
+                                             struct crystalhd_rx_buffer *buffer)
+{ buffer->ops->sync_for_cpu(adp, buffer); }
+static void crystalhd_rx_buffer_sync_for_device(struct crystalhd_adp *adp,
+                                                struct crystalhd_rx_buffer *buffer)
+{ buffer->ops->sync_for_device(adp, buffer); }
+static BC_STATUS crystalhd_rx_buffer_read(struct crystalhd_rx_buffer *buffer,
+                                          uint32_t at, void *dst, size_t bytes)
+{ return buffer->ops->read(buffer, at, dst, bytes); }
+static BC_STATUS crystalhd_rx_buffer_write(struct crystalhd_rx_buffer *buffer,
+                                           uint32_t at, const void *src, size_t bytes)
+{ return buffer->ops->write(buffer, at, src, bytes); }
 static int down_interruptible(int *sem)
 {
     sem_attempts++;
@@ -621,6 +666,13 @@ static BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(struct crystalhd_rx_buffer
 {
     size_t i = buffer_index(buffer);
 
+    if (buffer->ops == &crystalhd_retained_ops) {
+        struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+        assert(entry && entry->dio == &requests[i]);
+        registered_buffers[i] = buffer;
+        registered_cookies[i] = entry;
+    }
+
     assert(mapped[i] && buffer == registered_buffers[i] &&
            buffer->cookie == registered_cookies[i] && buffer->sgl &&
            buffer->dma_nents == 1 && buffer->capacity &&
@@ -633,7 +685,7 @@ static BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(struct crystalhd_rx_buffer
         assert(buffer->capacity == requests[i].uinfo.xfr_len &&
                buffer->uv_offset == requests[i].uinfo.uv_offset &&
                buffer->output_format == requests[i].uinfo.b422mode);
-    else
+    else if (buffer->ops != &crystalhd_retained_ops)
         assert(buffer->capacity == 192);
     assert(!hardware.fetch_sem);
     translate_calls++;
@@ -695,7 +747,7 @@ static BC_STATUS crystalhd_flea_rx_pause(struct crystalhd_hw *hw, bool pause)
 static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint32_t *uv)
 {
     assert(hw == &hardware && index < DMA_ENGINE_CNT);
-    *y = 128; *uv = 64;
+    *y = done_y_words; *uv = done_uv_words;
 }
 static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
 {
@@ -793,6 +845,9 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
         if (!used) break;
     }
     if (index == DMA_ENGINE_CNT) return BC_STS_BUSY;
+    /* This is the existing DMA-programming leaf boundary: the real Flea
+     * fire function invokes this callback immediately before its mailbox. */
+    crystalhd_rx_buffer_sync_for_device(hw->adp, packet->buffer);
     packet->pkt_tag = hw->rx_pkt_tag_seed + index;
     status = crystalhd_dioq_add(hw->rx_actq, packet, false, packet->pkt_tag);
     if (checking_cached_picture && status == BC_STS_SUCCESS)
@@ -838,6 +893,31 @@ static void crystalhd_rx_receipt_descriptors(struct crystalhd_rx_dma_pkt *packet
     assert(packet != NULL);
     (void)uv_descriptor_index;
 }
+static void *rx_kzalloc(size_t bytes, unsigned flags)
+{
+    (void)flags;
+    alloc_calls++;
+    if (alloc_fail_at == alloc_calls) return NULL;
+    void *memory = calloc(1, bytes);
+    assert(memory);
+    alloc_live++;
+    return memory;
+}
+static void rx_kfree(void *memory)
+{
+    assert(memory && alloc_live);
+    alloc_live--;
+    free(memory);
+}
+#define GFP_KERNEL 0U
+#define kzalloc rx_kzalloc
+#define kfree rx_kfree
+static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
+{ assert(hw == &hardware); return pm_tx_status; }
+static BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw)
+{ assert(hw == &hardware); return pm_suspend_status; }
+static BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
+{ assert(hw == &hardware); return pm_resume_status; }
 #undef context
 #define CRYSTALHD_ENABLE_FW_RESEARCH 1
 #include "rx-post.h"
@@ -880,6 +960,7 @@ static void reset(uint32_t device)
     /* Static model instances are independent scenarios. Reset does not call
      * any release callback for ownership retained by a prior fatal case.
      */
+    assert(!alloc_live); /* New heap registries must retire before scenario reset. */
     groups++;
     reset_lifecycle_events();
     memset(&active, 0, sizeof(active));
@@ -892,9 +973,13 @@ static void reset(uint32_t device)
     memset(registered_cookies, 0, sizeof(registered_cookies));
     memset(mapped, 0, sizeof(mapped));
     memset(unmaps, 0, sizeof(unmaps));
+    memset(unmap_attempts, 0, sizeof(unmap_attempts));
+    memset(cpu_syncs, 0, sizeof(cpu_syncs));
+    memset(device_syncs, 0, sizeof(device_syncs));
     endpoint.device = device;
     adapter.pdev = &endpoint;
     adapter.present = 1;
+    adapter.dma_terminal_quiesced = false;
     hardware = (struct crystalhd_hw){ .adp = &adapter, .fetch_sem = 1,
         .dev_started = true,
         .rx_actq = &active, .rx_rdyq = &ready, .rx_freeq = &available,
@@ -909,6 +994,9 @@ static void reset(uint32_t device)
         .pfnDevDRAMWrite = record_dram_write };
     context = (struct crystalhd_cmd){ .adp = &adapter, .hw_ctx = &hardware,
         .state = BC_LINK_READY };
+    context.user[0] = (struct crystalhd_user){ .uid = 0, .in_use = 1,
+                                            .mode = DTS_PLAYBACK_MODE };
+    context.session_owner = &context.user[0];
     for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) {
         cookies[i] = 0xc00c0000U + i;
         packets[i].desc_mem.phy_addr = 0x10000 + i * 4096;
@@ -920,6 +1008,7 @@ static void reset(uint32_t device)
     pause_status = BC_STS_SUCCESS;
     last_pause_direction = false;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
+    done_y_words = 128; done_uv_words = 64;
     fetch_wait_calls = interrupt_after = 0;
     fetch_try_calls = try_mutation_at = try_sem_mutation = try_fetch_mutation = 0;
     checking_try_release = false;
@@ -940,6 +1029,8 @@ static void reset(uint32_t device)
     wait_restart_start_status = wait_restart_add_status = BC_STS_ERROR;
     wait_restart_ready_status = wait_restart_complete_status = BC_STS_ERROR;
     stop_fault = false;
+    alloc_calls = alloc_fail_at = unmap_fail_mask = 0;
+    pm_tx_status = pm_suspend_status = pm_resume_status = BC_STS_SUCCESS;
     local_pending = master_enabled = true;
     master_clears = pending_waits = 0;
     chip_masks = 0;
@@ -3981,7 +4072,8 @@ static void legacy_nowait_command_cases(uint32_t device)
     memset(&data, 0xa5, sizeof(data));
     check(bc_cproc_query_caps(&context, &data) == BC_STS_SUCCESS &&
           data.udata.u.DriverCaps.abi_version == BC_DRIVER_CAPS_ABI_VERSION &&
-          data.udata.u.DriverCaps.flags == (BC_DRIVER_CAP_RX_POLL | BC_DRIVER_CAP_RX_NOWAIT) &&
+          data.udata.u.DriverCaps.flags == (BC_DRIVER_CAP_RX_POLL | BC_DRIVER_CAP_RX_NOWAIT |
+              (device == BC_PCI_DEVID_FLEA ? BC_DRIVER_CAP_RX_RETAINED : 0)) &&
           !data.udata.u.DriverCaps.reserved[0] && !data.udata.u.DriverCaps.reserved[1],
           "actual capability handler publishes additive fixed-width NOWAIT with zero reserved fields");
     memset(&data, 0, sizeof(data));
@@ -4026,6 +4118,320 @@ static void legacy_nowait_command_cases(uint32_t device)
               "new command preserves suspend/interruption/fault ownership with no picture wait");
         inventory(0, 0, 0);
     }
+}
+
+/* These cases execute the production registry/command/queue functions above.
+ * The existing DMA leaf writes the fixture buffer; it does not decode video.
+ * Discarding a successful command response models an unknown copy-out result;
+ * ioctl copy_to_user itself belongs to ioctl-dispatch's separate controls.
+ */
+static unsigned retained_owner_token;
+
+static crystalhd_ioctl_data retained_io(unsigned operation)
+{
+    crystalhd_ioctl_data data = {0};
+    data.cmd = BCM_IOC_RETAINED_RX;
+    data.file_owner = &retained_owner_token;
+    data.file_epoch = 17;
+    data.udata.u.RetainedRx.registration.operation = operation;
+    return data;
+}
+
+static BC_STATUS retained_register_at(unsigned index, BC_RX_REGISTRATION *key)
+{
+    crystalhd_ioctl_data data = retained_io(BC_RX_REGISTER);
+    data.udata.u.RetainedRx.registration.user_address = (uintptr_t)buffers[index];
+    data.udata.u.RetainedRx.registration.capacity = sizeof(buffers[index]);
+    data.udata.u.RetainedRx.registration.output_format = MODE422_YUY2;
+    done_y_words = sizeof(buffers[index]) / 4; done_uv_words = 0;
+    const BC_STATUS status = bc_cproc_retained_rx(&context, &data);
+    *key = data.udata.u.RetainedRx.registration;
+    return status;
+}
+
+static BC_STATUS retained_return_key(const BC_RX_REGISTRATION *key, unsigned operation)
+{
+    crystalhd_ioctl_data data = retained_io(operation);
+    data.udata.u.RetainedRx.registration = *key;
+    data.udata.u.RetainedRx.registration.operation = operation;
+    return bc_cproc_retained_rx(&context, &data);
+}
+
+static BC_STATUS retained_retire_all(void)
+{
+    crystalhd_ioctl_data data = retained_io(BC_RX_RETIRE);
+    const BC_STATUS status = bc_cproc_retained_rx(&context, &data);
+    BC_RX_REGISTRATION expected = { .operation = BC_RX_RETIRE, .state = BC_RX_RETIRED };
+    if (status == BC_STS_SUCCESS)
+        check(!memcmp(&data.udata.u.RetainedRx.registration, &expected, sizeof(expected)),
+              "positive owner-wide cleanup returns an empty RETIRED receipt");
+    return status;
+}
+
+static void retained_finish(void)
+{
+    check(retained_retire_all() == BC_STS_SUCCESS,
+          "normal owner retirement positively stops and unregisters the entire set");
+    check(crystalhd_retained_cleanup(&context, true) && !context.retained_rx && !alloc_live,
+          "quiesced session cleanup destroys the registry after its last entry");
+    inventory(0, 0, 0);
+}
+
+static BC_RX_REGISTRATION retained_fetch_ready(void)
+{
+    crystalhd_ioctl_data data = retained_io(BC_RX_FETCH);
+    check(bc_cproc_retained_rx(&context, &data) == BC_STS_SUCCESS,
+          "retained FETCH consumes the actual ready completion");
+    check(data.udata.u.RetainedRx.registration.operation == BC_RX_FETCH &&
+          data.udata.u.RetainedRx.registration.state == BC_RX_BORROWED &&
+          data.udata.u.RetainedRx.registration.registration_id &&
+          data.udata.u.RetainedRx.registration.borrow_sequence &&
+          (data.udata.u.RetainedRx.frame.Flags & COMP_FLAG_DATA_VALID),
+          "successful data FETCH publishes its exact opaque borrowed receipt");
+    return data.udata.u.RetainedRx.registration;
+}
+
+static void retained_cycle_cases(void)
+{
+    BC_RX_REGISTRATION initial;
+    reset(BC_PCI_DEVID_FLEA);
+    check(retained_register_at(0, &initial) == BC_STS_SUCCESS && maps == 1 &&
+          initial.state == BC_RX_QUEUED && !initial.borrow_sequence,
+          "initial retained registration performs one real mapping/admission");
+    check(!strcmp(lifecycle_events, "P"), "initial registration posts once without a stop/restart");
+    reset_lifecycle_events();
+    const struct crystalhd_rx_buffer *buffer = registered_buffers[0];
+    uint32_t expected[ARRAY_SIZE(buffers[0])];
+    for (unsigned cycle = 0; cycle < 100; ++cycle) {
+        for (unsigned word = 0; word < ARRAY_SIZE(expected); ++word)
+            expected[word] = buffers[0][word] = 0xa5000000U ^ (cycle * 257U + word);
+        complete(0);
+        ready.packets[0]->flags |= COMP_FLAG_PIB_VALID;
+        fill_ready_pib(ready.packets[0]);
+        ready.packets[0]->pib.picture_number = cycle + 1;
+        crystalhd_ioctl_data data = retained_io(BC_RX_FETCH);
+        check(bc_cproc_retained_rx(&context, &data) == BC_STS_SUCCESS &&
+              data.udata.u.RetainedRx.frame.PibInfo.ppb.picture_number == cycle + 1 &&
+              data.udata.u.RetainedRx.frame.OutPutBuffs.YuvBuff == (uint8_t *)buffers[0] &&
+              data.udata.u.RetainedRx.frame.OutPutBuffs.YuvBuffSz == sizeof(buffers[0]),
+              "actual retained FETCH preserves normal PIB, address and validated extent");
+        BC_RX_REGISTRATION key = data.udata.u.RetainedRx.registration;
+        check(key.registration_id == initial.registration_id &&
+              key.capture_generation == initial.capture_generation &&
+              key.borrow_sequence == cycle + 1 && key.state == BC_RX_BORROWED &&
+              map_attempts == 1 && maps == 1 && !unmaps[0] &&
+              fetch_try_calls == cycle + 1 && !fetch_wait_calls &&
+              !memcmp(buffers[0], expected, sizeof(expected)),
+              "100-cycle borrow reuses one mapping, unique lease and unchanged completed bytes");
+        inventory_with_private(0, 0, 0, buffer);
+        check(retained_return_key(&key, BC_RX_REPOST) == BC_STS_SUCCESS &&
+              map_attempts == 1 && !unmaps[0] && active.count == 1 &&
+              registered_buffers[0] == buffer && !memcmp(buffers[0], expected, sizeof(expected)),
+              "exact REPOST retains the same DIO and bytes without GUP/remapping");
+        check(!strcmp(lifecycle_events, "P"),
+              "each retained cycle has exactly one repost and no stop/restart event");
+        reset_lifecycle_events(); // Preserve the bounded recorder, not fewer cycles.
+    }
+    check(cpu_syncs[0] >= 100 && device_syncs[0] == 101,
+          "retention preserves CPU and each device ownership handoff");
+    retained_finish();
+    check(unmaps[0] == 1, "one registration is finally unmapped exactly once");
+}
+
+static void retained_identity_cases(void)
+{
+    BC_RX_REGISTRATION initial;
+    reset(BC_PCI_DEVID_FLEA);
+    check(retained_register_at(0, &initial) == BC_STS_SUCCESS, "seed retained identity negatives");
+    complete(0);
+    const BC_RX_REGISTRATION borrowed = retained_fetch_ready();
+    const unsigned posts = post_calls;
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        crystalhd_ioctl_data data = retained_io(BC_RX_REPOST);
+        data.udata.u.RetainedRx.registration = borrowed;
+        BC_RX_REGISTRATION *key = &data.udata.u.RetainedRx.registration;
+        key->operation = BC_RX_REPOST;
+        switch (fault) {
+        case 0: key->registration_id++; break;
+        case 1: key->capture_generation++; break;
+        case 2: key->borrow_sequence = 0; break;
+        case 3: key->user_address += 4; break;
+        case 4: key->capacity -= 4; break;
+        case 5: key->output_format = MODE420; break;
+        case 6: key->flags = 1; break;
+        case 7: data.file_owner = &cookies[0]; break;
+        case 8: data.file_epoch++; break; /* Same pointer/uc slot, different open. */
+        case 9: data.u_id = 1; break;
+        }
+        check(bc_cproc_retained_rx(&context, &data) != BC_STS_SUCCESS &&
+              maps == 1 && !unmaps[0] && post_calls == posts && !active.count &&
+              READ_ONCE(context.retained_rx->entries[0]->state) == BC_RX_BORROWED,
+              "wrong ID/generation/lease/layout/file/open epoch cannot claim or repost a borrow");
+    }
+    check(retained_return_key(&borrowed, BC_RX_REPOST) == BC_STS_SUCCESS,
+          "valid opaque borrow remains returnable after rejected claimants");
+    check(retained_return_key(&borrowed, BC_RX_REPOST) == BC_STS_INV_ARG && post_calls == posts + 1,
+          "duplicate return cannot post a second DMA owner");
+    complete(0);
+    const BC_RX_REGISTRATION next = retained_fetch_ready();
+    check(next.borrow_sequence == borrowed.borrow_sequence + 1 &&
+          retained_return_key(&borrowed, BC_RX_REPOST) == BC_STS_INV_ARG,
+          "stale positive borrow sequence cannot return a later lease");
+    check(retained_return_key(&next, BC_RX_RETIRE) == BC_STS_SUCCESS && unmaps[0] == 1,
+          "individual borrowed retirement releases only the detached exact registration");
+    BC_RX_REGISTRATION fresh;
+    check(retained_register_at(1, &fresh) == BC_STS_SUCCESS &&
+          fresh.registration_id != initial.registration_id &&
+          retained_return_key(&next, BC_RX_REPOST) != BC_STS_SUCCESS,
+          "a new registration never reuses a retired ID in the same owner set");
+    crystalhd_ioctl_data legacy = {0};
+    legacy.cmd = BCM_IOC_FETCH_RXBUFF;
+    check(bc_cproc_fetch_frame(&context, &legacy) == BC_STS_ERR_USAGE &&
+          bc_cproc_add_cap_buff(&context, &legacy) == BC_STS_ERR_USAGE &&
+          !context.legacy_rx_active,
+          "negotiated mode rejects both legacy RX admissions without a wait");
+    retained_finish();
+}
+
+static void retained_failure_cases(void)
+{
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        BC_RX_REGISTRATION first, ignored;
+        reset(BC_PCI_DEVID_FLEA);
+        if (fault < 2) alloc_fail_at = fault + 1; /* Registry or entry. */
+        if (fault == 2) map_status = BC_STS_INSUFF_RES;
+        if (fault == 3) translate_status = BC_STS_IO_ERROR;
+        check(retained_register_at(0, &ignored) != BC_STS_SUCCESS,
+              "registry/entry/map/descriptor failure is reported without a fabricated receipt");
+        alloc_fail_at = 0; map_status = translate_status = BC_STS_SUCCESS;
+        retained_finish();
+        check(!mapped[0] && !alloc_live, "failed initial admission can positively retire even an empty set");
+        (void)first;
+    }
+    reset(BC_PCI_DEVID_FLEA);
+    BC_RX_REGISTRATION first, ignored;
+    check(retained_register_at(0, &first) == BC_STS_SUCCESS, "seed partial retained pool");
+    map_status = BC_STS_INSUFF_RES;
+    check(retained_register_at(1, &ignored) != BC_STS_SUCCESS && mapped[0] && !unmaps[0],
+          "partial registration failure preserves every previously admitted mapping");
+    map_status = BC_STS_SUCCESS;
+    retained_finish();
+
+    for (unsigned lost = 0; lost < 3; ++lost) {
+        reset(BC_PCI_DEVID_FLEA);
+        check(retained_register_at(0, &ignored) == BC_STS_SUCCESS,
+              "execute REGISTER even when its successful response will be lost");
+        if (lost >= 1) {
+            complete(0);
+            const BC_RX_REGISTRATION key = retained_fetch_ready();
+            if (lost == 2)
+                check(retained_return_key(&key, BC_RX_REPOST) == BC_STS_SUCCESS,
+                      "execute a committed REPOST before losing its acknowledgement");
+        }
+        /* Do not reconstruct an unknown ID or replay a possibly committed
+         * operation. Owner-wide retirement alone recovers the inventory. */
+        memset(&ignored, 0, sizeof(ignored));
+        retained_finish();
+        check(unmaps[0] == 1 && !alloc_live,
+              "unknown REGISTER/FETCH/REPOST copy-out outcome remains recoverable by owner retirement");
+    }
+    reset(BC_PCI_DEVID_FLEA);
+    check(retained_register_at(0, &first) == BC_STS_SUCCESS &&
+          retained_register_at(1, &ignored) == BC_STS_SUCCESS,
+          "seed queued and outside-queue borrowed owners for partial cleanup");
+    complete(0); (void)retained_fetch_ready();
+    context.state |= BC_LINK_PAUSED;
+    unmap_fail_mask = 1U << 1;
+    check(retained_retire_all() == BC_STS_IO_ERROR && !mapped[0] && mapped[1] &&
+          unmaps[0] == 1 && !unmaps[1] && context.retained_rx &&
+          context.state == (BC_LINK_INIT | BC_LINK_PAUSED),
+          "failed unmap preserves the remaining registry after a positive full stop");
+    unmap_fail_mask = 0;
+    check(retained_retire_all() == BC_STS_SUCCESS && unmaps[0] == 1 && unmaps[1] == 1,
+          "paused retirement retries detached inventory without duplicate unmap");
+    check(retained_retire_all() == BC_STS_SUCCESS && unmaps[0] == 1 && unmaps[1] == 1,
+          "a lost successful cleanup ACK is repeatable in the paused state");
+    retained_finish();
+}
+
+static void retained_pm_and_quarantine_cases(void)
+{
+    for (unsigned failure = 0; failure < 3; ++failure) {
+        BC_RX_REGISTRATION first, second;
+        reset(BC_PCI_DEVID_FLEA);
+        check(retained_register_at(0, &first) == BC_STS_SUCCESS &&
+              retained_register_at(1, &second) == BC_STS_SUCCESS,
+              "seed mapped registry with two production DMA owners");
+        complete(0);
+        const BC_RX_REGISTRATION borrowed = retained_fetch_ready();
+        if (failure == 2) stop_fault = true;
+        if (failure == 1) pm_tx_status = BC_STS_IO_ERROR;
+        crystalhd_ioctl_data data = {0};
+        const BC_STATUS status = crystalhd_suspend(&context, &data);
+        check(status == (failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              context.retained_rx->stale && mapped[0] && mapped[1] &&
+              !unmaps[0] && !unmaps[1],
+              "actual suspend revokes borrowed authority before success or later failure");
+        if (!failure) {
+            check(crystalhd_resume(&context) == BC_STS_SUCCESS &&
+                  context.state == BC_LINK_RESUME &&
+                  retained_return_key(&borrowed, BC_RX_REPOST) == BC_STS_IO_USER_ABORT &&
+                  crystalhd_capture_start(&context, 0, 0) == BC_STS_IO_USER_ABORT,
+                  "actual resume cannot reactivate a pre-suspend borrow or stale pool");
+            retained_finish();
+        } else {
+            if (failure == 1) {
+                pm_tx_status = BC_STS_SUCCESS;
+                retained_finish();
+            } else {
+                check(retained_retire_all() == BC_STS_IO_ERROR &&
+                      !unmaps[0] && !unmaps[1] && context.retained_rx,
+                      "failed DMA stop keeps borrowed and queued mappings quarantined");
+                /* Model the existing terminal bus-drain/IRQ lifetime leaf;
+                 * keep dma_fault set, and execute real quiesced detachment. */
+                adapter.dma_terminal_quiesced = true;
+                crystalhd_hw_retire_rx_quiesced(&hardware);
+                check(crystalhd_retained_cleanup(&context, true) && !alloc_live &&
+                      unmaps[0] == 1 && unmaps[1] == 1,
+                      "only terminal quiescence releases the complete quarantined registry");
+            }
+        }
+    }
+}
+
+static void retained_admission_and_controls(void)
+{
+    BC_RX_REGISTRATION key;
+    reset(BC_PCI_DEVID_LINK);
+    check(retained_register_at(0, &key) == BC_STS_ERR_USAGE && !maps && !alloc_live,
+          "LINK retains its legacy RX/EOS contract and rejects the new mode");
+    reset(BC_PCI_DEVID_FLEA);
+    context.legacy_rx_active = 1;
+    check(retained_register_at(0, &key) == BC_STS_BUSY && !context.retained_rx && !maps,
+          "a legacy RX call before admission blocks first mode publication");
+    context.legacy_rx_active = 0;
+    check(add(0) == BC_STS_SUCCESS &&
+          retained_register_at(1, &key) == BC_STS_BUSY &&
+          retained_retire_all() == BC_STS_BUSY && mapped[0] && !unmaps[0],
+          "existing legacy DMA cannot be mixed or falsely acknowledged as retired");
+    drain();
+    reset(BC_PCI_DEVID_FLEA);
+    check(retained_register_at(0, &key) == BC_STS_SUCCESS, "seed format/control retained registration");
+    complete(0);
+    ready.packets[0]->flags = COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
+    fill_ready_pib(ready.packets[0]);
+    crystalhd_ioctl_data data = retained_io(BC_RX_FETCH);
+    BC_RX_REGISTRATION empty = { .operation = BC_RX_FETCH };
+    check(bc_cproc_retained_rx(&context, &data) == BC_STS_SUCCESS &&
+          !memcmp(&data.udata.u.RetainedRx.registration, &empty, sizeof(empty)) &&
+          (data.udata.u.RetainedRx.frame.Flags & COMP_FLAG_FMT_CHANGE) &&
+          !unmaps[0] && maps == 1 && active.count == 1,
+          "format acknowledgement requeues its original mapping without a public borrow");
+    complete(0);
+    const BC_RX_REGISTRATION borrowed = retained_fetch_ready();
+    check(retained_return_key(&borrowed, BC_RX_REPOST) == BC_STS_SUCCESS && maps == 1,
+          "ordinary data borrowing continues after the format control");
+    retained_finish();
 }
 
 int main(void)
@@ -4086,6 +4492,11 @@ int main(void)
     flea_pause_result_cases(false);
     flea_pause_result_cases(true);
     flea_disabled_pwm_repost_cases();
+    retained_cycle_cases();
+    retained_identity_cases();
+    retained_failure_cases();
+    retained_pm_and_quarantine_cases();
+    retained_admission_and_controls();
     check(receipt_return_calls > 0,
           "the extracted Flea post wrapper exercised the receipt return hook");
     check(receipt_complete_calls > 0,

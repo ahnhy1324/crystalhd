@@ -241,6 +241,48 @@ typedef struct _BC_NOTIFY_MODE {
 #define BC_DRIVER_CAP_RX_POLL		(1U << 0)
 /* No wait for picture arrival; command/session/semaphore locks may sleep. */
 #define BC_DRIVER_CAP_RX_NOWAIT		(1U << 1)
+/* Explicit host RX registration lifetime; initially BCM70015 only. */
+#define BC_DRIVER_CAP_RX_RETAINED		(1U << 2)
+
+enum BC_RETAINED_RX_OPERATION {
+	BC_RX_REGISTER = 1,
+	BC_RX_FETCH = 2,
+	BC_RX_REPOST = 3,
+	BC_RX_RETIRE = 4 /* registration_id0 retires the complete owner set */
+};
+enum BC_RETAINED_RX_STATE {
+	BC_RX_QUEUED = 1,
+	BC_RX_BORROWED = 2,
+	BC_RX_RETIRED = 3
+};
+
+/* Exactly64 bytes on both ABIs. No kernel pointers. REGISTER inputs address,
+ * capacity/UV offset/format and zero IDs; FETCH inputs operation only and uses
+ * the existing envelope Timeout (0: no arrival wait, positive: legacy wait).
+ * REPOST/individual RETIRE require the exact returned ID/generation/lease.
+ * RETIRE with ID0 requires all IDs/address/layout fields0 and quiesces/retires
+ * every registration, including a borrow whose copy-out failed. Reserved and
+ * flags must be0. A failed ioctl may have committed: never legacy-fallback or
+ * blindly retry; retain pool backing until owner-wide retirement succeeds.
+ */
+typedef struct _BC_RX_REGISTRATION {
+	uint64_t registration_id;
+	uint64_t capture_generation;
+	uint64_t borrow_sequence;
+	uint64_t user_address;
+	uint32_t operation;
+	uint32_t flags;
+	uint32_t capacity;
+	uint32_t uv_offset;
+	uint32_t output_format;
+	uint32_t state;
+	uint32_t reserved[2];
+} BC_RX_REGISTRATION;
+
+typedef struct _BC_RETAINED_RX {
+	BC_RX_REGISTRATION registration;
+	BC_DEC_OUT_BUFF frame; /* Existing native/compat frame translation. */
+} BC_RETAINED_RX;
 
 typedef struct _BC_DRIVER_CAPS {
 	uint32_t		abi_version;
@@ -267,6 +309,7 @@ typedef struct _BC_IOCTL_DATA {
 		BC_DTS_STATS		drvStat;
 		BC_NOTIFY_MODE		NotifyMode;
 		BC_DRIVER_CAPS		DriverCaps;
+		BC_RETAINED_RX		RetainedRx;
 	} u;
 	struct _BC_IOCTL_DATA	*next;
 } BC_IOCTL_DATA;
@@ -295,6 +338,7 @@ typedef enum _BC_DRV_CMD{
 	DRV_CMD_RELEASE,		/* Notify the driver to release user handle and application resources */
 	DRV_CMD_QUERY_CAPS,	/* Query additive driver capabilities */
 	DRV_CMD_FETCH_RXBUFF_NOWAIT, /* Fetch ready RX only; never wait for arrival */
+	DRV_CMD_RETAINED_RX, /* Negotiated register/fetch/repost/retire lifecycle */
 
 	/* MUST be the last one.. */
 	DRV_CMD_END,			/* End of the List.. */
@@ -328,6 +372,7 @@ typedef enum _BC_DRV_CMD{
 #define BCM_IOC_RELEASE			BC_IOC_IOWR(DRV_CMD_RELEASE, BC_IOCTL_MB)
 #define BCM_IOC_QUERY_CAPS		BC_IOC_IOWR(DRV_CMD_QUERY_CAPS, BC_IOCTL_MB)
 #define BCM_IOC_FETCH_RXBUFF_NOWAIT	BC_IOC_IOWR(DRV_CMD_FETCH_RXBUFF_NOWAIT, BC_IOCTL_MB)
+#define BCM_IOC_RETAINED_RX		BC_IOC_IOWR(DRV_CMD_RETAINED_RX, BC_IOCTL_MB)
 #define	BCM_IOC_END				BC_IOC_VOID
 
 /* Wrapper for main IOCTL data */
@@ -338,6 +383,8 @@ typedef struct _crystalhd_ioctl_data {
 	void			*add_cdata;	/* Additional command specific data..*/
 	uint32_t		add_cdata_sz;	/* Additional command specific data size */
 	const uint32_t		*tx_stopping;	/* Kernel-only synchronous input lifetime */
+	const void		*file_owner; /* Kernel-only exact open-file identity. */
+	uint64_t		file_epoch; /* Never-reused open identity, not a user field. */
 	struct _crystalhd_ioctl_data *next;	/* List/Fifo management */
 } crystalhd_ioctl_data;
 

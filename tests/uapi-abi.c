@@ -99,6 +99,23 @@ _Static_assert(BC_DRIVER_CAP_RX_POLL == 1U,
 _Static_assert(BC_DRIVER_CAP_RX_NOWAIT == 2U &&
 	       DRV_CMD_FETCH_RXBUFF_NOWAIT == DRV_CMD_QUERY_CAPS + 1,
 	       "NOWAIT is additive without renumbering old commands or bits");
+_Static_assert(BC_DRIVER_CAP_RX_RETAINED == 4U &&
+	       DRV_CMD_RETAINED_RX == DRV_CMD_FETCH_RXBUFF_NOWAIT + 1,
+	       "retained RX is additive without changing earlier command IDs");
+_Static_assert(sizeof(BC_RX_REGISTRATION) == 64U,
+	       "registration keys have the same fixed width on both ABIs");
+_Static_assert(offsetof(BC_RX_REGISTRATION, registration_id) == 0U &&
+	       offsetof(BC_RX_REGISTRATION, capture_generation) == 8U &&
+	       offsetof(BC_RX_REGISTRATION, borrow_sequence) == 16U &&
+	       offsetof(BC_RX_REGISTRATION, user_address) == 24U &&
+	       offsetof(BC_RX_REGISTRATION, operation) == 32U &&
+	       offsetof(BC_RX_REGISTRATION, reserved) == 56U,
+	       "opaque registration and borrow keys must not depend on pointer size");
+_Static_assert(offsetof(BC_RETAINED_RX, frame) == 64U &&
+	       sizeof(BC_RETAINED_RX) == 64U + EXPECT_DEC_OUT_SIZE,
+	       "retained output uses the existing per-ABI frame layout");
+_Static_assert(sizeof(BC_RETAINED_RX) <= sizeof(((BC_IOCTL_DATA *)0)->u),
+	       "retained output must fit the unchanged ioctl envelope");
 _Static_assert(_IOC_TYPE(BCM_IOC_GET_VERSION) == BC_IOC_BASE,
 	       "CrystalHD ioctl magic changed");
 _Static_assert(_IOC_NR(BCM_IOC_GET_VERSION) == DRV_CMD_VERSION,
@@ -115,6 +132,8 @@ _Static_assert(BCM_IOC_QUERY_CAPS == EXPECT_IOCTL_BASE + DRV_CMD_QUERY_CAPS,
 	       "CrystalHD QUERY_CAPS ioctl number changed");
 _Static_assert(BCM_IOC_FETCH_RXBUFF_NOWAIT == EXPECT_IOCTL_BASE + DRV_CMD_FETCH_RXBUFF_NOWAIT,
 	       "CrystalHD NOWAIT uses the unchanged native/compat envelope");
+_Static_assert(BCM_IOC_RETAINED_RX == EXPECT_IOCTL_BASE + DRV_CMD_RETAINED_RX,
+	       "retained RX uses the unchanged native/compat envelope");
 
 int main(void)
 {

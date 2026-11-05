@@ -20,6 +20,9 @@ typedef struct C011_PIB C011_PIB;
 #include "ioctl-types.h"
 
 typedef uint32_t u32;
+typedef uint64_t u64;
+#define U32_MAX UINT32_MAX
+#define U64_MAX UINT64_MAX
 typedef uint32_t compat_uptr_t;
 typedef uint8_t u8;
 typedef int32_t s32;
@@ -70,7 +73,7 @@ struct crystalhd_hw {
     enum FLEA_POWER_STATES FleaPowerState;
     uint32_t FleaRawActive;
 };
-struct crystalhd_file { struct crystalhd_user *user; struct test_lock release_lock; uint32_t tx_stopping; uint64_t generation; };
+struct crystalhd_file { struct crystalhd_user *user; struct test_lock release_lock; uint32_t tx_stopping; uint64_t generation, owner_epoch; };
 struct file { void *private_data; };
 struct inode { int unused; };
 typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);
@@ -87,6 +90,8 @@ static struct crystalhd_file binding;
 static struct file file;
 static struct test_lock chd_device_lock;
 static uint64_t chd_device_generation;
+static unsigned chd_file_epoch_lock;
+static u64 chd_file_epoch;
 static crystalhd_ioctl_data pooled, release_envelope;
 static bool release_live, release_alloc_fail;
 static BC_IOCTL_DATA caller_data;
@@ -115,11 +120,11 @@ static void Check(bool okay, const char *message)
     if (!okay) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 }
 #define spin_lock_irqsave(spin, flags) do { \
-    Check((spin) == &hardware.lock && !*(spin), "raw lease lock is nonrecursive"); \
+    Check(((spin) == &hardware.lock || (spin) == &chd_file_epoch_lock) && !*(spin), "raw/owner-epoch lock is nonrecursive"); \
     *(spin) = 1; (flags) = 0; \
 } while (0)
 #define spin_unlock_irqrestore(spin, flags) do { \
-    Check((spin) == &hardware.lock && *(spin) == 1 && !(flags), "raw lease lock balances"); \
+    Check(((spin) == &hardware.lock || (spin) == &chd_file_epoch_lock) && *(spin) == 1 && !(flags), "raw/owner-epoch lock balances"); \
     *(spin) = 0; \
 } while (0)
 static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
@@ -309,6 +314,8 @@ static BC_STATUS Handle(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io, uns
     Check(ctx == &adapter.cmds && LiveEnvelope(io) && io->cmd == command &&
           command == expected_cmd, "production command table selects the correct handler");
     Check(chd_device_lock.readers == 1, "handler retains device lifetime protection");
+    Check(io->file_owner == &binding && io->file_epoch == binding.owner_epoch,
+          "handler receives exact kernel-only open-file identity and epoch");
     if (command == BCM_IOC_RELEASE || command == BCM_IOC_NOTIFY_MODE ||
         command == BCM_IOC_FW_DOWNLOAD)
         Check(adapter.user_lock.writers == 1, "session mutation has exclusive admission");
@@ -358,6 +365,7 @@ HANDLER(bc_cproc_reset_stats, BCM_IOC_RST_DRV_STAT)
 HANDLER(bc_cproc_notify_mode, BCM_IOC_NOTIFY_MODE)
 HANDLER(bc_cproc_release_user, BCM_IOC_RELEASE)
 HANDLER(bc_cproc_query_caps, BCM_IOC_QUERY_CAPS)
+HANDLER(bc_cproc_retained_rx, BCM_IOC_RETAINED_RX)
 static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io)
 {
     Check(io->udata.u.regAcc.Offset == CRYSTALHD_FLEA_COLOR_REGISTER,
@@ -390,7 +398,7 @@ static void Reset(void)
     adapter.cmds.hw_ctx = &hardware;
     current_adapter = &adapter;
     chd_device_generation = 3;
-    binding = (struct crystalhd_file){ .user = &adapter.cmds.user[1], .generation = 3 };
+    binding = (struct crystalhd_file){ .user = &adapter.cmds.user[1], .generation = 3, .owner_epoch = 17 };
     file.private_data = &binding;
     caller_data = (BC_IOCTL_DATA){0};
     handler_calls = color_calls = allocations = frees = copies = extra_frees = 0;
@@ -424,6 +432,7 @@ static bool SessionRequired(unsigned number)
         number == DRV_ISSUE_FW_CMD || number == DRV_CMD_PROC_INPUT ||
         number == DRV_CMD_ADD_RXBUFFS || number == DRV_CMD_FETCH_RXBUFF ||
         number == DRV_CMD_FETCH_RXBUFF_NOWAIT ||
+        number == DRV_CMD_RETAINED_RX ||
         number == DRV_CMD_START_RX_CAP || number == DRV_CMD_FLUSH_RX_CAP;
 }
 static void CompatFetchTranslation(void)
@@ -461,6 +470,85 @@ static void CompatFetchTranslation(void)
               "actual compat output translation retains NOWAIT buffer pointer/layout/receipt fields");
     }
 }
+static void CompatRetainedTranslation(void)
+{
+    for (unsigned operation = BC_RX_REGISTER; operation <= BC_RX_RETIRE; ++operation) {
+        BC_IOCTL_DATA native;
+        BC_RX_REGISTRATION key = {0};
+        key.operation = operation;
+        if (operation == BC_RX_REGISTER || operation == BC_RX_REPOST) {
+            key.user_address = UINT64_C(0xf1234567);
+            key.capacity = 4096;
+            key.uv_offset = 2048;
+        }
+        if (operation == BC_RX_REPOST) {
+            key.registration_id = UINT64_C(0x1234567887654321);
+            key.capture_generation = UINT64_C(0x2345678998765432);
+            key.borrow_sequence = UINT64_C(0x3456789aa9876543);
+            key.state = BC_RX_BORROWED;
+        }
+        memset(&translation_wire, 0xa5, sizeof(translation_wire));
+        translation_wire.ioctl_data_size = sizeof(translation_wire);
+        translation_wire.timeout = 37;
+        memcpy(translation_wire.u.retained_rx.registration, &key, sizeof(key));
+        memset(&native, 0x5a, sizeof(native));
+        BC_DEC_OUT_BUFF zero = {0};
+        Check(!crystalhd_compat_user_data(0x1234, &native, BCM_IOC_RETAINED_RX, false) &&
+              !memcmp(&native.u.RetainedRx.registration, &key, sizeof(key)) &&
+              !memcmp(&native.u.RetainedRx.frame, &zero, sizeof(zero)) && native.Timeout == 37,
+              "compat retained input preserves all64-bit keys and clears untrusted output");
+    }
+    BC_IOCTL_DATA native = {0};
+    BC_RX_REGISTRATION key = {0};
+    key.operation = BC_RX_FETCH;
+    key.registration_id = UINT64_C(0x1234567887654321);
+    key.capture_generation = UINT64_C(0x2345678998765432);
+    key.borrow_sequence = UINT64_C(0x3456789aa9876543);
+    key.user_address = UINT64_C(0xf1234567);
+    key.capacity = 4096;
+    key.uv_offset = 2048;
+    key.state = BC_RX_BORROWED;
+    native.IoctlDataSz = sizeof(translation_wire);
+    native.u.RetainedRx.registration = key;
+    native.u.RetainedRx.frame.OutPutBuffs.YuvBuff = (uint8_t *)(uintptr_t)key.user_address;
+    native.u.RetainedRx.frame.OutPutBuffs.YuvBuffSz = key.capacity;
+    native.u.RetainedRx.frame.OutPutBuffs.UVbuffOffset = key.uv_offset;
+    native.u.RetainedRx.frame.OutPutBuffs.YBuffDoneSz = 512;
+    native.u.RetainedRx.frame.OutPutBuffs.UVBuffDoneSz = 256;
+    native.u.RetainedRx.frame.Flags = 7;
+    Check(!crystalhd_compat_user_data(0x1234, &native, BCM_IOC_RETAINED_RX, true) &&
+          !memcmp(translation_wire.u.retained_rx.registration, &key, sizeof(key)) &&
+          translation_wire.u.retained_rx.frame.output.yuv_buf == 0xf1234567U &&
+          translation_wire.u.retained_rx.frame.output.yuv_buf_size == 4096 &&
+          translation_wire.u.retained_rx.frame.output.uv_buf_offset == 2048 &&
+          translation_wire.u.retained_rx.frame.output.y_done_size == 512 &&
+          translation_wire.u.retained_rx.frame.output.uv_done_size == 256 &&
+          translation_wire.u.retained_rx.frame.flags == 7,
+          "compat retained output preserves exact borrow keys and the existing frame receipt");
+    key.operation = BC_RX_REGISTER;
+    key.user_address = UINT64_C(1) << 32;
+    memcpy(translation_wire.u.retained_rx.registration, &key, sizeof(key));
+    Check(crystalhd_compat_user_data(0x1234, &native, BCM_IOC_RETAINED_RX, false) == -EINVAL,
+          "compat registration rejects an unrepresentable user address rather than truncating");
+}
+
+static void FileOwnerEpochs(void)
+{
+    const u64 saved_epoch = chd_file_epoch;
+    u64 first = 0, second = 0;
+    Check(crystalhd_file_reserve_epoch(&first) &&
+          crystalhd_file_reserve_epoch(&second) && first && second > first,
+          "different opens receive distinct monotonically increasing owner epochs");
+    chd_file_epoch = U64_MAX - 1;
+    Check(crystalhd_file_reserve_epoch(&first) && first == U64_MAX,
+          "last representable owner epoch is issued exactly once");
+    Check(!crystalhd_file_reserve_epoch(&first) && !first &&
+          !crystalhd_file_reserve_epoch(&second) && !second && chd_file_epoch == U64_MAX,
+          "owner-epoch exhaustion never wraps or reuses a released identity");
+    /* Reset only the synthetic module instance for the remaining scenarios. */
+    chd_file_epoch = saved_epoch;
+}
+
 static void PollReadiness(void)
 {
     poll_table table = {0};
@@ -863,6 +951,8 @@ static void NativeHeld(void)
 int main(void)
 {
     CompatFetchTranslation();
+    CompatRetainedTranslation();
+    FileOwnerEpochs();
     PollReadiness();
     Routing();
     SessionOwnership();
