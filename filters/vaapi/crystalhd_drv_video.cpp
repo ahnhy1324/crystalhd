@@ -343,6 +343,7 @@ struct ImageExportBacking {
 };
 
 struct Surface;
+static bool PreserveDeferredCenteredSmallBeforeWrite(const Surface *surface);
 struct Buffer {
   VAContextID context = VA_INVALID_ID;
   VABufferType type = VAPictureParameterBufferType;
@@ -655,6 +656,15 @@ struct CenteredMirror {
   unsigned int fields = 0;
 };
 
+// Only an exact CPU-canonical Centered field pair may defer its private copy.
+// The public allocation owns the bytes; these weak certificates own neither
+// the VA surface nor its Canvas. A real consumer/writer must materialize the
+// arrived parities before the certified source changes.
+struct CenteredDeferredSmall : CenteredMirror {
+  std::weak_ptr<Surface> picture;
+  unsigned int small_fields = 0;
+};
+
 // Published CPU-primary storage, including bytes retained by a promoted
 // Surface, has one process-wide budget. Use native 32-bit atomics on i686.
 static constexpr uint32_t kCpuPrimaryBytes = 64U * 1024U * 1024U;
@@ -762,6 +772,10 @@ struct Surface {
   mutable CenteredReadback centered_readback;
   CenteredBorder centered_border;
   CenteredMirror centered_mirror;
+  CenteredDeferredSmall centered_deferred;
+  // Unlike the reusable mirror/readback tags, an outstanding preservation
+  // obligation survives metadata-only BeginPicture invalidation.
+  std::weak_ptr<Surface> centered_deferred_small;
   mutable uint64_t centered_write_epoch = 0;
   // An exported fd may outlive every VA call, including READ_ONLY exports.
   // No subsequent Compose may recertify this allocation as private/pristine.
@@ -1160,12 +1174,14 @@ struct Surface {
     return true;
   }
 
-  bool BeginCpuAccess(uint64_t direction) const {
+  bool BeginCpuAccess(uint64_t direction, bool preserve_deferred = true) const {
     CH_COST_SCOPE_FLAGS(cost_scope, CpuAccessBegin,
         crystalhd_test_maintained_cost::SurfaceIdentity(this),
         ((direction & DMA_BUF_SYNC_READ) ? 32U : 0U) |
             ((direction & DMA_BUF_SYNC_WRITE) ? 64U : 0U), direction);
     if ((direction & DMA_BUF_SYNC_WRITE) != 0) {
+      if (preserve_deferred && !PreserveDeferredCenteredSmallBeforeWrite(this))
+        CH_COST_RETURN(cost_scope, false);
       // This includes frozen VppPixelView writers, whose retained Canvas is
       // the allocation behind their unchanged raw plane addresses. Freeze all
       // surviving mapped/unmapped private images BEFORE any source store.
@@ -1214,7 +1230,9 @@ struct Surface {
 
   bool BeginCpuRead() const { return BeginCpuAccess(DMA_BUF_SYNC_READ); }
   bool EndCpuRead() const { return EndCpuAccess(DMA_BUF_SYNC_READ); }
-  bool BeginCpuWrite() const { return BeginCpuAccess(DMA_BUF_SYNC_WRITE); }
+  bool BeginCpuWrite(bool preserve_deferred = true) const {
+    return BeginCpuAccess(DMA_BUF_SYNC_WRITE, preserve_deferred);
+  }
   bool EndCpuWrite() const { return EndCpuAccess(DMA_BUF_SYNC_WRITE); }
 
   bool SetI915Domain(uint32_t read_domains, uint32_t write_domain) const {
@@ -1242,6 +1260,8 @@ struct Surface {
     if (used_i915_wc == nullptr)
       CH_COST_RETURN(cost_scope, false);
     *used_i915_wc = false;
+    if (!PreserveDeferredCenteredSmallBeforeWrite(this))
+      CH_COST_RETURN(cost_scope, false);
     if (cpu_primary_canvas && !cpu_primary_canvas->PrepareWrite())
       CH_COST_RETURN(cost_scope, false);
     // The WC path bypasses BeginCpuAccess. Retain its successful invalidation,
@@ -1665,6 +1685,96 @@ static bool CenteredReadbackCpuPixels(const Surface &small) {
       small.planes[1] == small.planes[0] + size_t{small.pitch[0]} * small.height;
 }
 
+static bool DeferredCenteredSmallBinding(const Surface &small) {
+  const auto &d = small.centered_deferred;
+  return d.fields != 0 && d.fields <= 3U &&
+      (d.small_fields == 0 || d.small_fields == d.fields) &&
+      d.small_epoch == small.centered_write_epoch &&
+      (d.small_fields != 0 || (!small.ready && small.frame_timestamp == 0)) &&
+      CenteredReadbackCpuPixels(small) && !small.failed && !small.destroyed &&
+      d.small.lock().get() == &small &&
+      small.expected_timestamp == d.timestamp && small.decode_identity == d.identity &&
+      small.trace_decode_identity == d.identity && small.trace_context == d.context &&
+      small.trace_generation == d.generation && small.trace_submission_ordinal == d.ordinal &&
+      small.width == d.geometry.capture_width && small.height == d.geometry.capture_height;
+}
+
+static bool DeferredCenteredSmallSource(const Surface &small) {
+  if (!DeferredCenteredSmallBinding(small)) return false;
+  const auto &d = small.centered_deferred;
+  const auto source = d.target.lock();
+  const auto backing = d.backing.lock();
+  // Metadata-only BeginPicture may already have invalidated readback tags.
+  // The certified allocation/write epoch, not its current public label, owns
+  // these still-unchanged bytes until a writer preserves them below.
+  return source && backing && CpuPrimaryStorageMatches(*source) &&
+      source->centered_deferred_small.lock().get() == &small &&
+      source->cpu_primary_canvas.get() == backing.get() &&
+      !source->cpu_primary_canvas.owner_before(backing) &&
+      !backing.owner_before(source->cpu_primary_canvas) &&
+      d.epoch != 0 && d.epoch == backing->WriteEpoch() &&
+      source->width == d.geometry.canvas_width && source->height == d.geometry.canvas_height &&
+      d.geometry.enabled && (d.geometry.x & 1U) == 0 && (d.geometry.y & 3U) == 0 &&
+      d.geometry.x <= source->width && small.width <= source->width - d.geometry.x &&
+      d.geometry.y <= source->height && small.height <= source->height - d.geometry.y;
+}
+
+static bool MaterializeDeferredCenteredSmall(Surface *small) {
+  if (small == nullptr || small->centered_deferred.fields == 0) return true;
+  auto &d = small->centered_deferred;
+  if (!DeferredCenteredSmallBinding(*small)) return false;
+  if (d.small_fields == d.fields)
+    return d.small_epoch == small->centered_write_epoch &&
+        small->ready == (d.fields == 3U) &&
+        small->frame_timestamp == (d.fields == 3U ? d.timestamp : 0);
+  if (d.small_fields != 0 || !DeferredCenteredSmallSource(*small)) return false;
+  const auto source = d.target.lock();
+  if (!source->BeginCpuRead()) return false;
+  if (!small->BeginCpuWrite()) {
+    source->EndCpuRead();
+    return false;
+  }
+  for (unsigned plane = 0; plane != 2; ++plane) {
+    const unsigned rows = plane ? small->height / 2U : small->height;
+    const unsigned first = plane ? d.geometry.y / 2U : d.geometry.y;
+    for (unsigned row = 0; row != rows; ++row)
+      if ((d.fields & (1U << (row & 1U))) != 0)
+        memcpy(small->planes[plane] + size_t{row} * small->pitch[plane],
+               source->planes[plane] + size_t{first + row} * source->pitch[plane] + d.geometry.x,
+               small->width);
+  }
+  const bool written = small->EndCpuWrite();
+  const bool read = source->EndCpuRead();
+  if (!written || !read) return false;
+  d.small_fields = d.fields;
+  d.small_epoch = small->centered_write_epoch;
+  small->ready = d.fields == 3U;
+  small->frame_timestamp = small->ready ? d.timestamp : 0;
+  // An unchanged first-parity mirror can still use the ordinary complement
+  // converter after a real consumer demanded its independent bytes.
+  auto &mirror = source->centered_mirror;
+  if (mirror.small.lock().get() == small && mirror.epoch == d.epoch &&
+      mirror.timestamp == d.timestamp && mirror.identity == d.identity)
+    mirror.small_epoch = d.small_epoch;
+  return true;
+}
+
+static bool PreserveDeferredCenteredSmallBeforeWrite(const Surface *surface) {
+  if (surface == nullptr) return false;
+  const auto preserve = [](const std::shared_ptr<Surface> &small) {
+    if (!small || small->centered_deferred.fields == 0) return true;
+    const auto picture = small->centered_deferred.picture.lock();
+    if (picture && picture->failed) {
+      small->centered_deferred = {};
+      return true; // A poisoned decode has no valid private-pixel consumer.
+    }
+    return MaterializeDeferredCenteredSmall(small.get());
+  };
+  const auto obligation = surface->centered_deferred_small.lock();
+  return preserve(obligation) &&
+      (surface->centered_pixels == obligation || preserve(surface->centered_pixels));
+}
+
 static bool CenteredMirrorDestination(const Surface &canvas, const Surface &small,
     const crystalhd_centered_output::Geometry &g) {
   const auto picture = canvas.decode_picture.lock();
@@ -1705,7 +1815,8 @@ static bool CenteredMirrorMatches(const Surface &canvas, const Surface &small,
     const crystalhd_centered_output::Geometry &g, unsigned int fields) {
   const auto &m = canvas.centered_mirror;
   const auto backing = m.backing.lock();
-  return CenteredMirrorDestination(canvas, small, g) && backing &&
+  return !(small.centered_deferred.fields != small.centered_deferred.small_fields) &&
+      CenteredMirrorDestination(canvas, small, g) && backing &&
       m.target.lock().get() == &canvas && m.small.lock().get() == &small &&
       backing.get() == canvas.cpu_primary_canvas.get() &&
       !backing.owner_before(canvas.cpu_primary_canvas) &&
@@ -1716,6 +1827,36 @@ static bool CenteredMirrorMatches(const Surface &canvas, const Surface &small,
       m.identity == canvas.decode_identity && m.context == canvas.trace_context &&
       m.generation == canvas.trace_generation && m.ordinal == canvas.trace_submission_ordinal &&
       SameCenteredGeometry(m.geometry, g);
+}
+
+static bool DeferredCenteredOwnFields(const Surface &canvas, const Surface &small,
+    const crystalhd_centered_output::Geometry &geometry, unsigned int fields) {
+  const auto &d = small.centered_deferred;
+  return fields != 0 && d.fields == fields && d.small_fields == 0 &&
+      d.small_epoch == small.centered_write_epoch &&
+      DeferredCenteredSmallSource(small) &&
+      d.target.lock().get() == &canvas &&
+      SameCenteredGeometry(d.geometry, geometry) &&
+      CenteredMirrorDestination(canvas, small, geometry);
+}
+
+static bool BeginDeferredCenteredWrite(Surface *canvas, Surface *small,
+    const crystalhd_centered_output::Geometry &geometry, unsigned int prior_fields) {
+  if (!canvas || !small || !CenteredMirrorDestination(*canvas, *small, geometry)) return false;
+  if (prior_fields != 0) {
+    if (!DeferredCenteredOwnFields(*canvas, *small, geometry, prior_fields)) return false;
+  } else {
+    // A NEW original cannot opt out of an older live picture's obligation.
+    if (small->centered_deferred.fields != 0 ||
+        !PreserveDeferredCenteredSmallBeforeWrite(canvas) ||
+        !CenteredMirrorDestination(*canvas, *small, geometry)) return false;
+  }
+  const uint64_t epoch = canvas->cpu_primary_canvas->WriteEpoch();
+  if (epoch == 0 || epoch == UINT64_MAX) return false;
+  // This exact canonical allocation has no DMA-BUF/WC branch. One real COW
+  // preparation precedes every store; a failed preparation advances no epoch.
+  // Only this validated same-pair ROI/border writer bypasses materialization.
+  return canvas->BeginCpuWrite(false);
 }
 
 // Compose real interlaced NV12, not a deinterlacer or a small opaque reference.
@@ -1734,9 +1875,14 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
     CH_COST_RETURN(cost_scope, false);
   const auto &g = picture.centered_geometry;
   const auto &small = picture.centered_pixels;
-  if (!small->ready || small->failed || small->destroyed ||
+  bool deferred_roi = decoded_public && !compact &&
+      DeferredCenteredOwnFields(*canvas, *small, g, 3U) &&
+      canvas->cpu_primary_canvas->WriteEpoch() != UINT64_MAX;
+  if (!deferred_roi && !MaterializeDeferredCenteredSmall(small.get()))
+    CH_COST_RETURN(cost_scope, false);
+  if ((!deferred_roi && !small->ready) || small->failed || small->destroyed ||
       small->expected_timestamp == 0 ||
-      small->frame_timestamp != small->expected_timestamp ||
+      (!deferred_roi && small->frame_timestamp != small->expected_timestamp) ||
       small->expected_timestamp != canvas->expected_timestamp ||
       small->decode_identity != canvas->decode_identity)
     CH_COST_RETURN(cost_scope, false);
@@ -1761,21 +1907,26 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
       !border_backing.owner_before(previous_backing) &&
       canvas->centered_border.epoch == before_epoch &&
       SameCenteredGeometry(canvas->centered_border.geometry, g);
-  bool mirrored_roi = decoded_public && !compact &&
-      CenteredMirrorMatches(*canvas, *small, g, 3U);
+  bool mirrored_roi = deferred_roi || (decoded_public && !compact &&
+      CenteredMirrorMatches(*canvas, *small, g, 3U));
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   auto *centered_observer = crystalhd_test_centered_payload::active;
-  auto *centered_slot = centered_observer
+  if (centered_observer && deferred_roi &&
+      !centered_observer->RecordDeferredUnobserved(picture.trace_context,
+                                                  picture.trace_generation))
+    CH_COST_RETURN(cost_scope, false);
+  auto *centered_slot = centered_observer && !deferred_roi
       ? centered_observer->Select(picture, *canvas, *small, compact, decoded_public)
       : nullptr;
 #endif
-  if (!small->BeginCpuRead())
+  if (!deferred_roi && !small->BeginCpuRead())
     CH_COST_RETURN(cost_scope, false);
   bool used_i915_wc = false;
-  const bool acquired = decoded_public
-      ? canvas->BeginDecodedCpuWrite(&used_i915_wc) : canvas->BeginCpuWrite();
+  const bool acquired = deferred_roi
+      ? BeginDeferredCenteredWrite(canvas, small.get(), g, 3U)
+      : decoded_public ? canvas->BeginDecodedCpuWrite(&used_i915_wc) : canvas->BeginCpuWrite();
   if (!acquired) {
-    small->EndCpuRead();
+    if (!deferred_roi) small->EndCpuRead();
     CH_COST_RETURN(cost_scope, false);
   }
   // BeginDecodedCpuWrite may prepare twice; do not assume one increment per
@@ -1837,7 +1988,7 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
   CH_COST_RESULT(cost_pixels, true);
   CH_COST_FINISH(cost_pixels);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
-  if (centered_observer) {
+  if (centered_observer && !deferred_roi) {
     CH_COST_SCOPE_FLAGS(cost_capture, DiagnosticCapture,
                        crystalhd_test_maintained_cost::SurfaceIdentity(&picture), 0, 1);
     centered_slot = centered_observer->SelectComposedTarget(
@@ -1848,13 +1999,20 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
 #endif
   const bool committed = decoded_public
       ? canvas->EndDecodedCpuWrite(used_i915_wc) : canvas->EndCpuWrite();
-  const bool released = small->EndCpuRead();
+  const bool released = deferred_roi || small->EndCpuRead();
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   if (centered_observer)
     centered_observer->EndCompose(centered_slot, committed, released);
 #endif
   if (!committed || !released)
     CH_COST_RETURN(cost_scope, false);
+  if (deferred_roi) {
+    if (!border_backing || acquired_epoch == 0 ||
+        border_backing->WriteEpoch() != acquired_epoch ||
+        canvas->cpu_primary_canvas != border_backing)
+      CH_COST_RETURN(cost_scope, false);
+    small->centered_deferred.epoch = acquired_epoch;
+  }
   // END failure never certifies a new border. An intervening real write or
   // any backing/exposure change also prevents publishing this proof.
   const uint64_t completed_epoch = border_backing ? border_backing->WriteEpoch() : 0;
@@ -1873,7 +2031,7 @@ static bool ComposeCenteredCanvas(const Surface &picture, Surface *canvas,
 #endif
   canvas->ready = true;
   canvas->failed = false;
-  canvas->frame_timestamp = small->frame_timestamp;
+  canvas->frame_timestamp = deferred_roi ? picture.expected_timestamp : small->frame_timestamp;
   if (decoded_public && !compact && CenteredReadbackSourceAllocation(*canvas) &&
       CenteredReadbackCpuPixels(*small) &&
       picture.trace_decode_identity != 0 &&
@@ -1948,6 +2106,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
                             deinterlace, color_range, preserve_fields, source_is_field)) {
     const auto &g = source->centered_geometry;
     const auto &small = source->centered_pixels;
+    if (!MaterializeDeferredCenteredSmall(small.get()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
     if (source->ready && !source->failed && !source->destroyed &&
         small->ready && !small->failed && !small->destroyed &&
         source->decode_identity != 0 && small->decode_identity == source->decode_identity &&
@@ -2513,7 +2673,11 @@ struct H264FirstField {
   // Only a New BCM70015 Centered NV12 field uses the existing private small
   // allocation. Its unselected parity is not a complete/publishable picture.
   bool nv12_staged = false;
+  bool nv12_deferred = false;
   std::weak_ptr<Surface> nv12_small;
+  // The paired-field temporary drops its strong picture reference before
+  // checking stale-map ownership. Keep this binding without changing owners.
+  std::weak_ptr<Surface> nv12_picture;
   uint64_t nv12_write_epoch = 0;
   std::shared_ptr<Surface> picture;
   std::vector<uint8_t> pixels;
@@ -3114,7 +3278,11 @@ struct PendingVpp {
 struct VppPixelView : Surface {
   std::shared_ptr<Surface> allocation;
   ~VppPixelView() { object_fds.clear(); }
-  void Capture(const std::shared_ptr<Surface> &surface) {
+  bool Capture(const std::shared_ptr<Surface> &surface) {
+    // Capture runs under the driver lock before a worker may retain raw planes.
+    // Its immutable view never borrows a deferred public-ROI obligation.
+    if (!surface || !PreserveDeferredCenteredSmallBeforeWrite(surface.get()))
+      return false;
     allocation = surface;
 #if defined(CRYSTALHD_VAAPI_TEST_VPP_PAYLOAD) || defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
     // A borrowed snapshot identifies its pinned allocation, not the view.
@@ -3140,6 +3308,7 @@ struct VppPixelView : Surface {
     centered_geometry = surface->centered_geometry;
     object_fds = surface->object_fds;
     cpu_primary_canvas = surface->cpu_primary_canvas;
+    return true;
   }
 };
 
@@ -3163,6 +3332,8 @@ static bool CaptureVppPixels(const PendingVpp &operation,
       operation.target->backing_owner != VA_INVALID_SURFACE ||
       operation.target->image_write_locked ||
       operation.target->vpp_external_write_exposed)
+    return false;
+  if (!MaterializeDeferredCenteredSmall(source->centered_pixels.get()))
     return false;
   // A direct centered canvas has no private full planes. Admit it only when
   // the existing dispatcher will use its immutable small CPU sidecar.
@@ -3189,11 +3360,12 @@ static bool CaptureVppPixels(const PendingVpp &operation,
       (!source->centered_pixels || !PrivateVppPixels(*source->centered_pixels)))
     return false;
   try {
-    input->Capture(source);
-    output->Capture(operation.target);
+    if (!input->Capture(source) || !output->Capture(operation.target))
+      return false;
     if (source->centered_geometry.enabled) {
       auto small = std::make_shared<VppPixelView>();
-      small->Capture(source->centered_pixels);
+      if (!small->Capture(source->centered_pixels))
+        return false;
       input->centered_pixels = std::move(small);
     }
     return true;
@@ -4294,7 +4466,8 @@ static bool CopyH264InterlacedToSurface(
       source_width == surface->width && source_height == surface->height &&
       CenteredMirrorDestination(*mirror, *surface, *mirror_geometry) &&
       (publish_complete
-          ? CenteredMirrorMatches(*mirror, *surface, *mirror_geometry, field_mask ^ 3U)
+          ? (CenteredMirrorMatches(*mirror, *surface, *mirror_geometry, field_mask ^ 3U) ||
+             DeferredCenteredOwnFields(*mirror, *surface, *mirror_geometry, field_mask ^ 3U))
           : (!surface->ready && surface->frame_timestamp == 0));
   const auto mirror_backing = mirror_candidate ? mirror->cpu_primary_canvas : nullptr;
   const uint64_t mirror_before = mirror_backing ? mirror_backing->WriteEpoch() : 0;
@@ -4305,16 +4478,33 @@ static bool CopyH264InterlacedToSurface(
       mirror->centered_border.epoch == mirror_before &&
       SameCenteredGeometry(mirror->centered_border.geometry, *mirror_geometry);
 
+  bool require_independent_small = false;
+#if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
+  if (mirror && crystalhd_test_centered_payload::active)
+    require_independent_small = crystalhd_test_centered_payload::active->NeedsIndependentSmall(
+        mirror->trace_context, mirror->trace_generation);
+#endif
+  const bool may_defer = mirror_candidate && !compact_field && width == 1280 && height == 720 &&
+      field_pitch == size_t{source_width} * 2U &&
+      surface->width == width && surface->height == height && !require_independent_small &&
+      surface->vpp_readers == 0 && surface->vpp_writers == 0 && !surface->image_write_locked &&
+      (publish_complete
+          ? DeferredCenteredOwnFields(*mirror, *surface, *mirror_geometry, field_mask ^ 3U)
+          : surface->centered_deferred.fields == 0);
+  bool deferred_small = may_defer && BeginDeferredCenteredWrite(
+      mirror.get(), surface, *mirror_geometry, publish_complete ? field_mask ^ 3U : 0U);
   bool used_i915_wc = false;
-  if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
+  if (!deferred_small &&
+      (!MaterializeDeferredCenteredSmall(surface) ||
+       !surface->BeginDecodedCpuWrite(&used_i915_wc)))
     CH_COST_RETURN(cost_scope, false);
   bool mirror_wc = false;
-  bool mirror_active = mirror_candidate && mirror_before != 0 &&
-      mirror->BeginDecodedCpuWrite(&mirror_wc);
+  bool mirror_active = deferred_small || (mirror_candidate && mirror_before != 0 &&
+      mirror->BeginDecodedCpuWrite(&mirror_wc));
   uint64_t mirror_acquired = mirror_active ? mirror_backing->WriteEpoch() : 0;
   if (mirror_active && mirror_acquired == 0) {
     if (!mirror->EndDecodedCpuWrite(mirror_wc)) {
-      surface->EndDecodedCpuWrite(used_i915_wc);
+      if (!deferred_small) surface->EndDecodedCpuWrite(used_i915_wc);
       mirror->centered_mirror = {};
       CH_COST_RETURN(cost_scope, false);
     }
@@ -4330,6 +4520,13 @@ static bool CopyH264InterlacedToSurface(
       size_t{mirror_geometry->y} * mirror_y_pitch + mirror_geometry->x : nullptr;
   uint8_t *mirror_uv = mirror_active ? mirror->planes[1] +
       size_t{mirror_geometry->y / 2U} * mirror_uv_pitch + mirror_geometry->x : nullptr;
+  // Deferred fields still store into a real, leased public allocation. They
+  // merely omit the duplicate private stores, never expose a raw ROI view.
+  uint8_t *const primary_y = deferred_small ? mirror_y : surface->planes[0];
+  uint8_t *const primary_uv = deferred_small ? mirror_uv : surface->planes[1];
+  const size_t primary_y_pitch = deferred_small ? mirror_y_pitch : surface->pitch[0];
+  const size_t primary_uv_pitch = deferred_small ? mirror_uv_pitch : surface->pitch[1];
+  const bool mirror_stores = mirror_active && !deferred_small;
   CH_COST_SCOPE_FLAGS(cost_pixels, FieldConvertPixels, crystalhd_test_maintained_cost::SurfaceIdentity(surface),
                       (compact_field ? 1U : 0U), field_mask);
   if (IsBgraStorageFormat(surface->fourcc)) {
@@ -4420,17 +4617,14 @@ static bool CopyH264InterlacedToSurface(
       const uint8_t *first = fields[parity] +
           static_cast<size_t>(paired_rows) * field_pitch;
       const uint8_t *second = first + field_pitch;
-      uint8_t *first_luma = surface->planes[0] +
-          static_cast<size_t>(first_y) * surface->pitch[0];
-      uint8_t *second_luma = surface->planes[0] +
-          static_cast<size_t>(second_y) * surface->pitch[0];
-      uint8_t *chroma = surface->planes[1] +
-          static_cast<size_t>(uv_row) * surface->pitch[1];
-      uint8_t *const mirror_first_luma = mirror_active
+      uint8_t *first_luma = primary_y + static_cast<size_t>(first_y) * primary_y_pitch;
+      uint8_t *second_luma = primary_y + static_cast<size_t>(second_y) * primary_y_pitch;
+      uint8_t *chroma = primary_uv + static_cast<size_t>(uv_row) * primary_uv_pitch;
+      uint8_t *const mirror_first_luma = mirror_stores
           ? mirror_y + size_t{first_y} * mirror_y_pitch : nullptr;
-      uint8_t *const mirror_second_luma = mirror_active
+      uint8_t *const mirror_second_luma = mirror_stores
           ? mirror_y + size_t{second_y} * mirror_y_pitch : nullptr;
-      uint8_t *const mirror_chroma = mirror_active
+      uint8_t *const mirror_chroma = mirror_stores
           ? mirror_uv + size_t{uv_row} * mirror_uv_pitch : nullptr;
       unsigned int column = 0;
       for (; width - column >= 16; column += 16) {
@@ -4452,7 +4646,7 @@ static bool CopyH264InterlacedToSurface(
         _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column), y0);
         _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
         _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
-        if (mirror_active) {
+        if (mirror_stores) {
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_first_luma + column), y0);
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_second_luma + column), y1);
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_chroma + column), uv);
@@ -4470,7 +4664,7 @@ static bool CopyH264InterlacedToSurface(
         first_luma[column] = y00; first_luma[column + 1U] = y01;
         second_luma[column] = y10; second_luma[column + 1U] = y11;
         chroma[column] = c0; chroma[column + 1U] = c1;
-        if (mirror_active) {
+        if (mirror_stores) {
           mirror_first_luma[column] = y00; mirror_first_luma[column + 1U] = y01;
           mirror_second_luma[column] = y10; mirror_second_luma[column + 1U] = y11;
           mirror_chroma[column] = c0; mirror_chroma[column + 1U] = c1;
@@ -4497,9 +4691,8 @@ static bool CopyH264InterlacedToSurface(
         break;
       const uint8_t *source = fields[parity] +
           static_cast<size_t>(source_row) * field_pitch;
-      uint8_t *destination = surface->planes[0] +
-          static_cast<size_t>(destination_row) * surface->pitch[0];
-      uint8_t *const mirror_destination = mirror_active
+      uint8_t *destination = primary_y + static_cast<size_t>(destination_row) * primary_y_pitch;
+      uint8_t *const mirror_destination = mirror_stores
           ? mirror_y + size_t{destination_row} * mirror_y_pitch : nullptr;
       unsigned int column = 0;
 #if defined(__SSE2__)
@@ -4511,14 +4704,14 @@ static bool CopyH264InterlacedToSurface(
         const __m128i y = _mm_packus_epi16(_mm_and_si128(packed0, luma_mask),
                                           _mm_and_si128(packed1, luma_mask));
         _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), y);
-        if (mirror_active)
+        if (mirror_stores)
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_destination + column), y);
       }
 #endif
       for (; column + 1 < width; column += 2) {
         const uint8_t y0 = source[column * 2], y1 = source[column * 2 + 2];
         destination[column] = y0; destination[column + 1] = y1;
-        if (mirror_active) {
+        if (mirror_stores) {
           mirror_destination[column] = y0; mirror_destination[column + 1U] = y1;
         }
       }
@@ -4538,9 +4731,8 @@ static bool CopyH264InterlacedToSurface(
       const uint8_t *first_row = fields[parity] +
           static_cast<size_t>(source_row) * field_pitch;
       const uint8_t *second_row = first_row + field_pitch;
-      uint8_t *destination = surface->planes[1] +
-          static_cast<size_t>(destination_row) * surface->pitch[1];
-      uint8_t *const mirror_destination = mirror_active
+      uint8_t *destination = primary_uv + static_cast<size_t>(destination_row) * primary_uv_pitch;
+      uint8_t *const mirror_destination = mirror_stores
           ? mirror_uv + size_t{destination_row} * mirror_uv_pitch : nullptr;
       unsigned int column = 0;
 #if defined(__SSE2__)
@@ -4557,7 +4749,7 @@ static bool CopyH264InterlacedToSurface(
             _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
             _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8));
         _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + column), uv);
-        if (mirror_active)
+        if (mirror_stores)
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_destination + column), uv);
       }
 #endif
@@ -4571,7 +4763,7 @@ static bool CopyH264InterlacedToSurface(
              second_row[column * 2 + 3] + 1U) /
             2U);
         destination[column] = c0; destination[column + 1] = c1;
-        if (mirror_active) {
+        if (mirror_stores) {
           mirror_destination[column] = c0; mirror_destination[column + 1U] = c1;
         }
       }
@@ -4586,7 +4778,7 @@ static bool CopyH264InterlacedToSurface(
   }
   CH_COST_RESULT(cost_pixels, true);
   CH_COST_FINISH(cost_pixels);
-  const bool small_released = surface->EndDecodedCpuWrite(used_i915_wc);
+  const bool small_released = deferred_small || surface->EndDecodedCpuWrite(used_i915_wc);
   const bool mirror_released = !mirror_active || mirror->EndDecodedCpuWrite(mirror_wc);
   if (!small_released || !mirror_released) {
     if (mirror) mirror->centered_mirror = {};
@@ -4604,28 +4796,50 @@ static bool CopyH264InterlacedToSurface(
     m.context = mirror->trace_context; m.generation = mirror->trace_generation;
     m.ordinal = mirror->trace_submission_ordinal; m.surface = mirror->id;
     m.fields = publish_complete ? 3U : field_mask;
+    if (deferred_small) {
+      auto &deferred = surface->centered_deferred;
+      static_cast<CenteredMirror &>(deferred) = m;
+      deferred.picture = picture;
+      deferred.small_fields = 0;
+      mirror->centered_deferred_small = picture->centered_pixels;
+    }
     // These bounded own writes touched ONLY the ROI. Carry a previously
     // verified black border, never invent one for an uninitialized canvas.
     if (mirrored_border_known)
       mirror->centered_border.epoch = mirror_acquired;
   } else if (mirror) {
     mirror->centered_mirror = {};
+    if (deferred_small) CH_COST_RETURN(cost_scope, false);
   }
-  surface->ready = publish_complete;
-  surface->frame_timestamp = publish_complete ? timestamp : 0;
+  if (!deferred_small) surface->centered_deferred = {};
+  surface->ready = publish_complete && !deferred_small;
+  surface->frame_timestamp = surface->ready ? timestamp : 0;
   CH_COST_RETURN(cost_scope, true);
 }
 
 static std::shared_ptr<Surface> StagedFirstFieldNv12(const H264FirstField &first) {
   const auto small = first.nv12_small.lock();
-  if (!first.nv12_staged || !small || !CenteredReadbackCpuPixels(*small) ||
+  if ((!first.nv12_staged && !first.nv12_deferred) || !small ||
+      (first.nv12_deferred && !MaterializeDeferredCenteredSmall(small.get())) ||
+      !CenteredReadbackCpuPixels(*small) ||
       small->width != first.width || small->height != first.height ||
       small->ready || small->failed || small->destroyed || small->image_write_locked ||
-      small->vpp_writers != 0 || small->centered_write_epoch != first.nv12_write_epoch ||
+      small->vpp_writers != 0 ||
       small->expected_timestamp != first.timestamp || small->frame_timestamp != 0 ||
       small->decode_identity != first.decode_identity ||
       small->trace_generation != first.generation)
     return nullptr;
+  if (first.nv12_deferred) {
+    const auto &d = small->centered_deferred;
+    const auto picture = first.nv12_picture.lock();
+    const unsigned fields = first.bottom ? 2U : 1U;
+    if (first.nv12_staged || d.fields != fields || d.small_fields != fields ||
+        d.small_epoch != small->centered_write_epoch || d.picture.lock() != picture ||
+        !picture || picture->centered_pixels != small)
+      return nullptr;
+  } else if (small->centered_write_epoch != first.nv12_write_epoch) {
+    return nullptr;
+  }
   return small;
 }
 
@@ -4639,8 +4853,17 @@ static bool CopyH264FieldPairToSurface(
       first.height != second.PicInfo.height)
     return false;
   const uint8_t *fields[2] = {};
-  if (first.nv12_staged) {
-    const auto small = StagedFirstFieldNv12(first);
+  if (first.nv12_staged || first.nv12_deferred) {
+    auto small = first.nv12_small.lock();
+    const auto picture = first.nv12_picture.lock();
+    const bool direct_deferred = first.nv12_deferred && !first.nv12_staged &&
+        small && small.get() == surface && mirror && geometry && picture &&
+        small->centered_deferred.picture.lock() == picture &&
+        picture->centered_pixels == small &&
+        first.timestamp == small->expected_timestamp && first.decode_identity == small->decode_identity &&
+        first.generation == small->trace_generation &&
+        DeferredCenteredOwnFields(*mirror, *small, *geometry, first.bottom ? 2U : 1U);
+    if (!direct_deferred) small = StagedFirstFieldNv12(first);
     if (!small || small.get() != surface)
       return false;
     // The first parity already has exactly the same within-field chroma
@@ -4900,6 +5123,8 @@ static bool PromoteDecodedPicture(Surface *picture) {
   if (!picture || !picture->direct_backing)
     return true;
   CH_COST_SCOPE(cost_promote, PublicPromote, crystalhd_test_maintained_cost::SurfaceIdentity(picture));
+  if (!PreserveDeferredCenteredSmallBeforeWrite(picture))
+    return false;
   const auto backing = picture->direct_backing;
   if (!picture->AllocateInternal(nullptr, -1, picture->width, picture->height,
                                   VA_FOURCC_NV12))
@@ -5569,8 +5794,11 @@ static VAStatus ProcessDecodedOutputImpl(
       first.width = width;
       first.height = height;
       first.source_pitch = padded_width * 2U;
-      first.nv12_staged = bool(staged_small);
+      first.nv12_deferred = staged_small && staged_small->centered_deferred.fields != 0 &&
+          staged_small->centered_deferred.small_fields == 0;
+      first.nv12_staged = staged_small && !first.nv12_deferred;
       first.nv12_small = staged_small;
+      first.nv12_picture = staged_small ? decoded->second : std::shared_ptr<Surface>{};
       first.nv12_write_epoch = staged_small ? staged_small->centered_write_epoch : 0;
       first.picture = replay_duplicate ? nullptr : decoded->second;
       first.pixels = std::move(pixels);
@@ -6869,6 +7097,8 @@ static VAStatus RejectH264Target(Driver *driver, DecodeContext *decode,
       // promotion before changing that picture's planes or ownership.
       if (picture->direct_backing != target)
         return VA_STATUS_ERROR_OPERATION_FAILED;
+      if (!PreserveDeferredCenteredSmallBeforeWrite(picture.get()))
+        return VA_STATUS_ERROR_OPERATION_FAILED;
       Surface preserved;
       if (!preserved.AllocateInternal(nullptr, -1, picture->width,
                                        picture->height, VA_FOURCC_NV12) ||
@@ -7937,7 +8167,7 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       !decoder->replay.IsOutstanding(operation.source_timestamp))
     return VA_STATUS_SUCCESS;
   if (first.source_pitch == 0 || first.height == 0 ||
-      (first.nv12_staged ? !StagedFirstFieldNv12(first) :
+      ((first.nv12_staged || first.nv12_deferred) ? !StagedFirstFieldNv12(first) :
        first.height / 2U > first.pixels.size() / first.source_pitch))
     return VA_STATUS_ERROR_DECODING_ERROR;
   try {
@@ -7963,7 +8193,7 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
       field_target->decode_identity = source->decode_identity;
       InheritTraceIdentity(field_target, *source);
     }
-    if (first.nv12_staged ? !CopyStagedFirstFieldBob(first, field_target) :
+    if ((first.nv12_staged || first.nv12_deferred) ? !CopyStagedFirstFieldBob(first, field_target) :
         !CopyH264InterlacedToSurface(field_target, fields, first.width,
                                     first.height, first.source_pitch,
                                     operation.source_timestamp,
@@ -9627,6 +9857,8 @@ static VAStatus DestroySurfacesWithTimeout(VADriverContextP context,
                         }))
           continue;
         auto pixels = std::make_shared<Surface>();
+        if (!MaterializeDeferredCenteredSmall(picture->centered_pixels.get()))
+          return VA_STATUS_ERROR_OPERATION_FAILED;
         if (!pixels->AllocateInternal(nullptr, -1, picture->width, picture->height,
                                       VA_FOURCC_NV12))
           return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -11183,6 +11415,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         return VA_STATUS_ERROR_INVALID_SURFACE;
       frame = source_owner;
     }
+    if (!MaterializeDeferredCenteredSmall(frame->centered_pixels.get()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
     if (!CenteredBobUsesSidecar(*frame, *target->second, source_region, output_region,
                                deinterlace, color_range, preserve_fields) &&
         !PromoteDecodedPicture(frame))
@@ -12924,6 +13158,8 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
 
   std::unique_ptr<Surface> cpu_promotion;
   if (surface->second->cpu_primary) {
+    if (!PreserveDeferredCenteredSmallBeforeWrite(surface->second.get()))
+      return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     const VAStatus prepared = PrepareCpuPrimaryExport(
         driver, surface->second.get(), access == VA_EXPORT_SURFACE_WRITE_ONLY, &cpu_promotion);
     if (prepared != VA_STATUS_SUCCESS)

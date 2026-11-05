@@ -70,6 +70,15 @@ not every decode/access attempt. It does not expand normal-backend or release
 qualification. Default pre-BEGIN selection retains its original failed-slot
 semantics.
 
+After both default FirstTwo slots have genuinely completed, later canonical
+Centered fields may defer their independent Small copy. The additive status
+counter `deferred_unobserved` records those original consideration points;
+`candidates` still includes each default consideration. They add no selected
+slot, eligible Small observation, rejection or pixel evidence. Selected payloads
+and qualification gates retain their independent Small oracle. Special selectors,
+including `case2-90-91`, always keep eager Small pixels and their original
+content-based candidate accounting.
+
 The independent content reader must decode exactly90/91 from each actual
 small/composed/public payload and retain all existing full-NV12 gates. For the
 interrupted play, each target's matching submission, materialization and

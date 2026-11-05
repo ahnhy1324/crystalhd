@@ -2434,43 +2434,68 @@ static void CenteredMirroredFieldsReceiveAndRelease() {
   }
   probe.reset();
   TraceEnvironment trace_environment;
-  for (bool bottom_first : {false, true})
-    for (unsigned fault = 0; fault != 3; ++fault) {
+  for (bool large : {false, true})
+   for (bool bottom_first : {false, true})
+    for (unsigned fault = 0; fault != (large ? 4U : 3U); ++fault) {
+      const unsigned width = large ? 1920U : 256U, height = large ? 1088U : 64U;
+      const unsigned capture_width = large ? 1280U : 128U, capture_height = large ? 720U : 32U;
       struct TraceSink {
         int fd = memfd_create("centered-mirror-fields-trace", MFD_CLOEXEC);
         TraceSink() { Require(fd >= 0, "allocate native mirrored-field trace sink"); }
         ~TraceSink() { close(fd); }
       } trace;
       DecodeIoMock io;
-      H264FieldFixture fixture(true, false, VA_FOURCC_NV12, 128, 1, trace.fd);
+      H264FieldFixture fixture(true, false, VA_FOURCC_NV12, capture_width, 1, trace.fd);
       auto &d = fixture.decoder;
-      d.width = 256; d.height = 64;
+      d.width = width; d.height = height;
       crystalhd_centered_output::Config config;
-      config.enabled = true; config.capture_width = 128; config.capture_height = 32;
-      config.visible_width = 256; config.visible_height = 64;
-      Require(crystalhd_centered_output::BuildGeometry(config, 256, 64, 4,
+      config.enabled = true; config.capture_width = capture_width; config.capture_height = capture_height;
+      config.visible_width = width; config.visible_height = large ? 1080U : height;
+      Require(crystalhd_centered_output::BuildGeometry(config, width, height, 4,
                                                       &d.centered_geometry),
               "select real Centered separate-field geometry");
       auto &target = *fixture.public_frame;
-      Require(target.AllocateCpuNv12(256, 64), "size the full public canonical image");
-      target.cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(256 * 64 * 3 / 2);
+      Require(target.AllocateCpuNv12(width, height), "size the full public canonical image");
+      target.cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(size_t{width} * height * 3 / 2);
       Require(bool(target.cpu_primary_canvas), "allocate actual memfd full public storage");
       target.cpu_primary = true;
       std::vector<uint8_t>().swap(target.storage);
       target.planes[0] = target.cpu_primary_canvas->Data();
-      target.planes[1] = target.planes[0] + 256 * 64;
+      target.planes[1] = target.planes[0] + size_t{target.pitch[0]} * height;
       memset(target.planes[0], 0xa5, target.cpu_primary_canvas->Size());
       Require(CpuPrimaryStorageMatches(target), "real CPU canvas satisfies production eligibility");
-      fixture.private_frame->width = 256; fixture.private_frame->height = 64;
+      fixture.private_frame->width = width; fixture.private_frame->height = height;
       fixture.private_frame->centered_geometry = d.centered_geometry;
       fixture.private_frame->centered_pixels = std::make_shared<Surface>();
       const auto small = fixture.private_frame->centered_pixels;
-      Require(small->AllocateCpuNv12(128, 32), "allocate independent small field storage");
+      Require(small->AllocateCpuNv12(capture_width, capture_height), "allocate independent small field storage");
+      const auto untouched_small = small->storage;
+      if (large)
+        for (unsigned parity = 0; parity != 2; ++parity) {
+          auto &field = parity ? fixture.bottom : fixture.top;
+          field.resize(size_t{capture_width} * capture_height);
+          for (unsigned row = 0; row != capture_height / 2U; ++row)
+            for (unsigned x = 0; x != capture_width; x += 2) {
+              auto *pixel = field.data() + (size_t{row} * capture_width + x) * 2U;
+              pixel[0] = uint8_t(24U + (row * 7U + x * 3U + parity * 59U) % 208U);
+              pixel[2] = uint8_t(24U + (row * 7U + (x + 1U) * 3U + parity * 59U) % 208U);
+              pixel[1] = uint8_t(48U + (row * 5U + x / 2U + parity * 31U) % 160U);
+              pixel[3] = uint8_t(64U + (row * 3U + x / 2U + parity * 47U) % 160U);
+            }
+        }
+      const auto pixel_oracle = [&](unsigned plane, unsigned row, unsigned x) {
+        const auto &field = (row & 1U) ? fixture.bottom : fixture.top;
+        if (!plane) return field[(size_t{row / 2U} * capture_width + x) * 2U];
+        const size_t at = (size_t{(row / 2U) * 2U} * capture_width + (x & ~1U)) * 2U +
+            1U + (x & 1U) * 2U;
+        return uint8_t((unsigned(field[at]) + field[at + capture_width * 2U] + 1U) / 2U);
+      };
       auto first = fixture.Output(bottom_first, bottom_first,
                                    bottom_first ? &fixture.bottom : &fixture.top);
       auto second = fixture.Output(!bottom_first, bottom_first,
                                     bottom_first ? &fixture.top : &fixture.bottom);
-      first.PicInfo.width = second.PicInfo.width = 128;
+      first.PicInfo.width = second.PicInfo.width = capture_width;
+      first.PicInfo.height = second.PicInfo.height = capture_height;
       io.override_output = true; io.overridden_output = first;
       io.events.reserve(8);
       MockDecodeScope scope(io); d.device = io.handle();
@@ -2486,9 +2511,15 @@ static void CenteredMirroredFieldsReceiveAndRelease() {
                 "failed first release cannot turn partial mirrored bytes into a completed original");
         continue;
       }
-      Require(first_status == VA_STATUS_SUCCESS && d.h264_first_field.nv12_staged &&
+      Require(first_status == VA_STATUS_SUCCESS &&
+                  (large ? d.h264_first_field.nv12_deferred && !d.h264_first_field.nv12_staged
+                         : d.h264_first_field.nv12_staged) &&
                   !small->ready && small->frame_timestamp == 0,
               "actual ReceiveOne keeps the independent small first parity unpublished");
+      if (large)
+        Require(small->storage == untouched_small && small->centered_deferred.fields ==
+                    (1U << unsigned(bottom_first)) && small->centered_deferred.small_fields == 0,
+                "first released large parity has real public bytes and no fabricated private Small materialization");
       PendingVpp bob;
       bob.source = fixture.private_frame;
       bob.decoder = std::shared_ptr<DecodeContext>(&d, [](DecodeContext *) {});
@@ -2497,32 +2528,37 @@ static void CenteredMirroredFieldsReceiveAndRelease() {
       bob.deinterlace.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
                                           : crystalhd_vpp_bob::FieldParity::kTop;
       std::shared_ptr<Surface> compact;
-      Require(PrepareFirstFieldBob(bob, &compact) == VA_STATUS_SUCCESS && compact &&
-                  compact->centered_pixels && compact->centered_pixels != small,
-              "early Bob retains independent compact small pixels even while public ROI is mirrored");
-      const auto bob_pixels = compact->centered_pixels->storage;
+      if (!large)
+        Require(PrepareFirstFieldBob(bob, &compact) == VA_STATUS_SUCCESS && compact &&
+                    compact->centered_pixels && compact->centered_pixels != small,
+                "early Bob retains independent compact small pixels even while public ROI is mirrored");
+      const auto bob_pixels = compact ? compact->centered_pixels->storage : std::vector<uint8_t>{};
       for (unsigned plane = 0; plane != 2; ++plane) {
-        const unsigned rows = plane ? 16 : 32;
-        const unsigned top = plane ? 8 : 16;
+        const unsigned rows = plane ? capture_height / 2U : capture_height;
+        const unsigned top = plane ? d.centered_geometry.y / 2U : d.centered_geometry.y;
         for (unsigned row = 0; row < rows; ++row) {
           if ((row & 1U) != unsigned(bottom_first)) continue;
-          for (unsigned x = 0; x != 128; ++x) {
-            const uint8_t expected = plane
-                ? uint8_t((bottom_first ? ((x & 1U) ? 160 : 140)
-                                       : ((x & 1U) ? 60 : 40)) + (row & ~1U) + 1U)
-                : uint8_t((bottom_first ? 100 : 20) + row / 2U);
-            Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] == expected &&
-                        target.planes[plane][size_t{row + top} * target.pitch[plane] + 64 + x] == expected,
-                    "actual first conversion writes exact Y/UV to two independent destinations");
+          for (unsigned x = 0; x != capture_width; ++x) {
+            const uint8_t expected = pixel_oracle(plane, row, x);
+            Require((large || small->planes[plane][size_t{row} * small->pitch[plane] + x] == expected) &&
+                        target.planes[plane][size_t{row + top} * target.pitch[plane] +
+                                             d.centered_geometry.x + x] == expected,
+                    "first released field has exact independent packed-oracle Y/UV at each genuine destination");
           }
         }
       }
       if (fault == 2) small->InvalidateCenteredReadback();
+      if (fault == 3) io.output_release_status = BC_STS_ERROR;
+      bool release_saw_completion = false;
+      io.on_output_release = [&] {
+        release_saw_completion = target.ready && target.frame_timestamp == 1 &&
+            CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1;
+      };
       io.overridden_output = second; activity = false;
       const VAStatus second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
       Require(activity && io.released_outputs == 2 && !d.h264_first_field.valid && !io.invalid,
               "second mirrored output preserves exactly-once hardware release and latch clearing");
-      Require(compact->centered_pixels->storage == bob_pixels,
+      Require(!compact || compact->centered_pixels->storage == bob_pixels,
               "complement/failure never aliases or rewrites an already owned first-field Bob");
       if (fault == 2) {
         Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
@@ -2530,22 +2566,41 @@ static void CenteredMirroredFieldsReceiveAndRelease() {
                 "stale private-small pair cannot publish partial public mirrors or native M");
         continue;
       }
+      if (fault == 3) {
+        Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    release_saw_completion && target.ready && target.frame_timestamp == 1 &&
+                    CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+                "failed real second release fails the decoder while preserving its already completed public picture");
+        continue;
+      }
       Require(second_status == VA_STATUS_SUCCESS && target.ready &&
-                  target.frame_timestamp == 1 && d.replay.outstanding() == 0 &&
+                  release_saw_completion && target.frame_timestamp == 1 && d.replay.outstanding() == 0 &&
                   CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
               "only the validated pair produces one M before its original successful release");
+      if (large) {
+        Require(!small->ready && small->frame_timestamp == 0 && small->storage == untouched_small &&
+                    small->centered_deferred.fields == 3 && small->centered_deferred.small_fields == 0,
+                "real pair release publishes full public pixels without falsely declaring deferred Small READY");
+        Require(MaterializeDeferredCenteredSmall(small.get()) && small->ready && small->frame_timestamp == 1 &&
+                    CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+                "later private demand preserves released source identity and emits no second materialization event");
+        for (unsigned plane = 0; plane != 2; ++plane)
+          for (unsigned row = 0; row != (plane ? capture_height / 2U : capture_height); ++row)
+            for (unsigned x = 0; x != capture_width; ++x)
+              Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] == pixel_oracle(plane, row, x),
+                      "later-demanded genuine Small matches every independent nonuniform packed Y/UV byte");
+      }
       for (unsigned plane = 0; plane != 2; ++plane) {
-        const unsigned rows = plane ? 32 : 64, top = plane ? 8 : 16;
-        const unsigned active_rows = plane ? 16 : 32;
+        const unsigned rows = plane ? height / 2U : height;
+        const unsigned top = plane ? d.centered_geometry.y / 2U : d.centered_geometry.y;
+        const unsigned active_rows = plane ? capture_height / 2U : capture_height;
         for (unsigned row = 0; row != rows; ++row)
-          for (unsigned x = 0; x != 256; ++x) {
+          for (unsigned x = 0; x != width; ++x) {
             uint8_t expected = plane ? 128 : 16;
-            if (row >= top && row < top + active_rows && x >= 64 && x < 192) {
+            if (row >= top && row < top + active_rows && x >= d.centered_geometry.x &&
+                x < d.centered_geometry.x + capture_width) {
               const unsigned y = row - top;
-              expected = plane
-                  ? uint8_t(((y & 1U) ? ((x & 1U) ? 160 : 140)
-                                      : ((x & 1U) ? 60 : 40)) + (y & ~1U) + 1U)
-                  : uint8_t(((y & 1U) ? 100 : 20) + y / 2U);
+              expected = pixel_oracle(plane, y, x - d.centered_geometry.x);
             }
             Require(target.planes[plane][size_t{row} * target.pitch[plane] + x] == expected,
                     "actual release path retains every packed-oracle ROI and black-border byte");

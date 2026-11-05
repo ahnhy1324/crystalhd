@@ -52,6 +52,7 @@ struct Stream {
   int close_status = -1;
   uint64_t next_generation = 0;
   uint64_t context = 0, generation = 0, candidates = 0, rejected = 0, reject_mask = 0;
+  uint64_t deferred_unobserved = 0;
   std::array<Slot, kSlots> slots{};
 };
 inline bool SameGeometry(const Geometry &a, const Geometry &b) {
@@ -153,6 +154,34 @@ struct State {
       return &s;
     }
     return nullptr;
+  }
+  // A prospective field cannot reserve a stream or select a slot. Keep the
+  // old independent Small oracle eager until the existing selection has
+  // actually completed both slots. Content-based/special selectors always
+  // retain their original independent Small bytes and selection semantics.
+  bool NeedsIndependentSmall(uint64_t context, uint64_t generation) const {
+    if (selection != Selection::FirstTwo) return true;
+    for (const auto &stream : streams)
+      if (stream.used && stream.context == context && stream.generation == generation) {
+        if (stream.sealed) return true;
+        for (const auto &slot : stream.slots)
+          if (!Complete(slot)) return true;
+        return false;
+      }
+    return true;
+  }
+  bool RecordDeferredUnobserved(uint64_t context, uint64_t generation) {
+    if (NeedsIndependentSmall(context, generation)) return false;
+    // The pure query above proved an existing, unsealed FirstTwo stream with
+    // two genuinely complete slots. Preserve its consideration count without
+    // treating deferred bytes as an eligible or rejected Small observation.
+    for (auto &stream : streams)
+      if (stream.used && stream.context == context && stream.generation == generation) {
+        ++stream.candidates;
+        ++stream.deferred_unobserved;
+        return true;
+      }
+    return false;
   }
   bool Writable(const Slot *s) const {
     return s && s->selected && s->stream_index < streams.size() &&
@@ -407,13 +436,16 @@ inline void State::PrintStatus(int index) {
       "\"driver_instance\":%llu,\"context\":%llu,\"generation\":%llu,"
       "\"retirement_status\":%d,\"sealed\":true,\"after_driver_unlock\":true,"
       "\"directory_open\":%s,\"directory_errno\":%d,\"candidates\":%llu,"
+      "\"deferred_unobserved\":%llu,"
       "\"rejected\":%llu,\"reject_mask\":%llu,\"selected_slots\":%u,"
       "\"compose_committed_slots\":%u,\"public_committed_slots\":%u,"
       "\"materialized_slots\":%u,\"eligible\":%s%s%s}\n",
       static_cast<long long>(getpid()), static_cast<unsigned long long>(session),
       static_cast<unsigned long long>(s.context), static_cast<unsigned long long>(s.generation),
       s.retirement_status, directory >= 0 ? "true" : "false", directory_errno,
-      static_cast<unsigned long long>(s.candidates), static_cast<unsigned long long>(s.rejected),
+      static_cast<unsigned long long>(s.candidates),
+      static_cast<unsigned long long>(s.deferred_unobserved),
+      static_cast<unsigned long long>(s.rejected),
       static_cast<unsigned long long>(s.reject_mask), selected, composed, published, materialized,
       Complete(s) ? "true" : "false", reset_metadata,
       selection == Selection::Case2_90_91 ? ",\"selection\":\"case2-90-91\"" : "");

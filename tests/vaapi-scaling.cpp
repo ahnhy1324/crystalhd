@@ -4074,10 +4074,12 @@ void CenteredCowBorderEndFailureAndEpochWrap() {
 
 void CenteredMirroredFieldsPreservePartialAndRetainedPixels() {
   RequireCowAvailable();
-  for (bool full : {false, true})
+  for (bool large : {false, true})
+   for (bool full : {false, true})
     for (bool bottom_first : {false, true}) {
       CenteredDumbScope io;
-      CenteredFixture f(256, 32, 32, 128, 16, 32, full, true);
+      CenteredFixture f(large ? 1920 : 256, large ? 1088 : 32, large ? 1080 : 32,
+                        large ? 1280 : 128, large ? 720 : 16, large ? 1088 : 32, full, true);
       const auto surface = InstallCenteredDumb(&f, &io.state);
       RecreateCenteredContext(&f);
       const auto old_packed = f.Packed(17), next_packed = f.Packed(91);
@@ -4090,31 +4092,42 @@ void CenteredMirroredFieldsPreservePartialAndRetainedPixels() {
       auto retained = old_canvas; retained[0] ^= 0x5a;
       static_cast<uint8_t *>(mapped)[0] = retained[0];
       f.Submit(1, false);
+      const auto picture = f.decode->decoded_frames.at(2 * kTimestampStep);
+      const auto allocated = picture->centered_pixels;
+      const auto untouched_small = allocated->storage;
       f.Field(next_packed, bottom_first, bottom_first, 2 * kTimestampStep);
       const auto &first = f.decode->h264_first_field;
       const auto small = first.nv12_small.lock();
-      Require(first.valid && first.nv12_staged && small && !small->ready &&
+      Require(first.valid && (large ? first.nv12_deferred && !first.nv12_staged : first.nv12_staged) &&
+                  first.pixels.empty() && small == allocated && small && !small->ready &&
                   !surface->ready && surface->frame_timestamp == 0 &&
                   !memcmp(mapped, retained.data(), retained.size()) &&
                   SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
               "actual first mirror preserves old private edits and cannot publish a public picture");
+      if (large)
+        Require(small->storage == untouched_small && small->frame_timestamp == 0 &&
+                    small->centered_deferred.fields == (1U << unsigned(bottom_first)) &&
+                    small->centered_deferred.small_fields == 0,
+                "eligible first parity exists only in the real public ROI, never in READY or fake Small bytes");
       // The public ROI really changes BEFORE Compose, but only the arriving
       // field's Y/UV rows. Compare it to independent old/new packed oracles.
       for (unsigned plane = 0; plane != 2; ++plane) {
         const size_t base = plane ? size_t{f.coded_width} * f.canvas_height : 0;
         const unsigned rows = plane ? f.canvas_height / 2 : f.canvas_height;
-        const unsigned top = plane ? 4 : 8;
+        const auto &geometry = f.decode->centered_geometry;
+        const unsigned top = plane ? geometry.y / 2U : geometry.y;
         const unsigned active = plane ? f.capture_height / 2 : f.capture_height;
         for (unsigned row = 0; row != rows; ++row)
           for (unsigned x = 0; x != f.coded_width; ++x) {
             const size_t at = base + size_t{row} * f.coded_width + x;
             const bool arriving = row >= top && row < top + active &&
-                ((row - top) & 1U) == unsigned(bottom_first) && x >= 64 && x < 192;
+                ((row - top) & 1U) == unsigned(bottom_first) &&
+                x >= geometry.x && x < geometry.x + f.capture_width;
             Require(surface->planes[plane][size_t{row} * surface->pitch[plane] + x] ==
                         (arriving ? next_canvas[at] : old_canvas[at]),
                     "partial mirror updates only exact arriving rows and leaves opposite field/borders intact");
-            if (arriving)
-              Require(small->planes[plane][size_t{row - top} * small->pitch[plane] + x - 64] == next_canvas[at],
+            if (arriving && !large)
+              Require(small->planes[plane][size_t{row - top} * small->pitch[plane] + x - geometry.x] == next_canvas[at],
                       "private small and public ROI have independently stored matching first-parity bytes");
           }
       }
@@ -4127,10 +4140,200 @@ void CenteredMirroredFieldsPreservePartialAndRetainedPixels() {
                   TestCowImageBytes(&f.context, old_image) == retained &&
                   !memcmp(mapped, retained.data(), retained.size()),
               "both mirrored fields avoid every final ROI-copy byte while full canvas and retained COW edits remain exact");
+      if (large) {
+        Require(!small->ready && small->frame_timestamp == 0 && small->storage == untouched_small &&
+                    small->centered_deferred.fields == 3 && small->centered_deferred.small_fields == 0,
+                "completed public canvas remains genuine while the optional private Small is explicitly deferred");
+        Require(f.Read(1) == next_canvas && f.Read(1, true) == next_canvas &&
+                    small->storage == untouched_small && !small->ready,
+                "actual public Get/Derive snapshots read full pixels without forcing unnecessary Small stores");
+        f.QueueBob(unsigned(bottom_first), bottom_first, full);
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                    SyncSurface2(&f.context, 2, 0) == VA_STATUS_SUCCESS && small->ready &&
+                    small->frame_timestamp == 2 * kTimestampStep &&
+                    f.Read(2) == f.BobOracle(next_canvas, unsigned(bottom_first)),
+                "actual VPP source enrollment demands genuine complete Small before processing independent Bob output");
+        const auto &geometry = f.decode->centered_geometry;
+        for (unsigned plane = 0; plane != 2; ++plane)
+          for (unsigned row = 0; row != (plane ? f.capture_height / 2U : f.capture_height); ++row) {
+            const size_t base = plane ? size_t{f.coded_width} * f.canvas_height : 0;
+            Require(!memcmp(small->planes[plane] + size_t{row} * small->pitch[plane],
+                            next_canvas.data() + base +
+                                size_t{row + (plane ? geometry.y / 2U : geometry.y)} * f.coded_width + geometry.x,
+                            f.capture_width),
+                    "VPP-demanded Small independently matches every scalar packed-oracle active Y/UV row");
+          }
+      }
       Require(UnmapBuffer(&f.context, old_image.buf) == VA_STATUS_SUCCESS &&
                   DestroyImage(&f.context, old_image.image_id) == VA_STATUS_SUCCESS,
               "mirroring adds no retained-image mapping or lifetime restriction");
     }
+}
+
+// These source-unit controls execute real Submit/ProcessDecodedOutput and VPP
+// APIs. ReceiveOne/DIL output release is covered separately by vaapi-replay.
+void CenteredDeferredFirstBobAndInterveningWriters() {
+  RequireCowAvailable();
+  for (bool bottom_first : {false, true})
+    for (unsigned mode = 0; mode != 3; ++mode) {
+      CenteredDumbScope io;
+      CenteredFixture f(1920, 1088, 1080, 1280, 720, 1088, false, true);
+      const auto surface = InstallCenteredDumb(&f, &io.state);
+      RecreateCenteredContext(&f);
+      f.Submit();
+      const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+      const auto small = picture->centered_pixels;
+      const auto untouched = small->storage;
+      const auto packed = f.Packed(37), canvas = f.Canvas(packed);
+      f.Field(packed, bottom_first, bottom_first);
+      Require(f.decode->h264_first_field.valid && f.decode->h264_first_field.nv12_deferred &&
+                  !f.decode->h264_first_field.nv12_staged && small->storage == untouched &&
+                  !small->ready && !surface->ready && surface->frame_timestamp == 0,
+              "large first parity is genuinely deferred before a real consumer or writer demands it");
+      std::shared_ptr<Surface> compact;
+      std::vector<uint8_t> compact_bytes;
+      if (mode == 0) {
+        f.QueueBob(unsigned(bottom_first), bottom_first, false);
+        Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1 &&
+                    PrepareFirstFieldBob(f.driver.pending_vpp.front(), &compact) == VA_STATUS_SUCCESS &&
+                    compact && compact->centered_pixels && compact->centered_pixels != small,
+                "actual early Bob demands a separately owned first-field snapshot before its worker reads");
+        compact_bytes = compact->centered_pixels->storage;
+      } else if (mode == 1) {
+        Require(surface->BeginCpuWrite(),
+                "generic public WRITE demands private preservation before returning a writable pointer");
+      } else {
+        // Allocation-level control: Capture and its WRITE lease are genuine
+        // production helpers, without claiming an invented pending VPP job.
+        VppPixelView view;
+        Require(view.Capture(surface) && view.BeginCpuWrite(),
+                "captured allocation WRITE preserves the pending owner's genuine first parity");
+        memset(view.planes[0], 0xa2, surface->cpu_primary_canvas->Size());
+        Require(view.EndCpuWrite(), "end the captured allocation helper WRITE");
+      }
+      const auto &geometry = f.decode->centered_geometry;
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? f.capture_height / 2U : f.capture_height); ++row)
+          for (unsigned x = 0; x != f.capture_width; ++x) {
+            const size_t at = (plane ? size_t{f.coded_width} * f.canvas_height : 0U) +
+                size_t{row + (plane ? geometry.y / 2U : geometry.y)} * f.coded_width + geometry.x + x;
+            const size_t small_at = (plane ? size_t{small->pitch[0]} * small->height : 0U) +
+                size_t{row} * small->pitch[plane] + x;
+            Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] ==
+                        ((row & 1U) == unsigned(bottom_first) ? canvas[at] : untouched[small_at]),
+                    "demand materializes only the arrived Y/UV parity from an independent packed oracle");
+          }
+      Require(!small->ready && small->frame_timestamp == 0 && !surface->ready,
+              "real partial materialization still cannot publish an incomplete Small or public picture");
+      if (mode == 0) {
+        f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
+        const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
+        f.driver.StopWorkers(); f.driver.stopping = false;
+        Require(synced == VA_STATUS_SUCCESS && f.Read(2) == f.BobOracle(canvas, unsigned(bottom_first)) &&
+                    SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
+                "real worker reads independent first-field bytes while original full Sync still waits");
+      } else if (mode == 1) {
+        memset(surface->planes[0], 0xa1, surface->cpu_primary_canvas->Size());
+        Require(surface->EndCpuWrite(), "end generic intervening WRITE after private first preservation");
+      }
+      f.Field(packed, !bottom_first, bottom_first);
+      Require(surface->ready && !surface->failed && f.PrivatePixels(*surface) == canvas &&
+                  small->ready && small->frame_timestamp == kTimestampStep &&
+                  (!compact || compact->centered_pixels->storage == compact_bytes),
+              "complement repairs every public byte from genuine Small and keeps early Bob snapshot immutable");
+    }
+}
+
+void CenteredDeferredReuseAndEpochBoundaries() {
+  RequireCowAvailable();
+  for (unsigned mode = 0; mode != 4; ++mode) {
+    CenteredDumbScope io;
+    CenteredFixture f(1920, 1088, 1080, 1280, 720, 1088, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit();
+    const auto picture = f.decode->decoded_frames.at(kTimestampStep);
+    const auto small = picture->centered_pixels;
+    const auto packed = f.Packed(19), canvas = f.Canvas(packed);
+    f.Field(packed, false, false);
+    Require(f.decode->h264_first_field.nv12_deferred && !small->ready,
+            "lifecycle control begins with genuine outstanding deferred first parity");
+    if (mode == 2) {
+      // Existing rejection policy: a dependent submission is rejected while
+      // the earlier accepted first field remains valid private work.
+      f.decode->h264_waiting_for_idr = true;
+      Require(SubmitH264(&f, {0x41, 0x88, 0x84}) == VA_STATUS_ERROR_DECODING_ERROR &&
+                  surface->failed && !surface->ready && !picture->failed &&
+                  !picture->direct_backing && !small->ready &&
+                  small->centered_deferred.small_fields == 1,
+              "actual rejected public reuse preserves arrived Small before revoking its backing owner");
+      f.Field(packed, true, false);
+      Require(picture->ready && !picture->failed && small->ready && surface->failed &&
+                  !surface->ready && f.PrivatePixels(*picture) == canvas,
+              "accepted complement completes exact private pixels without reviving a rejected public target");
+      continue;
+    }
+    f.Field(packed, true, false);
+    Require(surface->ready && !small->ready && small->centered_deferred.fields == 3 &&
+                small->centered_deferred.small_fields == 0 && f.PrivatePixels(*surface) == canvas,
+            "lifecycle control holds a real completed public picture with explicitly deferred private bytes");
+    VAImage retained{};
+    Require(DeriveImage(&f.context, 1, &retained) == VA_STATUS_SUCCESS && !small->ready &&
+                TestCowImageBytes(&f.context, retained) == canvas,
+            "actual retained COW image starts from complete public pixels without eagerly manufacturing Small");
+    if (mode == 0) {
+      Require(BeginPicture(&f.context, 1, 1) == VA_STATUS_SUCCESS && !small->ready &&
+                  MaterializeDeferredCenteredSmall(small.get()) && small->ready &&
+                  small->frame_timestamp == kTimestampStep,
+              "metadata-only Begin invalidation retains unchanged canonical bytes for a later genuine private demand");
+      f.Parameters(false); f.End();
+    } else if (mode == 1) {
+      f.Submit(1, false);
+    } else {
+      f.AddOriginal(3, true);
+      f.Submit(3);
+      f.Complete(f.Packed(83), false, 2 * kTimestampStep);
+      VASurfaceID old = 1;
+      Require(DestroySurfaces(&f.context, &old, 1) == VA_STATUS_SUCCESS && !f.driver.surfaces.count(old),
+              "actual obsolete-IDR surface retirement preserves deferred bytes before its custom full promotion");
+    }
+    Require(small->ready && small->frame_timestamp == kTimestampStep &&
+                !picture->direct_backing && f.PrivatePixels(*picture) == canvas &&
+                TestCowImageBytes(&f.context, retained) == canvas,
+            "reuse and retirement retain exact old private full pixels, Small identity and the earlier COW image");
+    if (mode != 3) {
+      const auto next_packed = f.Packed(83), next_canvas = f.Canvas(next_packed);
+      const auto preserved = small->storage;
+      f.Field(next_packed, true, true, 2 * kTimestampStep);
+      f.Field(next_packed, false, true, 2 * kTimestampStep);
+      Require(f.PrivatePixels(*surface) == next_canvas && small->storage == preserved &&
+                  f.PrivatePixels(*picture) == canvas && TestCowImageBytes(&f.context, retained) == canvas,
+              "new public pair cannot overwrite any retained old full, Small or COW snapshot bytes");
+    }
+    Require(DestroyImage(&f.context, retained.image_id) == VA_STATUS_SUCCESS,
+            "retained lifecycle image retires through the ordinary public API");
+  }
+  // Test-only epoch injection keeps the production wrap contract explicit:
+  // preserve a pre-wrap first field; already wrapping storage stays eager.
+  for (uint64_t epoch : {UINT64_MAX - 1U, UINT64_MAX, uint64_t{0}}) {
+    CenteredDumbScope io;
+    CenteredFixture f(1920, 1088, 1080, 1280, 720, 1088, false, true);
+    const auto surface = InstallCenteredDumb(&f, &io.state);
+    RecreateCenteredContext(&f);
+    f.Submit();
+    surface->cpu_primary_canvas->TestSetWriteEpoch(epoch);
+    const auto small = f.decode->decoded_frames.at(kTimestampStep)->centered_pixels;
+    const auto packed = f.Packed(61);
+    f.Field(packed, false, false);
+    Require(f.decode->h264_first_field.valid && !small->ready &&
+                (epoch == UINT64_MAX - 1U ? f.decode->h264_first_field.nv12_deferred
+                                         : f.decode->h264_first_field.nv12_staged),
+            "counterfactual epoch boundary admits only the still-preservable first deferred write");
+    f.Field(packed, true, false);
+    Require(surface->ready && !surface->failed && small->ready &&
+                f.PrivatePixels(*surface) == f.Canvas(packed) && surface->cpu_primary_canvas->WriteEpoch() == 0,
+            "wrapping complement uses genuine eager fallback and retains every scalar-oracle full canvas byte");
+  }
 }
 
 void CenteredMirrorInvalidationUsesFullSmallFallback() {
@@ -4379,6 +4582,21 @@ void CenteredImageReadbackExportAndPartial() {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--centered-deferred") == 0) {
+    try {
+      CenteredMirroredFieldsPreservePartialAndRetainedPixels();
+      CenteredDeferredFirstBobAndInterveningWriters();
+      CenteredDeferredReuseAndEpochBoundaries();
+      std::printf("PASS centered deferred private Small: %u checks\n", checks);
+      return 0;
+    } catch (const CowUnavailable &) {
+      std::puts("deferred Small controls NOT_EXERCISED: unsupported COW capability");
+      return 77;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL centered deferred private Small: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && std::strcmp(argv[1], "--cpu-primary") == 0) {
     try {
       CenteredCowUnavailableKeepsDumb();
@@ -4390,6 +4608,8 @@ int main(int argc, char **argv) {
       CenteredCowBorderInvalidatesForRealWritersAndAllocations();
       CenteredCowBorderEndFailureAndEpochWrap();
       CenteredMirroredFieldsPreservePartialAndRetainedPixels();
+      CenteredDeferredFirstBobAndInterveningWriters();
+      CenteredDeferredReuseAndEpochBoundaries();
       CenteredMirrorInvalidationUsesFullSmallFallback();
       std::printf("PASS centered full CPU-primary canvases: %u checks\n", checks);
       return 0;
@@ -4415,6 +4635,8 @@ int main(int argc, char **argv) {
       CenteredCowBorderInvalidatesForRealWritersAndAllocations();
       CenteredCowBorderEndFailureAndEpochWrap();
       CenteredMirroredFieldsPreservePartialAndRetainedPixels();
+      CenteredDeferredFirstBobAndInterveningWriters();
+      CenteredDeferredReuseAndEpochBoundaries();
       CenteredMirrorInvalidationUsesFullSmallFallback();
       std::printf("PASS centered independent image readback: %u checks\n", checks);
       return 0;
@@ -4477,6 +4699,8 @@ int main(int argc, char **argv) {
     {"COW border real-writer and allocation invalidation", CenteredCowBorderInvalidatesForRealWritersAndAllocations},
     {"COW border END failure and uint64 wrap", CenteredCowBorderEndFailureAndEpochWrap},
     {"mirrored fields preserve partial public and retained COW pixels", CenteredMirroredFieldsPreservePartialAndRetainedPixels},
+    {"deferred first Bob and intervening allocation writers", CenteredDeferredFirstBobAndInterveningWriters},
+    {"deferred metadata, reuse, rejection, retirement and wrap", CenteredDeferredReuseAndEpochBoundaries},
     {"stale or rejected field mirrors use full small-copy fallback", CenteredMirrorInvalidationUsesFullSmallFallback},
     {"ordinary H.264 pixel-format admission", H264UnsupportedPixelFormatsAreTransactional},
     {"obsolete surface retirement preserves independent decode", ObsoleteSurfaceRetirementPreservesIndependentDecode},

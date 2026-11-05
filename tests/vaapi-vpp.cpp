@@ -7565,9 +7565,13 @@ std::vector<uint8_t> CpuPrimaryActiveBytes(const Surface &surface) {
 }
 
 std::shared_ptr<Surface> MakeCpuPrimaryTarget(Fixture *fixture, NativeNodeMock *mock,
-                                            bool cpu_primary = true) {
+                                            bool cpu_primary = true,
+                                            unsigned width = 256, unsigned height = 32,
+                                            unsigned visible_height = 32,
+                                            unsigned capture_width = 128,
+                                            unsigned capture_height = 16) {
   auto surface = std::make_shared<Surface>();
-  Require(surface->AllocateInternal(nullptr, mock->render_fd, 256, 32, VA_FOURCC_NV12),
+  Require(surface->AllocateInternal(nullptr, mock->render_fd, width, height, VA_FOURCC_NV12),
           "allocate a real driver DUMB layout using private memfd DRM controls");
   surface->id = 41; surface->rt_format = VA_RT_FORMAT_YUV420;
   surface->direct_decode_eligible = surface->ready = true;
@@ -7575,16 +7579,18 @@ std::shared_ptr<Surface> MakeCpuPrimaryTarget(Fixture *fixture, NativeNodeMock *
   fixture->driver.drm_fd = mock->render_fd;
   fixture->driver.next_surface = 42;
   for (unsigned plane = 0; plane != 2; ++plane)
-    for (unsigned row = 0; row != (plane ? 16U : 32U); ++row)
-      for (unsigned column = 0; column != 256; ++column)
+    for (unsigned row = 0; row != (plane ? height / 2U : height); ++row)
+      for (unsigned column = 0; column != width; ++column)
         surface->planes[plane][size_t{row} * surface->pitch[plane] + column] =
             static_cast<uint8_t>(43U + plane * 67U + row * 11U + column * 3U);
   const auto old = CpuPrimaryActiveBytes(*surface);
   if (!cpu_primary) return surface;
-  DecodeContext decoder; decoder.width = 256; decoder.height = 32;
+  DecodeContext decoder; decoder.width = width; decoder.height = height;
   crystalhd_centered_output::Config config;
-  Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
-              crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder.centered_geometry) &&
+  const std::string policy = std::to_string(capture_width) + "x" + std::to_string(capture_height) +
+      "@" + std::to_string(width) + "x" + std::to_string(visible_height) + ":limited";
+  Require(crystalhd_centered_output::ParseConfig(policy.c_str(), &config) &&
+              crystalhd_centered_output::BuildGeometry(config, width, height, 4, &decoder.centered_geometry) &&
               TryCpuPrimaryTarget(surface.get(), decoder) && CpuPrimaryStorageMatches(*surface) &&
               CpuPrimaryActiveBytes(*surface) == old,
           "real full-copy conversion preserves every original public pixel");
@@ -7714,25 +7720,35 @@ void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
     return;
   }
   const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (bool large : {false, true})
   for (bool bottom_first : {false, true}) {
+    const unsigned width = large ? 1920U : 256U;
+    const unsigned height = large ? 1088U : 32U;
+    const unsigned visible = large ? 1080U : 32U;
+    const unsigned capture_width = large ? 1280U : 128U;
+    const unsigned capture_height = large ? 720U : 16U;
     NativeNodeMock mock; mock.real_prime_files = true;
     Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
     {
       MockNativeNodeScope scope(mock);
-      auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
+      auto surface = MakeCpuPrimaryTarget(&fixture, &mock, true, width, height, visible,
+                                          capture_width, capture_height);
       auto decoder = std::make_shared<DecodeContext>();
       decoder->id = 53; decoder->generation = 1;
-      decoder->width = 256; decoder->height = 32; decoder->profile = VAProfileH264Main;
+      decoder->width = width; decoder->height = height; decoder->profile = VAProfileH264Main;
       crystalhd_centered_output::Config config;
-      Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
-                  crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder->centered_geometry),
+      const std::string policy = std::to_string(capture_width) + "x" + std::to_string(capture_height) +
+          "@" + std::to_string(width) + "x" + std::to_string(visible) + ":limited";
+      Require(crystalhd_centered_output::ParseConfig(policy.c_str(), &config) &&
+                  crystalhd_centered_output::BuildGeometry(config, width, height, 4, &decoder->centered_geometry),
               "known admitted fixture has the actual canonical Centered geometry");
       auto picture = std::make_shared<Surface>();
-      picture->id = 41; picture->width = 256; picture->height = 32;
+      picture->id = 41; picture->width = width; picture->height = height;
       picture->centered_geometry = decoder->centered_geometry;
       picture->centered_pixels = std::make_shared<Surface>();
       auto small = picture->centered_pixels;
-      Require(small->AllocateCpuNv12(128, 16), "allocate the unchanged independent private Small");
+      Require(small->AllocateCpuNv12(capture_width, capture_height),
+              "allocate the unchanged independent private Small");
       for (Surface *item : {surface.get(), picture.get(), small.get()}) {
         item->expected_timestamp = 100000; item->frame_timestamp = 0;
         item->decode_identity = item->trace_decode_identity = 901;
@@ -7748,7 +7764,7 @@ void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
               "scaffold admits one actual New token without a device call");
       std::vector<uint8_t> fields[2];
       for (unsigned parity = 0; parity != 2; ++parity) {
-        fields[parity].resize(128U * 8U * 2U);
+        fields[parity].resize(size_t{capture_width} * capture_height);
         for (size_t i = 0; i != fields[parity].size(); ++i)
           fields[parity][i] = static_cast<uint8_t>((i * 13U + parity * 47U + 23U) & 255U);
       }
@@ -7756,7 +7772,8 @@ void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
         BC_DTS_PROC_OUT output{}; output.Ybuff = fields[parity].data();
         output.YBuffDoneSz = fields[parity].size() / 4U;
         output.PoutFlags = BC_POUT_FLAGS_PIB_VALID; output.b422Mode = OUTPUT_MODE422_YUY2;
-        output.PicInfo.timeStamp = 100000; output.PicInfo.width = 128; output.PicInfo.height = 16;
+        output.PicInfo.timeStamp = 100000;
+        output.PicInfo.width = capture_width; output.PicInfo.height = capture_height;
         output.PicInfo.picture_number = 1; output.PicInfo.sess_num = 7;
         output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
             (parity ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
@@ -7764,37 +7781,73 @@ void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
         return ProcessDecodedOutput(&fixture.driver, decoder.get(), output);
       };
       const unsigned first = bottom_first ? 1U : 0U;
+      const auto untouched_small = small->storage;
       Require(process(first) == VA_STATUS_SUCCESS && decoder->h264_first_field.valid &&
                   surface->centered_mirror.fields == (1U << first) &&
-                  CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first) &&
+                  (large ? DeferredCenteredOwnFields(*surface, *small, decoder->centered_geometry, 1U << first)
+                         : CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first)) &&
                   !surface->ready && surface->frame_timestamp == 0 && !small->ready,
               "actual first-field producer establishes pending mirror without public/private completion");
+      if (large)
+        Require(decoder->h264_first_field.nv12_deferred && !decoder->h264_first_field.nv12_staged &&
+                    small->storage == untouched_small && small->frame_timestamp == 0 &&
+                    small->centered_deferred.fields == (1U << first) && small->centered_deferred.small_fields == 0,
+                "large export control starts with genuine public-only first parity and no private Small stores");
       const auto pending_small = small->storage;
       VADRMPRIMESurfaceDescriptor prime{};
       Require(ExportSurfaceHandle(&fixture.context, 41, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                                   VA_EXPORT_SURFACE_WRITE_ONLY, &prime) == VA_STATUS_SUCCESS &&
-                  prime.num_objects == 1 && !surface->cpu_primary && surface->cpu_primary_gpu_promoted &&
-                  !surface->ready && surface->frame_timestamp == 0 && small->storage == pending_small &&
+                  prime.num_objects == 1 && prime.num_layers == 2 &&
+                  !surface->cpu_primary && surface->cpu_primary_gpu_promoted &&
+                  !surface->ready && surface->frame_timestamp == 0 &&
+                  (!large ? small->storage == pending_small : !small->ready) &&
                   !CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first),
               "real WRITE_ONLY export stays allowed while pending and GPU promotion invalidates only mirror reuse");
-      Require(process(first ^ 1U) == VA_STATUS_SUCCESS && !decoder->h264_first_field.valid &&
-                  surface->ready && !surface->failed && surface->frame_timestamp == 100000 && small->ready &&
-                  decoder->replay.outstanding() == 0,
-              "matching complement completes normally through the full-Small fallback after actual export");
-      std::vector<uint8_t> expected(256U * 32U * 3U / 2U, 128);
-      std::fill_n(expected.data(), 256U * 32U, 16);
-      for (unsigned row = 0; row != 16; ++row)
-        for (unsigned x = 0; x != 128; ++x)
-          expected[size_t{row + 8U} * 256U + 64U + x] =
-              fields[row & 1U][(size_t{row / 2U} * 128U + x) * 2U];
-      for (unsigned row = 0; row != 8; ++row)
-        for (unsigned x = 0; x != 128; x += 2)
+      const auto &geometry = decoder->centered_geometry;
+      std::vector<uint8_t> expected(size_t{width} * height * 3U / 2U, 128);
+      std::fill_n(expected.data(), size_t{width} * height, 16);
+      std::vector<uint8_t> expected_small(size_t{capture_width} * capture_height * 3U / 2U);
+      for (unsigned row = 0; row != capture_height; ++row)
+        for (unsigned x = 0; x != capture_width; ++x) {
+          const uint8_t pixel = fields[row & 1U][(size_t{row / 2U} * capture_width + x) * 2U];
+          expected[size_t{row + geometry.y} * width + geometry.x + x] = pixel;
+          expected_small[size_t{row} * capture_width + x] = pixel;
+        }
+      for (unsigned row = 0; row != capture_height / 2U; ++row)
+        for (unsigned x = 0; x != capture_width; x += 2)
           for (unsigned component = 0; component != 2; ++component) {
             const auto &field = fields[row & 1U];
-            const size_t at = (size_t{(row / 2U) * 2U} * 128U + x) * 2U + 1U + component * 2U;
-            expected[256U * 32U + size_t{row + 4U} * 256U + 64U + x + component] =
-                static_cast<uint8_t>((unsigned(field[at]) + field[at + 256U] + 1U) / 2U);
+            const size_t at = (size_t{(row / 2U) * 2U} * capture_width + x) * 2U + 1U + component * 2U;
+            const uint8_t pixel = static_cast<uint8_t>(
+                (unsigned(field[at]) + field[at + capture_width * 2U] + 1U) / 2U);
+            expected[size_t{width} * height + size_t{row + geometry.y / 2U} * width +
+                     geometry.x + x + component] = pixel;
+            expected_small[size_t{capture_width} * capture_height + size_t{row} * capture_width +
+                           x + component] = pixel;
           }
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? capture_height / 2U : capture_height); ++row)
+          for (unsigned x = 0; x != capture_width; ++x) {
+            const size_t at = (plane ? size_t{capture_width} * capture_height : 0U) +
+                size_t{row} * capture_width + x;
+            Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] ==
+                        ((row & 1U) == first ? expected_small[at] : untouched_small[at]),
+                    "WRITE_ONLY export preserves genuine first Y/UV parity before exposing any mutable fd");
+          }
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const uint8_t changed = 0xe1U + plane;
+        const off_t at = prime.layers[plane].offset[0] +
+            off_t{(plane ? geometry.y / 2U : geometry.y) + first} * prime.layers[plane].pitch[0] + geometry.x;
+        Require(pwrite(prime.objects[0].fd, &changed, 1, at) == 1,
+                "the real exported fd overwrites arrived-parity Y and UV after private preservation");
+      }
+      Require(process(first ^ 1U) == VA_STATUS_SUCCESS && !decoder->h264_first_field.valid &&
+                  surface->ready && !surface->failed && surface->frame_timestamp == 100000 && small->ready &&
+                  picture->decode_identity == 901 && small->decode_identity == 901 &&
+                  small->trace_context == 53 && small->trace_generation == 1 &&
+                  small->trace_submission_ordinal == 1 && decoder->replay.outstanding() == 0 &&
+                  CpuPrimaryActiveBytes(*small) == expected_small,
+              "matching complement keeps source identity and exact full Small after mutable export");
       std::vector<uint8_t> actual(expected.size());
       Require(CpuPrimaryActiveBytes(*surface) == expected &&
                   pread(prime.objects[0].fd, actual.data(), actual.size(), 0) ==
