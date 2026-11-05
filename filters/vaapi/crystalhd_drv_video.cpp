@@ -2661,6 +2661,7 @@ struct H264FirstField {
   bool bottom = false;
   bool bottom_first = false;
   bool is_70012 = false;
+  uint8_t source_format = 0;
   uint64_t timestamp = 0;
   uint64_t decode_identity = 0;
   uint64_t generation = 0;
@@ -2692,6 +2693,29 @@ struct H264Auxiliary {
     HANDLE device = nullptr;
     bool prefeed = false;
   };
+  // Normalized static SPS and capture configuration, never per-picture POC,
+  // reference identities, parity or a public completion certificate.
+  struct CaptureContract {
+    uint64_t generation = 0;
+    HANDLE device = nullptr;
+    VAProfile profile = VAProfileNone;
+    unsigned int coded_width = 0, coded_height = 0;
+    std::array<uint32_t, 8> sps{};
+    crystalhd_centered_output::Geometry geometry;
+    bool operator==(const CaptureContract &other) const {
+      return generation == other.generation && device == other.device &&
+          profile == other.profile && coded_width == other.coded_width &&
+          coded_height == other.coded_height && sps == other.sps &&
+          SameCenteredGeometry(geometry, other.geometry);
+    }
+  } capture_contract;
+  uint64_t capture_epoch_first_token = 0;
+  bool capture_pair_released = false;
+  void InvalidateCapture() {
+    capture_contract = CaptureContract();
+    capture_epoch_first_token = 0;
+    capture_pair_released = false;
+  }
   std::map<uint64_t, Syntax> syntax;
   Syntax candidate{};
   uint64_t candidate_timestamp = 0, generation = 0, timestamp = 0;
@@ -4146,6 +4170,38 @@ static bool H264AuxiliaryPolicy(const DecodeContext &decode,
         (decode.low_latency_h264 || decode.auto_h264_prefeed)));
 }
 
+static bool H264AuxiliaryCaptureContract(
+    const DecodeContext &decode, const H264Auxiliary::Syntax &syntax,
+    H264Auxiliary::CaptureContract *contract) {
+  const auto &p = syntax.picture;
+  const auto &s = p.seq_fields.bits;
+  const unsigned width = (static_cast<unsigned>(p.picture_width_in_mbs_minus1) + 1U) * 16U;
+  const unsigned height = (static_cast<unsigned>(p.picture_height_in_mbs_minus1) + 1U) * 16U;
+  const unsigned frame_bits = s.log2_max_frame_num_minus4 + 4U;
+  const unsigned poc_bits = s.log2_max_pic_order_cnt_lsb_minus4 + 4U;
+  if (!decode.centered_geometry.enabled || decode.decode_processing ||
+      decode.video_process || decode.is_70012 || !IsH264Profile(decode.profile) ||
+      syntax.generation != decode.generation || syntax.device != decode.device ||
+      !decode.device || width != decode.width || height != decode.height ||
+      width > 1920 || height > 1088 || (height & 31U) != 0 ||
+      !SupportedH264PictureFormat(p) || s.frame_mbs_only_flag ||
+      !s.mb_adaptive_frame_field_flag || s.pic_order_cnt_type != 0 ||
+      p.pic_fields.bits.field_pic_flag || frame_bits > 16 || poc_bits > 16 ||
+      p.frame_num >= (1U << frame_bits) || p.CurrPic.TopFieldOrderCnt < 0)
+    return false;
+  contract->generation = decode.generation;
+  contract->device = decode.device;
+  contract->profile = decode.profile;
+  contract->coded_width = width;
+  contract->coded_height = height;
+  contract->sps = {{s.log2_max_frame_num_minus4, s.pic_order_cnt_type,
+      s.log2_max_pic_order_cnt_lsb_minus4, p.num_ref_frames,
+      s.gaps_in_frame_num_value_allowed_flag, s.frame_mbs_only_flag,
+      s.mb_adaptive_frame_field_flag, s.direct_8x8_inference_flag}};
+  contract->geometry = decode.centered_geometry;
+  return true;
+}
+
 static VAStatus OpenDevice(DecodeContext *decode) {
   const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
                   DTS_SKIP_TX_CHK_CPB | DTS_PLAYBACK_DROP_RPT_MODE |
@@ -5424,6 +5480,7 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
 static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
                             const char *reason) {
   decode->mpeg2_auxiliary.Abandon();
+  decode->auxiliary.InvalidateCapture();
   decode->auxiliary.candidate_timestamp = 0;
   decode->auxiliary.syntax.clear();
   decode->auxiliary.pending = decode->auxiliary.needs_eos = false;
@@ -5793,6 +5850,7 @@ static VAStatus ProcessDecodedOutputImpl(
       first.bottom = bottom;
       first.bottom_first = bottom_first;
       first.is_70012 = decode->is_70012;
+      first.source_format = output.b422Mode;
       first.timestamp = output.PicInfo.timeStamp;
       first.decode_identity =
           replay_duplicate ? 0 : decoded->second->decode_identity;
@@ -6214,6 +6272,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return VA_STATUS_SUCCESS;
   }
   if (status == BC_STS_FMT_CHANGE) {
+    decode->auxiliary.InvalidateCapture();
     *activity = true;
     return VA_STATUS_SUCCESS;
   }
@@ -6229,6 +6288,18 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   const bool had_first_field = decode->h264_first_field.valid;
   const bool auxiliary = decode->auxiliary.ever &&
       output.PicInfo.timeStamp == decode->auxiliary.timestamp;
+  // Cache all borrowed-buffer facts before processing/releasing the lease.
+  // An older queued pair must not certify a newer accepted SPS epoch.
+  const auto &first = decode->h264_first_field;
+  const bool capture_pair = !auxiliary && had_first_field &&
+      !first.replay_duplicate && !first.is_70012 &&
+      IsH264Profile(decode->profile) && decode->centered_geometry.enabled &&
+      first.timestamp == output.PicInfo.timeStamp &&
+      first.generation == decode->generation &&
+      first.source_format == OUTPUT_MODE422_YUY2 &&
+      output.b422Mode == OUTPUT_MODE422_YUY2 &&
+      decode->replay.Inspect(output.PicInfo.timeStamp) == CrystalHDDecodeReplay::Output::New &&
+      ClassifyH264InterlacedPayload(output) == H264InterlacedPayload::Field;
   auto *mpeg2_auxiliary = FindMpeg2Auxiliary(decode, output.PicInfo.timeStamp);
   Mpeg2Auxiliary::Output next_mpeg2_auxiliary;
   const bool unknown_mpeg2 = decode->IsMpeg2() && decode->mpeg2_auxiliary.ever &&
@@ -6271,6 +6342,15 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
                  output.PicInfo.picture_meta_payload, output.PicInfo.flags);
     driver->condition.notify_all();
     return VA_STATUS_SUCCESS;
+  }
+  if (capture_pair && result == VA_STATUS_SUCCESS &&
+      !decode->h264_first_field.valid && decode->replay.outstanding() < outstanding &&
+      decode->auxiliary.capture_epoch_first_token != 0 &&
+      output.PicInfo.timeStamp >= decode->auxiliary.capture_epoch_first_token) {
+    H264Auxiliary::CaptureContract contract;
+    if (H264AuxiliaryCaptureContract(*decode, decode->auxiliary.candidate, &contract) &&
+        contract == decode->auxiliary.capture_contract)
+      decode->auxiliary.capture_pair_released = true;
   }
   // A newly validated first field is real hardware progress even though its
   // picture must remain outstanding until the complementary field arrives.
@@ -6719,6 +6799,20 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       }
       if (!replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
+      if constexpr (std::is_same<std::decay_t<decltype(replay)>,
+                                 CrystalHDDecodeReplay>::value) {
+        auto &aux = decode->auxiliary;
+        H264Auxiliary::CaptureContract contract;
+        if (!have_auxiliary_candidate ||
+            !H264AuxiliaryCaptureContract(*decode, auxiliary_candidate, &contract)) {
+          aux.InvalidateCapture();
+        } else if (!aux.capture_epoch_first_token ||
+                   !(aux.capture_contract == contract)) {
+          aux.capture_contract = contract;
+          aux.capture_epoch_first_token = input_timestamp;
+          aux.capture_pair_released = false;
+        }
+      }
       if (decode->IsMpeg2()) {
         auto &aux = decode->mpeg2_auxiliary;
         aux.candidate_timestamp = 0;
@@ -8226,13 +8320,83 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
 
 enum class H264AuxiliaryDemand { ComplementaryBob, CenteredExactSync };
 
+static std::shared_ptr<Surface> CenteredAuxiliaryBeforeFirst(
+    Driver *driver, DecodeContext *decode,
+    const std::shared_ptr<Surface> &surface, uint64_t idle, bool empty_ready) {
+  const auto &aux = decode->auxiliary;
+  if (!empty_ready || idle < UINT64_C(10000000) || !surface ||
+      decode->h264_first_field.valid || decode->h264_first_field.picture ||
+      !aux.capture_pair_released || !aux.capture_epoch_first_token ||
+      aux.capture_epoch_first_token > surface->expected_timestamp ||
+      surface->expected_timestamp > aux.candidate_timestamp ||
+      decode->admission_in_progress || decode->destroy_in_progress ||
+      decode->retained_close_status != BC_STS_SUCCESS ||
+      aux.eos_only || aux.ended ||
+      surface->opaque_reference || PublicReadRejected(surface.get()) ||
+      surface->vpp_readers)
+    return {};
+  H264Auxiliary::CaptureContract contract;
+  if (!H264AuxiliaryCaptureContract(*decode, aux.candidate, &contract) ||
+      !(contract == aux.capture_contract))
+    return {};
+  const uint64_t token = surface->expected_timestamp;
+  const auto context = driver->contexts.find(decode->id);
+  const auto owner = driver->surfaces.find(surface->id);
+  const auto pending = decode->pending.find(token);
+  const auto decoded = decode->decoded_frames.find(token);
+  const auto binding = decode->surface_timestamps.find(surface.get());
+  if (!token || context == driver->contexts.end() || context->second.get() != decode ||
+      owner == driver->surfaces.end() || owner->second != surface ||
+      pending == decode->pending.end() || pending->second != surface->id ||
+      decoded == decode->decoded_frames.end() || !decoded->second ||
+      binding == decode->surface_timestamps.end() || binding->second != token ||
+      decode->replay.Inspect(token) != CrystalHDDecodeReplay::Output::New)
+    return {};
+  const auto &picture = decoded->second;
+  auto geometry = decode->centered_geometry;
+  geometry.canvas_width = surface->width;
+  geometry.canvas_height = surface->height;
+  if (!CenteredStorageMatches(*picture) ||
+      !SameCenteredGeometry(picture->centered_geometry, geometry) ||
+      surface->width != decode->width || surface->height < geometry.visible_height ||
+      surface->height > decode->height || (surface->height & 3U) != 0 ||
+      (surface->height != geometry.visible_height && surface->height != decode->height) ||
+      surface->fourcc != VA_FOURCC_NV12 || surface->backing_owner != VA_INVALID_SURFACE ||
+      surface->ready || surface->frame_timestamp || surface->failed || surface->destroyed ||
+      surface->image_write_locked || surface->vpp_writers || surface->export_waiters ||
+      surface->centered_allocation_exposed || surface->decode_picture.lock() != picture ||
+      !surface->decode_identity || surface->decode_identity != picture->decode_identity ||
+      surface->trace_decode_identity != picture->decode_identity ||
+      surface->trace_context != TraceId(decode->id, VA_INVALID_ID) ||
+      surface->trace_generation != decode->generation ||
+      !surface->trace_submission_ordinal ||
+      surface->trace_submission_ordinal != picture->trace_submission_ordinal ||
+      picture->ready || picture->frame_timestamp || picture->failed || picture->destroyed ||
+      picture->expected_timestamp != token ||
+      picture->trace_decode_identity != picture->decode_identity ||
+      picture->trace_context != surface->trace_context ||
+      picture->trace_generation != decode->generation || picture->vpp_readers ||
+      (picture->direct_picture && picture->decode_target.lock() != surface) ||
+      (picture->direct_backing && picture->direct_backing != surface))
+    return {};
+  return picture;
+}
+
 static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
                                const std::shared_ptr<Surface> &surface,
                                const VppDeinterlace *demand, uint64_t idle,
                                H264AuxiliaryDemand request =
-                                   H264AuxiliaryDemand::ComplementaryBob) {
+                                   H264AuxiliaryDemand::ComplementaryBob,
+                               bool empty_ready_before_first = false) {
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
+  const auto before_first =
+      request == H264AuxiliaryDemand::CenteredExactSync && !demand
+          ? CenteredAuxiliaryBeforeFirst(driver, decode, surface, idle,
+                                         empty_ready_before_first)
+          : nullptr;
+  const uint64_t requested = before_first ? surface->expected_timestamp : first.timestamp;
+  const auto &original_picture = before_first ? before_first : first.picture;
   const bool bob = request == H264AuxiliaryDemand::ComplementaryBob &&
       demand && demand->bob &&
       first.bottom != (demand->field == crystalhd_vpp_bob::FieldParity::kBottom);
@@ -8272,14 +8436,16 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   // Exact Sync already demands this genuine complement. Keep the progress
   // turn passive (idle0), then let its existing empty RX turn provide bounded
   // lookahead without the Bob/EOS inactivity delay. No output is fabricated.
-  if ((!bob && !exact) || (exact ? idle == 0 : idle < kDecodeBatchGraceNs) || aux.pending ||
+  if ((!bob && !exact && !before_first) ||
+      (!before_first && (exact ? idle == 0 : idle < kDecodeBatchGraceNs)) || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
-      !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
-      first.timestamp != surface->expected_timestamp ||
-      aux.candidate_timestamp < first.timestamp ||
+      !aux.candidate_timestamp ||
+      (!before_first && (!first.valid || first.replay_duplicate ||
+                        first.timestamp != surface->expected_timestamp ||
+                        first.generation != decode->generation || !first.picture)) ||
+      aux.candidate_timestamp < requested ||
       aux.candidate.generation != decode->generation ||
       aux.candidate.device != decode->device ||
-      first.generation != decode->generation || !first.picture ||
       decode->is_70012 || !IsH264Profile(decode->profile) ||
       decode->experimental_ready_remap || decode->closing || decode->retired ||
       decode->destroy_prepared || decode->hardware_close_pending ||
@@ -8289,17 +8455,18 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       decode->replay.NextInput() != nullptr || decode->partial_input_timestamp ||
       decode->partial_input_offset || driver->stopping)
     return VA_STATUS_SUCCESS;
-  const auto picture = decode->decoded_frames.find(first.timestamp);
-  const auto pending = decode->pending.find(first.timestamp);
-  if (exact) {
+  const auto picture = decode->decoded_frames.find(requested);
+  const auto pending = decode->pending.find(requested);
+  if (exact || before_first) {
     const auto owner = driver->surfaces.find(surface->id);
     if (pending == decode->pending.end() || pending->second != surface->id ||
         owner == driver->surfaces.end() || owner->second != surface)
       return VA_STATUS_SUCCESS;
   }
   if (picture == decode->decoded_frames.end() || pending == decode->pending.end() ||
-      picture->second != first.picture || first.decode_identity == 0 ||
-      first.decode_identity != picture->second->decode_identity)
+      picture->second != original_picture || !original_picture ||
+      original_picture->decode_identity == 0 ||
+      (!before_first && first.decode_identity != picture->second->decode_identity))
     return FailDecode(driver, decode, "H.264 auxiliary lost original ownership");
   const uint64_t token = decode->next_timestamp;
   if (!token || token > std::numeric_limits<uint64_t>::max() - kTimestampStep ||
@@ -8323,11 +8490,11 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
     return VA_STATUS_SUCCESS;
   }
   const bool consume = decode->prefed_timestamp == token;
-  Debug("H.264 auxiliary qualified source=%llu token=%llu bytes=%zu generation=%llu consume_prefeed=%d idle_ns=%llu",
-               static_cast<unsigned long long>(first.timestamp),
+  Debug("H.264 auxiliary qualified source=%llu token=%llu bytes=%zu generation=%llu consume_prefeed=%d idle_ns=%llu no_first=%d",
+               static_cast<unsigned long long>(requested),
                static_cast<unsigned long long>(token), bytes,
                static_cast<unsigned long long>(decode->generation), consume,
-               static_cast<unsigned long long>(idle));
+               static_cast<unsigned long long>(idle), before_first != nullptr);
   // One whole-call reservation; any non-success is terminal, never retried.
   const BC_STATUS status = DtsProcInput(decode->device, payload.data(),
       static_cast<uint32_t>(bytes), consume ? 0 : token, FALSE);
@@ -8343,9 +8510,10 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   decode->CancelPendingPrefeed();
   if (consume) decode->prefed_timestamp = 0;
   decode->RecordTransportProgress();
-  Debug("H.264 auxiliary input_sent token=%llu transport_timestamp=%llu bytes=%zu public_picture=0 public_ordinal_advanced=0",
+  Debug("H.264 auxiliary input_sent token=%llu transport_timestamp=%llu bytes=%zu public_picture=0 public_ordinal_advanced=0 source=%llu no_first=%d",
                static_cast<unsigned long long>(token),
-               static_cast<unsigned long long>(consume ? 0 : token), bytes);
+               static_cast<unsigned long long>(consume ? 0 : token), bytes,
+               static_cast<unsigned long long>(requested), before_first != nullptr);
   // Delimit the synthetic slice with the ordinary next-AU prefix. The next
   // original AU consumes this prefix without acquiring an auxiliary identity.
   decode->pending_prefeed_timestamp = decode->next_timestamp;
@@ -8685,7 +8853,7 @@ static VAStatus SyncDecodeSurface(
           auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync && !no_output
               ? 0 : idle;
       status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, auxiliary_idle,
-                               auxiliary_demand);
+                               auxiliary_demand, no_output);
       if (status != VA_STATUS_SUCCESS) return status;
       // A newly accepted real auxiliary input is progress, not an EOF trigger.
       if (before != decode->transport_progress) {
