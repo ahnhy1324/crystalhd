@@ -2,7 +2,7 @@
 
 # Current work
 
-Updated **2026-11-05**, after stable 1.3 publication. This is the current work queue.
+Updated **2026-11-06**, after stable 1.3 publication. This is the current work queue.
 A packaged copy is a snapshot; subsequent completion belongs in the current
 repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
@@ -55,7 +55,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [latest source0331 research results](tests/fixtures/issue477/source900-deferred-20261105.json), based on maintained master3e, return 896/890 originals privately and 894/893 with the ordinary native-only backend; both still fail 900. Strict native ledgers, controls and normal full official20 restoration pass. The private arm also has four scoped audits and zero replay; ordinary pixel/replay audits are unobserved. Next investigate the remaining renderer-lateness/off-CPU history with a discriminating hypothesis. Broader pixels, clocks/cadence, GPU return, lifetime/endurance and matched benefit remain open. #665–#670 are merged; the full research stack stays unpromoted and the caller filter-EOF limit remains explicit. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current research and wake-fix record](tests/fixtures/issue477/auxiliary-control-wake-20261106.json) retains source1fa at 889/898 originals: Source900 FAIL, strict ledgers/four audits/controls PASS, zero replay and full official20 restoration PASS. The latest ordinary run is the separate [source0331 predecessor checkpoint](tests/fixtures/issue477/source900-deferred-20261105.json), 894/893 with native-only scope. A bounded scheduler diagnostic observes most known same-worker gap time blocked inside poll, without establishing its underlying cause. The maintained pending-auxiliary delimiter control-wake fix passes strict O2 builds, full replay and focused CPU controls; task integration requires the existing current-base CI gate, and CPU results do not qualify actual playback (see the owning issues for later results). Broader pixels, clocks/cadence, GPU return, lifetime/endurance and matched benefit remain open; the full research stack stays unpromoted. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist. The current matched-baseline SIZED16 arm completes864/854 originals and still fails900; sequential counts do not prove a performance gain or justify changing the default. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator. Preserve DMA quarantine and the coupled defer-allocation/DONTNEED scope. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -72,17 +72,46 @@ support scopes are not additional promotion gates. Nonblocking research continue
 ### Source 900 investigation and remaining real-time boundary
 
 **900 originals remain unresolved; #477 and #436 stay open.** The
-[latest research receipt](tests/fixtures/issue477/source900-deferred-20261105.json)
-records source0331, which includes maintained master3e and the explicitly
-unpromoted full research stack. The original Kodi/App, 900-picture input and
+[current research and wake-fix record](tests/fixtures/issue477/auxiliary-control-wake-20261106.json)
+records the unpromoted source1fa stack. Current maintained work starts from
+master6c. The original Kodi/App, 900-picture input and
 discard policy remain unchanged. Serial populations do not measure a causal
 speedup. Every temporary22 case below normally restores the complete matched
 official1.3/source24a/module20 installation; research artifacts do not replace it.
 
 | Latest separate natural-play observation, default fixed DIL / temporary22 | First play | Reopen | Disposition |
 | --- | ---: | ---: | --- |
-| Source0331, deferred private Small and bounded source prefetch | 896 | 890 | Source900 FAIL; strict ledgers/four audits/controls PASS; zero replay; maximum68C; full official20 restore PASS |
-| Same0331, ordinary native-only backend | 894 | 893 | Source900 FAIL; both strict native ledgers/controls PASS; pixel/replay audits UNOBSERVED; maximum68C; full official20 restore PASS |
+| Latest source1fa, bounded worker pairing after actual auxiliary output release | 889 | 898 | Source900 FAIL; 1,778/1,796 validated original fields/releases; strict ledgers/four audits/controls PASS; zero replay; App0/kernel0; maximum65C; no handoff; full official20 restore PASS |
+| Earlier source0331 ordinary native-only checkpoint | 894 | 893 | Source900 FAIL; strict native ledgers/controls PASS; native dequeues precede field validation; private pixel/replay/packet/cost/postfilter audits UNOBSERVED; maximum68C; full official20 restore PASS. No source1fa ordinary result is implied. |
+
+The separate source1fa scheduler/syscall diagnostic returns **865/881**, with
+four scoped audits, controls, retirement and full official20 restoration passing.
+Its capture overhead prevents comparison with natural-play counts. In the
+first play, 819 exact same-worker field gaps total 13.351s; 786 have fully known
+scheduler partitions and 33 retain unknown segments. Disjoint intersections
+contain 10.8374s blocked inside matched poll attempts, 0.7472s blocked inside
+futex attempts, 0.7426s runnable and 0.8441s unknown. Successful wakeup and actual
+switch-in bound runnable time; a waking attempt alone does not. These observations
+do not establish that TX backpressure caused the waits or the 900 shortage.
+
+A separate maintained-code control reproduces a missed wake: after an accepted
+H.264 auxiliary leaves its delimiter pending, condition-variable notification
+cannot wake a worker already polling RX. The proposed conditional control-event
+notification preserves the quiet path when no delimiter remains. The old
+notification path fails the real-worker control and the fix passes all four focused O0
+cases. Strict O2 production/replay builds and the affected full replay suite
+pass; fresh scaling/VPP/library suites are not claimed. Task integration requires
+the existing current-base CI gate; CPU results do not qualify actual playback.
+This is a bounded own wakeup correction,
+not a demonstrated Source900 repair. Keep all 13 owners open for their remaining
+work and retain the original filter-EOF, pixel/clock and lifetime limits.
+
+<details>
+<summary>Source0331 predecessor: deferred Small and source-prefetch qualification</summary>
+
+The [source0331 checkpoint](tests/fixtures/issue477/source900-deferred-20261105.json)
+records the earlier 896/890 private and 894/893 ordinary observations, with
+maintained master3e as their original base. It remains valid within that scope.
 
 The deferred representation omits duplicate Small stores only while actual
 public ROI bytes, field parity, allocation epoch and original ownership are
@@ -96,7 +125,7 @@ The full 52-group suite was not rerun on source0331. All 800 pairs preserve ever
 Small/public oracle byte. Independent selected pixel captures remain eager;
 deferred-compose adoption does not qualify all unselected pixels.
 
-The latest private natural-play case has 1,792/1,780 validated original fields
+The source0331 private natural-play case has 1,792/1,780 validated original fields
 and successful releases. The separate ordinary case has 1,788/1,786 native
 dequeue records and both strict native ledgers pass, with no private probes.
 These ordinary records precede field validation and do not qualify parity,
@@ -130,10 +159,9 @@ same-worker pairs. Read-only frequency observation finds about 93.5–94.8%
 upper-Pstate residency and median 2.095GHz; it supplies no basis to change the
 governor merely to obtain a passing count.
 
-Next investigate causal renderer-lateness/off-CPU history, which remains
-unobserved. For the remaining 900 shortage, no own correctness defect or global
-impossibility is established. Do not create another speculative microbranch
-or repeat the identical 900 case merely to obtain a passing count. The returned-
+These predecessor cases do not establish the 900 shortage's underlying cause
+or global impossibility. The later scheduler observation and maintained wakeup
+correction are scoped separately above. The returned-
 frame probe remains NOT_EXERCISED with its original wrapper failure preserved.
 Full source900, unselected post-copy/filter pixels, source clocks/cadence, GPU
 return, presentation and broader lifetime/endurance remain open. The original
@@ -142,6 +170,8 @@ client's missing filter EOF is a scoped known limitation, not proof of the
 release gates or change defaults; all 13 owning issues retain their remaining
 work. Earlier failures and ordinary/private qualification boundaries remain
 in the records below.
+
+</details>
 
 <details>
 <summary>Earlier post-release cases and maintained component checkpoints</summary>

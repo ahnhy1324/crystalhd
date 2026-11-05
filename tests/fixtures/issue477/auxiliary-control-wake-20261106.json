@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "MAINTAINED_WAKE_FIX_CPU_PASS_SOURCE900_UNRESOLVED",
+  "owning_issues": [
+    477,
+    436
+  ],
+  "owner_disposition": "All thirteen owners remain open for their remaining scopes; no Source900 fix or global impossibility established.",
+  "maintained_fix": {
+    "base": "6c583f9939275874c050a091735be9307ec4aa5d",
+    "component": "filters/vaapi/crystalhd_drv_video.cpp: TryH264Auxiliary",
+    "trigger": "A genuinely accepted auxiliary leaves its next-AU delimiter pending after TX BUSY or insufficient space while the worker is already polling RX.",
+    "change": "NotifyDecodeWorker latches the control event only while pending_prefeed_timestamp remains nonzero; otherwise preserve the existing condition notification.",
+    "scope": "Own maintained wakeup correction. The scheduler capture does not establish that TX backpressure caused its observed poll waits or the original shortage.",
+    "CPU_validation": {
+      "strict_O2_production_and_replay_build_exit": 0,
+      "full_O2_replay_exit": 0,
+      "focused_O0_fixed_exit": 0,
+      "focused_real_worker_cases": "TFF/BFF times BUSY/insufficient-TX-space; worker retries exactly the delimiter without rescue wake, auxiliary replay, invented RX, pixels or EOS.",
+      "retained_coverage": "Affected full replay includes existing EOS, restart, ownership, fairness and failure controls. No fresh full scaling, VPP or library suite is claimed.",
+      "independent_source_review": "PASS",
+      "current_base_CI": "Task integration requires the existing current-base CI gate; CPU evidence does not establish its result.",
+      "integration": "See the task PR and owning issues for integration state; no merge qualification inferred from CPU tests.",
+      "actual_playback_with_fix": "Not qualified by this CPU receipt; see owning issues for later original-App observations.",
+      "old_notification_control": "Build02 exit0; focused exit1 at the intended missing control-readiness/worker-poll wake assertion. Initial build01 missing reused-DIL prerequisite is preserved separately."
+    },
+    "code_commit": "af0a1dc"
+  },
+  "latest_unpromoted_research": {
+    "source": "1fa4df5274ab8a7c15d30dc7dab412bdfb61722d",
+    "case": "worker-postaux22-fixed-private-01",
+    "originals": [
+      889,
+      898
+    ],
+    "validated_original_fields_and_successful_releases": [
+      1778,
+      1796
+    ],
+    "source900": "FAIL",
+    "strict_native_ledgers": [
+      "PASS",
+      "PASS"
+    ],
+    "four_scoped_audits": "Packet admission, postfilter, maintained cost and replay disposition PASS; these do not qualify full Source900 or every unselected pixel.",
+    "controls": "PASS",
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "full_boundary_equal": true,
+    "live_resource_handoff": null,
+    "max_temperature_mC": 65000,
+    "AC_present_throughout": true,
+    "official20_restoration": "PASS",
+    "completed_replay_inputs": [
+      0,
+      0
+    ]
+  },
+  "ordinary_predecessor_checkpoint": {
+    "source": "0331a13573af0ecca5167973bed0fedbeb4c5507",
+    "originals": [
+      894,
+      893
+    ],
+    "scope": "Earlier ordinary native-only arm. Native dequeues precede field validation; pixel, individual release, packet, replay-disposition, cost and postfilter audits remain unobserved. No ordinary source1fa playback result is implied.",
+    "receipt": "tests/fixtures/issue477/source900-deferred-20261105.json"
+  },
+  "separate_scheduler_diagnostic": {
+    "case": "worker-postaux22-sched-01",
+    "source": "1fa4df5274ab8a7c15d30dc7dab412bdfb61722d",
+    "originals": [
+      865,
+      881
+    ],
+    "source900": "FAIL",
+    "scope": "Same forty-second first-play initial-TID scheduler/selected-native-syscall capture; capture overhead forbids a natural-play performance comparison. Raw syscall arguments and pointers remain local.",
+    "four_audits_controls_retirement_restoration": "PASS; full matched official20 restored",
+    "reader": "SOURCE and actual-output independent review PASS",
+    "same_worker_pairs": 819,
+    "pair_gap_total_ns": 13351308836,
+    "fully_known_scheduler_pairs": 786,
+    "partial_or_unknown_scheduler_pairs": 33,
+    "disjoint_gap_intersections_ns": {
+      "blocked_inside_matched_poll": 10837418903,
+      "blocked_inside_matched_futex": 747212809,
+      "runnable": 742637294,
+      "running": 179896065,
+      "unknown": 844143765
+    },
+    "limits": "Successful wakeup bounds runnable time; waking alone is an attempt. Capture/lifetime/loss/unmatched boundaries remain unknown. Attempts match enter/exit by TID and syscall id; restart attempts are not stitched. Intersections are disjoint observations, not pure causes."
+  },
+  "persistent_host": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "module": "3.10.20",
+    "temporary_experiment": "Exact reviewed module3.10.22 over unchanged official20 installation; normal full official20 restoration after retirement. No external product code or defaults changed."
+  },
+  "artifact_root": "/home/mache/.cache/crystalhd-source900-current-20261105",
+  "original_artifacts_relative_to_root": {
+    "latest_research_summary": "worker-postaux22-case-summary.json",
+    "latest_research_result": "worker-postaux22-fixed-private-01/result.json",
+    "latest_research_restore": "module22-worker-postaux-transition-restore20.json",
+    "diagnostic_result": "worker-postaux22-sched-01/result.json",
+    "diagnostic_sampling": "worker-postaux22-sched-01.sampling.json",
+    "diagnostic_raw_local": "worker-postaux22-sched-01/perf.data",
+    "diagnostic_local_text": "worker-postaux22-sched-01/perf-script-local.txt",
+    "diagnostic_integrity": "worker-postaux22-sched-01/trace-integrity.json",
+    "diagnostic_reader": "review-worker-postaux-sched.py",
+    "diagnostic_analysis": "worker-postaux22-sched-01/worker-gap-scheduler-analysis.json",
+    "diagnostic_restore": "module22-worker-postaux-sched-transition-restore20.json",
+    "reader_original_failures": [
+      "worker-postaux22-sched-01/gap-reader-01.log",
+      "worker-postaux22-sched-01/gap-reader-02.log"
+    ],
+    "reader_completed": "worker-postaux22-sched-01/gap-reader-03.log",
+    "fixed_O0_focused": "aux-control-fixed-O0-focused-01.log",
+    "old_O0_focused_expected_failure": "aux-control-old-O0-focused-01.log",
+    "old_build_original_failure": "aux-control-old-O0-build-01.log",
+    "old_build_completed_retry": "aux-control-old-O0-build-02.log",
+    "strict_O2_build": "aux-control-fixed-O2-build-01.log",
+    "CPU_result": "aux-control-cpu-result.json",
+    "full_O2_replay": "aux-control-fixed-O2-full-replay-01.log"
+  }
+}
