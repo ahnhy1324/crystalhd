@@ -17,6 +17,7 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <sys/resource.h>
 #include <sys/wait.h>
 
@@ -13914,6 +13915,346 @@ static void CenteredAuxiliaryIdleGrace() {
           "the idle guard probe consumes its mock channel without fabricating output or EOS");
 }
 
+// Keep this regression source compilable with the literal old six-argument
+// product. The old caller masked exact-Sync idle after a nonempty RX turn;
+// the new caller retains real idle and supplies that observation separately.
+template <typename Function>
+static VAStatus TimedH264Auxiliary(Function function, Driver *driver,
+    DecodeContext *decode, const std::shared_ptr<Surface> &surface,
+    const VppDeinterlace *demand, uint64_t idle, H264AuxiliaryDemand request,
+    uint64_t elapsed, uint64_t *retry, bool successful_empty_rx) {
+  if constexpr (std::is_invocable_r_v<VAStatus, Function, Driver *, DecodeContext *,
+                    const std::shared_ptr<Surface> &, const VppDeinterlace *,
+                    uint64_t, H264AuxiliaryDemand, uint64_t, uint64_t *, bool>) {
+    return function(driver, decode, surface, demand, idle, request,
+                    elapsed, retry, successful_empty_rx);
+  } else {
+    if (retry) *retry = 0;
+    const uint64_t masked = request == H264AuxiliaryDemand::CenteredExactSync &&
+        !successful_empty_rx ? 0 : idle;
+    return function(driver, decode, surface, demand, masked, request);
+  }
+}
+
+static void CenteredLateSyncGrace() {
+  // Late acceptance is first so literal-old execution reaches the intended
+  // real-input verdict before any assertion about the new scheduling hint.
+  for (uint64_t accepted_elapsed : {UINT64_C(40000000), UINT64_C(0), UINT64_C(39999999)}) {
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(f);
+    auto &d = *f.decoder;
+    d.auto_h264_prefeed = true;
+    f.Prepare(1);
+    d.picture = NeutralPicture(256, 64);
+    d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+    Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+            "late grace starts with genuinely admitted and submitted original syntax");
+    f.io.outputs.push_back(kTimestampStep);
+    f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+    bool empty = true;
+    Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && !empty &&
+                d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+            "actual first-field acquisition and release is a nonempty RX turn");
+    const auto pixels = f.held[0]->storage;
+    const auto held = d.h264_first_field.pixels;
+    const auto ordinal = d.next_submission_ordinal, token = d.next_timestamp;
+    const auto progress = d.transport_progress;
+    const auto calls = f.io.input_calls.size();
+    std::vector<uint8_t> expected;
+    Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected, true),
+            "late grace retains the same relative-POC private field-pair payload");
+    const auto unchanged = [&] {
+      return f.io.input_calls.size() == calls && d.next_timestamp == token &&
+          d.prefed_timestamp == token && !d.pending_prefeed_timestamp &&
+          d.next_submission_ordinal == ordinal && d.transport_progress == progress &&
+          !d.auxiliary.ever && !d.auxiliary.pending && !d.auxiliary.needs_eos &&
+          !d.auxiliary.output_released && d.h264_first_field.valid &&
+          d.h264_first_field.timestamp == kTimestampStep && d.h264_first_field.pixels == held &&
+          !f.held[0]->ready && f.held[0]->storage == pixels && d.pending.size() == 1 &&
+          d.replay.outstanding() == 1 && !d.replay.sealed() && f.io.outputs.empty() &&
+          f.io.released_outputs == 1;
+    };
+    const auto passive = [&](uint64_t idle, uint64_t elapsed, bool fresh, uint64_t *hint) {
+      const VAStatus status = TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d,
+          f.held[0], nullptr, idle, H264AuxiliaryDemand::CenteredExactSync, elapsed, hint, fresh);
+      const bool preserved = status == VA_STATUS_SUCCESS && unchanged();
+      if (!preserved)
+        Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                    f.io.device_close_calls == 1 && !f.io.invalid,
+                "unexpected early input consumes the finite channel before its verdict");
+      Require(preserved, "normal/late subthreshold or nonempty turns preserve original and private debt");
+    };
+    uint64_t first_hint = UINT64_MAX;
+    passive(0, UINT64_C(38000000), false, &first_hint);
+    Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && empty && unchanged(),
+            "only a genuine successful empty RX turn supplies fresh input permission");
+    uint64_t hint = UINT64_MAX, near_boundary_hint = UINT64_MAX;
+    passive(UINT64_C(7000000), 0, true, &hint);
+    passive(UINT64_C(9999999), UINT64_C(39999999), true, &near_boundary_hint);
+    uint64_t quiet_hint = UINT64_MAX, nonempty_hint = UINT64_MAX;
+    passive(UINT64_C(999999), UINT64_C(40000000), true, &quiet_hint);
+    passive(UINT64_C(1000000), UINT64_C(40000000), false, &nonempty_hint);
+    const uint64_t accepted_idle = accepted_elapsed == UINT64_C(40000000)
+        ? UINT64_C(1000000) : UINT64_C(10000000);
+    const VAStatus status = TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d,
+        f.held[0], nullptr, accepted_idle, H264AuxiliaryDemand::CenteredExactSync,
+        accepted_elapsed, &hint, true);
+    const bool accepted = status == VA_STATUS_SUCCESS && f.io.input_calls.size() == calls + 2 &&
+        f.io.input_calls[calls].accepted && f.io.input_calls[calls].timestamp == 0 &&
+        f.io.input_calls[calls].bytes == expected && f.io.input_calls.back().accepted &&
+        f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+        f.io.input_calls.back().timestamp == token + kTimestampStep &&
+        d.auxiliary.timestamp == token && d.auxiliary.pending && d.auxiliary.needs_eos &&
+        d.auxiliary.output.field_pairs && d.auxiliary.output.fields == 0 &&
+        !d.auxiliary.output_released && !d.auxiliary.ended &&
+        d.next_timestamp == token + kTimestampStep && d.next_submission_ordinal == ordinal &&
+        d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+        !f.held[0]->ready && f.held[0]->storage == pixels && d.pending.size() == 1 &&
+        d.replay.outstanding() == 1 && !d.replay.sealed() && f.io.outputs.empty() &&
+        f.io.released_outputs == 1;
+    Require(d.Close(0) == BC_STS_SUCCESS && !d.device && f.io.device_close_calls == 1 &&
+                !f.io.invalid && std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 &&
+                std::count(f.io.events.begin(), f.io.events.end(), "eos") == 0,
+            "late-grace positive and literal-old refusal both close before the acceptance verdict");
+    Require(accepted, accepted_elapsed == UINT64_C(40000000)
+        ? "late exact Sync after forty milliseconds must accept the real private field-pair AU at one millisecond quiet"
+        : "normal exact Sync before forty milliseconds retains its ten-millisecond input guard");
+    Require(first_hint == UINT64_C(2000000) && near_boundary_hint == 1 &&
+                quiet_hint == 1 && nonempty_hint == 0,
+            "qualified wait hints join both numeric deadlines without a repeated nonempty one-ms poll");
+  }
+}
+
+static void PrepareLateSyncFixture(H264AdmissionFixture &f, bool hold_first) {
+  ConfigureCenteredAdmission(f);
+  auto &d = *f.decoder;
+  d.auto_h264_prefeed = true;
+  f.Prepare(1);
+  d.picture = NeutralPicture(256, 64);
+  d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+  Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+          "late-Sync controls genuinely submit the retained original");
+  if (hold_first) {
+    f.io.outputs.push_back(kTimestampStep);
+    f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+    bool empty = true;
+    Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && !empty &&
+                d.h264_first_field.valid && f.io.released_outputs == 1,
+            "late-Sync controls validate and release their original first field");
+    Require(ReceiveAvailable(&f.driver, &d, 1, &empty) == VA_STATUS_SUCCESS && empty,
+            "late-Sync controls observe a genuine empty RX turn");
+  }
+}
+
+static void CenteredLateSyncVetoAndFailure() {
+  enum Fault { Exposed, ExportWaiter, Writer, AuxiliaryPending, PendingOwner,
+    MissingLiveOwner, CandidateGeneration, Policy, Syntax, HintAllocation,
+    HintTx, ActualTx, ActualAllocation, ActualBusy, PrefixBusy };
+  for (unsigned fault = Exposed; fault != PrefixBusy + 1U; ++fault) {
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+    PrepareLateSyncFixture(f, true);
+    auto &d = *f.decoder;
+    const auto pixels = f.held[0]->storage, held = d.h264_first_field.pixels;
+    const auto token = d.next_timestamp, ordinal = d.next_submission_ordinal;
+    const auto progress = d.transport_progress, epoch = d.h264_first_field.nv12_write_epoch;
+    const auto calls = f.io.input_calls.size();
+    const auto generation = d.auxiliary.candidate.generation;
+    const auto bottom_poc = d.auxiliary.candidate.picture.CurrPic.BottomFieldOrderCnt;
+    const auto profile = d.profile;
+    if (fault == Exposed) f.held[0]->centered_allocation_exposed = true;
+    if (fault == ExportWaiter) f.held[0]->export_waiters = 1;
+    if (fault == Writer) f.held[0]->image_write_locked = true;
+    if (fault == AuxiliaryPending) d.auxiliary.pending = true; // Negative guard only, never a producer.
+    if (fault == PendingOwner) d.pending.at(kTimestampStep) = 2;
+    if (fault == MissingLiveOwner) f.driver.surfaces.erase(1);
+    if (fault == CandidateGeneration) ++d.auxiliary.candidate.generation;
+    if (fault == Policy) d.profile = VAProfileMPEG2Main;
+    if (fault == Syntax)
+      d.auxiliary.candidate.picture.CurrPic.BottomFieldOrderCnt = std::numeric_limits<int32_t>::min();
+    if (fault == HintTx || fault == ActualTx) f.io.tx_free_size = 0;
+    if (fault == ActualBusy) f.io.input_busy = true;
+    if (fault == PrefixBusy) f.io.prefeed_busy_once = true;
+    const bool actual = fault >= ActualTx;
+    allocation_fault::fail_next = fault == HintAllocation || fault == ActualAllocation;
+    uint64_t retry = UINT64_MAX;
+    const VAStatus status = TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d,
+        f.held[0], nullptr, actual ? UINT64_C(1000000) : 0,
+        H264AuxiliaryDemand::CenteredExactSync,
+        actual ? UINT64_C(40000000) : UINT64_C(38000000), &retry, actual);
+    const bool allocation_consumed = !allocation_fault::fail_next;
+    allocation_fault::fail_next = false;
+    f.held[0]->centered_allocation_exposed = false;
+    f.held[0]->export_waiters = 0;
+    f.held[0]->image_write_locked = false;
+    if (fault == AuxiliaryPending) d.auxiliary.pending = false;
+    d.pending[kTimestampStep] = 1;
+    f.driver.surfaces[1] = f.held[0];
+    d.auxiliary.candidate.generation = generation;
+    d.auxiliary.candidate.picture.CurrPic.BottomFieldOrderCnt = bottom_poc;
+    d.profile = profile;
+    f.io.input_busy = false;
+    Require(retry == 0 && ((fault != HintAllocation && fault != ActualAllocation) || allocation_consumed),
+            "vetoed or actual late attempts leave no timer hint; allocation controls reach the real builder");
+    if (fault == ActualAllocation || fault == ActualBusy) {
+      Require(status == VA_STATUS_ERROR_DECODING_ERROR && d.ReplayFailed() &&
+                  !d.auxiliary.ever && !d.auxiliary.pending && !d.auxiliary.needs_eos &&
+                  f.io.input_calls.size() == calls + (fault == ActualBusy ? 1U : 0U) &&
+                  (fault != ActualBusy || !f.io.input_calls.back().accepted) &&
+                  d.next_timestamp == token && d.next_submission_ordinal == ordinal &&
+                  !f.held[0]->ready && f.held[0]->storage == pixels,
+              "actual eligible allocation/input failure keeps the existing terminal no-retry contract");
+    } else if (fault == PrefixBusy) {
+      Require(status == VA_STATUS_SUCCESS && d.auxiliary.pending && d.auxiliary.needs_eos &&
+                  d.auxiliary.timestamp == token && d.pending_prefeed_timestamp == token + kTimestampStep &&
+                  f.io.input_calls.size() == calls + 2 && f.io.input_calls[calls].accepted &&
+                  !f.io.input_calls.back().accepted && !f.held[0]->ready,
+              "late input acceptance retains a BUSY successor prefix without replaying its private AU");
+      bool attempted = false;
+      Require(RetryPendingH264Prefeed(&f.driver, &d, &attempted) == VA_STATUS_SUCCESS && attempted &&
+                  f.io.input_calls.size() == calls + 3 && f.io.input_calls.back().accepted &&
+                  f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                  f.io.input_calls.back().timestamp == token + kTimestampStep,
+              "the ordinary retry pays exactly the delimiter, not another auxiliary");
+    } else {
+      Require(status == VA_STATUS_SUCCESS && f.io.input_calls.size() == calls &&
+                  d.next_timestamp == token && d.next_submission_ordinal == ordinal &&
+                  d.transport_progress == progress && !d.auxiliary.ever &&
+                  !d.auxiliary.pending && !d.auxiliary.needs_eos && !d.ReplayFailed() &&
+                  d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+                  d.h264_first_field.nv12_write_epoch == epoch && !f.held[0]->ready &&
+                  f.held[0]->storage == pixels && d.pending.size() == 1 &&
+                  d.replay.outstanding() == 1 && f.io.outputs.empty() && f.io.released_outputs == 1 &&
+                  d.input_backpressured == (fault == ActualTx),
+              "pretime owner/policy/payload/allocation/TX veto is passive; only actual TX shortage marks backpressure");
+      if (fault == ActualTx) {
+        f.io.tx_free_size = 1024 * 1024;
+        Require(TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d, f.held[0], nullptr,
+                    UINT64_C(1000000), H264AuxiliaryDemand::CenteredExactSync,
+                    UINT64_C(40000000), &retry, true) == VA_STATUS_SUCCESS && retry == 0 &&
+                    f.io.input_calls.size() == calls + 2 && d.auxiliary.pending &&
+                    d.auxiliary.timestamp == token && d.next_submission_ordinal == ordinal,
+                "real restored TX headroom permits one ordinary late auxiliary and delimiter");
+      }
+    }
+    Require(d.Close(0) == BC_STS_SUCCESS && !d.device && f.io.device_close_calls == 1 &&
+                !f.io.invalid && std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 &&
+                std::count(f.io.events.begin(), f.io.events.end(), "eos") == 0,
+            "late veto/failure controls consume their finite mock channel without fabricating EOS");
+  }
+  H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+  PrepareLateSyncFixture(f, true);
+  auto &d = *f.decoder;
+  const auto calls = f.io.input_calls.size();
+  VppDeinterlace bob{};
+  bob.bob = true;
+  bob.field = crystalhd_vpp_bob::FieldParity::kBottom;
+  uint64_t retry = UINT64_MAX;
+  Require(TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d, f.held[0], &bob,
+              UINT64_C(99999999), H264AuxiliaryDemand::ComplementaryBob, UINT64_MAX, &retry, false) ==
+              VA_STATUS_SUCCESS && retry == 0 && f.io.input_calls.size() == calls && !d.auxiliary.ever,
+          "a long active Sync value never shortens Bob's hundred-ms grace or adds a timer hint");
+  Require(TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d, f.held[0], nullptr,
+              UINT64_C(100000000), H264AuxiliaryDemand::ComplementaryBob, UINT64_MAX, &retry, true) ==
+              VA_STATUS_SUCCESS && retry == 0 && f.io.input_calls.size() == calls,
+          "default demand without a Bob operation cannot inject private input");
+  std::vector<uint8_t> legacy;
+  Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &legacy), "build the unchanged legacy Bob AU");
+  Require(TimedH264Auxiliary(&TryH264Auxiliary, &f.driver, &d, f.held[0], &bob,
+              UINT64_C(100000000), H264AuxiliaryDemand::ComplementaryBob, UINT64_MAX, &retry, false) ==
+              VA_STATUS_SUCCESS && retry == 0 && f.io.input_calls.size() == calls + 2 &&
+              f.io.input_calls[calls].bytes == legacy && f.io.input_calls[calls].accepted &&
+              d.auxiliary.pending && !d.auxiliary.output.field_pairs,
+          "Bob still accepts its identical legacy Weave payload at hundred-ms quiet without exact-RX rules");
+  Require(d.Close(0) == BC_STS_SUCCESS && !d.device && !f.io.invalid,
+          "unchanged Bob control closes its finite channel");
+}
+
+static void CenteredLatePublicSyncAndDeadline() {
+  {
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+    PrepareLateSyncFixture(f, false);
+    auto &d = *f.decoder;
+    const auto pixels = f.held[0]->storage;
+    const auto ordinal = d.next_submission_ordinal;
+    const auto calls = f.io.input_calls.size();
+    const auto started = std::chrono::steady_clock::now();
+    bool first_released = false, auxiliary_observed = false;
+    std::function<void()> after_first;
+    after_first = [&] {
+      Require(d.h264_first_field.valid && f.io.released_outputs == 1 &&
+                  !f.held[0]->ready && f.held[0]->storage == pixels &&
+                  d.next_submission_ordinal == ordinal && !d.replay.sealed(),
+              "a real long active public Sync retains its incomplete original until the genuine complement");
+      first_released = true;
+      if (d.auxiliary.pending) {
+        Require(std::chrono::steady_clock::now() - started >= std::chrono::milliseconds(40) &&
+                    f.io.input_calls.size() == calls + 2 && d.auxiliary.output.field_pairs &&
+                    d.auxiliary.needs_eos && d.replay.outstanding() == 1,
+                "the public caller really submits private input after the active lower deadline");
+        auxiliary_observed = true;
+        f.io.outputs.push_back(kTimestampStep);
+        f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_BOTTOMFIELD);
+      } else {
+        Require(f.io.input_calls.size() == calls && !d.auxiliary.ever,
+                "fresh empty-RX polling remains passive before actual acceptance");
+        __real_usleep(1000);
+        f.io.on_sleep = after_first;
+      }
+    };
+    f.io.on_sleep = [&] {
+      Require(!d.h264_first_field.valid && f.io.released_outputs == 0 &&
+                  f.io.input_calls.size() == calls && !d.auxiliary.ever,
+              "no held first field means no early auxiliary or invented output");
+      std::this_thread::sleep_for(std::chrono::milliseconds(41));
+      f.io.outputs.push_back(kTimestampStep);
+      f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+      f.io.on_sleep = after_first;
+    };
+    Require(SyncSurface2(&f.context, 1, 2ULL * 1000 * 1000 * 1000) == VA_STATUS_SUCCESS &&
+                first_released && auxiliary_observed && f.held[0]->ready &&
+                f.io.released_outputs == 2 && d.replay.outstanding() == 0 && d.auxiliary.pending &&
+                d.next_submission_ordinal == ordinal && !f.io.invalid,
+            "roomy public Sync completes only after two actual original field releases");
+    // The lower deadline is real; scheduler oversleep is not an upper latency
+    // oracle or proof that a particular one-ms adoption window was exercised.
+    CheckCenteredAdmissionPicture(f, 0);
+    Require(d.Close(0) == BC_STS_SUCCESS && !d.device && !f.io.invalid,
+            "long active public Sync consumes remaining private debt by normal finite close");
+  }
+  {
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+    PrepareLateSyncFixture(f, true);
+    auto &d = *f.decoder;
+    const auto pixels = f.held[0]->storage;
+    const auto calls = f.io.input_calls.size();
+    const auto ordinal = d.next_submission_ordinal;
+    Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+                SyncSurface2(&f.context, 1, 1) == VA_STATUS_ERROR_TIMEDOUT &&
+                f.io.input_calls.size() == calls && !d.auxiliary.ever && f.io.released_outputs == 1,
+            "passive and expired finite callers return before private input eligibility");
+    unsigned callbacks = 0;
+    f.io.on_sleep = [&] {
+      ++callbacks;
+      std::this_thread::sleep_for(std::chrono::milliseconds(510));
+      f.io.outputs.push_back(kTimestampStep);
+      f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_BOTTOMFIELD);
+    };
+    Require(SyncSurface2(&f.context, 1, UINT64_C(500000000)) == VA_STATUS_ERROR_TIMEDOUT &&
+                callbacks == 1 && f.io.outputs.size() == 1 && f.io.released_outputs == 1 &&
+                f.io.input_calls.size() == calls && !d.auxiliary.ever && !f.held[0]->ready &&
+                f.held[0]->storage == pixels && d.h264_first_field.valid &&
+                d.next_submission_ordinal == ordinal && !d.ReplayFailed() && !d.replay.sealed(),
+            "after-wait expiry returns before acquiring a newly queued complement or submitting private input");
+    Require(SyncSurface2(&f.context, 1, 2ULL * 1000 * 1000 * 1000) == VA_STATUS_SUCCESS &&
+                f.held[0]->ready && f.io.released_outputs == 2 && f.io.outputs.empty() &&
+                f.io.input_calls.size() == calls && !d.auxiliary.ever && !f.io.invalid,
+            "a fresh caller completes the same exact original from that genuine queued complement");
+    CheckCenteredAdmissionPicture(f, 0);
+    Require(d.Close(0) == BC_STS_SUCCESS && !d.device && !f.io.invalid,
+            "finite timeout preserves and normally consumes the original channel");
+  }
+}
+
 static void CenteredAuxiliaryFieldLayout() {
   // Real own admission, neutral-byte generation, field validation and release;
   // the mock supplies scalar output and never decodes H.264 or models its DPB.
@@ -14630,6 +14971,9 @@ static void NeutralAuxiliaryContracts() {
   CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
   CenteredAuxiliaryIdleGrace();
+  CenteredLateSyncGrace();
+  CenteredLateSyncVetoAndFailure();
+  CenteredLatePublicSyncAndDeadline();
   CenteredAuxiliaryFieldLayout();
   CenteredAuxiliaryFieldFaults();
   CenteredWorkerPairsAfterReleasedAuxiliary();
@@ -14649,6 +14993,15 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (const char *focus = std::getenv("CRYSTALHD_TEST_LATE_SYNC_FOCUS")) {
+      Require(argc == 1 && std::strcmp(focus, "1") == 0,
+              "late-Sync focus requires its exact test-only marker and no arguments");
+      CenteredLateSyncGrace();
+      CenteredLateSyncVetoAndFailure();
+      CenteredLatePublicSyncAndDeadline();
+      std::puts("VA-API Centered late exact Sync: real private input, normal/late quiet guards and numeric retry coupling PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--centered-aux-idle-grace") == 0) {
       CenteredAuxiliaryIdleGrace();
       std::puts("VA-API Centered exact auxiliary: deterministic ten-ms idle guard and unchanged field-pair ownership PASS");

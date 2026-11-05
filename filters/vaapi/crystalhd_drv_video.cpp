@@ -209,6 +209,8 @@ static bool IsH264Profile(VAProfile profile);
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
 constexpr uint64_t kCenteredExactAuxiliaryGraceNs = 10ULL * 1000 * 1000;
+constexpr uint64_t kCenteredLateSyncThresholdNs = 40ULL * 1000 * 1000;
+constexpr uint64_t kCenteredLateAuxiliaryGraceNs = 1ULL * 1000 * 1000;
 constexpr uint64_t kBoundedH264InactivityGraceNs =
     1ULL * 1000 * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
@@ -8283,7 +8285,11 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
                                const std::shared_ptr<Surface> &surface,
                                const VppDeinterlace *demand, uint64_t idle,
                                H264AuxiliaryDemand request =
-                                   H264AuxiliaryDemand::ComplementaryBob) {
+                                   H264AuxiliaryDemand::ComplementaryBob,
+                               uint64_t sync_elapsed_ns = 0,
+                               uint64_t *retry_after_ns = nullptr,
+                               bool successful_empty_rx = true) {
+  if (retry_after_ns) *retry_after_ns = 0;
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
   const bool bob = request == H264AuxiliaryDemand::ComplementaryBob &&
@@ -8322,11 +8328,26 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       surface->trace_generation == decode->generation &&
       surface->trace_submission_ordinal == first.picture->trace_submission_ordinal &&
       (!first.picture->direct_backing || first.picture->direct_backing == surface);
-  // Exact Sync requires ten milliseconds without real transport progress and
-  // the caller's successful empty RX turn. Bob retains its existing grace;
-  // neither path fabricates output or completes the original picture.
+  // A long active exact Sync may use a shorter quiet interval, but input still
+  // requires this turn's successful empty RX. A nonempty turn can only request
+  // a future recheck; its unmasked real idle prevents repeated expired hints.
+  const uint64_t grace = exact
+      ? (sync_elapsed_ns >= kCenteredLateSyncThresholdNs
+             ? kCenteredLateAuxiliaryGraceNs : kCenteredExactAuxiliaryGraceNs)
+      : kDecodeBatchGraceNs;
+  const bool time_eligible = idle >= grace && (!exact || successful_empty_rx);
+  uint64_t retry = 0;
+  if (exact && retry_after_ns) {
+    const uint64_t until_late = sync_elapsed_ns < kCenteredLateSyncThresholdNs
+        ? kCenteredLateSyncThresholdNs - sync_elapsed_ns : 0;
+    const uint64_t until_quiet = idle < kCenteredLateAuxiliaryGraceNs
+        ? kCenteredLateAuxiliaryGraceNs - idle : 0;
+    const uint64_t remaining = std::max(until_late, until_quiet);
+    if (remaining != 0 && remaining < kCenteredExactAuxiliaryGraceNs)
+      retry = remaining;
+  }
   if ((!bob && !exact) ||
-      idle < (exact ? kCenteredExactAuxiliaryGraceNs : kDecodeBatchGraceNs) || aux.pending ||
+      (!time_eligible && retry == 0) || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.timestamp != surface->expected_timestamp ||
@@ -8354,7 +8375,9 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
   if (picture == decode->decoded_frames.end() || pending == decode->pending.end() ||
       picture->second != first.picture || first.decode_identity == 0 ||
       first.decode_identity != picture->second->decode_identity)
-    return FailDecode(driver, decode, "H.264 auxiliary lost original ownership");
+    return time_eligible
+        ? FailDecode(driver, decode, "H.264 auxiliary lost original ownership")
+        : VA_STATUS_SUCCESS;
   const uint64_t token = decode->next_timestamp;
   if (!token || token > std::numeric_limits<uint64_t>::max() - kTimestampStep ||
       decode->pending.count(token) || decode->decoded_frames.count(token) ||
@@ -8362,26 +8385,36 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       (decode->pending_prefeed_timestamp &&
        (decode->pending_prefeed_timestamp != token ||
         decode->pending_prefeed_generation != decode->generation)))
-    return FailDecode(driver, decode, "H.264 auxiliary timestamp reservation");
+    return time_eligible
+        ? FailDecode(driver, decode, "H.264 auxiliary timestamp reservation")
+        : VA_STATUS_SUCCESS;
   std::vector<uint8_t> payload;
   try {
     if (!BuildH264NeutralIntra(aux.candidate.picture, &payload, exact))
       return VA_STATUS_SUCCESS;
   } catch (const std::bad_alloc &) {
-    return FailDecode(driver, decode, "neutral picture allocation");
+    return time_eligible ? FailDecode(driver, decode, "neutral picture allocation")
+                         : VA_STATUS_SUCCESS;
   }
   const size_t bytes = payload.size();
   const size_t reservation = bytes + (bytes / 60000 + 1) * 32 + 1024;
   if (DtsTxFreeSize(decode->device) < reservation) {
-    decode->input_backpressured = true;
+    if (time_eligible) decode->input_backpressured = true;
+    return VA_STATUS_SUCCESS;
+  }
+  if (!time_eligible) {
+    if (retry_after_ns) *retry_after_ns = retry;
     return VA_STATUS_SUCCESS;
   }
   const bool consume = decode->prefed_timestamp == token;
-  Debug("H.264 auxiliary qualified source=%llu token=%llu bytes=%zu generation=%llu consume_prefeed=%d idle_ns=%llu",
+  Debug("H.264 auxiliary qualified source=%llu token=%llu bytes=%zu generation=%llu consume_prefeed=%d idle_ns=%llu candidate_source=%llu sync_elapsed_ns=%llu grace_ns=%llu fresh_empty_rx=%d",
                static_cast<unsigned long long>(first.timestamp),
                static_cast<unsigned long long>(token), bytes,
                static_cast<unsigned long long>(decode->generation), consume,
-               static_cast<unsigned long long>(idle));
+               static_cast<unsigned long long>(idle),
+               static_cast<unsigned long long>(aux.candidate_timestamp),
+               static_cast<unsigned long long>(sync_elapsed_ns),
+               static_cast<unsigned long long>(grace), successful_empty_rx);
   // One whole-call reservation; any non-success is terminal, never retried.
   const BC_STATUS status = DtsProcInput(decode->device, payload.data(),
       static_cast<uint32_t>(bytes), consume ? 0 : token, FALSE);
@@ -8734,17 +8767,15 @@ static VAStatus SyncDecodeSurface(
     }
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
+    uint64_t auxiliary_retry_ns = 0;
     if ((private_vpp_ready && private_demand) ||
         auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync) {
       const uint64_t before = decode->transport_progress;
-      // A duplicate, format event or other acquired output can leave the
-      // progress counter unchanged. Only the existing successful empty turn
-      // may enable early exact lookahead; Bob and EOS retain their old idle.
-      const uint64_t auxiliary_idle =
-          auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync && !no_output
-              ? 0 : idle;
-      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, auxiliary_idle,
-                               auxiliary_demand);
+      // Keep real idle separate from empty-RX proof: a newly released first
+      // field may schedule a recheck, but cannot submit auxiliary input yet.
+      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, idle,
+                               auxiliary_demand, elapsed, &auxiliary_retry_ns,
+                               no_output);
       if (status != VA_STATUS_SUCCESS) return status;
       // A newly accepted real auxiliary input is progress, not an EOF trigger.
       if (before != decode->transport_progress) {
@@ -8781,7 +8812,22 @@ static VAStatus SyncDecodeSurface(
     // With negotiated RX polling, the sole hardware waiter publishes output
     // through this condition; retain the old 1 ms sleep for older stacks.
     if (decode->output_poll && driver->decode_control_fd >= 0) {
-      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+      uint64_t wait_ns = 10ULL * 1000 * 1000;
+      const auto wait_now = std::chrono::steady_clock::now();
+      if (auxiliary_retry_ns != 0) {
+        const uint64_t qualification_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(wait_now - now).count();
+        wait_ns = std::min(wait_ns, qualification_ns < auxiliary_retry_ns
+            ? auxiliary_retry_ns - qualification_ns : 0);
+      }
+      if (timeout_ns != VA_TIMEOUT_INFINITE) {
+        const uint64_t wait_elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(wait_now - start).count();
+        wait_ns = std::min(wait_ns, wait_elapsed < timeout_ns
+            ? timeout_ns - wait_elapsed : 0);
+      }
+      driver->condition.wait_for(*driver_lock,
+          std::chrono::nanoseconds(static_cast<int64_t>(wait_ns)));
     } else {
       driver_lock->unlock();
       usleep(1000);
@@ -8807,6 +8853,27 @@ static VAStatus SyncDecodeSurface(
         return presentation;
       if (presentation_ready())
         return VA_STATUS_SUCCESS;
+      if (driver->stopping)
+        return VA_STATUS_ERROR_OPERATION_FAILED;
+      if (private_vpp_ready) {
+        bool ready = false;
+        const VAStatus private_status = private_vpp_ready(&ready);
+        if (private_status != VA_STATUS_SUCCESS || ready)
+          return private_status;
+      }
+      // A pending request must expire before the next RX/input turn, while
+      // an exact picture or private view completed during the wait stays valid.
+      const uint64_t resumed_elapsed =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - start).count();
+      const VAStatus resumed_wait_status = DecodeWaitStatus(timeout_ns, resumed_elapsed);
+      if (resumed_wait_status == VA_STATUS_ERROR_DECODING_ERROR) {
+        Debug("firmware did not complete timestamp=%llu within 10 seconds",
+              static_cast<unsigned long long>(surface->expected_timestamp));
+        return FailDecode(driver, decode.get(), "sealed-batch sync timed out");
+      }
+      if (resumed_wait_status != VA_STATUS_SUCCESS)
+        return resumed_wait_status;
     }
   }
   const VAStatus binding_state = wait_binding_status();
