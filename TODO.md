@@ -55,7 +55,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Current source2d returns **892/891 originals: Source900 FAIL**, with strict ledgers/four audits/controls, safety and full official20 restoration PASS. The narrow maintained control-wake fix [#672](https://github.com/ahnhy1324/crystalhd/pull/672) is merged after distinguishing CPU controls, full replay, independent review and current-base CI. A separate renderer diagnostic links all 900 input decisions per play to accepted sends and observes DROP_ANY requests, without establishing actual discard counts or the lateness cause. Continue that causal attribution and the remaining pixels, clocks/cadence, GPU return, lifetime/endurance and matched-benefit work. Latest ordinary evidence remains the separate [source0331 predecessor](tests/fixtures/issue477/source900-deferred-20261105.json), 894/893 with native-only scope; no ordinary source2d result is claimed. Current source2d evidence is in the linked owning issues; the full research stack stays unpromoted. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | Maintained task candidate `247bfc8` fixes private field layout, relative POC and exact-Sync pacing; CPU and fresh 75-picture pixel/metadata regression PASS, but its original Kodi run returns **832/834: Source900 FAIL**. The separate unpromoted research source `6a293ff` returns **900/900: scoped Source900 PASS**; that result does not qualify the main-only port or a release. Both runs pass four scoped audits, controls, safety and full official20 restoration. See the [current receipt and limits](tests/fixtures/issue477/auxiliary-field-pacing-20261106.json). Continue main-only shortage attribution and the broader pixels, clocks/cadence, GPU return, lifetime/endurance and matched-benefit work; both umbrella issues stay open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist. The current matched-baseline SIZED16 arm completes864/854 originals and still fails900; sequential counts do not prove a performance gain or justify changing the default. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator. Preserve DMA quarantine and the coupled defer-allocation/DONTNEED scope. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -71,19 +71,61 @@ support scopes are not additional promotion gates. Nonblocking research continue
 
 ### Source 900 investigation and remaining real-time boundary
 
-**900 originals remain unresolved; #477 and #436 stay open.** Their
-[current #477 evidence](https://github.com/ahnhy1324/crystalhd/issues/477) and
-[#436 evidence](https://github.com/ahnhy1324/crystalhd/issues/436) identify the
-unpromoted source2d research stack, which includes the maintained control-wake
-fix merged in [#672](https://github.com/ahnhy1324/crystalhd/pull/672).
-The original Kodi/App, 900-picture input and discard policy remain unchanged.
-Serial populations do not measure a causal speedup. Every temporary22 case
-below normally restores the complete matched official1.3/source24a/module20
-installation; research artifacts do not replace it.
+**The maintained field/pacing correction passes its bounded regression;
+main-only Source900 still fails.** Task candidate `247bfc8`, based on maintained
+master `98ecab2`, changes only our private auxiliary field ledger, relative
+bottom-field POC and 10ms exact-Sync quiet threshold. It imports none of the
+research COW, worker, Surface or conversion changes. The
+[current receipt](tests/fixtures/issue477/auxiliary-field-pacing-20261106.json)
+separates that candidate from the unpromoted research stack.
+
+The literal old maintained code fails the intended first-private-field oracle
+after actual release and finite cleanup. The fixed O0 focused/full replay and
+strict O2 ordinary/private builds plus full replay pass, including four field
+orders, 13 faults, signed POC bounds, unchanged legacy bytes and the quiet guard.
+Fresh maintained-source prefix75 playback observes two actual private fields
+and successful releases, with pending debt `1→0`; all 75 visible NV12 frames
+and raw metadata equal the reused source2d baseline. That is a cross-source
+regression comparison, not an independent decoder golden or timing comparison.
+The complete accepted-auxiliary-to-following-original scope has FMT18 counts
+`2→0`; 63 following originals include P/B pictures, IDRs at packet ordinals
+26/51 and actual EOS. This does not promise general zero format changes.
 
 | Latest separate natural-play observation, default fixed DIL / temporary22 | First play | Reopen | Disposition |
 | --- | ---: | ---: | --- |
-| Current source2d, research stack plus pending-auxiliary control wake | 892 | 891 | Source900 FAIL; 1,784/1,782 validated original fields/releases; strict ledgers/four audits/controls PASS; zero replay; App0/kernel0; maximum68C; AC present throughout; full boundary equality; no handoff; full official20 restore PASS |
+| Maintained task candidate `247bfc8`, narrow field/POC/pacing correction | 832 | 834 | **Source900 FAIL**; 1,664/1,668 validated original fields/releases; strict ledgers/four scoped audits/controls PASS; zero replay; App0/kernel0; maximum65C; AC throughout; full boundary equality; no handoff; full official20 restore PASS |
+| Separate unpromoted research `6a293ff`, combined research stack | 900 | 900 | **Scoped Source900 PASS**; 1,800 original fields/releases each; four scoped audits/controls and safety PASS; zero replay; 130/128 private auxiliary pairs; App0/kernel0; maximum66C; AC throughout; full boundary equality; no handoff; full official20 restore PASS |
+
+The research source900 subtask is complete for those two natural plays; its
+result does not transfer to the main-only candidate. Both use the unchanged
+original Kodi/App, 900-picture input and discard policy, with own diagnostic
+observers. Serial populations establish neither a paired speedup nor the cause
+of the main-only shortage. Neither run qualifies stock compatibility, a release,
+every pixel, physical cadence or GPU return. Published 1.3 remains frozen at
+source24a/module20; temporary22 experiments restore that complete installation.
+
+[#477](https://github.com/ahnhy1324/crystalhd/issues/477) and
+[#436](https://github.com/ahnhy1324/crystalhd/issues/436) stay **open** for their
+broader acceptance: independent full-field/chroma and post-copy/filter pixels,
+source clocks/cadence, matched CPU/QoS benefit, GPU return and lifetime/endurance,
+broader inputs, and the original filter-EOF tail. Source-qualified no-drift logs
+satisfy A/V for their recorded route; accepted renderer/QoS loss is not a new
+universal zero-loss release gate. Continue the main-only lateness/selection
+attribution without inventing an external defect or global impossibility.
+All 13 owners retain their genuine remaining scopes.
+
+<details>
+<summary>Earlier source2d renderer and source1fa scheduler/wake checkpoints</summary>
+
+These frozen observations precede the field/POC/pacing work above. They retain
+their original failures and limits; no ordinary source2d result is claimed.
+The latest separate ordinary predecessor remains
+[source0331](tests/fixtures/issue477/source900-deferred-20261105.json), 894/893
+with native-only scope.
+
+| Earlier natural-play observation, default fixed DIL / temporary22 | First play | Reopen | Disposition |
+| --- | ---: | ---: | --- |
+| Source2d, research stack plus pending-auxiliary control wake | 892 | 891 | Source900 FAIL; 1,784/1,782 validated original fields/releases; strict ledgers/four audits/controls PASS; zero replay; App0/kernel0; maximum68C; AC present throughout; full boundary equality; no handoff; full official20 restore PASS |
 
 The **separate renderer diagnostic** on source2d returns **893/888**, with
 four scoped audits, controls, App0/kernel0, full boundary equality, no handoff
@@ -109,22 +151,11 @@ rules remain intact. Fresh scaling/VPP/library reruns are not claimed.
 This proves a bounded own notification fix; it does not establish the source900
 cause or qualify a main-only playback result from the combined research stack.
 
-Next work is to attribute the remaining lateness/selection cause and establish
-900 distinct originals in each unchanged natural play, while preserving the
-original filter-EOF and broader post-copy/filter pixels, clocks/cadence, GPU
-return and lifetime/endurance limits. Unobserved EndPicture bodies and other
-threads remain part of that causal boundary. Neither global impossibility nor
-an external defect is established. All 13 owning issues retain their remaining
-work; these research targets do not add release gates, change defaults or
-replace the accepted renderer/QoS-loss policy with a universal zero-loss rule.
-
-<details>
-<summary>Previous source1fa worker-pairing, scheduler and wake-fix checkpoints</summary>
-
 The [retained research and CPU wake-fix record](tests/fixtures/issue477/auxiliary-control-wake-20261106.json)
 records source1fa and the distinguishing maintained-code controls. It remains
-that checkpoint; the current source2d natural-play and renderer observations
-are separate evidence in the owning issues.
+that checkpoint; the source2d natural-play and renderer observations above are
+separate evidence in the owning issues. Unobserved EndPicture bodies and other
+threads remain part of the causal boundary.
 
 | Earlier natural-play observation, default fixed DIL / temporary22 | First play | Reopen | Disposition |
 | --- | ---: | ---: | --- |
@@ -201,8 +232,9 @@ These predecessor cases do not establish the 900 shortage's underlying cause
 or global impossibility. The later scheduler observation and maintained wakeup
 correction are scoped separately above. The returned-
 frame probe remains NOT_EXERCISED with its original wrapper failure preserved.
-Full source900, unselected post-copy/filter pixels, source clocks/cadence, GPU
-return, presentation and broader lifetime/endurance remain open. The original
+For this predecessor, full source900, unselected post-copy/filter pixels,
+source clocks/cadence, GPU return, presentation and broader lifetime/endurance
+remain open. The original
 client's missing filter EOF is a scoped known limitation, not proof of the
 900 shortage's cause or global impossibility. These research scopes do not add
 release gates or change defaults; all 13 owning issues retain their remaining
@@ -224,7 +256,7 @@ do not replace the latest separate cases above.
 | Source67c, deferred private Small | 887 | 899 | Source900 FAIL; strict ledgers/four audits/controls PASS; zero replay; maximum69C; full official20 restore PASS |
 | Source8fa, bounded released-first-field worker pair | 891 | 893 | Source900 FAIL; strict ledgers/four audits/controls PASS; zero replay; maximum66C; full official20 restore PASS |
 | Same8fa, additional read-only 1Hz frequency observation | 894 | 888 | Source900 FAIL; same scoped checks PASS; zero replay; maximum64C; no governor/bounds/priority changes; full official20 restore PASS |
-| Current e4d full research candidate | 837 | 830 | Source900 FAIL |
+| Research e4d full candidate | 837 | 830 | Source900 FAIL |
 | Same e4d with existing SIZED16 DIL opt-in | 864 | 854 | Source900 FAIL; second play also has10 classified replay inputs, not extra originals |
 | Same original App/e4d/SIZED16 under49Hz all-thread perf | 876 | 878 | Diagnostic profile only; Source900 FAIL, no speedup comparison |
 | Research9d with bounded TX-before-RX, actual fixed DIL | 881 | 877 | Source900 FAIL; replay not exercised |
