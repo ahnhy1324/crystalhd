@@ -38,19 +38,24 @@ struct Event {
   bool lock_acquired = false;
   std::atomic<bool> ready{false};
 };
+struct Retirement {
+  uint64_t driver = 0, context = 0, generation = 0;
+  int64_t outcome = 0;
+};
 class State;
 inline State *fork_state = nullptr;
 class State {
  public:
   std::array<Event, kCapacity> events{};
   std::mutex gate;
+  std::mutex publish_gate; // Only post-retirement IO; never an original API lock.
   uint64_t attempted = 0, dropped = 0, drivers_opened = 0, drivers_closed = 0;
+  uint64_t retirements = 0;
   unsigned live_drivers = 0;
   std::atomic<unsigned> inflight{0}, clock_failures{0}, lifecycle_failures{0};
   std::atomic<bool> fork_seen{false};
   pid_t pid = 0;
   int directory = -1;
-  bool publishing = false;
   State() noexcept {
     const int saved = errno;
     pid = getpid();
@@ -86,8 +91,7 @@ class State {
     const int saved = errno;
     if (Active()) {
       std::lock_guard<std::mutex> hold(gate);
-      if (publishing) ++lifecycle_failures;
-      else { ++drivers_opened; ++live_drivers; }
+      ++drivers_opened; ++live_drivers;
     }
     errno = saved;
   }
@@ -95,7 +99,7 @@ class State {
     const int saved = errno;
     if (Active()) {
       std::lock_guard<std::mutex> hold(gate);
-      if (publishing || !live_drivers) ++lifecycle_failures;
+      if (!live_drivers) ++lifecycle_failures;
       else { ++drivers_closed; --live_drivers; }
     }
     errno = saved;
@@ -103,7 +107,6 @@ class State {
   bool Reserve(unsigned *index) noexcept {
     if (!Active()) return false; // No inherited-child observer mutex access.
     std::lock_guard<std::mutex> hold(gate);
-    if (publishing) { ++lifecycle_failures; return false; }
     const uint64_t slot = attempted++;
     if (slot >= events.size()) { ++dropped; return false; }
     *index = static_cast<unsigned>(slot);
@@ -119,23 +122,28 @@ class State {
     }
     return true;
   }
-  void Publish() noexcept {
+  void PublishRetired(const Retirement &retirement) noexcept {
     const int saved = errno;
     if (!Active()) { errno = saved; return; }
-    uint64_t total, lost, opened, closed;
-    unsigned busy;
+    // Serialize only publishers, outside Driver::mutex. Reserve stays available
+    // while immutable earlier slots are written to this separate prefix file.
+    std::lock_guard<std::mutex> publication(publish_gate);
+    uint64_t total, lost, opened, closed, retirement_index;
+    unsigned busy, live, bad_clock, bad_life;
+    bool forked;
     {
       std::lock_guard<std::mutex> hold(gate);
-      if (publishing) { errno = saved; return; }
-      publishing = true;
-      // Do not perform observer IO while a Driver owner survives. Missing
-      // output means unavailable evidence, never successful retirement.
-      if (live_drivers) { errno = saved; return; }
+      if (retirements == UINT64_MAX) { ++lifecycle_failures; errno = saved; return; }
+      retirement_index = ++retirements;
       total = attempted; lost = dropped; opened = drivers_opened; closed = drivers_closed;
+      live = live_drivers;
       busy = inflight.load(std::memory_order_acquire);
+      bad_clock = clock_failures.load(); bad_life = lifecycle_failures.load();
+      forked = fork_seen.load();
     }
-    char name[96], partial[112];
-    const int length = std::snprintf(name, sizeof(name), "api-admission-%ld.jsonl", static_cast<long>(pid));
+    char name[128], partial[144];
+    const int length = std::snprintf(name, sizeof(name), "api-admission-%ld-retirement-%" PRIu64 ".jsonl",
+                                     static_cast<long>(pid), retirement_index);
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(name)) { errno = saved; return; }
     const int temporary = std::snprintf(partial, sizeof(partial), "%s.partial", name);
     if (temporary <= 0 || static_cast<size_t>(temporary) >= sizeof(partial)) { errno = saved; return; }
@@ -143,13 +151,18 @@ class State {
     if (fd < 0) { errno = saved; return; }
     char line[1536];
     int n = std::snprintf(line, sizeof(line),
-        "{\"type\":\"header\",\"schema\":\"crystalhd-api-admission-v1\",\"pid\":%ld,"
+        "{\"type\":\"header\",\"schema\":\"crystalhd-api-admission-v2\",\"pid\":%ld,"
         "\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"scope\":\"OWN_PUBLIC_API_MUTEX_ACQUISITION_ONLY\","
         "\"capacity\":%u,\"product_base_revision\":\"50c4dce60773d12a7d6fc46217571a625c85805b\","
         "\"clock_names\":{\"wall\":\"CLOCK_MONOTONIC\",\"cpu\":\"CLOCK_THREAD_CPUTIME_ID\"},"
         "\"context_identity\":\"UNVALIDATED_API_ARGUMENT\",\"api_return_status\":\"NOT_OBSERVED\","
-        "\"publication\":\"DSO_OR_PROCESS_TEARDOWN_AFTER_ALL_OBSERVED_DRIVERS_RETIRED\"}\n",
-        static_cast<long>(pid), kCapacity);
+        "\"publication\":\"AFTER_CONSUMED_NONVPP_CONTEXT_DESTROY_AND_DRIVER_MUTEX_UNLOCK\","
+        "\"sequence_scope\":\"CUMULATIVE_RESERVATION_PREFIX\",\"retirement_index\":%" PRIu64 ","
+        "\"reservation_cutoff\":%" PRIu64 ",\"whole_process_retirement\":\"NOT_OBSERVED\","
+        "\"retirement\":{\"driver_instance\":%" PRIu64 ",\"context\":%" PRIu64 ","
+        "\"generation\":%" PRIu64 ",\"outcome\":%" PRId64 "}}\n",
+        static_cast<long>(pid), kCapacity, retirement_index, total,
+        retirement.driver, retirement.context, retirement.generation, retirement.outcome);
     bool ok = n > 0 && static_cast<size_t>(n) < sizeof(line) && WriteAll(fd, line, static_cast<size_t>(n));
     const unsigned count = total < events.size() ? static_cast<unsigned>(total) : kCapacity;
     unsigned written = 0, unpublished = 0;
@@ -169,16 +182,19 @@ class State {
       ok = n > 0 && static_cast<size_t>(n) < sizeof(line) && WriteAll(fd, line, static_cast<size_t>(n));
       if (ok) ++written;
     }
-    const unsigned bad_clock = clock_failures.load(), bad_life = lifecycle_failures.load();
-    const bool complete = ok && total && opened && opened == closed && !lost && !busy &&
+    // Counts/errors are the coherent reservation-cutoff snapshot. A busy
+    // prefix never becomes qualified just because its slots finish during IO.
+    const bool complete = ok && total && opened && retirement.driver && retirement.context &&
+                          retirement.generation && retirement.outcome == 0 && !lost && !busy &&
                           !unpublished && !bad_clock && !bad_life;
     n = std::snprintf(line, sizeof(line),
         "{\"type\":\"footer\",\"events\":%u,\"attempted_events\":%" PRIu64 ",\"dropped\":%" PRIu64 ","
         "\"inflight\":%u,\"unpublished\":%u,\"clock_failures\":%u,\"lifecycle_failures\":%u,"
-        "\"drivers_opened\":%" PRIu64 ",\"drivers_closed\":%" PRIu64 ",\"live_drivers\":0,"
-        "\"fork_seen\":%s,\"complete\":%s}\n",
+        "\"drivers_opened\":%" PRIu64 ",\"drivers_closed\":%" PRIu64 ",\"live_drivers\":%u,"
+        "\"retirement_index\":%" PRIu64 ",\"reservation_cutoff\":%" PRIu64 ","
+        "\"fork_seen\":%s,\"prefix_complete\":%s}\n",
         written, total, lost, busy, unpublished, bad_clock, bad_life, opened, closed,
-        fork_seen.load() ? "true" : "false", complete ? "true" : "false");
+        live, retirement_index, total, forked ? "true" : "false", complete ? "true" : "false");
     ok = ok && n > 0 && static_cast<size_t>(n) < sizeof(line) &&
          WriteAll(fd, line, static_cast<size_t>(n));
     const bool stream_closed = close(fd) == 0; // Consuming close is never retried.
@@ -190,13 +206,29 @@ class State {
   }
   ~State() {
     const int saved = errno;
-    Publish();
+    // No destructor-only fallback: Kodi can retain its VA display through exit.
     if (fork_state == this) fork_state = nullptr;
     if (directory >= 0) close(directory);
     errno = saved;
   }
 };
 inline State state;
+// Declare before the existing Driver lock. Store only scalars, so original
+// DestroyCall/shared-object cleanup and mutex unlock precede publication IO.
+class PublishOnReturn {
+  Retirement retirement_;
+  bool armed_ = false;
+ public:
+  void Arm(uint64_t driver, uint64_t context, uint64_t generation, int64_t outcome) noexcept {
+    if (!state.Active()) return;
+    retirement_ = {driver, context, generation, outcome};
+    armed_ = true;
+  }
+  ~PublishOnReturn() { if (armed_) state.PublishRetired(retirement_); }
+  PublishOnReturn() = default;
+  PublishOnReturn(const PublishOnReturn &) = delete;
+  PublishOnReturn &operator=(const PublishOnReturn &) = delete;
+};
 class Admission {
   Event *event_ = nullptr;
  public:
@@ -243,4 +275,7 @@ class Admission {
 #define CH_API_ADMISSION_ACQUIRED(name, driver) (name).Acquired((driver))
 #define CH_API_ADMISSION_DRIVER_OPENED() crystalhd_test_api_admission::state.DriverOpened()
 #define CH_API_ADMISSION_DRIVER_CLOSED() crystalhd_test_api_admission::state.DriverClosed()
+#define CH_API_ADMISSION_PUBLICATION(name) crystalhd_test_api_admission::PublishOnReturn name
+#define CH_API_ADMISSION_RETIRED(name, eligible, driver, context, generation, outcome) \
+  do { if (eligible) (name).Arm((driver), (context), (generation), (outcome)); } while (false)
 #endif

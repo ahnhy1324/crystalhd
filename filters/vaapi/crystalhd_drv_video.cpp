@@ -114,6 +114,8 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #define CH_API_ADMISSION_ACQUIRED(name, driver) do {} while (false)
 #define CH_API_ADMISSION_DRIVER_OPENED() do {} while (false)
 #define CH_API_ADMISSION_DRIVER_CLOSED() do {} while (false)
+#define CH_API_ADMISSION_PUBLICATION(name) do {} while (false)
+#define CH_API_ADMISSION_RETIRED(name, eligible, driver, context, generation, outcome) do {} while (false)
 #endif
 
 #if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST)
@@ -10135,6 +10137,7 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
                                           VAContextID context_id,
                                           uint64_t close_timeout_ns) {
   Driver *driver = GetDriver(context);
+  CH_API_ADMISSION_PUBLICATION(api_publication);
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
   // Independent frozen arrays publish only after the existing lock releases.
   crystalhd_test_centered_payload::PublishOnReturn centered_publication;
@@ -10268,6 +10271,9 @@ static VAStatus DestroyContextWithTimeout(VADriverContextP context,
     }
   }
 #endif
+  CH_API_ADMISSION_RETIRED(api_publication,
+                          status == VA_STATUS_SUCCESS && !decode->video_process,
+                          driver->trace.session(), fields.context, fields.generation, status);
   return status;
 }
 
