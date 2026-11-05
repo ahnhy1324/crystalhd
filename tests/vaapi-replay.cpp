@@ -12759,8 +12759,12 @@ struct NeutralSyntaxReader {
   }
   uint32_t UE() {
     unsigned zeros = 0;
-    while (!Bits(1)) Require(++zeros < 31, "bounded neutral Exp-Golomb");
+    while (!Bits(1)) Require(++zeros < 32, "bounded neutral Exp-Golomb");
     return ((1U << zeros) - 1) + Bits(zeros);
+  }
+  int64_t SE() {
+    const uint32_t value = UE();
+    return (value & 1U) ? (int64_t{value} + 1) / 2 : -int64_t{value / 2U};
   }
   void End() {
     Require(Bits(1) == 1, "RBSP stop bit");
@@ -12852,6 +12856,67 @@ static void NeutralAuxSyntaxIsSelfContained() {
     Require(!BuildH264NeutralIntra(p, &rejected), "unsupported neutral syntax rejected");
   }
 }
+static void NeutralAuxFieldPocSyntax() {
+  // Syntax only: no H.264 decoder, firmware output or ordering is modeled.
+  const auto legacy_unchanged = [](VAPictureParameterBufferH264 p) {
+    std::vector<uint8_t> implicit, explicit_false, reference;
+    Require(BuildH264NeutralIntra(p, &implicit) &&
+                BuildH264NeutralIntra(p, &explicit_false, false),
+            "legacy neutral generation remains available independently of bottom POC");
+    p.CurrPic.BottomFieldOrderCnt = p.CurrPic.TopFieldOrderCnt;
+    Require(BuildH264NeutralIntra(p, &reference, false) &&
+                implicit == explicit_false && implicit == reference,
+            "legacy default/false bytes ignore only bottom POC, including field-mode rejection cases");
+    auto nals = NeutralParseNals(implicit);
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(2) == 0,
+            "legacy PPS keeps bottom-POC presence disabled");
+  };
+  const int32_t maximum = std::numeric_limits<int32_t>::max();
+  const int32_t minimum = std::numeric_limits<int32_t>::min();
+  for (const auto &counts : {std::make_pair(int32_t{0}, int32_t{0}),
+                             {0, 1}, {1, 0}, {0, maximum}, {maximum, 0}}) {
+    auto p = NeutralPicture(16, 32);
+    p.CurrPic.TopFieldOrderCnt = counts.first;
+    p.CurrPic.BottomFieldOrderCnt = counts.second;
+    std::vector<uint8_t> bytes;
+    Require(BuildH264NeutralIntra(p, &bytes, true),
+            "field-pair neutral syntax admits zero, signed unit and both bounded POC delta extremes");
+    auto nals = NeutralParseNals(bytes);
+    Require(nals[0].first == 9 && nals[1].first == 0x68 && nals[2].first == 1,
+            "field POC syntax retains only AUD, reserved PPS and nonreference nonIDR I");
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(2) == 1 &&
+                pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 && pps.Bits(3) == 0 &&
+                pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 && pps.Bits(3) == 4,
+            "only the bottom POC presence flag changes the neutral PPS contract");
+    pps.End();
+    auto &slice = nals[2].second;
+    Require(slice.UE() == 0 && slice.UE() == 2 && slice.UE() == 254 &&
+                slice.Bits(4) == p.frame_num && slice.Bits(1) == 0 &&
+                slice.Bits(6) == (static_cast<uint32_t>(counts.first) & 63U) &&
+                slice.SE() == int64_t{counts.second} - counts.first &&
+                slice.SE() == 0 && slice.UE() == 1,
+            "actual SE bytes preserve the signed bottom-minus-top delta before unchanged QP/deblock syntax");
+    Require(slice.Bits(1) == 1, "field decoding remains selected for the MBAFF pair");
+    for (unsigned mb = 0; mb != 2; ++mb)
+      Require(slice.UE() == 3 && slice.UE() == 0 && slice.SE() == 0 && slice.Bits(1) == 1,
+              "field POC changes do not alter neutral I16 DC macroblock syntax");
+    slice.End();
+    legacy_unchanged(p);
+  }
+  for (const auto &counts : {std::make_pair(int32_t{0}, minimum), {1, minimum}, {maximum, minimum}}) {
+    auto p = NeutralPicture(16, 32);
+    p.CurrPic.TopFieldOrderCnt = counts.first;
+    p.CurrPic.BottomFieldOrderCnt = counts.second;
+    const std::vector<uint8_t> sentinel = {0x7b, 0xa5};
+    auto bytes = sentinel;
+    Require(!BuildH264NeutralIntra(p, &bytes, true) && bytes == sentinel,
+            "INT32_MIN or widened POC underflow is rejected before mutating caller output");
+    legacy_unchanged(p);
+  }
+}
+
 constexpr uint64_t kNeutralAuxToken = 2 * kTimestampStep;
 
 static void NeutralAuxBegin(H264WeaveFixture *fixture, DecodeIoMock *io) {
@@ -13869,14 +13934,36 @@ static void CenteredAuxiliaryFieldLayout() {
     auto nals = NeutralParseNals(payload);
     Require(nals[0].first == 9 && nals[1].first == 0x68 && nals[2].first == 1,
             "private layout retains AUD/PPS254/nonreference nonIDR I without changing original SPS");
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(1) == 0,
+            "field-coded private PPS retains reserved identity and CAVLC");
+    const bool bottom_poc_present = pps.Bits(1) != 0;
+    Require(pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.Bits(3) == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.UE() == 0 && pps.Bits(3) == 4,
+            "field-coded private PPS keeps the remaining original neutral syntax");
+    pps.End();
+    if (!bottom_poc_present) {
+      f.io.override_output = false;
+      Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "old missing-bottom-POC declaration closes its finite mock channel without fabricating EOS");
+    }
+    Require(bottom_poc_present,
+            "field-coded private PPS must declare the accepted bottom-minus-top POC delta");
     auto &slice = nals[2].second;
     const unsigned frame_bits = syntax.seq_fields.bits.log2_max_frame_num_minus4 + 4;
     const unsigned poc_bits = syntax.seq_fields.bits.log2_max_pic_order_cnt_lsb_minus4 + 4;
     Require(slice.UE() == 0 && slice.UE() == 2 && slice.UE() == 254 &&
                 slice.Bits(frame_bits) == syntax.frame_num && slice.Bits(1) == 0 &&
-                slice.Bits(poc_bits) == (static_cast<uint32_t>(syntax.CurrPic.TopFieldOrderCnt) & ((1U << poc_bits) - 1)) &&
-                slice.UE() == 0 && slice.UE() == 1,
+                slice.Bits(poc_bits) == (static_cast<uint32_t>(syntax.CurrPic.TopFieldOrderCnt) & ((1U << poc_bits) - 1)),
             "private slice keeps accepted frame/POC and frame-picture syntax rather than inventing PAFF pictures");
+    const uint32_t delta_code = slice.UE();
+    const int64_t bottom_delta = (delta_code & 1U)
+        ? (int64_t{delta_code} + 1) / 2 : -int64_t{delta_code / 2U};
+    Require(bottom_delta == int64_t{syntax.CurrPic.BottomFieldOrderCnt} - syntax.CurrPic.TopFieldOrderCnt &&
+                slice.UE() == 0 && slice.UE() == 1,
+            "field-coded private slice preserves the exact signed bottom-minus-top POC before QP and deblocking");
     for (unsigned mb = 0; mb < (256U / 16U) * (64U / 16U); ++mb) {
       if (!(mb & 1U)) Require(slice.Bits(1) == 1, "every private MBAFF pair uses field decoding");
       Require(slice.UE() == 3 && slice.UE() == 0 && slice.UE() == 0 && slice.Bits(1) == 1,
@@ -14457,6 +14544,7 @@ static void NeutralAuxiliaryContracts() {
   NeutralAuxFiniteActualEosPermitsContinuation();
   NeutralAuxRestartRejectsUnpaidDebt();
   NeutralAuxSyntaxIsSelfContained();
+  NeutralAuxFieldPocSyntax();
   NeutralAuxWeavePreservesHeldOriginal();
   NeutralAuxWeaveFaultsFailClosed();
   NeutralAuxSequentialRetirementIsBounded();
@@ -14469,6 +14557,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::strcmp(argv[1], "--centered-aux-field-layout") == 0) {
       CenteredAuxiliaryFieldLayout();
       CenteredAuxiliaryFieldFaults();
+      NeutralAuxFieldPocSyntax();
       std::puts("VA-API Centered private field layout: independent syntax, two-release debt and unchanged original pixels/EOS PASS");
       return 0;
     }

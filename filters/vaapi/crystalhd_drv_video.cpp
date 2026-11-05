@@ -6502,11 +6502,17 @@ static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
       frame_bits > 16 || poc_bits > 16 ||
       p.frame_num >= (1U << frame_bits) || p.CurrPic.TopFieldOrderCnt < 0)
     return false;
+  const int64_t bottom_delta = static_cast<int64_t>(p.CurrPic.BottomFieldOrderCnt) -
+                               static_cast<int64_t>(p.CurrPic.TopFieldOrderCnt);
+  if (field_pairs &&
+      (bottom_delta < -std::numeric_limits<int32_t>::max() ||
+       bottom_delta > std::numeric_limits<int32_t>::max()))
+    return false;
   bytes->clear();
   AppendNal(bytes, 9, 0, std::vector<uint8_t>{0x10});
   BitWriter pps;
   pps.PutUE(254); pps.PutUE(0);
-  pps.PutBit(false); pps.PutBit(false);
+  pps.PutBit(false); pps.PutBit(field_pairs);
   pps.PutUE(0); pps.PutUE(0); pps.PutUE(0);
   pps.PutBit(false); pps.PutBits(2, 0);
   pps.PutSE(0); pps.PutSE(0); pps.PutSE(0);
@@ -6518,6 +6524,7 @@ static bool BuildH264NeutralIntra(const VAPictureParameterBufferH264 &p,
   slice.PutBit(false); // One frame picture; MBAFF pair mode is selected below.
   slice.PutBits(poc_bits, static_cast<uint32_t>(p.CurrPic.TopFieldOrderCnt) &
                              ((1U << poc_bits) - 1));
+  if (field_pairs) slice.PutSE(static_cast<int32_t>(bottom_delta));
   slice.PutSE(0); slice.PutUE(1); // default QP, deblocking disabled
   for (unsigned mb = 0; mb < (width / 16U) * (height / 16U); ++mb) {
     if ((mb & 1U) == 0) slice.PutBit(field_pairs);
