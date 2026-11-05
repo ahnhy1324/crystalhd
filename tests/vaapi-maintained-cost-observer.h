@@ -19,9 +19,9 @@
 #include <type_traits>
 #include <unistd.h>
 #ifndef CRYSTALHD_MAINTAINED_COST_CAPACITY
-#define CRYSTALHD_MAINTAINED_COST_CAPACITY 65536
+#define CRYSTALHD_MAINTAINED_COST_CAPACITY 131072
 #endif
-#if CRYSTALHD_MAINTAINED_COST_CAPACITY < 2 || CRYSTALHD_MAINTAINED_COST_CAPACITY > 65536
+#if CRYSTALHD_MAINTAINED_COST_CAPACITY < 2 || CRYSTALHD_MAINTAINED_COST_CAPACITY > 131072
 #error "Invalid fixed maintained-cost capacity"
 #endif
 #ifndef CRYSTALHD_MAINTAINED_COST_CLOCK
@@ -114,7 +114,7 @@ class State {
     const int saved=errno;pid=getpid();
     const char *marker=std::getenv("CRYSTALHD_TEST_MAINTAINED_COST");
     const char *path=std::getenv("CRYSTALHD_TEST_MAINTAINED_COST_PREFIX");
-    enabled=marker && std::strcmp(marker,"v1")==0 && path && path[0]=='/' && std::strlen(path)<sizeof(prefix);
+    enabled=marker && std::strcmp(marker,"v2")==0 && path && path[0]=='/' && std::strlen(path)<sizeof(prefix);
     if (enabled) {
       std::memcpy(prefix,path,std::strlen(path)+1);fork_state=this;
       if (pthread_atfork(ForkPrepare,nullptr,nullptr)) ++lifecycle_failures;
@@ -159,7 +159,7 @@ class State {
     if (length<=0 || static_cast<size_t>(length)>=sizeof(path)) {errno=saved;return;}
     const int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
     if (fd<0) {errno=saved;return;}
-    bool ok=dprintf(fd,"{\"type\":\"header\",\"schema\":\"crystalhd-maintained-cost-v1\",\"pid\":%ld,\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"scope\":\"OWN_MAINTAINED_BACKEND_ONLY\",\"capacity\":%zu,\"clock_names\":{\"wall\":\"CLOCK_MONOTONIC\",\"cpu\":\"CLOCK_THREAD_CPUTIME_ID\"},\"stages\":[",static_cast<long>(pid),events.size())>=0;
+    bool ok=dprintf(fd,"{\"type\":\"header\",\"schema\":\"crystalhd-maintained-cost-v2\",\"pid\":%ld,\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"scope\":\"OWN_MAINTAINED_BACKEND_ONLY\",\"capacity\":%zu,\"clock_names\":{\"wall\":\"CLOCK_MONOTONIC\",\"cpu\":\"CLOCK_THREAD_CPUTIME_ID\"},\"stages\":[",static_cast<long>(pid),events.size())>=0;
     for (unsigned i=0;ok && i<sizeof(kStages)/sizeof(kStages[0]);++i)
       ok=dprintf(fd,"%s\"%s\"",i?",":"",kStages[i])>=0;
     if (ok) ok=dprintf(fd,"],\"flags\":{\"compact\":1,\"decoded_public\":2,\"direct_public\":4,\"selected_capture\":8,\"i915_wc\":16,\"read\":32,\"write\":64}}\n")>=0;

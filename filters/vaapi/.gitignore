@@ -6,6 +6,7 @@
 /vaapi-replay-test
 /vaapi-buffer-handles-test
 /vaapi-cache-test
+/vaapi-cow-snapshot-test
 /vaapi-private-backing-test
 /vaapi-conversion-test
 /vaapi-scaling-test

@@ -43,6 +43,15 @@ struct Geometry {
   uintptr_t bo_address = 0;
   uint32_t dumb_handle = 0;
 };
+template <typename Surface>
+auto OwnedCpuStorageBytes(const Surface &surface, int)
+    -> decltype(surface.PayloadCpuStorageBytes()) {
+  return surface.PayloadCpuStorageBytes();
+}
+template <typename Surface>
+size_t OwnedCpuStorageBytes(const Surface &surface, long) {
+  return surface.storage.size();
+}
 template <typename Surface> Geometry Describe(const Surface &surface) {
   if (surface.payload_observer_is_view)
     return surface.payload_observer_view_geometry;
@@ -54,7 +63,10 @@ template <typename Surface> Geometry Describe(const Surface &surface) {
     g.pitch[plane] = surface.pitch[plane];
     g.plane[plane] = reinterpret_cast<uintptr_t>(surface.planes[plane]);
   }
-  g.storage_bytes = surface.storage.size();
+  // Current owned CPU extent, not an assertion that the allocator is vector.
+  // Actual memfd primaries use the private Surface accessor; simple fixtures
+  // and unchanged vector storage retain their exact historical metadata.
+  g.storage_bytes = OwnedCpuStorageBytes(surface, 0);
   g.object_count = surface.object_sizes.size();
   for (size_t i = 0; i < g.object_count && i < 4; ++i)
     g.object_sizes[i] = surface.object_sizes[i];

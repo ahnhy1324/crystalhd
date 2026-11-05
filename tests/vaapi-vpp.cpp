@@ -101,6 +101,9 @@ CRYSTALHD_TEST_NOINLINE void operator delete[](void *p, const std::nothrow_t &) 
 
 extern "C" int __real_close(int fd);
 extern "C" int __real_eventfd(unsigned int initial_value, int flags);
+extern "C" int __real_fstat(int, struct stat *);
+extern "C" void *__real_mmap64(void *, size_t, int, int, int, off64_t);
+extern "C" int __real_munmap(void *, size_t);
 
 namespace {
 
@@ -277,7 +280,7 @@ struct MockFenceScope {
 struct NativeNodeMock {
   static constexpr int render_fd = 8100;
   struct File { bool primary; struct stat identity; };
-  struct Dumb { int fd; uint64_t size; uint32_t pitch; uint64_t offset; };
+  struct Dumb { int fd; uint64_t size; uint32_t pitch; uint64_t offset; int prime = -1; };
   struct stat render = {}, primary = {};
   char primary_path[64] = "/dev/dri/crystalhd-test-primary";
   char *nodes[DRM_NODE_MAX] = {};
@@ -305,6 +308,22 @@ struct NativeNodeMock {
   std::unordered_map<int, File> files;
   std::unordered_map<uint32_t, Dumb> dumbs;
   std::unordered_map<void *, std::unique_ptr<std::vector<uint8_t>>> mappings;
+  // Opt-in real private memfds let CPU-primary export tests inspect the exact
+  // produced bytes/aliases while discovery and DRM ioctls remain simulated.
+  bool real_prime_files = false, fail_write_end = false;
+  std::function<void()> on_write_end;
+  unsigned read_starts = 0, read_ends = 0, write_starts = 0, write_ends = 0;
+  std::vector<struct stat> real_identities;
+  std::unordered_map<void *, size_t> real_mappings;
+
+  bool RealBackingFd(int fd) const {
+    if (!real_prime_files) return false;
+    struct stat value{};
+    if (__real_fstat(fd, &value) != 0) return false;
+    for (const auto &identity : real_identities)
+      if (identity.st_dev == value.st_dev && identity.st_ino == value.st_ino) return true;
+    return false;
+  }
 
   NativeNodeMock() {
     render.st_dev = 10; render.st_ino = 20; render.st_rdev = 30;
@@ -331,7 +350,10 @@ struct NativeNodeMock {
       return 0;
     }
     const auto file = files.find(fd);
-    if (file == files.end()) { ++invalid; return Error(); }
+    if (file == files.end()) {
+      if (RealBackingFd(fd)) return __real_fstat(fd, info);
+      ++invalid; return Error();
+    }
     ++primary_stats;
     if (fail_primary_stats != 0) { --fail_primary_stats; return Error(); }
     *info = file->second.identity;
@@ -363,7 +385,11 @@ struct NativeNodeMock {
   int Close(int fd) {
     ++closes;
     const auto file = files.find(fd);
-    if (file == files.end()) { ++invalid; return Error(); }
+    if (file == files.end()) {
+      if (RealBackingFd(fd)) return __real_close(fd);
+      ++invalid; return Error();
+    }
+    const bool real = !file->second.primary && real_prime_files;
     // Closing a surface's own DRM file also drops a failed DESTROY_DUMB handle.
     if (file->second.primary)
       for (auto it = dumbs.begin(); it != dumbs.end(); ) {
@@ -371,9 +397,21 @@ struct NativeNodeMock {
         else ++it;
       }
     files.erase(file);
-    return 0;
+    return real ? __real_close(fd) : 0;
   }
   int Ioctl(int fd, unsigned long request, void *argument) {
+    if (request == DMA_BUF_IOCTL_SYNC && RealBackingFd(fd)) {
+      const auto flags = static_cast<dma_buf_sync *>(argument)->flags;
+      if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)) ++read_starts;
+      else if (flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)) ++read_ends;
+      else if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) ++write_starts;
+      else if (flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)) {
+        ++write_ends;
+        if (fail_write_end) return Error();
+        if (on_write_end) on_write_end();
+      } else { ++invalid; return Error(); }
+      return 0;
+    }
     const auto file = files.find(fd);
     if (file == files.end() || !file->second.primary) {
       ++invalid;
@@ -460,6 +498,23 @@ struct NativeNodeMock {
       ++invalid;
       return Error();
     }
+    if (real_prime_files) {
+      const int prime = memfd_create("crystalhd-cpu-primary-test", MFD_CLOEXEC);
+      struct stat identity{};
+      if (prime < 0) return Error();
+      if (ftruncate(prime, dumb->second.size) != 0 || __real_fstat(prime, &identity) != 0) {
+        __real_close(prime); return Error();
+      }
+      try {
+        real_identities.push_back(identity);
+        files.emplace(prime, File{false, identity});
+      } catch (const std::bad_alloc &) {
+        __real_close(prime); errno = ENOMEM; return -1;
+      }
+      dumb->second.prime = prime;
+      *result = prime;
+      return 0;
+    }
     *result = next_fd++;
     files.emplace(*result, File{false, primary});
     return 0;
@@ -467,6 +522,14 @@ struct NativeNodeMock {
   void *Map(size_t size, int prot, int flags, int fd, off64_t offset) {
     ++map_attempts;
     last_mapped_offset = static_cast<uint64_t>(offset);
+    if (RealBackingFd(fd)) {
+      void *address = __real_mmap64(nullptr, size, prot, flags, fd, offset);
+      if (address == MAP_FAILED) return address;
+      try { real_mappings.emplace(address, size); }
+      catch (const std::bad_alloc &) { __real_munmap(address, size); errno = ENOMEM; return MAP_FAILED; }
+      ++maps;
+      return address;
+    }
     const auto dumb = std::find_if(dumbs.begin(), dumbs.end(),
         [&](const auto &entry) {
           return entry.second.fd == fd && entry.second.offset ==
@@ -479,6 +542,13 @@ struct NativeNodeMock {
       return MAP_FAILED;
     }
     ++maps;
+    if (real_prime_files) {
+      void *address = __real_mmap64(nullptr, size, prot, flags, dumb->second.prime, 0);
+      if (address == MAP_FAILED) return address;
+      try { real_mappings.emplace(address, size); }
+      catch (const std::bad_alloc &) { __real_munmap(address, size); errno = ENOMEM; return MAP_FAILED; }
+      return address;
+    }
     auto pixels = std::make_unique<std::vector<uint8_t>>(size);
     void *address = pixels->data();
     mappings.emplace(address, std::move(pixels));
@@ -491,6 +561,12 @@ struct NativeNodeMock {
     return address;
   }
   int Unmap(void *address, size_t size) {
+    const auto real = real_mappings.find(address);
+    if (real != real_mappings.end()) {
+      if (real->second != size) { ++invalid; return Error(); }
+      ++unmaps; real_mappings.erase(real);
+      return __real_munmap(address, size);
+    }
     const auto mapping = mappings.find(address);
     if (mapping == mappings.end() || mapping->second->size() != size) {
       ++invalid;
@@ -680,7 +756,44 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
              : __real_ioctl(fd, request, argument);
 }
 
+// Only the COW helper's named real memfd bypasses the DRM model. Its VMAs
+// are real kernel private/shared mappings; keep fixed bookkeeping so allocator
+// fault tests do not accidentally fail in this test-only forwarding path.
+namespace cow_kernel_io {
+struct Mapping { void *address = nullptr; size_t size = 0; };
+static std::array<Mapping, 256> mappings;
+static std::mutex mutex;
+static bool File(int fd) {
+  const int saved = errno;
+  char path[64], name[128];
+  std::snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+  const ssize_t bytes = readlink(path, name, sizeof(name) - 1);
+  if (bytes >= 0) name[bytes] = '\0';
+  const bool result = bytes >= 0 &&
+      std::strcmp(name, "/memfd:crystalhd-canvas (deleted)") == 0;
+  errno = saved;
+  return result;
+}
+static void Track(void *address, size_t size) {
+  if (address == MAP_FAILED) return;
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &mapping : mappings) if (mapping.address == nullptr) {
+    mapping = {address, size}; return;
+  }
+  std::abort();
+}
+static bool Untrack(void *address, size_t size) {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &mapping : mappings) if (mapping.address == address) {
+    if (mapping.size != size) std::abort();
+    mapping = {}; return true;
+  }
+  return false;
+}
+} // namespace cow_kernel_io
+
 extern "C" int __wrap_close(int fd) {
+  if (cow_kernel_io::File(fd)) return __real_close(fd);
   if (native_node_mock != nullptr)
     return native_node_mock->Close(fd);
   return fence_io_mock != nullptr ? fence_io_mock->Close(fd)
@@ -711,6 +824,11 @@ extern "C" int __wrap_drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags
 }
 extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
                               int fd, off_t offset) {
+  if (cow_kernel_io::File(fd)) {
+    void *result = __real_mmap(address, size, prot, flags, fd, offset);
+    cow_kernel_io::Track(result, size);
+    return result;
+  }
   void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap(address, size, prot, flags, fd, offset);
@@ -719,6 +837,11 @@ extern "C" void *__wrap_mmap(void *address, size_t size, int prot, int flags,
 }
 extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
                                 int fd, off64_t offset) {
+  if (cow_kernel_io::File(fd)) {
+    void *result = __real_mmap64(address, size, prot, flags, fd, offset);
+    cow_kernel_io::Track(result, size);
+    return result;
+  }
   void *result = native_node_mock != nullptr
       ? native_node_mock->Map(size, prot, flags, fd, offset)
       : __real_mmap64(address, size, prot, flags, fd, offset);
@@ -726,6 +849,7 @@ extern "C" void *__wrap_mmap64(void *address, size_t size, int prot, int flags,
   return result;
 }
 extern "C" int __wrap_munmap(void *address, size_t size) {
+  if (cow_kernel_io::Untrack(address, size)) return __real_munmap(address, size);
   const int result = native_node_mock != nullptr
       ? native_node_mock->Unmap(address, size) : __real_munmap(address, size);
   if (import_io_probe != nullptr) import_io_probe->Unmap(address, size, result);
@@ -7413,6 +7537,440 @@ void ImageGeometryAndOddNv12Roundtrip() {
             "invalid or overflow image dimensions must fail before allocation");
 }
 
+static bool TestCowAvailable() {
+  static const bool available = [] {
+    auto canvas = crystalhd_cow_snapshot::Canvas::Create(4096);
+    if (canvas) return true;
+    const int error = errno;
+    if (error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP) return false;
+    throw std::runtime_error("COW capability operational failure errno=" + std::to_string(error));
+  }();
+  return available;
+}
+
+static uint32_t TestCowPrimaryCapacity(const Surface &surface) {
+  const auto &canvas = surface.cpu_primary_canvas ? surface.cpu_primary_canvas
+                                                   : surface.retired_cpu_primary_canvas;
+  return canvas ? static_cast<uint32_t>(canvas->Capacity()) : 0U;
+}
+
+std::vector<uint8_t> CpuPrimaryActiveBytes(const Surface &surface) {
+  std::vector<uint8_t> bytes;
+  for (unsigned plane = 0; plane != 2; ++plane)
+    for (unsigned row = 0; row != (plane ? surface.height / 2U : surface.height); ++row) {
+      const uint8_t *line = surface.planes[plane] + size_t{row} * surface.pitch[plane];
+      bytes.insert(bytes.end(), line, line + surface.width);
+    }
+  return bytes;
+}
+
+std::shared_ptr<Surface> MakeCpuPrimaryTarget(Fixture *fixture, NativeNodeMock *mock,
+                                            bool cpu_primary = true,
+                                            unsigned width = 256, unsigned height = 32,
+                                            unsigned visible_height = 32,
+                                            unsigned capture_width = 128,
+                                            unsigned capture_height = 16) {
+  auto surface = std::make_shared<Surface>();
+  Require(surface->AllocateInternal(nullptr, mock->render_fd, width, height, VA_FOURCC_NV12),
+          "allocate a real driver DUMB layout using private memfd DRM controls");
+  surface->id = 41; surface->rt_format = VA_RT_FORMAT_YUV420;
+  surface->direct_decode_eligible = surface->ready = true;
+  fixture->driver.surfaces[41] = surface;
+  fixture->driver.drm_fd = mock->render_fd;
+  fixture->driver.next_surface = 42;
+  for (unsigned plane = 0; plane != 2; ++plane)
+    for (unsigned row = 0; row != (plane ? height / 2U : height); ++row)
+      for (unsigned column = 0; column != width; ++column)
+        surface->planes[plane][size_t{row} * surface->pitch[plane] + column] =
+            static_cast<uint8_t>(43U + plane * 67U + row * 11U + column * 3U);
+  const auto old = CpuPrimaryActiveBytes(*surface);
+  if (!cpu_primary) return surface;
+  DecodeContext decoder; decoder.width = width; decoder.height = height;
+  crystalhd_centered_output::Config config;
+  const std::string policy = std::to_string(capture_width) + "x" + std::to_string(capture_height) +
+      "@" + std::to_string(width) + "x" + std::to_string(visible_height) + ":limited";
+  Require(crystalhd_centered_output::ParseConfig(policy.c_str(), &config) &&
+              crystalhd_centered_output::BuildGeometry(config, width, height, 4, &decoder.centered_geometry) &&
+              TryCpuPrimaryTarget(surface.get(), decoder) && CpuPrimaryStorageMatches(*surface) &&
+              CpuPrimaryActiveBytes(*surface) == old,
+          "real full-copy conversion preserves every original public pixel");
+  return surface;
+}
+
+void CpuPrimaryExportPreservesRetainedPixelsAndAliases() {
+  if (!TestCowAvailable()) { std::puts("COW CPU-primary export NOT_EXERCISED: explicit unsupported capability"); return; }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  NativeNodeMock mock; mock.real_prime_files = true;
+  Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
+  {
+    MockNativeNodeScope scope(mock);
+    auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
+    auto readback_decoder = std::make_shared<DecodeContext>();
+    readback_decoder->id = 53; readback_decoder->width = 256; readback_decoder->height = 32;
+    crystalhd_centered_output::Config config;
+    Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
+                crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &readback_decoder->centered_geometry),
+            "freeze exact Centered geometry for the CPU/GPU provenance transition");
+    fixture.driver.contexts[53] = readback_decoder;
+    auto picture = std::make_shared<Surface>();
+    picture->id = 41; picture->width = 256; picture->height = 32;
+    picture->centered_geometry = readback_decoder->centered_geometry;
+    picture->centered_pixels = std::make_shared<Surface>();
+    Require(picture->centered_pixels->AllocateCpuNv12(128, 16),
+            "allocate the exact private immutable small picture");
+    memset(picture->centered_pixels->storage.data(), 51, picture->centered_pixels->storage.size());
+    for (Surface *item : {surface.get(), picture.get(), picture->centered_pixels.get()}) {
+      item->expected_timestamp = item->frame_timestamp = 100000;
+      item->decode_identity = item->trace_decode_identity = 901;
+      item->trace_context = 53; item->trace_generation = 1; item->trace_submission_ordinal = 1;
+      item->ready = true;
+    }
+    picture->direct_backing = surface;
+    surface->decode_picture = picture;
+    surface->ready = false; surface->frame_timestamp = 0;
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                CenteredReadbackSourceAllocation(*surface) && !surface->centered_readback.small.expired(),
+            "real full CPU Compose establishes immutable-small provenance before export");
+    const auto expected = CpuPrimaryActiveBytes(*surface);
+    const uint32_t charge = TestCowPrimaryCapacity(*surface);
+    const uint8_t *old_planes[2] = {surface->planes[0], surface->planes[1]};
+    auto view = std::make_unique<VppPixelView>(); view->Capture(surface);
+    const uint64_t before_view_write = surface->cpu_primary_canvas->WriteEpoch();
+    Require(view->BeginCpuWrite(), "actual captured pixel view obtains its original CPU backing WRITE lease");
+    view->planes[0][0] ^= 0x5a;
+    Require(view->EndCpuWrite() && surface->cpu_primary_canvas->WriteEpoch() != before_view_write &&
+                surface->centered_border.epoch != surface->cpu_primary_canvas->WriteEpoch(),
+            "frozen VPP writer invalidates the same backing-local border proof before export");
+    Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                CpuPrimaryActiveBytes(*surface) == expected &&
+                surface->centered_border.epoch == surface->cpu_primary_canvas->WriteEpoch(),
+            "full real Compose repairs the modified border and certifies only the completed current backing");
+    ++surface->vpp_readers;
+    VADRMPRIMESurfaceDescriptor prime{};
+    Require(ExportSurfaceHandle(&fixture.context, 41, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                VA_EXPORT_SURFACE_READ_ONLY, &prime) == VA_STATUS_SUCCESS &&
+                prime.num_objects == 1 && !surface->cpu_primary &&
+                surface->cpu_primary_gpu_promoted && surface->centered_allocation_exposed &&
+                surface->planes[0] != old_planes[0] && surface->layout.valid &&
+                surface->retired_cpu_primary_canvas->Data() == old_planes[0] &&
+                TestCowPrimaryCapacity(*surface) == charge &&
+                crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
+                mock.write_starts == 1 && mock.write_ends == 1,
+            "successful export commits a fully copied/registered DRM allocation while pinning charged old CPU bytes");
+    Require(CpuPrimaryActiveBytes(*surface) == expected && CpuPrimaryActiveBytes(*view) == expected,
+            "the new exported planes and an already captured CPU view both keep every exact pixel");
+    const uint8_t changed_exported_border = 0xa9;
+    Require(pwrite(prime.objects[0].fd, &changed_exported_border, 1, 0) == 1,
+            "actual GPU-exported fd can modify the border independently of the retained CPU backing");
+    Require(!CenteredReadbackSourceAllocation(*surface) && surface->centered_readback.small.expired() &&
+                ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+                surface->centered_readback.small.expired() &&
+                !surface->cpu_primary_canvas && CpuPrimaryActiveBytes(*surface) == expected,
+            "GPU export invalidates immutable-small provenance permanently even after another successful Compose");
+    std::vector<uint8_t> exported(expected.size());
+    Require(pread(prime.objects[0].fd, exported.data(), exported.size(), 0) ==
+                static_cast<ssize_t>(exported.size()) && exported == expected,
+            "the real exported memfd contains the copied full public canvas");
+    --surface->vpp_readers;
+    VASurfaceAttrib attributes[2]{};
+    attributes[0].type = VASurfaceAttribMemoryType; attributes[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor; attributes[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[1].value.type = VAGenericValueTypePointer; attributes[1].value.value.p = &prime;
+    VASurfaceID alias = VA_INVALID_SURFACE;
+    Require(CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420, 256, 32, &alias, 1,
+                            attributes, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.surfaces.at(alias)->backing_owner == 41 &&
+                CpuPrimaryActiveBytes(*fixture.driver.surfaces.at(alias)) == expected,
+            "the registered exported allocation imports as the exact owner alias and real shared pixels");
+    const uint8_t changed = 95;
+    Require(pwrite(prime.objects[0].fd, &changed, 1, 0) == 1 &&
+                surface->planes[0][0] == changed &&
+                fixture.driver.surfaces.at(alias)->planes[0][0] == changed &&
+                view->planes[0][0] == expected[0],
+            "exported GPU changes are visible to public aliases without corrupting an older immutable CPU view");
+    DecodeContext decoder; decoder.centered_geometry.enabled = true;
+    Require(!TryCpuPrimaryTarget(surface.get(), decoder) && !surface->cpu_primary,
+            "an allocation is never demoted back to CPU after successful READ_ONLY export");
+    Require(DestroySurfaces(&fixture.context, &alias, 1) == VA_STATUS_SUCCESS,
+            "retire the imported alias without changing canonical backing lifetime");
+    close(prime.objects[0].fd);
+    VASurfaceID id = 41;
+    Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+            "remove the public ID after successful export");
+    picture.reset();
+    surface.reset();
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
+                CpuPrimaryActiveBytes(*view) == expected,
+            "retired CPU storage stays charged and readable past the last VA ID");
+    view.reset();
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
+                mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
+            "last captured allocation releases CPU budget, mappings and real/fake DRM files exactly once");
+  }
+}
+
+// OWN admitted-token scaffold exercises actual ProcessDecodedOutput and real
+// ExportSurfaceHandle/DRM memfd bytes. It does NOT execute ReceiveOne or prove
+// DIL lease/release order; the replay fixture supplies that separate coverage.
+void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
+  if (!TestCowAvailable()) {
+    std::puts("pending-mirror WRITE_ONLY export NOT_EXERCISED: unsupported COW capability");
+    return;
+  }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (bool large : {false, true})
+  for (bool bottom_first : {false, true}) {
+    const unsigned width = large ? 1920U : 256U;
+    const unsigned height = large ? 1088U : 32U;
+    const unsigned visible = large ? 1080U : 32U;
+    const unsigned capture_width = large ? 1280U : 128U;
+    const unsigned capture_height = large ? 720U : 16U;
+    NativeNodeMock mock; mock.real_prime_files = true;
+    Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
+    {
+      MockNativeNodeScope scope(mock);
+      auto surface = MakeCpuPrimaryTarget(&fixture, &mock, true, width, height, visible,
+                                          capture_width, capture_height);
+      auto decoder = std::make_shared<DecodeContext>();
+      decoder->id = 53; decoder->generation = 1;
+      decoder->width = width; decoder->height = height; decoder->profile = VAProfileH264Main;
+      crystalhd_centered_output::Config config;
+      const std::string policy = std::to_string(capture_width) + "x" + std::to_string(capture_height) +
+          "@" + std::to_string(width) + "x" + std::to_string(visible) + ":limited";
+      Require(crystalhd_centered_output::ParseConfig(policy.c_str(), &config) &&
+                  crystalhd_centered_output::BuildGeometry(config, width, height, 4, &decoder->centered_geometry),
+              "known admitted fixture has the actual canonical Centered geometry");
+      auto picture = std::make_shared<Surface>();
+      picture->id = 41; picture->width = width; picture->height = height;
+      picture->centered_geometry = decoder->centered_geometry;
+      picture->centered_pixels = std::make_shared<Surface>();
+      auto small = picture->centered_pixels;
+      Require(small->AllocateCpuNv12(capture_width, capture_height),
+              "allocate the unchanged independent private Small");
+      for (Surface *item : {surface.get(), picture.get(), small.get()}) {
+        item->expected_timestamp = 100000; item->frame_timestamp = 0;
+        item->decode_identity = item->trace_decode_identity = 901;
+        item->trace_context = 53; item->trace_generation = item->trace_submission_ordinal = 1;
+        item->ready = item->failed = false;
+      }
+      picture->direct_picture = true; picture->direct_backing = surface;
+      picture->decode_target = surface; surface->decode_picture = picture;
+      fixture.driver.contexts[53] = decoder;
+      decoder->decoded_frames[100000] = picture; decoder->pending[100000] = 41;
+      decoder->surface_timestamps[surface.get()] = 100000;
+      Require(decoder->replay.Append(100000, true, {1}) && decoder->replay.InputSent(),
+              "scaffold admits one actual New token without a device call");
+      std::vector<uint8_t> fields[2];
+      for (unsigned parity = 0; parity != 2; ++parity) {
+        fields[parity].resize(size_t{capture_width} * capture_height);
+        for (size_t i = 0; i != fields[parity].size(); ++i)
+          fields[parity][i] = static_cast<uint8_t>((i * 13U + parity * 47U + 23U) & 255U);
+      }
+      const auto process = [&](unsigned parity) {
+        BC_DTS_PROC_OUT output{}; output.Ybuff = fields[parity].data();
+        output.YBuffDoneSz = fields[parity].size() / 4U;
+        output.PoutFlags = BC_POUT_FLAGS_PIB_VALID; output.b422Mode = OUTPUT_MODE422_YUY2;
+        output.PicInfo.timeStamp = 100000;
+        output.PicInfo.width = capture_width; output.PicInfo.height = capture_height;
+        output.PicInfo.picture_number = 1; output.PicInfo.sess_num = 7;
+        output.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+            (parity ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+            (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0);
+        return ProcessDecodedOutput(&fixture.driver, decoder.get(), output);
+      };
+      const unsigned first = bottom_first ? 1U : 0U;
+      const auto untouched_small = small->storage;
+      Require(process(first) == VA_STATUS_SUCCESS && decoder->h264_first_field.valid &&
+                  surface->centered_mirror.fields == (1U << first) &&
+                  (large ? DeferredCenteredOwnFields(*surface, *small, decoder->centered_geometry, 1U << first)
+                         : CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first)) &&
+                  !surface->ready && surface->frame_timestamp == 0 && !small->ready,
+              "actual first-field producer establishes pending mirror without public/private completion");
+      if (large)
+        Require(decoder->h264_first_field.nv12_deferred && !decoder->h264_first_field.nv12_staged &&
+                    small->storage == untouched_small && small->frame_timestamp == 0 &&
+                    small->centered_deferred.fields == (1U << first) && small->centered_deferred.small_fields == 0,
+                "large export control starts with genuine public-only first parity and no private Small stores");
+      const auto pending_small = small->storage;
+      VADRMPRIMESurfaceDescriptor prime{};
+      Require(ExportSurfaceHandle(&fixture.context, 41, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_WRITE_ONLY, &prime) == VA_STATUS_SUCCESS &&
+                  prime.num_objects == 1 && prime.num_layers == 2 &&
+                  !surface->cpu_primary && surface->cpu_primary_gpu_promoted &&
+                  !surface->ready && surface->frame_timestamp == 0 &&
+                  (!large ? small->storage == pending_small : !small->ready) &&
+                  !CenteredMirrorMatches(*surface, *small, decoder->centered_geometry, 1U << first),
+              "real WRITE_ONLY export stays allowed while pending and GPU promotion invalidates only mirror reuse");
+      const auto &geometry = decoder->centered_geometry;
+      std::vector<uint8_t> expected(size_t{width} * height * 3U / 2U, 128);
+      std::fill_n(expected.data(), size_t{width} * height, 16);
+      std::vector<uint8_t> expected_small(size_t{capture_width} * capture_height * 3U / 2U);
+      for (unsigned row = 0; row != capture_height; ++row)
+        for (unsigned x = 0; x != capture_width; ++x) {
+          const uint8_t pixel = fields[row & 1U][(size_t{row / 2U} * capture_width + x) * 2U];
+          expected[size_t{row + geometry.y} * width + geometry.x + x] = pixel;
+          expected_small[size_t{row} * capture_width + x] = pixel;
+        }
+      for (unsigned row = 0; row != capture_height / 2U; ++row)
+        for (unsigned x = 0; x != capture_width; x += 2)
+          for (unsigned component = 0; component != 2; ++component) {
+            const auto &field = fields[row & 1U];
+            const size_t at = (size_t{(row / 2U) * 2U} * capture_width + x) * 2U + 1U + component * 2U;
+            const uint8_t pixel = static_cast<uint8_t>(
+                (unsigned(field[at]) + field[at + capture_width * 2U] + 1U) / 2U);
+            expected[size_t{width} * height + size_t{row + geometry.y / 2U} * width +
+                     geometry.x + x + component] = pixel;
+            expected_small[size_t{capture_width} * capture_height + size_t{row} * capture_width +
+                           x + component] = pixel;
+          }
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != (plane ? capture_height / 2U : capture_height); ++row)
+          for (unsigned x = 0; x != capture_width; ++x) {
+            const size_t at = (plane ? size_t{capture_width} * capture_height : 0U) +
+                size_t{row} * capture_width + x;
+            Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] ==
+                        ((row & 1U) == first ? expected_small[at] : untouched_small[at]),
+                    "WRITE_ONLY export preserves genuine first Y/UV parity before exposing any mutable fd");
+          }
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const uint8_t changed = 0xe1U + plane;
+        const off_t at = prime.layers[plane].offset[0] +
+            off_t{(plane ? geometry.y / 2U : geometry.y) + first} * prime.layers[plane].pitch[0] + geometry.x;
+        Require(pwrite(prime.objects[0].fd, &changed, 1, at) == 1,
+                "the real exported fd overwrites arrived-parity Y and UV after private preservation");
+      }
+      Require(process(first ^ 1U) == VA_STATUS_SUCCESS && !decoder->h264_first_field.valid &&
+                  surface->ready && !surface->failed && surface->frame_timestamp == 100000 && small->ready &&
+                  picture->decode_identity == 901 && small->decode_identity == 901 &&
+                  small->trace_context == 53 && small->trace_generation == 1 &&
+                  small->trace_submission_ordinal == 1 && decoder->replay.outstanding() == 0 &&
+                  CpuPrimaryActiveBytes(*small) == expected_small,
+              "matching complement keeps source identity and exact full Small after mutable export");
+      std::vector<uint8_t> actual(expected.size());
+      Require(CpuPrimaryActiveBytes(*surface) == expected &&
+                  pread(prime.objects[0].fd, actual.data(), actual.size(), 0) ==
+                      static_cast<ssize_t>(actual.size()) && actual == expected,
+              "actual exported GPU allocation contains every scalar-oracle Y/UV/black byte after fallback");
+      close(prime.objects[0].fd);
+      surface->completed_decode_picture = {}; picture->direct_backing.reset();
+      decoder->decoded_frames.clear(); decoder->surface_timestamps.clear();
+      fixture.driver.contexts.erase(53);
+      VASurfaceID id = 41;
+      Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+              "exported pending-mirror fixture retires the actual public surface");
+    }
+    Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
+                mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
+            "WRITE_ONLY mirror withdrawal leaves no backing, registration or primary charge behind");
+  }
+}
+
+void CpuPrimaryExportFailuresAreTransactional() {
+  if (!TestCowAvailable()) { std::puts("COW CPU-primary export NOT_EXERCISED: explicit unsupported capability"); return; }
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (unsigned failure = 0; failure != 5; ++failure) {
+    NativeNodeMock mock; mock.real_prime_files = true;
+    Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
+    {
+      MockNativeNodeScope scope(mock);
+      auto surface = MakeCpuPrimaryTarget(&fixture, &mock);
+      const auto expected = CpuPrimaryActiveBytes(*surface);
+      const uint8_t *plane = surface->planes[0];
+      const uint32_t charge = TestCowPrimaryCapacity(*surface);
+      VAImage writable{};
+      if (failure == 0) fixture.driver.drm_fd = -1;
+      if (failure == 1) mock.fail_write_end = true;
+      if (failure == 2) mock.on_write_end = [] { allocation_fault::fail_next = true; };
+      if (failure == 3) {
+        void *mapped = nullptr;
+        Require(DeriveImage(&fixture.context, 41, &writable) == VA_STATUS_SUCCESS &&
+                    MapBufferWithFlags(&fixture.context, writable.buf, &mapped, kImageMapWrite) == VA_STATUS_SUCCESS &&
+                    surface->image_write_locked,
+                "hold an actual cold-derived write lease during export");
+      }
+      if (failure == 4) allocation_fault::fail_next = true;
+      VADRMPRIMESurfaceDescriptor prime, unchanged;
+      memset(&prime, 0xa5, sizeof(prime)); unchanged = prime;
+      const VAStatus status = ExportSurfaceHandle(&fixture.context, 41,
+          VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_READ_ONLY, &prime);
+      Require(status != VA_STATUS_SUCCESS && memcmp(&prime, &unchanged, sizeof(prime)) == 0 &&
+                  surface->cpu_primary && !surface->cpu_primary_gpu_promoted &&
+                  surface->planes[0] == plane && surface->layout.valid == false &&
+                  !surface->retired_cpu_primary_canvas &&
+                  TestCowPrimaryCapacity(*surface) == charge &&
+                  crystalhd_cow_snapshot::LiveBytes() == baseline + charge &&
+                  CpuPrimaryActiveBytes(*surface) == expected && fixture.driver.backing_owners.empty(),
+              "missing DRM, failed END, registry OOM, cold writer or candidate OOM cannot publish or partially replace CPU backing");
+      allocation_fault::fail_next = false; mock.on_write_end = {};
+      if (failure == 3)
+        Require(UnmapBuffer(&fixture.context, writable.buf) == VA_STATUS_SUCCESS &&
+                    DestroyImage(&fixture.context, writable.image_id) == VA_STATUS_SUCCESS,
+                "failed export preserves the original derived-image writeback lease");
+      VASurfaceID id = 41;
+      Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+              "CPU fallback remains independently destroyable after failed export");
+      surface.reset();
+      Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
+                  mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
+              "failed export leaves no descriptor, mapping, registry or budget owner behind");
+    }
+  }
+}
+
+void CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess() {
+  const bool cpu_available = TestCowAvailable();
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  for (uint32_t access : {VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_READ_WRITE,
+                          VA_EXPORT_SURFACE_WRITE_ONLY}) {
+    std::array<VAStatus, 2> outcomes{};
+    for (bool cpu_primary : {false, true}) {
+      if (cpu_primary && !cpu_available) continue; // Always retain the actual DUMB access-policy cases.
+      NativeNodeMock mock; mock.real_prime_files = true;
+      Fixture fixture; fixture.driver.StopWorkers(); fixture.driver.stopping = false;
+      {
+        MockNativeNodeScope scope(mock);
+        auto surface = MakeCpuPrimaryTarget(&fixture, &mock, cpu_primary);
+        const auto expected = CpuPrimaryActiveBytes(*surface);
+        surface->failed = true; surface->ready = false;
+        Require(surface->decode_picture.expired(),
+                "paired overwrite targets have no retained decoder picture or writer");
+        VADRMPRIMESurfaceDescriptor prime, unchanged;
+        memset(&prime, 0xa5, sizeof(prime)); unchanged = prime;
+        const VAStatus status = ExportSurfaceHandle(&fixture.context, 41,
+            VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, access, &prime);
+        outcomes[cpu_primary ? 1 : 0] = status;
+        if (access == VA_EXPORT_SURFACE_WRITE_ONLY) {
+          Require(status == VA_STATUS_SUCCESS && prime.num_objects == 1 &&
+                      surface->failed && !surface->ready &&
+                      !surface->cpu_primary && surface->centered_allocation_exposed,
+                  "both DUMB and CPU-primary preserve overwrite export without forging ready/healthy state");
+          std::vector<uint8_t> bytes(expected.size());
+          Require(pread(prime.objects[0].fd, bytes.data(), bytes.size(), 0) ==
+                      static_cast<ssize_t>(bytes.size()) && bytes == expected,
+                  "overwrite promotion still copies every initialized public byte before fd publication");
+          close(prime.objects[0].fd);
+        } else {
+          Require(status != VA_STATUS_SUCCESS && memcmp(&prime, &unchanged, sizeof(prime)) == 0 &&
+                      surface->cpu_primary == cpu_primary,
+                  "READ and READ_WRITE retain baseline failed-picture rejection and unchanged backing");
+        }
+        VASurfaceID id = 41;
+        Require(DestroySurfaces(&fixture.context, &id, 1) == VA_STATUS_SUCCESS,
+                "paired failed targets retain independent destruction semantics");
+        surface.reset();
+        Require(crystalhd_cow_snapshot::LiveBytes() == baseline && mock.files.empty() &&
+                    mock.dumbs.empty() && mock.real_mappings.empty() && mock.invalid == 0,
+                "paired access-policy controls retire every resource and actual CPU charge");
+      }
+    }
+    if (cpu_available)
+      Require(outcomes[0] == outcomes[1],
+              "CPU-primary changes allocation only, not baseline access-policy status");
+  }
+}
+
 void ImageCopiesRejectInvalidAndBusyRectangles() {
   Fixture fixture;
   VAImage image = MakeImage(&fixture);
@@ -8394,6 +8952,24 @@ static void FirstFieldCpuViewPreservesPublicReadiness() {
 // Keep the complete entry globally compiled for syntax coverage. CPU-only
 // section-GC builds retain only their selected state-machine groups below.
 int VppFullTestEntry(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--cpu-primary") == 0) {
+    try {
+      if (!TestCowAvailable()) {
+        CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+        puts("COW CPU-primary positive export NOT_EXERCISED: explicit unsupported capability; actual DUMB access policy PASS");
+        return 77;
+      }
+      CpuPrimaryExportPreservesRetainedPixelsAndAliases();
+      CpuPrimaryExportFailuresAreTransactional();
+      CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+      CpuPrimaryWriteOnlyExportBetweenMirroredFields();
+      puts("VA-API CPU-primary export/alias/retained-storage and failure rollback PASS");
+      return 0;
+    } catch (const std::exception &error) {
+      fprintf(stderr, "VA-API CPU-primary export failed: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc == 2 && strcmp(argv[1], "--trace-vpp") == 0) {
     try { VppTraceKeepsQueuedIdentity(); puts("VA-API VPP trace PASS"); return 0; }
     catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 1; }
@@ -8657,6 +9233,10 @@ int VppFullTestEntry(int argc, char **argv) {
     DerivedDefaultRefreshAndDecodedSnapshotsStayIndependent();
     BgraImagesPreserveBytesAndDerivedOwnership();
     ImageGeometryAndOddNv12Roundtrip();
+    CpuPrimaryExportPreservesRetainedPixelsAndAliases();
+    CpuPrimaryExportFailuresAreTransactional();
+    CpuPrimaryWriteOnlyMatchesDumbOverwriteAccess();
+    CpuPrimaryWriteOnlyExportBetweenMirroredFields();
     ImageCopiesRejectInvalidAndBusyRectangles();
     PutImageCannotOverwriteRetainedDecodeIdentity();
     PutImageOwnershipFailuresCannotComplete();
@@ -8673,7 +9253,7 @@ int VppFullTestEntry(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: 115 hardware-free regressions passed");
+  puts("VA-API VPP capabilities/identity/lifecycle/fences/images: hardware-free regressions passed");
   return 0;
 }
 
