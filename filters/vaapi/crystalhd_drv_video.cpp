@@ -208,6 +208,7 @@ static bool IsH264Profile(VAProfile profile);
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+constexpr uint64_t kCenteredExactAuxiliaryGraceNs = 10ULL * 1000 * 1000;
 constexpr uint64_t kBoundedH264InactivityGraceNs =
     1ULL * 1000 * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
@@ -8321,10 +8322,11 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       surface->trace_generation == decode->generation &&
       surface->trace_submission_ordinal == first.picture->trace_submission_ordinal &&
       (!first.picture->direct_backing || first.picture->direct_backing == surface);
-  // Exact Sync already demands this genuine complement. Keep the progress
-  // turn passive (idle0), then let its existing empty RX turn provide bounded
-  // lookahead without the Bob/EOS inactivity delay. No output is fabricated.
-  if ((!bob && !exact) || (exact ? idle == 0 : idle < kDecodeBatchGraceNs) || aux.pending ||
+  // Exact Sync requires ten milliseconds without real transport progress and
+  // the caller's successful empty RX turn. Bob retains its existing grace;
+  // neither path fabricates output or completes the original picture.
+  if ((!bob && !exact) ||
+      idle < (exact ? kCenteredExactAuxiliaryGraceNs : kDecodeBatchGraceNs) || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.timestamp != surface->expected_timestamp ||

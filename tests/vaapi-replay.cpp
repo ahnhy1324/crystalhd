@@ -13730,9 +13730,26 @@ static void CenteredExactSyncUsesPrivateLookahead() {
               "public full Sync accepts private lookahead without public completion or EOS");
       queue(kTimestampStep, second);
     };
+    std::function<void()> supply_after_grace;
+    supply_after_grace = [&] {
+      if (d.auxiliary.pending) {
+        supply_complement();
+        return;
+      }
+      Require(d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+                  fixture.io.released_outputs == 1 && fixture.io.input_calls.size() == input_calls &&
+                  !d.auxiliary.ever && !d.auxiliary.needs_eos && !d.replay.sealed() &&
+                  !source->ready && !fixture.held[0]->ready && fixture.held[0]->storage == original &&
+                  d.next_submission_ordinal == ordinal && fixture.io.outputs.empty(),
+              "early exact-Sync turns remain passive until actual auxiliary acceptance");
+      // This callback replaces SyncDecodeSurface's usleep(1000). Preserve that
+      // real waiting turn while rearming; never advance a clock or RX state.
+      __real_usleep(1000);
+      fixture.io.on_sleep = supply_after_grace;
+    };
     fixture.io.on_sleep = [&] {
       if (preheld) {
-        supply_complement();
+        supply_after_grace();
         return;
       }
       Require(d.h264_first_field.valid && fixture.io.released_outputs == 1 &&
@@ -13740,9 +13757,8 @@ static void CenteredExactSyncUsesPrivateLookahead() {
                   !source->ready,
               "new first-field release is a progress turn with idle0 and no auxiliary");
       held = d.h264_first_field.pixels;
-      // No test clock advance or arbitrary sleep: the next existing RX turn
-      // sees the actual empty mock queue and must use early exact lookahead.
-      fixture.io.on_sleep = supply_complement;
+      // Subsequent real empty turns may deliberately remain inside the guard.
+      fixture.io.on_sleep = supply_after_grace;
     };
     Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS && source->ready &&
                 fixture.held[0]->ready && !d.h264_first_field.valid &&
@@ -13818,6 +13834,75 @@ static void CenteredExactSyncUsesPrivateLookahead() {
                 fixture.held[0]->storage == completed && !fixture.io.invalid,
             "explicit close consumes the actual terminal EOS after all eight picture leases");
   }
+}
+
+static void CenteredAuxiliaryIdleGrace() {
+  H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+  ConfigureCenteredAdmission(f);
+  auto &d = *f.decoder;
+  d.auto_h264_prefeed = true;
+  f.Prepare(1);
+  d.picture = NeutralPicture(256, 64);
+  d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+  Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+          "idle guard starts with genuine accepted Centered original syntax");
+  f.io.outputs.push_back(kTimestampStep);
+  f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+  Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+              d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+          "idle guard owns one genuinely validated and released original first field");
+  bool quiet = false;
+  Require(ReceiveAvailable(&f.driver, &d, 1, &quiet) == VA_STATUS_SUCCESS && quiet &&
+              f.io.outputs.empty() && f.io.released_outputs == 1,
+          "the existing successful empty RX turn supplies real quiet-queue evidence");
+  const auto pixels = f.held[0]->storage;
+  const auto held = d.h264_first_field.pixels;
+  const auto ordinal = d.next_submission_ordinal;
+  const auto token = d.next_timestamp;
+  const auto progress = d.transport_progress;
+  const auto calls = f.io.input_calls.size();
+  std::vector<uint8_t> expected;
+  Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected, true),
+          "the threshold uses the same POC-preserving field-coded auxiliary bytes");
+  for (uint64_t idle : {UINT64_C(7000000), UINT64_C(9999999)}) {
+    const VAStatus status = TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, idle,
+        H264AuxiliaryDemand::CenteredExactSync);
+    const bool passive = status == VA_STATUS_SUCCESS && f.io.input_calls.size() == calls &&
+        d.next_timestamp == token && d.prefed_timestamp == token && !d.pending_prefeed_timestamp &&
+        d.next_submission_ordinal == ordinal && d.transport_progress == progress &&
+        !d.auxiliary.ever && !d.auxiliary.pending && !d.auxiliary.needs_eos &&
+        !d.auxiliary.output_released && d.h264_first_field.valid &&
+        d.h264_first_field.timestamp == kTimestampStep && d.h264_first_field.pixels == held &&
+        !f.held[0]->ready && f.held[0]->storage == pixels &&
+        d.pending.size() == 1 && d.replay.outstanding() == 1 && !d.replay.sealed() &&
+        f.io.outputs.empty() && f.io.released_outputs == 1;
+    if (!passive)
+      Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "old sub-ten-ms auxiliary acceptance closes its finite mock channel before the guard verdict");
+    Require(passive,
+            "Centered exact auxiliary must preserve original state and submit no private input below ten milliseconds");
+  }
+  Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, UINT64_C(10000000),
+              H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+              f.io.input_calls.size() == calls + 2 && f.io.input_calls[calls].accepted &&
+              f.io.input_calls[calls].timestamp == 0 && f.io.input_calls[calls].bytes == expected &&
+              f.io.input_calls.back().accepted && f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+              f.io.input_calls.back().timestamp == token + kTimestampStep &&
+              d.auxiliary.timestamp == token && d.auxiliary.pending && d.auxiliary.needs_eos &&
+              d.auxiliary.output.field_pairs && d.auxiliary.output.fields == 0 &&
+              !d.auxiliary.output_released && !d.auxiliary.ended &&
+              d.next_timestamp == token + kTimestampStep && d.next_submission_ordinal == ordinal &&
+              d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+              !f.held[0]->ready && f.held[0]->storage == pixels &&
+              d.pending.size() == 1 && d.replay.outstanding() == 1 && !d.replay.sealed() &&
+              f.io.outputs.empty() && f.io.released_outputs == 1,
+          "exactly ten milliseconds permits only the same private field-pair input and unpaid EOS debt");
+  Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+              f.io.device_close_calls == 1 && !f.io.invalid &&
+              std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 &&
+              std::count(f.io.events.begin(), f.io.events.end(), "eos") == 0,
+          "the idle guard probe consumes its mock channel without fabricating output or EOS");
 }
 
 static void CenteredAuxiliaryFieldLayout() {
@@ -14535,6 +14620,7 @@ static void NeutralAuxiliaryContracts() {
   ReceiveAvailableQuietHintPreservesActivity();
   CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
+  CenteredAuxiliaryIdleGrace();
   CenteredAuxiliaryFieldLayout();
   CenteredAuxiliaryFieldFaults();
   CenteredWorkerPairsAfterReleasedAuxiliary();
@@ -14554,6 +14640,11 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--centered-aux-idle-grace") == 0) {
+      CenteredAuxiliaryIdleGrace();
+      std::puts("VA-API Centered exact auxiliary: deterministic ten-ms idle guard and unchanged field-pair ownership PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--centered-aux-field-layout") == 0) {
       CenteredAuxiliaryFieldLayout();
       CenteredAuxiliaryFieldFaults();
@@ -14660,7 +14751,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--centered-aux-field-layout|--centered-worker-pair|--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--centered-aux-idle-grace|--centered-aux-field-layout|--centered-worker-pair|--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
