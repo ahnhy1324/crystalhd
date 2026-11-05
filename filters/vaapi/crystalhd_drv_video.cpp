@@ -7786,7 +7786,16 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         !decode->mpeg4_draining_epochs.empty())
       status = SealDecodeBatch(driver, decode);
   } else {
-    status = ReceiveAvailable(driver, decode);
+    // Give H.264 one bounded input-pump turn before converting older READY
+    // output. Keep sealed/restart and remapping paths receive-first. The
+    // additional turn has a one-fragment/AU budget; existing prefix handling
+    // may make its own calls. RX64 and the subsequent TX32 stay unchanged.
+    if (IsH264Profile(profile) && !decode->is_70012 &&
+        decode->centered_geometry.enabled && !decode->experimental_ready_remap &&
+        !decode->replay.sealed() && !decode->replay.NeedsRestart())
+      status = PumpDecodeInput(driver, decode, 1);
+    if (status == VA_STATUS_SUCCESS)
+      status = ReceiveAvailable(driver, decode);
     if (status == VA_STATUS_SUCCESS)
       status = PumpDecodeInput(driver, decode);
   }
