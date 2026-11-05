@@ -1,11 +1,12 @@
 # Broadcom Crystal HD for current Linux systems
 
-Use **1.3.0 with `crystalhd-play`** for local video playback once its
-[official release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
-provides the qualified release. This guide targets bundle `1.3.0` / module
-`3.10.20`; select its exact released core and qualification receipt. A version
-string alone does not announce publication. If that release is unavailable,
-use the immutable [1.2.0 fallback](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0).
+Use **released 1.3.0 with `crystalhd-play`** for local video playback.
+The [official release](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
+contains the qualified core, settings add-on and optional native companion.
+Install the matching `1.3.0` runtime and module `3.10.20` from frozen source
+`24a5182b988b`; the [qualification receipt](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json)
+records the tested scope. Older releases remain available for explicitly
+selected comparisons or rollback.
 
 Start with a BCM70015 card and a progressive H.264 file at 720p30 or below.
 The player handles audio, subtitles and playback controls; the card decodes video.
@@ -36,13 +37,10 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-First choose the exact core source in a new directory and retain the previous
-source for rollback. **After 1.3.0 is published**, download the core archive named
-in its [release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0)
-and qualification receipt, extract it and enter its directory. Its bundle and
-module versions must be `1.3.0` / `3.10.20`; a companion/tools archive is not
-the core. The archive name and exact source identity come from that receipt.
-Alternatively, only after the official release is published:
+Download the [1.3.0 core archive](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/crystalhd-1.3.0-24a5182b988b.tar.gz),
+extract it into a new directory and enter that directory. This is the complete
+source for the matching runtime and module `3.10.20`; retain any previous
+source for an explicitly needed rollback. Alternatively, clone the frozen tag:
 
 ```sh
 sudo apt install git
@@ -51,11 +49,10 @@ git clone --branch v1.3.0 --single-branch \
 cd crystalhd-1.3.0
 ```
 
-During preparation, testers use the exact private final-candidate archive and
-binding manifest. For the available stable fallback, follow the
-[frozen 1.2.0 quick start](https://github.com/ahnhy1324/crystalhd/blob/v1.2.0/README.md#quick-start);
-keep its module13 and source unchanged. Do not use a moving checkout in place
-of either version. From the selected core directory on Ubuntu:
+Use this released source for an ordinary installation. Development checkouts
+and isolated research builds keep their own source identities; a matching
+version string does not make them the published release. From the selected
+core directory on Ubuntu:
 
 ```sh
 sudo apt install build-essential pkg-config gettext linux-headers-$(uname -r) \
@@ -165,11 +162,9 @@ Player command-line options rather than these new editors.
 
 ### Install matching 1.3 tools
 
-Use the `1.3.0` core / module `3.10.20` identified by its official release
-entry and qualification receipt **after publication**. During final preparation,
-use only the exact private candidate archive and binding manifest; preparation
-alone is not qualification or a download announcement. The [quick start](#quick-start)
-shows source selection without guessing an archive name or source hash.
+Use the [published 1.3.0 core](#quick-start), source `24a5182b988b` / module
+`3.10.20`, for the driver, library, frontends and settings tools together.
+Installing only an editor over an older runtime leaves that runtime unchanged.
 
 Keep the previous source and cached module for rollback. Published RC3
 core `36ef4c681f49` / module18 and RC2 core `940cf357` / module17 retain their
@@ -265,9 +260,9 @@ rules are listed under [Development and project records](#development-and-projec
 
 | Release | Status |
 | --- | --- |
-| Target `1.3.0`, module-DKMS `3.10.20` | Ordinary playback, settings and all 17 feature groups with their existing defaults. Its [official release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0) and qualification receipts define actual availability, exact core and results; use the immutable 1.2 fallback if unavailable. |
-| [Stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module-DKMS `3.10.13` | Immutable fallback and retained rollback source. [Final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23) and [change summary](HISTORY.md#120). |
-| Frozen `1.3.0-rc.4` candidate, module-DKMS `3.10.19` | Source `1c8b0451c631` retains every integrated feature plus the Player seek/resume-grace and Xv response-deadline fixes. Its separate qualification receipts and [release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4) define actual outcomes and availability; those results are not relabeled as final20. |
+| [Stable 1.3.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0), module-DKMS `3.10.20` | Published from frozen source `24a5182b988b` with 12 assets; ordinary playback, settings and all 17 feature groups/defaults remain. The qualification receipt defines actual checks and scoped reuse. |
+| [Previous stable 1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0), module-DKMS `3.10.13` | Immutable source for explicitly selected older-version comparisons or rollback. [Final-package qualification](HARDWARE-2026-09-13.md#120-final-package-qualification--2026-10-23) and [change summary](HISTORY.md#120). |
+| Published `1.3.0-rc.4`, module-DKMS `3.10.19` | Frozen source `1c8b0451c631` retains every integrated feature plus the Player seek/resume-grace and Xv response-deadline fixes. Its separate qualification receipts and [release entry](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4) retain candidate19 attribution. |
 | [Complete 1.3.0-rc.3 candidate](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), module-DKMS `3.10.18` | Published prerelease with 12 assets; current-equipment qualification is complete. Retains every RC2 feature plus integrated native range/multi-slice, Xv and field-output changes. Centered stays included and default off. See the [actual qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json). |
 | [Complete 1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), module-DKMS `3.10.17` | Published prerelease: current-equipment qualification and companion delivery are complete; its tag and 13 assets are frozen, including the [core archive](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.2/crystalhd-1.3.0-rc.2-940cf357ff0b.tar.gz). Frozen RC2 does not qualify RC4 or stable promotion. |
 | Earlier 1.2 candidates | Immutable [RC1](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.1) / `3.10.11` and [RC2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0-rc.2) / `3.10.12`; RC2 completed bounded G0–G3 under [#473](https://github.com/ahnhy1324/crystalhd/issues/473). |
@@ -291,9 +286,9 @@ and use the guide shipped with that version.
 
 The [native runtime companion](NATIVE-RUNTIME-DELIVERY.md) is an optional,
 experimental Kodi route for the measured Core2 T8100 / BCM70015 / Intel965
-cohort. Published RC2 uses frozen core `940cf357` / module17; published RC3
-uses core `36ef4c681f49` / module18. RC4/module19 and final 1.3/module20 each
-need their own exact core and measured native binding.
+cohort. Stable 1.3 uses its own source `24a5182b988b` / module20 binding.
+Published RC2/core `940cf357` / module17, RC3/core `36ef4c681f49` / module18
+and RC4/module19 retain their separately qualified artifacts and bindings.
 Use the matching package and prerequisites. The stable quick start above uses
 the ordinary GStreamer/VA stack and does not install that companion.
 
