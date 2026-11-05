@@ -1,0 +1,332 @@
+{
+  "schema": 1,
+  "date": "2026-11-05",
+  "status": "UNPROMOTED_RESEARCH_SOURCE900_FAIL",
+  "owning_issues": [
+    477,
+    436
+  ],
+  "owning_issue_state": "OPEN; both900 criterion and broader acceptance remain unresolved. No global impossibility proved.",
+  "maintained_code_base": "3e147b317bf4aaad492c929e8cd723d0529eeff1",
+  "permanent_host": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "module": "3.10.20",
+    "status": "Full matched official cohort restored after every experiment; published artifacts unchanged."
+  },
+  "temporary_arm": {
+    "module": "3.10.22",
+    "source": "95f75c86d556f909b5e7daed883cd7a368ce6d21",
+    "artifact": "Frozen default legacy artifact; unchanged from previous retained-RX component checks.",
+    "runtime": "Unmodified original Kodi22RC1/App FFmpeg, method7/BWDIF, same900 fixture, natural EOF/reopen, ordinary discard/scheduling.",
+    "equipment": "Current Core2 Duo T8100/BCM70015/965GM, kernel7.0.0-38, AC. Other hardware not qualified."
+  },
+  "research_sources": [
+    {
+      "source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+      "branch": "research/centered-deferred-small-20261105",
+      "scope": "Exact canonical public ROI/parity/epoch/picture ownership may defer duplicate private Small stores. Materialize genuine Small before consumers, writes, exports or detachment. Existing broader full research stack remains unpromoted.",
+      "fixed_own_regression": "Actual second field failed because new code required a strong picture reference after the existing intentional reference reset. Independent weak staging binding fixes this without changing stale-map use_count semantics. Original failing runs are retained."
+    },
+    {
+      "source": "0331a13573af0ecca5167973bed0fedbeb4c5507",
+      "branch": "research/centered-source-prefetch-20261105",
+      "scope": "Only7later lines: bounded256B source T0 hints for two same-field rows in existing deferred SSE2 path; every64B with complete future64B inside row. No pixel arithmetic, writes, ownership, defaults or external product code changed."
+    }
+  ],
+  "cpu_qualification": {
+    "full_checks_source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+    "ordinary_and_private_strict_O2_builds": 0,
+    "scaling": {
+      "groups": 52,
+      "checks": 21094879,
+      "failures": 0,
+      "COW_unexercised": 0
+    },
+    "full_replay": {
+      "exit": 0,
+      "scalar_conversion_cases": 1170
+    },
+    "full_VPP": 0,
+    "buffer_handles": 0,
+    "centered_observer_checks": 1822,
+    "reader_tests": {
+      "payload": 64,
+      "stock": 56,
+      "stock_expected_skip": 1,
+      "controls_reader": 28,
+      "controls_stock": 64
+    },
+    "focused_before_and_after": {
+      "original_failure": "deferred-small-fast-scaling-01.log and debug-01: real second-field path failure.",
+      "after_weak_binding_fix": "Same strictO0 focused test PASS,20,889,345 checks."
+    },
+    "source0331_fresh_checks": "Strict ordinary/private builds0; same production function warm/cold800pair full-byte controls0. Earlier67c structural/replay/VPP/handle/observer evidence is explicitly reused for seven hint-only lines, not relabelled as a0331 full-suite rerun.",
+    "independent_review": "Source safety/consumers/writers/lifetime/query, benchmark source and actual output, original case outcomes and restore scope PASS. Root alone executes builds/tests/analysis/media."
+  },
+  "finite_benchmarks": {
+    "deferred_small": {
+      "baseline_source": "8fa01e7b182e5812650d76e4ea3a012f42e0a341",
+      "candidate_source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+      "pairs_per_ABBA_arm": 100,
+      "baseline_mean_cpu_ns": 1708782.635,
+      "candidate_mean_cpu_ns": 1188722.305,
+      "candidate_to_baseline_cpu_ratio": 0.6956544856274245,
+      "small_address_phase_mod64": "Baseline16/32; candidate32.",
+      "scope": "Actual first+complement ProcessDecodedOutput warm CPU. Full3,133,440 public bytes checked BEFORE untimed private demand; full1,382,400 Small bytes afterward. Private demand excluded; not net lifecycle or playback benefit."
+    },
+    "source_prefetch": {
+      "baseline_source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+      "candidate_source": "0331a13573af0ecca5167973bed0fedbeb4c5507",
+      "measured_pairs_total": 800,
+      "conditions": {
+        "warm": {
+          "baseline_mean_cpu_ns": 1201247.205,
+          "candidate_mean_cpu_ns": 1048381.59,
+          "candidate_to_baseline_cpu_ratio": 0.8727442491739242
+        },
+        "cold": {
+          "baseline_mean_cpu_ns": 1126858.65,
+          "candidate_mean_cpu_ns": 1005902.73,
+          "candidate_to_baseline_cpu_ratio": 0.8926609650642519
+        }
+      },
+      "small_address_phase_mod64": "32 in all8arms.",
+      "source_prefetch_instruction_sites": {
+        "baseline": 0,
+        "candidate": 2
+      },
+      "cold_source_setup": "Existing CPUID-qualified CLFLUSH on owned CPU vectors only, line64 and final-byte coverage; barrier outside timer.",
+      "scope": "Same full-byte oracle and actual production function. Compare within each separate warm/cold condition only. Flush/writeback/private demand excluded; DMA coherence and natural field gap are not modelled. No cache-miss cause, net lifecycle, throughput, source900 or release claim."
+    }
+  },
+  "original_app_cases": [
+    {
+      "case": "deferred-small22-fixed-private-01",
+      "source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+      "backend": "private-observers",
+      "controller_status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "original_bindings": [
+        887,
+        899
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_boundary_equal": true,
+      "live_resource_handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 69000,
+      "all_ac_present": true,
+      "validated_original_fields_and_releases": [
+        1774,
+        1798
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "deferred_canvases_unobserved": [
+        885,
+        897
+      ],
+      "independent_eager_selected_pixel_slots_per_play": 2,
+      "private_audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION"
+      },
+      "official20_restoration": "PASS_RESTORED_MATCHED_OFFICIAL_1_3_SOURCE24A_MODULE20_FULL_BASELINE",
+      "raw_case_location": "/home/mache/.cache/crystalhd-source900-current-20261105/deferred-small22-fixed-private-01"
+    },
+    {
+      "case": "deferred-small22-profile-01",
+      "source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+      "backend": "private-observers",
+      "controller_status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "original_bindings": [
+        887,
+        858
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_boundary_equal": true,
+      "live_resource_handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 66000,
+      "all_ac_present": true,
+      "validated_original_fields_and_releases": [
+        1774,
+        1716
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "deferred_canvases_unobserved": [
+        885,
+        856
+      ],
+      "independent_eager_selected_pixel_slots_per_play": 2,
+      "private_audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION"
+      },
+      "official20_restoration": "PASS_RESTORED_MATCHED_OFFICIAL_1_3_SOURCE24A_MODULE20_FULL_BASELINE",
+      "raw_case_location": "/home/mache/.cache/crystalhd-source900-current-20261105/deferred-small22-profile-01"
+    },
+    {
+      "case": "source-prefetch22-fixed-private-01",
+      "source": "0331a13573af0ecca5167973bed0fedbeb4c5507",
+      "backend": "private-observers",
+      "controller_status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "original_bindings": [
+        896,
+        890
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_boundary_equal": true,
+      "live_resource_handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 68000,
+      "all_ac_present": true,
+      "validated_original_fields_and_releases": [
+        1792,
+        1780
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "deferred_canvases_unobserved": [
+        894,
+        888
+      ],
+      "independent_eager_selected_pixel_slots_per_play": 2,
+      "private_audits": {
+        "replay_disposition_audit": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+        "postfilter_audit": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+        "packet_admission_audit": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+        "maintained_cost_audit": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION"
+      },
+      "official20_restoration": "PASS_RESTORED_MATCHED_OFFICIAL_1_3_SOURCE24A_MODULE20_FULL_BASELINE",
+      "raw_case_location": "/home/mache/.cache/crystalhd-source900-current-20261105/source-prefetch22-fixed-private-01"
+    },
+    {
+      "case": "source-prefetch22-ordinary-01",
+      "source": "0331a13573af0ecca5167973bed0fedbeb4c5507",
+      "backend": "ordinary-native-only",
+      "controller_status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "original_bindings": [
+        894,
+        893
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_boundary_equal": true,
+      "live_resource_handoff": null,
+      "errors": [],
+      "maximum_temperature_mC": 68000,
+      "all_ac_present": true,
+      "output_dequeues": [
+        1788,
+        1786
+      ],
+      "dequeue_scope": "Pre-validation native records; no parity, unique field bytes or DIL-release qualification.",
+      "private_preloads": "ABSENT",
+      "private_test_environment": "ABSENT",
+      "pixel_qualification": "NOT_OBSERVED",
+      "replay_disposition": "NOT_OBSERVED",
+      "private_audits": "NOT_RUN",
+      "official20_restoration": "PASS_RESTORED_MATCHED_OFFICIAL_1_3_SOURCE24A_MODULE20_FULL_BASELINE",
+      "raw_case_location": "/home/mache/.cache/crystalhd-source900-current-20261105/source-prefetch22-ordinary-01"
+    }
+  ],
+  "actual_exact_materialization_cost": {
+    "scope": "First-field staging including its converter + complementary converter + final Compose; disjoint thread CPU work for exact native-M keys. Serial populations and cross-thread sums are not causal speedup or elapsed playback budgets.",
+    "source67c_mean_cpu_ns_per_original": [
+      1779181.8917700113,
+      1753365.2458286986
+    ],
+    "source0331_mean_cpu_ns_per_original": [
+      1579896.8058035714,
+      1565405.7382022473
+    ],
+    "raw_public_codec_label_association": {
+      "source67c_missing": [
+        13,
+        1
+      ],
+      "source0331_missing": [
+        4,
+        10
+      ],
+      "entry_skip_frame": "Every absent numeric label enters with NONREF8; returned NONREF labels also exist.",
+      "scope": "One public codec epoch, unique accepted and returned raw numeric labels. Not source90k/private-clock conversion, per-AU payload identity or native-VA identity. No proof of what caused caller lateness."
+    }
+  },
+  "sampled_profile": {
+    "source": "67c948b71742ea97a7260dc53a0ec8e68cc8dbef",
+    "case": "deferred-small22-profile-01",
+    "frequency_Hz": 49,
+    "samples": 3725,
+    "lost_samples_reported": 0,
+    "empty_unwind_samples": 31,
+    "own_leaf_samples": 173,
+    "any_unwound_own_frame_samples": 226,
+    "libc_leaf_samples": 1433,
+    "libc_leaf_with_any_unwound_own_frame": 49,
+    "converter_leaf_samples": 121,
+    "scope": "cpu-clock:u userspace over attached lifetime including controls/pause. Kernel work, waiting, preemption and complete renderer lateness history are unobserved. No per-play clock calibration. Truncated/unresolved callchains cannot establish an external root cause. Diagnostic887/858 is excluded from normal performance comparisons.",
+    "exit_disposition": "Profiler/sampler0; original controller1/source900FAIL. Original parent labelled sampler0 as original_controller_exit; raw script/journal preserved, separate result-disposition receipt records both codes correctly."
+  },
+  "pinned_original_caller_review": {
+    "source": "28ea2eac1eb7af8fdcbd2672d933ce87f594be79",
+    "urls": [
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp",
+      "https://github.com/xbmc/xbmc/blob/28ea2eac1eb7af8fdcbd2672d933ce87f594be79/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp"
+    ],
+    "findings": "hurry:1 reports render buffer level1, not a boolean NONREF request. Actual DROP_VERYLATE subtracts accumulated drop gains and has additional caller conditions. Decoder dropped feedback is PTS-gap-based and not an exhaustive absent-picture census. Confirmed missing filter EOF remains a separate scoped known issue.",
+    "boundary": "Read-only source review only. No external application/dependency product modification or distributable patch."
+  },
+  "remaining_work": [
+    "Establish a causal renderer-lateness/off-CPU history or another distinguishing own defect before selecting further code changes. Current samples and NONREF association are insufficient.",
+    "Whole900, unselected physical pixels/filter output, source clocks/cadence, GPU reader return, presentation, broader lifetime/endurance and owner-specific acceptance remain open.",
+    "Do not repeat the identical case for a passing count, lower900, infer replay on ordinary traces, promote prototypes, or claim global impossibility from these finite negatives."
+  ],
+  "retained_inputs": {
+    "root": "/home/mache/.cache/crystalhd-source900-current-20261105",
+    "original_cases": "Each case retains frozen source/runtime plan, original trace, result, controls, scoped audit inputs and normal restoration journal.",
+    "finite_sources": [
+      "deferred-small-benchmark.cpp",
+      "deferred-source-prefetch-benchmark.cpp",
+      "review-deferred-small-cost.py",
+      "review-source-prefetch-cost.py",
+      "review-deferred-small-profile.py"
+    ],
+    "original_failures": "Initial second-field failure and initial profile-reader schema/empty-unwind failures remain retained; fixes did not rerun media to erase them."
+  }
+}
