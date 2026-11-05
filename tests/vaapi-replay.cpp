@@ -13137,9 +13137,8 @@ static void CenteredExactSyncUsesPrivateLookahead() {
       Require(crystalhd_centered_output::BuildGeometry(
                   config, 1920, 1088, 4, &fixture.decoder->centered_geometry),
               "build the real visible1080/coded1088 centered geometry");
-      // Reproduce the actual config-versus-admitted-surface distinction:
-      // Submit must keep ROI/visible fields and normalize only canvas extent.
-      fixture.decoder->centered_geometry.canvas_height = 1080;
+      // CreateContext uses this coded1088 geometry. Submit may independently
+      // admit a visible1080 or coded1088 target without changing ROI/range.
       fixture.io.output_width = 1280;
       fixture.io.output_height = 720;
     }
@@ -13194,8 +13193,8 @@ static void CenteredExactSyncUsesPrivateLookahead() {
     const auto source = d.decoded_frames.at(kTimestampStep);
     Require(source->centered_geometry.canvas_height == public_height &&
                 fixture.held[0]->height == public_height &&
-                (public_height == 64 || d.centered_geometry.canvas_height == 1080),
-            "actual Submit owns the precise visible or coded public canvas extent");
+                d.centered_geometry.canvas_height == coded_height,
+            "coded context geometry and accepted visible/coded public extent stay distinct");
     const auto original = fixture.held[0]->storage;
     queue(kTimestampStep, first);
     Require(ReceiveAvailable(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&

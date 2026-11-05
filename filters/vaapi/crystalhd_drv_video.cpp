@@ -7978,9 +7978,9 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       first.bottom != (demand->field == crystalhd_vpp_bob::FieldParity::kBottom);
   auto accepted_geometry = decode->centered_geometry;
   if (surface) {
-    // SubmitPicture normalizes only these extents to the admitted VA target;
-    // a visible1080 config may own a coded1088 canvas. Keep every ROI, range,
-    // capture and visible field unchanged when checking that exact picture.
+    // A coded1088 decode context may own a visible1080 or coded1088 public
+    // target. SubmitPicture normalizes only those target extents; keep every
+    // ROI, range, capture and visible field unchanged for the exact picture.
     accepted_geometry.canvas_width = surface->width;
     accepted_geometry.canvas_height = surface->height;
   }
