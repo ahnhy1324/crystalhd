@@ -28,6 +28,8 @@
 
 #include <stdlib.h>
 #include <limits.h>
+#include <stdint.h>
+#include <string.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_priv.h"
@@ -238,6 +240,33 @@ static unsigned DtsSequenceStartCode(const uint8_t *data, uint32_t size)
 	return 0;
 }
 
+/* Find the same earliest prefix as a forward DtsSequenceStartCode loop.
+ * Only candidate 0x01 bytes need inspection. Zeros before 'from' do not
+ * belong to the search, and a four-byte prefix wins at its earlier start.
+ * Use unsigned address distances: a valid uint32-sized input need not fit
+ * the signed pointer-difference range of a 32-bit userspace build. */
+static uint32_t DtsNextSequenceStartCode(const uint8_t *data, uint32_t size,
+	uint32_t from)
+{
+	if (from >= size || size - from < 3)
+		return size;
+	uint32_t candidate = from + 2;
+	while (candidate < size) {
+		const uint8_t *one = (const uint8_t *)memchr(data + candidate, 1,
+			size - candidate);
+		if (!one)
+			break;
+		candidate += (uint32_t)((uintptr_t)one - (uintptr_t)(data + candidate));
+		if (data[candidate - 1] == 0 && data[candidate - 2] == 0) {
+			if (candidate - from >= 3 && data[candidate - 3] == 0)
+				return candidate - 3;
+			return candidate - 2;
+		}
+		++candidate;
+	}
+	return size;
+}
+
 /* Annex B permits leading_zero_8bits before the first start-code prefix.
  * Accept only zero padding there; later NAL boundaries still have to be
  * exact three- or four-byte prefixes and empty NALs remain invalid. */
@@ -299,9 +328,7 @@ static BC_STATUS DtsConvertSequenceHeaders(const uint8_t *data, uint32_t size,
 			if (!prefix)
 				return BC_STS_INV_ARG;
 			begin = position + prefix;
-			position = begin;
-			while (position < size && !DtsSequenceStartCode(data + position, size - position))
-				++position;
+			position = DtsNextSequenceStartCode(data, size, begin);
 			length = position - begin;
 		} else {
 			if (size - position < 2)
@@ -427,10 +454,7 @@ static bool DtsFragmentConfigBoundarySafe(const uint8_t *data, uint32_t size)
 			return false;
 		const uint32_t begin = position + prefix;
 		const unsigned type = data[begin] & 0x1f;
-		position = begin + 1;
-		while (position < size &&
-		       !DtsSequenceStartCode(data + position, size - position))
-			++position;
+		position = DtsNextSequenceStartCode(data, size, begin + 1);
 		if (position != size)
 			continue;
 
