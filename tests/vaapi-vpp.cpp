@@ -7836,9 +7836,13 @@ void CpuPrimaryWriteOnlyExportBetweenMirroredFields() {
           }
       for (unsigned plane = 0; plane != 2; ++plane) {
         const uint8_t changed = 0xe1U + plane;
-        const off_t at = prime.layers[plane].offset[0] +
-            off_t{(plane ? geometry.y / 2U : geometry.y) + first} * prime.layers[plane].pitch[0] + geometry.x;
-        Require(pwrite(prime.objects[0].fd, &changed, 1, at) == 1,
+        const uint64_t row = uint64_t{plane ? geometry.y / 2U : geometry.y} + first;
+        const uint64_t at = uint64_t{prime.layers[plane].offset[0]} +
+            row * prime.layers[plane].pitch[0] + geometry.x;
+        Require(at <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()) &&
+                    at < prime.objects[0].size,
+                "exported parity edit fits the object and the native file-offset type");
+        Require(pwrite(prime.objects[0].fd, &changed, 1, static_cast<off_t>(at)) == 1,
                 "the real exported fd overwrites arrived-parity Y and UV after private preservation");
       }
       Require(process(first ^ 1U) == VA_STATUS_SUCCESS && !decoder->h264_first_field.valid &&
