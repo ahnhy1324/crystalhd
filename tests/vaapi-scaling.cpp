@@ -3190,20 +3190,101 @@ void CenteredReadableCanvasAndBob() {
       }
 }
 
+static uint8_t *RetireDirtyCenteredSmall(CenteredFixture *fixture, uint8_t value,
+                                       bool confirmed_flea = true) {
+  if (confirmed_flea)
+    Require(OpenDecoder(fixture->decode.get()) == VA_STATUS_SUCCESS &&
+                fixture->decode->decoder_open && fixture->decode->decoder_started &&
+                !fixture->decode->is_70012,
+            "confirm Flea through the real mock decoder-open path before reusing small bytes");
+  if (!fixture->decode->private_backing_pool)
+    fixture->decode->private_backing_pool = std::make_shared<CrystalHDPrivateBackingPool>();
+  const size_t bytes = size_t{Align(fixture->capture_width, 64)} *
+      (fixture->capture_height + fixture->capture_height / 2U);
+  std::vector<uint8_t> retired(bytes, value);
+  uint8_t *const address = retired.data();
+  fixture->decode->private_backing_pool->Recycle(std::move(retired));
+  Require(fixture->decode->private_backing_pool->Cached().buffers == 1,
+          "only a fully retired exact-size small allocation enters the private pool");
+  return address;
+}
+
+static void CenteredSmallReuseInitializationBoundaries() {
+  for (unsigned width : {128U, 144U}) {
+    CenteredFixture f(width * 2U, 32, 32, width, 16);
+    uint8_t *const retired = RetireDirtyCenteredSmall(&f, 0xa5);
+    f.Submit();
+    const auto small = f.decode->decoded_frames.at(kTimestampStep)->centered_pixels;
+    const uint8_t initial = width == 128 ? 0xa5 : 0;
+    Require(small->storage.data() == retired && !small->ready &&
+                std::all_of(small->storage.begin(), small->storage.end(),
+                            [&](uint8_t byte) { return byte == initial; }),
+            "only tight internal small reuse retains old bytes; padded reuse remains entirely zero");
+    const auto packed = f.Packed(43);
+    f.Complete(packed);
+    Require(f.Read(1) == f.Canvas(packed) && f.Read(1, true) == f.Canvas(packed),
+            "dirty small reuse and padded fallback both produce exact full YUV canvases");
+    for (unsigned plane = 0; plane != 2; ++plane)
+      for (unsigned row = 0; row != (plane ? f.capture_height / 2U : f.capture_height); ++row)
+        for (unsigned column = width; column != small->pitch[plane]; ++column)
+          Require(small->planes[plane][size_t{row} * small->pitch[plane] + column] == 0,
+                  "non-tight small allocations preserve every aligned zero-padding byte");
+  }
+  for (bool retired_before_discovery : {false, true}) {
+    CenteredFixture f;
+    if (retired_before_discovery)
+      RetireDirtyCenteredSmall(&f, 0xa5, false);
+    f.Submit();
+    const auto small = f.decode->decoded_frames.at(kTimestampStep)->centered_pixels;
+    Require(std::all_of(small->storage.begin(), small->storage.end(),
+                        [](uint8_t byte) { return byte == 0; }),
+            "fresh and unconfirmed-device internal small allocations still start entirely zero");
+  }
+  for (unsigned height : {16U, 8U}) {
+    auto pool = std::make_shared<CrystalHDPrivateBackingPool>();
+    std::vector<uint8_t> dirty(size_t{128} * (height + height / 2U), 0xa5);
+    uint8_t *const address = dirty.data();
+    pool->Recycle(std::move(dirty));
+    Surface generic;
+    Require(generic.AllocateCpuNv12(128, height, pool) && generic.storage.data() == address &&
+                std::all_of(generic.storage.begin(), generic.storage.end(),
+                            [](uint8_t byte) { return byte == 0; }),
+            "default generic and compact-sized retired allocations keep the full zero contract");
+  }
+}
+
 void CenteredFirstFieldAndQueuedBob() {
+  CenteredSmallReuseInitializationBoundaries();
   for (bool direct : {false, true})
     for (bool bottom_first : {false, true}) {
       CenteredFixture f(256, 32, 32, 128, 16, 32, false, direct);
+      uint8_t *const retired = RetireDirtyCenteredSmall(&f, 0xa5);
       f.Submit();
+      const auto small = f.decode->decoded_frames.at(kTimestampStep)->centered_pixels;
+      Require(small->storage.data() == retired &&
+                  std::all_of(small->storage.begin(), small->storage.end(),
+                              [](uint8_t byte) { return byte == 0xa5; }),
+              "actual Centered admission reuses dirty tight small bytes without clearing them");
       const auto packed = f.Packed(31);
       const auto canvas = f.Canvas(packed);
       f.Field(packed, bottom_first, bottom_first);
+      Require(f.decode->h264_first_field.valid &&
+                  !f.decode->h264_first_field.pixels.empty() && !small->ready &&
+                  small->frame_timestamp == 0 &&
+                  std::all_of(small->storage.begin(), small->storage.end(),
+                              [](uint8_t byte) { return byte == 0xa5; }),
+              "the maintained packed first-field path leaves the entire dirty small unpublished");
       Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT,
               "one physical field never completes the public full decoded canvas");
       const unsigned before = centered_probe::calls;
       f.QueueBob(bottom_first, bottom_first, false);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS && f.driver.pending_vpp.size() == 1,
               "pending ordinary Bob retains exact source and target ownership");
+      std::shared_ptr<Surface> compact;
+      Require(PrepareFirstFieldBob(f.driver.pending_vpp.front(), &compact) == VA_STATUS_SUCCESS &&
+                  compact && compact->centered_pixels && compact->centered_pixels != small,
+              "packed early Bob owns an independent compact result, not dirty unfinished small bytes");
+      const auto compact_pixels = compact->centered_pixels->storage;
       f.driver.vpp_worker = std::thread([&] { RunVppWorker(&f.driver); });
       const VAStatus synced = SyncSurface2(&f.context, 2, 1000000000ULL);
       f.driver.StopWorkers(); f.driver.stopping = false;
@@ -3215,6 +3296,9 @@ void CenteredFirstFieldAndQueuedBob() {
       f.Field(packed, !bottom_first, bottom_first);
       Require(SyncSurface2(&f.context, 1, 0) == VA_STATUS_SUCCESS && f.Read(1) == canvas,
               "matching second field completes the real public canvas exactly once");
+      Require(compact->centered_pixels->storage == compact_pixels &&
+                  !f.decode->h264_first_field.valid,
+              "complete pair conversion preserves the independently retained compact Bob pixels");
       f.QueueBob(!bottom_first, bottom_first, false);
       Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
                   f.Read(2) == f.BobOracle(canvas, !bottom_first),

@@ -23,7 +23,7 @@ maintained components; isolated diagnostic probes retain their own scope.
 | Published RC4 candidate | [1.3.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4), frozen source `1c8b0451c631` / module-DKMS `3.10.19`, is published with 12 downloaded-and-verified assets after #654 qualification/integration. Its actual outcomes and scoped reuse remain candidate19 evidence, not final20 results. Preserve its artifacts and registered payload. |
 | Published RC3 candidate | [1.3.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), core `36ef4c681f49` / module-DKMS `3.10.18`, is published with 12 assets: complete core, settings ZIP and native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Current-equipment qualification is complete; see the [actual results](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json) and [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). RC4 and final20 promotion retain separate identities and qualification. |
 | Frozen published candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. Frozen RC2 does not qualify a later package identity or stable promotion. |
-| Development master | Latest protected master includes [#663](https://github.com/ahnhy1324/crystalhd/pull/663) after final1.3/#655. The latest-source and separate prototype audits, reviewed fixes and targeted checks are complete; the task-PR/current-base CI rule governs integration. Published source `24a5182b988b` stays immutable; isolated CPU/COW/field/mirror candidates remain unpromoted. |
+| Development master | Latest protected master includes [#664](https://github.com/ahnhy1324/crystalhd/pull/664), after the maintained readback/cache changes in [#663](https://github.com/ahnhy1324/crystalhd/pull/663). A minimal task branch prepares TX-before-RX ordering, bounded parser scanning and gated private-small reuse; its affected checks/current-base CI remain separate from the research results below. Published source `24a5182b988b` stays immutable; isolated CPU/COW/field/mirror candidates remain unpromoted. |
 | Installed host baseline | **Verified official1.3/source24a/module20**, retained after normal installation and installed Player/controls checks. DKMS20 is installed for kernels7.0.0-38 and7.0.0-42; actual playback uses38. VERSION1.3.0 and the complete installed runtime receipt agree, full before/after boundary is equal and kernel checking passes. The [post-release receipt](tests/fixtures/issue477/postrelease-source900-20261105.json) records the new baseline; the former13/dev.1 host and temporary20/research3fd comparison remain historical. |
 
 The [published stable claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
@@ -55,9 +55,9 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [post-release results](tests/fixtures/issue477/postrelease-source900-20261105.json) retain every separate candidate failure. Dual-store field conversion/final ROI-copy omission is implemented but unpromoted: private882/844 still FAIL900; selected mirrored composed/public pixels pass for two originals. Ordinary module13 and temporary20 controls each have one unqualified ledger, kept separate from raw submits. The matched baseline and source/prototype audit are complete. Further attribution remains separate research; the caller's missing filter EOF remains a narrow limitation. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current results](tests/fixtures/issue477/postrelease-source900-20261105.json) still fail900: full research8fac returns897/894 originals; its ordinary control has two failed ledgers, so raw876/886 are unqualified. The three minimal maintained changes below pass affected CPU checks; task-PR/current-base CI remain pending. Keep COW/field/mirror prototypes unpromoted and continue the actual shortage/latency investigation; neither this bounded progress nor the caller's separate filter-EOF limitation closes either issue. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
-| 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist, with dated lifecycle and stock-Kodi sized/fixed evidence. The newly prepared SIZED comparison remains held and unexecuted; completing the official baseline does not resume it. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator or promote its default. Preserve DMA quarantine. |
+| 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist. The current matched-baseline SIZED16 arm completes864/854 originals and still fails900; sequential counts do not prove a performance gain or justify changing the default. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator. Preserve DMA quarantine and the coupled defer-allocation/DONTNEED scope. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
 | 7 | [#530 field-GPU output](https://github.com/ahnhy1324/crystalhd/issues/530) | Remaining XID refill, congested writes/X11 calls, EGL/whole-window restart, absolute chroma reconstruction and live/endurance work. Existing setup/resize/handoff deadlines and selected NV12 field/pixel controls are complete. The hardware-GL LSan failure remains recorded. |
 | 8, parallel research | [#92 capabilities](https://github.com/ahnhy1324/crystalhd/issues/92), [#204 picture ownership](https://github.com/ahnhy1324/crystalhd/issues/204) | Establish a coherent firmware-owned acquire/hold/publish/complete/release boundary. Standalone scaler/CSC/DNR and hardware deinterlacing follow that contract; headers or host-register guesses are not proof. |
@@ -75,7 +75,44 @@ support scopes are not additional promotion gates. Nonblocking research continue
 records the latest completed cases; the [earlier receipt](tests/fixtures/issue477/native900-20261104.json)
 retains its original source, failures and no-clock limits. All stock cases use
 the same900 input and unchanged original Kodi/App/discard policy. These serial
-counts are not causal speedup estimates. Every prototype below is unpromoted.
+counts are not causal speedup estimates. The permanent host baseline remains
+official1.3/source24a/module20; isolated research artifacts do not replace it.
+
+| Current matched-baseline arm | First play | Reopen | Disposition |
+| --- | ---: | ---: | --- |
+| Current e4d full research candidate | 837 | 830 | Source900 FAIL |
+| Same e4d with existing SIZED16 DIL opt-in | 864 | 854 | Source900 FAIL; second play also has10 classified replay inputs, not extra originals |
+| Same original App/e4d/SIZED16 under49Hz all-thread perf | 876 | 878 | Diagnostic profile only; Source900 FAIL, no speedup comparison |
+| Research9d with bounded TX-before-RX | 881 | 877 | Source900 FAIL; replay not exercised |
+| Research8fac with tight private-small reuse | 897 | 894 | Source900 FAIL; replay not exercised |
+| Same8fac ordinary backend, native trace only | Unqualified; raw submits876 | Unqualified; raw submits886 | Both strict ledgers FAIL; no replay/unknown-row waiver |
+
+Private cases retain their scoped packet/postfilter/cost/replay audits, controls,
+App0/kernel0 and full official-baseline equality. The ordinary arm has no private
+audit or pixel proof: first-play input/dequeue multiplicity and second-play
+incomplete identities fail its ledgers despite normal EOF/control cleanup.
+
+The minimal maintained branch contains only a bounded H264/Flea/Centered input
+pump before the unchanged RX64 harvest, equivalent bounded Annex-B prefix search,
+and clear-elision on exact-size retired tight privateSmall bytes after device
+confirmation. Fresh, padded, generic/public/image and compact-Bob initialization
+remain unchanged. Its tests use maintained packed first fields; COW, NV12
+first-field staging, border reuse and mirror stores from full8fac are excluded.
+Default-DIL/ordinary-VA strict builds, main packed-path scaling39groups/190,061
+checks, full replay and private-backing controls pass. The unchanged parser's
+complete library check and26,003-case native/scalar32/PentiumII results are
+explicitly reused; no unchanged-library rerun is inferred. Task-PR/current-base
+CI remains pending, and **these CPU results do not establish a900 fix**.
+The actual shortage, decoder skip/latency,
+full post-copy pixels/clocks, GPU return and endurance remain open. Preserve the
+original missing-filter-EOF and no-clock limits without claiming impossibility.
+
+<details>
+<summary>Retained pre-current field/COW/mirror checkpoints and historical host comparisons</summary>
+
+The following source-qualified records retain their original checkpoint state;
+the current matched-baseline observations and integration queue above supersede
+their then-pending plans. Every isolated prototype remains unpromoted.
 
 | Separate source/arm | First play | Reopen | Disposition |
 | --- | ---: | ---: | --- |
@@ -137,6 +174,8 @@ compatible-header fork. The fixed caller's absent filter EOF is a confirmed
 narrow tail boundary, separate from source900 and no proof of global
 impossibility. Stable1.3 payloads and every17-feature/default contract remain
 unchanged; this research does not replace their qualification.
+
+</details>
 
 <details>
 <summary>Retained804/805 and earlier comparison details, with original sources and limits</summary>
