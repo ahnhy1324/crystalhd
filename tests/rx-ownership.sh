@@ -40,17 +40,18 @@ awk '
 
 # Keep state values, buffer layouts and ownership functions tied to the driver.
 awk '
-    /^enum (_crystalhd_state|FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|BRCM_EVENT)[[:space:]]*\{/ ||
-    /^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_buffer_ops|crystalhd_rx_buffer|crystalhd_rx_format_metadata|crystalhd_rx_metadata|crystalhd_rx_dma_pkt|crystalhd_rx_completion|crystalhd_hw_stats|crystalhd_dio_user_info)[[:space:]]*\{/ {
+    /^enum (_crystalhd_state|crystalhd_decoder_phase|crystalhd_decoder_codec|list_sts|FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|BRCM_EVENT)[[:space:]]*\{/ ||
+    /^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_buffer_ops|crystalhd_rx_buffer|crystalhd_rx_format_metadata|crystalhd_rx_metadata|crystalhd_rx_dma_pkt|crystalhd_rx_completion|crystalhd_hw_stats|crystalhd_dio_user_info|crystalhd_user|crystalhd_retained_rx_entry|crystalhd_retained_rx_registry)[[:space:]]*\{/ {
 		copying = 1; found++
 	}
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-	END { if (found != 14 || copying) exit 1 }
+	END { if (found != 20 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" \
     "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
-    "$repo_dir/driver/linux/crystalhd_misc.h" > "$rx_test_dir/rx-types.h"
+    "$repo_dir/driver/linux/crystalhd_misc.h" \
+    "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-types.h"
 awk '
     /^enum list_sts[[:space:]]*\{/ { copying = 1; found_enum++ }
     copying { print }
@@ -98,6 +99,7 @@ awk '
     /^static unsigned int crystalhd_hw_detach_rx_owners\(/ ||
     /^uint32_t crystalhd_hw_count_free_rx_pkts(_locked)?\(/ ||
     /^void crystalhd_hw_stats\(/ ||
+    /^bool crystalhd_hw_rx_idle\(/ ||
     /^BC_STATUS crystalhd_rx_pkt_(complete|done)\(/ ||
     /^static BC_STATUS crystalhd_hw_complete_rx_locked\(/ ||
     /^BC_STATUS crystalhd_hw_(add_cap_buffer|get_cap_buffer|try_get_cap_buffer|repost_cap_buffer|start_capture|stop_capture_locked|stop_capture)\(/ {
@@ -105,18 +107,20 @@ awk '
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 24 || copying || awaiting_name) exit 1 }
+    END { if (found != 25 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
-	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_try_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||
+	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_try_dequeue|rx_ack_format|capture_start|capture_flush|suspend|resume)\(/ ||
 	/^static BC_STATUS crystalhd_rx_dequeue_common\(/ ||
-	/^static void bc_cproc_copy_pib\(/ ||
-	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fetch_frame|start_capture|flush_cap_buffs|query_caps)\(/ {
+	/^static void bc_cproc_(copy_pib|mark_pwr_state)\(/ ||
+    /^static (void|bool|BC_STATUS) crystalhd_(retained_[[:alnum:]_]+|legacy_rx_enter|legacy_rx_leave)\(/ ||
+    /^static const struct crystalhd_rx_buffer_ops crystalhd_retained_ops = \{/ ||
+	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|add_cap_buff_legacy|fetch_frame|fetch_frame_legacy|retained_rx|start_capture|flush_cap_buffs|query_caps)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-	END { if (found != 14 || copying) exit 1 }
+	END { if (found != 35 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-command.h"
 awk '
     /^BC_STATUS crystalhd_(flea|link)_hw_post_cap_buff\(/ {

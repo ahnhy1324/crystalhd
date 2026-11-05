@@ -97,6 +97,9 @@ struct crystalhd_hw {
     struct { uint32_t rx_success, rx_errors; } stats;
 };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
+/* This fixture covers legacy/native session PM. Actual retained registry
+ * transitions are exercised by rx-ownership; no registry is created here. */
+struct crystalhd_retained_rx_registry { bool stale; };
 struct crystalhd_cmd {
     uint32_t state;
     struct crystalhd_adp *adp;
@@ -106,6 +109,10 @@ struct crystalhd_cmd {
     const struct crystalhd_session_owner_ops *session_lifetime_ops;
     bool retain_rx_on_suspend;
     bool session_module_pinned;
+    int retained_rx_lock, ctx_lock;
+    struct crystalhd_retained_rx_registry *retained_rx;
+    uint64_t retained_rx_serial;
+    unsigned legacy_rx_active;
     enum crystalhd_decoder_phase decoder_phase;
     enum crystalhd_decoder_codec decoder_codec;
     uint32_t fw_sequence, decoder_channel_id;
@@ -219,6 +226,7 @@ static bool capture_notify_ok;
 static uint8_t replacement_owner;
 static bool pause_states[4];
 static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t retained_rx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t transaction_changed = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t capture_overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -379,6 +387,12 @@ static void Event(char event)
 }
 static void TransactionLock(int *lock)
 {
+    if (lock == &context.retained_rx_lock) {
+        if (pthread_mutex_lock(&retained_rx_mutex)) abort();
+        Check(!*lock, "legacy RX retirement lock starts unlocked");
+        *lock = 1;
+        return;
+    }
     if (lock == &adapter.legacy_gate) {
         Check(!*lock, "legacy gate starts unlocked"); *lock = 1; return;
     }
@@ -397,6 +411,12 @@ static void TransactionLock(int *lock)
 }
 static void TransactionUnlock(int *lock)
 {
+    if (lock == &context.retained_rx_lock) {
+        Check(*lock == 1, "legacy RX retirement lock balances");
+        *lock = 0;
+        if (pthread_mutex_unlock(&retained_rx_mutex)) abort();
+        return;
+    }
     if (lock == &adapter.legacy_gate) {
         Check(*lock == 1, "legacy gate balances"); *lock = 0; return;
     }
@@ -405,6 +425,17 @@ static void TransactionUnlock(int *lock)
 }
 #define mutex_lock(lock) TransactionLock(lock)
 #define mutex_unlock(lock) TransactionUnlock(lock)
+static void mutex_init(int *lock)
+{
+    Check(lock == &context.retained_rx_lock && !*lock,
+          "setup initializes the empty registry mutex under session exclusion");
+    *lock = 0;
+}
+static void spin_lock_init(int *lock)
+{
+    Check(lock == &context.ctx_lock, "setup initializes its own RX admission lock");
+    *lock = 0;
+}
 static struct device *chddev(void) { return &endpoint.dev; }
 static struct crystalhd_adp *chd_get_adp(void)
 {
@@ -1032,6 +1063,13 @@ static int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
 	Check(adp == &adapter, "session L0s end receives the owning adapter");
 	session_l0s_ends++;
 	return session_l0s_end_error;
+}
+static bool crystalhd_retained_cleanup(struct crystalhd_cmd *ctx, bool destroy)
+{
+    (void)destroy;
+    Check(ctx && !ctx->retained_rx,
+          "legacy/native session fixture cannot silently stub a live retained registry");
+    return true;
 }
 /* Keep close accounting while executing its complete production body. */
 #define crystalhd_hw_close crystalhd_hw_close_actual

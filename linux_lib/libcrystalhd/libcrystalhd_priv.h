@@ -135,6 +135,8 @@ typedef struct _DTS_MPOOL_TYPE {
 	uint32_t	type;
 	uint32_t	sz;
 	uint8_t		*buff;
+	/* Negotiated retained RX identity; never inferred from a user pointer. */
+	BC_RX_REGISTRATION rxRegistration;
 } DTS_MPOOL_TYPE;
 
 #define LIB_CTX_SIG	0x11223344
@@ -285,10 +287,16 @@ typedef struct _DTS_LIB_CONTEXT{
 	 * thread related race conditions.
 	 */
 	BC_IOCTL_DATA	*pOutData;		/* Current Active Proc Out Buffer */
-	/* Lazy driver negotiation belongs to this descriptor/context lifetime.
-	 * Only the exclusive admitted output caller reads/writes this cache. */
+	/* Descriptor-lifetime negotiation is published once under thLock, then
+	 * immutable. Map owns the lifecycle lease; retained-mode publication also
+	 * requires IDLE, so it cannot change an admitted legacy output call. */
 	bool driverCapsQueried;
 	uint32_t driverCapsFlags;
+	/* thLock/control/output admission serialize registration and borrowing.
+	 * A failed or ambiguous command can only proceed to owner-wide retirement. */
+	bool retainedRxMode;
+	bool retainedRxPoisoned;
+	BC_RX_REGISTRATION retainedRxBorrow;
 
 	/* Place Holder for FW file paths */
 	char			StreamFile[MAX_PATH+1];

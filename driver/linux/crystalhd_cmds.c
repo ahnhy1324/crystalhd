@@ -35,6 +35,150 @@
 #include "crystalhd_stream.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
+
+/* The registry owns mappings even when a fetched packet is outside every HW
+ * queue. Core release only detaches that one owner; only checked retirement
+ * below may unmap. All fields except state are protected by retained_rx_lock.
+ */
+struct crystalhd_retained_rx_entry {
+	struct crystalhd_rx_buffer buffer;
+	struct crystalhd_dio_req *dio;
+	BC_RX_REGISTRATION key;
+	u64 capture_epoch;
+	u32 state; /* BC_RX_QUEUED/BC_RX_BORROWED, or0 after core detachment */
+};
+
+struct crystalhd_retained_rx_registry {
+	const void *file_owner;
+	u64 file_epoch;
+	struct crystalhd_user *user;
+	u64 generation;
+	bool stale;
+	struct crystalhd_retained_rx_entry *entries[BC_RX_LIST_CNT];
+};
+
+static void crystalhd_retained_cpu(struct crystalhd_adp *adp,
+				   struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+
+	crystalhd_rx_buffer_sync_for_cpu(adp, &entry->dio->rx_buffer);
+}
+
+static void crystalhd_retained_device(struct crystalhd_adp *adp,
+				      struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+
+	crystalhd_rx_buffer_sync_for_device(adp, &entry->dio->rx_buffer);
+}
+
+static BC_STATUS crystalhd_retained_read(struct crystalhd_rx_buffer *buffer,
+					u32 offset, void *data, size_t size)
+{
+	struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+
+	return crystalhd_rx_buffer_read(&entry->dio->rx_buffer, offset, data, size);
+}
+
+static BC_STATUS crystalhd_retained_write(struct crystalhd_rx_buffer *buffer,
+					 u32 offset, const void *data, size_t size)
+{
+	struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+
+	return crystalhd_rx_buffer_write(&entry->dio->rx_buffer, offset, data, size);
+}
+
+static void crystalhd_retained_detach(struct crystalhd_adp *adp,
+				      struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_retained_rx_entry *entry = buffer->cookie;
+
+	(void)adp;
+	/* Runs only after the packet is fully detached, including terminal DMA
+	 * retirement. Never free or acquire the registry mutex in this callback. */
+	WRITE_ONCE(entry->state, 0);
+}
+
+static const struct crystalhd_rx_buffer_ops crystalhd_retained_ops = {
+	.sync_for_cpu = crystalhd_retained_cpu,
+	.sync_for_device = crystalhd_retained_device,
+	.read = crystalhd_retained_read,
+	.write = crystalhd_retained_write,
+	.release = crystalhd_retained_detach,
+};
+
+/* Caller owns registry serialization or terminal user_lock exclusivity and
+ * has positively retired every HW owner. Check the entire inventory first. */
+static bool crystalhd_retained_cleanup(struct crystalhd_cmd *ctx, bool destroy)
+{
+	struct crystalhd_retained_rx_registry *registry = ctx->retained_rx;
+	unsigned long flags;
+	unsigned int i;
+
+	if (!registry)
+		return true;
+	for (i = 0; i < BC_RX_LIST_CNT; i++)
+		if (registry->entries[i] &&
+		    READ_ONCE(registry->entries[i]->state) == BC_RX_QUEUED)
+			return false;
+	for (i = 0; i < BC_RX_LIST_CNT; i++) {
+		struct crystalhd_retained_rx_entry *entry = registry->entries[i];
+
+		if (!entry)
+			continue;
+		if (crystalhd_unmap_dio(ctx->adp, entry->dio) != BC_STS_SUCCESS)
+			return false;
+		kfree(entry);
+		registry->entries[i] = NULL;
+	}
+	if (destroy) {
+		spin_lock_irqsave(&ctx->ctx_lock, flags);
+		WRITE_ONCE(ctx->retained_rx, NULL);
+		spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+		kfree(registry);
+	} else {
+		registry->stale = ctx->retained_rx_serial == U64_MAX;
+		if (!registry->stale)
+			registry->generation = ++ctx->retained_rx_serial;
+	}
+	return true;
+}
+
+/* Do not serialize a legacy arrival wait with stop/cancellation. Only count
+ * its admission window so a concurrent first REGISTER fails closed. */
+static bool crystalhd_legacy_rx_enter(struct crystalhd_cmd *ctx)
+{
+	unsigned long flags;
+	bool allowed;
+
+	spin_lock_irqsave(&ctx->ctx_lock, flags);
+	allowed = !ctx->retained_rx && ctx->legacy_rx_active != UINT_MAX;
+	if (allowed)
+		ctx->legacy_rx_active++;
+	spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+	return allowed;
+}
+
+static void crystalhd_legacy_rx_leave(struct crystalhd_cmd *ctx)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ctx->ctx_lock, flags);
+	ctx->legacy_rx_active--;
+	spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+}
+
+static bool crystalhd_retained_no_owners(struct crystalhd_cmd *ctx)
+{
+	unsigned long flags;
+	bool empty;
+
+	spin_lock_irqsave(&ctx->ctx_lock, flags);
+	empty = !ctx->legacy_rx_active && crystalhd_hw_rx_idle(ctx->hw_ctx);
+	spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+	return empty;
+}
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
 {
 	struct crystalhd_user *user = NULL;
@@ -168,6 +312,8 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 	if (retire_session_resources) {
 		if (crystalhd_hw_free_dma_rings(ctx->hw_ctx) != BC_STS_SUCCESS)
 			goto retained;
+		if (!crystalhd_retained_cleanup(ctx, true))
+			goto retained;
 		crystalhd_destroy_dio_pool(ctx->adp);
 		crystalhd_delete_elem_pool(ctx->adp);
 	}
@@ -176,6 +322,8 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
 retired:
+	if (!crystalhd_retained_cleanup(ctx, true))
+		return false;
 	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	return true;
@@ -458,6 +606,11 @@ static BC_STATUS bc_cproc_query_caps(struct crystalhd_cmd *ctx,
 	memset(caps, 0, sizeof(*caps));
 	caps->abi_version = BC_DRIVER_CAPS_ABI_VERSION;
 	caps->flags = BC_DRIVER_CAP_RX_POLL | BC_DRIVER_CAP_RX_NOWAIT;
+	if (ctx->adp && ctx->adp->pdev->device == BC_PCI_DEVID_FLEA)
+		caps->flags |= BC_DRIVER_CAP_RX_RETAINED;
+	BUILD_BUG_ON(sizeof(BC_RX_REGISTRATION) != 64);
+	BUILD_BUG_ON(offsetof(BC_RETAINED_RX, frame) != 64);
+	BUILD_BUG_ON(sizeof(BC_RETAINED_RX) > sizeof(BC_FW_CMD));
 	return BC_STS_SUCCESS;
 }
 
@@ -1806,7 +1959,7 @@ BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 	return sts == BC_STS_BUSY ? BC_STS_SUCCESS : sts;
 }
 
-static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
+static BC_STATUS bc_cproc_add_cap_buff_legacy(struct crystalhd_cmd *ctx,
 				       crystalhd_ioctl_data *idata)
 {
 	struct device *dev = chddev();
@@ -1849,6 +2002,20 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	}
 
 	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
+				       crystalhd_ioctl_data *idata)
+{
+	BC_STATUS sts;
+
+	if (!ctx)
+		return BC_STS_INV_ARG;
+	if (!crystalhd_legacy_rx_enter(ctx))
+		return BC_STS_ERR_USAGE;
+	sts = bc_cproc_add_cap_buff_legacy(ctx, idata);
+	crystalhd_legacy_rx_leave(ctx);
+	return sts;
 }
 
 BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
@@ -1969,6 +2136,8 @@ BC_STATUS crystalhd_rx_pause_metadata_idle(struct crystalhd_cmd *ctx,
 	else {
 		ctx->hw_ctx->rx_cancel_epoch++;
 		ctx->state |= BC_LINK_FMT_CHG;
+		if (ctx->retained_rx)
+			WRITE_ONCE(ctx->retained_rx->stale, true);
 		sts = BC_STS_SUCCESS;
 	}
 	enable_irq(ctx->adp->pdev->irq);
@@ -2060,7 +2229,7 @@ BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *ctx,
 	return crystalhd_rx_dequeue_common(ctx, result, true);
 }
 
-static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
+static BC_STATUS bc_cproc_fetch_frame_legacy(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
 	struct crystalhd_rx_completion result;
@@ -2108,6 +2277,306 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
+static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
+				      crystalhd_ioctl_data *idata)
+{
+	BC_STATUS sts;
+
+	if (!ctx)
+		return BC_STS_INV_ARG;
+	if (!crystalhd_legacy_rx_enter(ctx))
+		return BC_STS_ERR_USAGE;
+	sts = bc_cproc_fetch_frame_legacy(ctx, idata);
+	crystalhd_legacy_rx_leave(ctx);
+	return sts;
+}
+
+static bool crystalhd_retained_owner(struct crystalhd_cmd *ctx,
+				     crystalhd_ioctl_data *idata)
+{
+	struct crystalhd_retained_rx_registry *r = ctx->retained_rx;
+
+	return r && idata->u_id < BC_LINK_MAX_OPENS && idata->file_owner &&
+		idata->file_epoch && r->file_owner == idata->file_owner &&
+		r->file_epoch == idata->file_epoch && r->user == &ctx->user[idata->u_id] &&
+		ctx->session_owner == r->user;
+}
+
+/* Called under retained_rx_lock. Publishing mode excludes every legacy RX
+ * admission, including one that has not yet submitted its freshly pinned DIO. */
+static BC_STATUS crystalhd_retained_register(struct crystalhd_cmd *ctx,
+					    crystalhd_ioctl_data *idata,
+					    const BC_RX_REGISTRATION *key)
+{
+	struct crystalhd_retained_rx_registry *r = ctx->retained_rx;
+	struct crystalhd_retained_rx_entry *entry;
+	unsigned long flags;
+	unsigned int i, slot = BC_RX_LIST_CNT;
+	BC_STATUS sts;
+
+	if (key->registration_id || key->capture_generation || key->borrow_sequence ||
+	    key->state || !key->user_address || key->user_address > ULONG_MAX ||
+	    key->capacity > ULONG_MAX - (unsigned long)key->user_address ||
+	    !idata->file_owner || !idata->file_epoch || idata->u_id >= BC_LINK_MAX_OPENS)
+		return BC_STS_INV_ARG;
+	if (ctx->session_owner != &ctx->user[idata->u_id])
+		return BC_STS_ERR_USAGE;
+	if (!r) {
+		if (ctx->retained_rx_serial == U64_MAX)
+			return BC_STS_INSUFF_RES;
+		r = kzalloc(sizeof(*r), GFP_KERNEL);
+		if (!r)
+			return BC_STS_INSUFF_RES;
+		/* No new legacy RX may start between the idle sample and publish. */
+		spin_lock_irqsave(&ctx->ctx_lock, flags);
+		if (ctx->legacy_rx_active || !crystalhd_hw_rx_idle(ctx->hw_ctx)) {
+			spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+			kfree(r);
+			return BC_STS_BUSY;
+		}
+		r->file_owner = idata->file_owner;
+		r->file_epoch = idata->file_epoch;
+		r->user = &ctx->user[idata->u_id];
+		r->generation = ++ctx->retained_rx_serial;
+		WRITE_ONCE(ctx->retained_rx, r);
+		spin_unlock_irqrestore(&ctx->ctx_lock, flags);
+	}
+	if (!crystalhd_retained_owner(ctx, idata) || r->stale)
+		return BC_STS_ERR_USAGE;
+	if (ctx->retained_rx_serial == U64_MAX)
+		return BC_STS_INSUFF_RES;
+	sts = bc_cproc_check_inbuffs(false, (void *)(unsigned long)key->user_address,
+		key->capacity, key->uv_offset, key->output_format != MODE420);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	for (i = 0; i < BC_RX_LIST_CNT; i++) {
+		const struct crystalhd_retained_rx_entry *other = r->entries[i];
+
+		if (!other) {
+			if (slot == BC_RX_LIST_CNT)
+				slot = i;
+			continue;
+		}
+		if (key->user_address < other->key.user_address + other->key.capacity &&
+		    other->key.user_address < key->user_address + key->capacity)
+			return BC_STS_INV_ARG;
+	}
+	if (slot == BC_RX_LIST_CNT)
+		return BC_STS_INSUFF_RES;
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry)
+		return BC_STS_INSUFF_RES;
+	sts = crystalhd_map_dio(ctx->adp, (void *)(unsigned long)key->user_address,
+		key->capacity, key->uv_offset, key->output_format, false, &entry->dio);
+	if (sts != BC_STS_SUCCESS) {
+		kfree(entry);
+		return sts;
+	}
+	entry->buffer = entry->dio->rx_buffer;
+	entry->buffer.ops = &crystalhd_retained_ops;
+	entry->buffer.cookie = entry;
+	entry->key = *key;
+	entry->key.registration_id = ++ctx->retained_rx_serial;
+	entry->key.capture_generation = r->generation;
+	entry->key.state = BC_RX_QUEUED;
+	entry->capture_epoch = ctx->hw_ctx->rx_cancel_epoch;
+	WRITE_ONCE(entry->state, BC_RX_QUEUED);
+	r->entries[slot] = entry;
+	sts = crystalhd_rx_submit(ctx, &entry->buffer);
+	if (sts != BC_STS_SUCCESS) {
+		WRITE_ONCE(entry->state, 0);
+		if (crystalhd_unmap_dio(ctx->adp, entry->dio) != BC_STS_SUCCESS) {
+			r->stale = true;
+			return BC_STS_IO_ERROR;
+		}
+		r->entries[slot] = NULL;
+		kfree(entry);
+		return sts;
+	}
+	idata->udata.u.RetainedRx.registration = entry->key;
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS crystalhd_retained_fetch(struct crystalhd_cmd *ctx,
+					 crystalhd_ioctl_data *idata)
+{
+	struct crystalhd_retained_rx_registry *r = ctx->retained_rx;
+	struct crystalhd_retained_rx_entry *entry = NULL;
+	struct crystalhd_rx_completion result;
+	BC_DEC_OUT_BUFF *frame = &idata->udata.u.RetainedRx.frame;
+	unsigned int i;
+	BC_STATUS sts;
+
+	if (r->stale)
+		return BC_STS_IO_USER_ABORT;
+	for (i = 0; i < BC_RX_LIST_CNT; i++)
+		if (r->entries[i] && READ_ONCE(r->entries[i]->state) == BC_RX_BORROWED)
+			return BC_STS_BUSY;
+	sts = idata->udata.Timeout ? crystalhd_rx_dequeue(ctx, &result) :
+		crystalhd_rx_try_dequeue(ctx, &result);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	frame->Flags = result.flags;
+	if (result.flags & COMP_FLAG_PIB_VALID)
+		bc_cproc_copy_pib(&frame->PibInfo, &result.pib);
+	for (i = 0; i < BC_RX_LIST_CNT; i++)
+		if (r->entries[i] && result.buffer == &r->entries[i]->buffer &&
+		    result.cookie == r->entries[i]) {
+			entry = r->entries[i];
+			break;
+		}
+	if (!entry || READ_ONCE(entry->state) != BC_RX_QUEUED ||
+	    result.capture_epoch != entry->capture_epoch) {
+		crystalhd_rx_buffer_release(ctx->adp, result.buffer);
+		r->stale = true;
+		return BC_STS_IO_ERROR;
+	}
+	if (result.flags & COMP_FLAG_FMT_CHANGE)
+		return crystalhd_rx_ack_format(ctx, &result);
+	if (entry->key.borrow_sequence == U64_MAX) {
+		WRITE_ONCE(entry->state, 0);
+		r->stale = true;
+		return BC_STS_IO_ERROR;
+	}
+	crystalhd_rx_buffer_sync_for_cpu(ctx->adp, &entry->buffer);
+	entry->key.borrow_sequence++;
+	entry->key.state = BC_RX_BORROWED;
+	WRITE_ONCE(entry->state, BC_RX_BORROWED);
+	frame->OutPutBuffs.YuvBuff = entry->dio->uinfo.xfr_buff;
+	frame->OutPutBuffs.YuvBuffSz = entry->key.capacity;
+	frame->OutPutBuffs.UVbuffOffset = entry->key.uv_offset;
+	frame->OutPutBuffs.b422Mode = entry->key.output_format;
+	frame->OutPutBuffs.YBuffDoneSz = result.y_done_sz;
+	frame->OutPutBuffs.UVBuffDoneSz = result.uv_done_sz;
+	idata->udata.u.RetainedRx.registration = entry->key;
+	idata->udata.u.RetainedRx.registration.operation = BC_RX_FETCH;
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS crystalhd_retained_return(struct crystalhd_cmd *ctx,
+					  crystalhd_ioctl_data *idata,
+					  const BC_RX_REGISTRATION *key)
+{
+	struct crystalhd_retained_rx_registry *r = ctx->retained_rx;
+	struct crystalhd_retained_rx_entry *entry = NULL;
+	unsigned int i;
+	BC_STATUS sts;
+
+	for (i = 0; i < BC_RX_LIST_CNT; i++)
+		if (r->entries[i] &&
+		    r->entries[i]->key.registration_id == key->registration_id) {
+			entry = r->entries[i];
+			break;
+		}
+	if (!entry || key->capture_generation != entry->key.capture_generation ||
+	    key->borrow_sequence != entry->key.borrow_sequence ||
+	    key->user_address != entry->key.user_address ||
+	    key->capacity != entry->key.capacity || key->uv_offset != entry->key.uv_offset ||
+	    key->output_format != entry->key.output_format ||
+	    key->state != BC_RX_BORROWED || READ_ONCE(entry->state) != BC_RX_BORROWED)
+		return BC_STS_INV_ARG;
+	if (key->operation == BC_RX_RETIRE) {
+		if (READ_ONCE(ctx->hw_ctx->dma_fault) &&
+		    !ctx->adp->dma_terminal_quiesced)
+			return BC_STS_IO_ERROR;
+		sts = crystalhd_unmap_dio(ctx->adp, entry->dio);
+		if (sts != BC_STS_SUCCESS) {
+			r->stale = true;
+			return sts;
+		}
+		kfree(entry);
+		r->entries[i] = NULL;
+		idata->udata.u.RetainedRx.registration = *key;
+		idata->udata.u.RetainedRx.registration.state = BC_RX_RETIRED;
+		return BC_STS_SUCCESS;
+	}
+	if (r->stale || entry->capture_epoch != ctx->hw_ctx->rx_cancel_epoch ||
+	    key->capture_generation != r->generation)
+		return BC_STS_IO_USER_ABORT;
+	WRITE_ONCE(entry->state, BC_RX_QUEUED);
+	sts = crystalhd_rx_submit(ctx, &entry->buffer);
+	if (sts != BC_STS_SUCCESS) {
+		WRITE_ONCE(entry->state, BC_RX_BORROWED);
+		return sts;
+	}
+	entry->key.state = BC_RX_QUEUED;
+	idata->udata.u.RetainedRx.registration = entry->key;
+	idata->udata.u.RetainedRx.registration.operation = BC_RX_REPOST;
+	return BC_STS_SUCCESS;
+}
+
+/* New protocol only: an explicit complete retirement is repeatable even when
+ * PAUSED survives STOP_VIDEO, or a previous successful stop lost copy-out.
+ * The legacy pre-capture FLUSH state predicate remains unchanged. */
+static BC_STATUS crystalhd_retained_retire_all(struct crystalhd_cmd *ctx)
+{
+	BC_STATUS sts;
+	const u32 allowed = BC_LINK_INIT | BC_LINK_CAP_EN | BC_LINK_FMT_CHG |
+		BC_LINK_PAUSED;
+
+	if (ctx->state != BC_LINK_RESUME &&
+	    (!(ctx->state & BC_LINK_INIT) || (ctx->state & ~allowed)))
+		return BC_STS_ERR_USAGE;
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
+	ctx->state &= ~(BC_LINK_CAP_EN | BC_LINK_FMT_CHG);
+	sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, true);
+	if (sts == BC_STS_SUCCESS && !crystalhd_retained_cleanup(ctx, false))
+		sts = BC_STS_IO_ERROR;
+	if (sts != BC_STS_SUCCESS)
+		ctx->retained_rx->stale = true;
+	up(&ctx->hw_ctx->fetch_sem);
+	return sts;
+}
+
+static BC_STATUS bc_cproc_retained_rx(struct crystalhd_cmd *ctx,
+				      crystalhd_ioctl_data *idata)
+{
+	BC_RX_REGISTRATION key, empty = {};
+	BC_STATUS sts;
+	bool retire_all;
+
+	if (!ctx || !ctx->adp || !ctx->hw_ctx || !idata ||
+	    ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return BC_STS_ERR_USAGE;
+	key = idata->udata.u.RetainedRx.registration;
+	memset(&idata->udata.u.RetainedRx, 0, sizeof(BC_RETAINED_RX));
+	idata->udata.u.RetainedRx.registration.operation = key.operation;
+	if (key.flags || key.reserved[0] || key.reserved[1])
+		return BC_STS_INV_ARG;
+	retire_all = key.operation == BC_RX_RETIRE && !key.registration_id;
+	if (retire_all || key.operation == BC_RX_FETCH) {
+		empty.operation = key.operation;
+		if (memcmp(&key, &empty, sizeof(key)))
+			return BC_STS_INV_ARG;
+	}
+	mutex_lock(&ctx->retained_rx_lock);
+	if (key.operation == BC_RX_REGISTER)
+		sts = crystalhd_retained_register(ctx, idata, &key);
+	else if (retire_all && !ctx->retained_rx && idata->file_owner &&
+		 idata->file_epoch && idata->u_id < BC_LINK_MAX_OPENS &&
+		 ctx->session_owner == &ctx->user[idata->u_id]) {
+		/* Even a first REGISTER copy-in/allocation failure has a positive
+		 * empty-owner result, but never ACK while legacy DMA still owns data. */
+		sts = crystalhd_retained_no_owners(ctx) ? BC_STS_SUCCESS : BC_STS_BUSY;
+		if (sts == BC_STS_SUCCESS)
+			idata->udata.u.RetainedRx.registration.state = BC_RX_RETIRED;
+	} else if (!crystalhd_retained_owner(ctx, idata))
+		sts = BC_STS_ERR_USAGE;
+	else if (retire_all) {
+		sts = crystalhd_retained_retire_all(ctx);
+		if (sts == BC_STS_SUCCESS)
+			idata->udata.u.RetainedRx.registration.state = BC_RX_RETIRED;
+	} else if (key.operation == BC_RX_FETCH)
+		sts = crystalhd_retained_fetch(ctx, idata);
+	else if (key.operation == BC_RX_REPOST || key.operation == BC_RX_RETIRE)
+		sts = crystalhd_retained_return(ctx, idata, &key);
+	else
+		sts = BC_STS_INV_ARG;
+	mutex_unlock(&ctx->retained_rx_lock);
+	return sts;
+}
+
 /*
  * Start capture with scalar thresholds. The caller keeps command/device
  * lifetime protection; this function acquires fetch_sem itself.
@@ -2120,6 +2589,8 @@ BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 
 	if (!ctx || !ctx->hw_ctx)
 		return BC_STS_INV_ARG;
+	if (ctx->retained_rx && READ_ONCE(ctx->retained_rx->stale))
+		return BC_STS_IO_USER_ABORT;
 
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
@@ -2179,8 +2650,11 @@ BC_STATUS crystalhd_capture_flush(struct crystalhd_cmd *ctx, bool discard_only)
 		return BC_STS_INV_ARG;
 	}
 
-	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+	mutex_lock(&ctx->retained_rx_lock);
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
+		mutex_unlock(&ctx->retained_rx_lock);
 		return BC_STS_IO_USER_ABORT;
+	}
 	/*
 	 * Registration precedes capture enable. Permit an exact INIT session to
 	 * destructively unwind a partially registered pool, but never let the
@@ -2210,9 +2684,17 @@ BC_STATUS crystalhd_capture_flush(struct crystalhd_cmd *ctx, bool discard_only)
 	} else {
 		ctx->state &= ~(BC_LINK_CAP_EN|BC_LINK_FMT_CHG);
 		sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, true);
+		if (sts != BC_STS_SUCCESS && ctx->retained_rx)
+			ctx->retained_rx->stale = true;
+		if (sts == BC_STS_SUCCESS && !crystalhd_retained_cleanup(ctx, false)) {
+			if (ctx->retained_rx)
+				ctx->retained_rx->stale = true;
+			sts = BC_STS_IO_ERROR;
+		}
 	}
 out:
 	up(&ctx->hw_ctx->fetch_sem);
+	mutex_unlock(&ctx->retained_rx_lock);
 	return sts;
 }
 
@@ -2402,6 +2884,7 @@ static const struct crystalhd_cmd_tbl	g_crystalhd_cproc_tbl[] = {
 	{ BCM_IOC_RELEASE,			bc_cproc_release_user,  0},
 	{ BCM_IOC_QUERY_CAPS,		bc_cproc_query_caps,	0},
 	{ BCM_IOC_FETCH_RXBUFF_NOWAIT,	bc_cproc_fetch_frame,	1},
+	{ BCM_IOC_RETAINED_RX,		bc_cproc_retained_rx,	1},
 	{ BCM_IOC_END,				NULL},
 };
 
@@ -2421,6 +2904,9 @@ void crystalhd_rx_retire_quiesced(struct crystalhd_cmd *ctx, bool suspend_only)
 		return;
 
 	crystalhd_hw_retire_rx_quiesced(ctx->hw_ctx);
+	/* Include the borrowed owners that were outside every hardware queue. */
+	if (!crystalhd_retained_cleanup(ctx, false) && ctx->retained_rx)
+		ctx->retained_rx->stale = true;
 }
 
 /**
@@ -2467,6 +2953,9 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 	dev_dbg(dev, "State before suspend is %x\n", ctx->state);
 
 	bc_cproc_mark_pwr_state(ctx, BC_HW_SUSPEND); /* going to suspend */
+	/* Revoke borrow authority even if a later stop/suspend step fails. */
+	if (ctx->retained_rx)
+		ctx->retained_rx->stale = true;
 
 	if (ctx->state & BC_LINK_CAP_EN) {
 		// Clean any pending RX
@@ -2690,7 +3179,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	}
 	/* Reinitialization must never erase a live module or frontend reference. */
 	if (ctx->session_module_pinned || ctx->session_lifetime_owner ||
-	    ctx->session_lifetime_ops)
+	    ctx->session_lifetime_ops || ctx->retained_rx)
 		return BC_STS_BUSY;
 
 	if (ctx->adp)
@@ -2702,6 +3191,11 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	ctx->session_lifetime_ops = NULL;
 	ctx->session_module_pinned = false;
 	ctx->retain_rx_on_suspend = false;
+	mutex_init(&ctx->retained_rx_lock);
+	spin_lock_init(&ctx->ctx_lock);
+	ctx->retained_rx = NULL;
+	ctx->retained_rx_serial = 0;
+	ctx->legacy_rx_active = 0;
 	crystalhd_decoder_tracking_reset(ctx);
 	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
 		ctx->user[i].uid = i;
@@ -2749,9 +3243,13 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 		sts = crystalhd_hw_free_dma_rings(ctx->hw_ctx);
 		if (sts != BC_STS_SUCCESS)
 			return sts;
+		if (!crystalhd_retained_cleanup(ctx, true))
+			return BC_STS_IO_ERROR;
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 	}
+	if (!crystalhd_retained_cleanup(ctx, true))
+		return BC_STS_IO_ERROR;
 	if (ctx->adp->fill_byte_pool)
 		crystalhd_destroy_dio_pool(ctx->adp);
 	if (ctx->adp->elem_pool_head)
