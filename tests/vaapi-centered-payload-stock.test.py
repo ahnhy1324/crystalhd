@@ -34,6 +34,145 @@ PID = 321
 FIELDS = STOCK.BINDING + ('surface', 'owner')
 
 
+class RuntimeBaselineTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='centered-runtime-baseline-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for key, leaf in (('RUNTIME_RECEIPT', 'receipt.json'), ('RUNTIME_VERSION', 'VERSION'),
+                          ('RUNTIME_PENDING', 'pending')):
+            change = patch.object(STOCK, key, self.root / leaf)
+            change.start(); self.addCleanup(change.stop)
+        ports = ('0000:02:00.0', '0000:00:1c.0')
+        self.data = {'schema': 1, 'status': 'PASS_VERIFIED_OFFICIAL_STABLE_BASELINE',
+            'bundle': '1.3.0', 'core_source': STOCK.STABLE_SOURCE,
+            'runtime_receipt_path': str(STOCK.RUNTIME_RECEIPT),
+            'snapshot': dict(module='3.10.20', srcversion='ABCDEF0123456789ABCDEF01', ref=0, pin_net=0,
+                force='Y', session='N', power='on', video_nodes=[], debug_rows=91,
+                debug_sha256='1'*64, firmware_sha256='2'*64, installed_module_sha256='3'*64,
+                links={p: 0x42 for p in ports},
+                aer={p: {'aer_dev_correctable': 'Receiver Error 0\n'} for p in ports}),
+            'runtime_receipt': {'schema': 1, 'scope': 'installed-userspace-files', 'bundle': '1.3.0',
+                'components': {**{k: {'identity': 'gnu-build-id', 'files': [
+                    {'path': '/usr/lib/' + k, 'gnu_build_id': '4'*40}]}
+                    for k in ('dil', 'gstreamer', 'vaapi')},
+                    'player': {'identity': 'source-revision', 'source_id': 'archive:' + STOCK.STABLE_SOURCE,
+                        'files': [{'path': '/usr/bin/crystalhd-play', 'bytes': 1582},
+                                  {'path': '/usr/share/crystalhd/player.py', 'bytes': 74424}]}}}}
+        self.path = self.root / 'baseline.json'; self.write(self.data)
+        STOCK.RUNTIME_RECEIPT.write_text(json.dumps(self.data['runtime_receipt']))
+        STOCK.RUNTIME_VERSION.write_text('1.3.0\n')
+        mains = self.root / 'AC'; mains.mkdir()
+        (mains / 'type').write_text('Mains'); (mains / 'online').write_text('1')
+        temperature = self.root / 'temp'; temperature.write_text('60000')
+        original_glob = Path.glob
+        def host_glob(path, pattern):
+            if str(path) == '/sys/class/power_supply': return iter([mains])
+            if str(path) == '/sys/class/thermal': return iter([temperature])
+            return original_glob(path, pattern)
+        change = patch.object(Path, 'glob', host_glob)
+        change.start(); self.addCleanup(change.stop)
+        change = patch.object(STOCK.subprocess, 'run', return_value=SimpleNamespace(returncode=1))
+        self.fuser = change.start(); self.addCleanup(change.stop)
+        self.boundary = SimpleNamespace(snapshot=lambda: copy.deepcopy(self.data['snapshot']))
+        self.verifications = []
+        def verify(*args): self.verifications.append(args); return [('OK', 'test cohort')], False
+        self.provenance = SimpleNamespace(verify_receipt=verify)
+
+    def write(self, data): self.path.write_text(json.dumps(data))
+
+    def guard(self): return STOCK.guard_runtime_baseline(self.data, self.boundary, self.provenance)
+
+    def test_explicit_official20_data_and_actual_receipt_verification(self):
+        self.assertEqual(STOCK.read_runtime_baseline(self.path), self.data)
+        self.assertEqual(self.guard(), self.data['snapshot'])
+        self.assertEqual(self.verifications, [(STOCK.RUNTIME_RECEIPT, '/', '1.3.0', {})])
+        self.fuser.assert_called_once_with(['sudo', '-n', 'fuser', '-s', '/dev/crystalhd'], timeout=3)
+
+    def test_old_development_or_mixed_official_cohorts_are_rejected(self):
+        for section, key, value in ((None, 'bundle', '1.3.0-dev.1'),
+                (None, 'core_source', '0'*40), (None, 'status', 'PREPARED'),
+                ('snapshot', 'module', '3.10.13'), ('snapshot', 'ref', True),
+                ('runtime_receipt', 'bundle', '1.2.0')):
+            with self.subTest(section=section, key=key):
+                data = copy.deepcopy(self.data); (data if section is None else data[section])[key] = value
+                self.write(data)
+                with self.assertRaises(ValueError): STOCK.read_runtime_baseline(self.path)
+        for source in ('unknown', 'git:' + STOCK.STABLE_SOURCE, 'archive:' + '0'*40):
+            data = copy.deepcopy(self.data); data['runtime_receipt']['components']['player']['source_id'] = source
+            self.write(data)
+            with self.assertRaises(ValueError): STOCK.read_runtime_baseline(self.path)
+
+    def test_missing_or_stale_frozen_data_never_falls_back_to13(self):
+        binding = {'path': str(self.path), 'data': copy.deepcopy(self.data)}
+        self.assertEqual(STOCK.frozen_runtime_baseline(binding), self.data)
+        changed = copy.deepcopy(self.data); changed['snapshot']['installed_module_sha256'] = '9'*64
+        self.write(changed)
+        with self.assertRaisesRegex(ValueError, 'DATA changed'): STOCK.frozen_runtime_baseline(binding)
+        with self.assertRaisesRegex(ValueError, 'no historical13 fallback'): STOCK.frozen_runtime_baseline(None)
+        self.path.write_text('{"schema":1,"schema":1}')
+        with self.assertRaisesRegex(ValueError, 'duplicate'): STOCK.read_runtime_baseline(self.path)
+
+    def test_whole_boundary_drift_and_owned_card_reject(self):
+        for key, value in (('module', '3.10.13'), ('srcversion', 'DEADBEEF'),
+                           ('installed_module_sha256', '8'*64), ('debug_sha256', '8'*64),
+                           ('firmware_sha256', '8'*64), ('ref', 1), ('pin_net', 1)):
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.data['snapshot']); changed[key] = value
+                self.boundary.snapshot = lambda: changed
+                with self.assertRaisesRegex(ValueError, 'full runtime boundary changed'): self.guard()
+        self.boundary.snapshot = lambda: copy.deepcopy(self.data['snapshot'])
+        self.fuser.return_value.returncode = 0
+        with self.assertRaisesRegex(ValueError, 'card is owned'): self.guard()
+
+    def test_same_receipt_cannot_hide_mixed_installed_component_files(self):
+        self.provenance.verify_receipt = lambda *args: ([('FAIL', 'DIL GNU Build ID differs')], True)
+        with self.assertRaisesRegex(ValueError, 'DIL GNU Build ID differs'): self.guard()
+
+    def test_pending_or_changed_installed_record_rejects(self):
+        STOCK.RUNTIME_PENDING.write_text('interrupted')
+        with self.assertRaisesRegex(ValueError, 'installation is pending'): self.guard()
+        STOCK.RUNTIME_PENDING.unlink()
+        STOCK.RUNTIME_VERSION.write_text('1.3.0-dev.1')
+        with self.assertRaisesRegex(ValueError, 'VERSION/receipt changed'): self.guard()
+        STOCK.RUNTIME_VERSION.write_text('1.3.0')
+        changed = copy.deepcopy(self.data['runtime_receipt']); changed['components']['dil']['files'][0]['gnu_build_id'] = '9'*40
+        STOCK.RUNTIME_RECEIPT.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'VERSION/receipt changed'): self.guard()
+
+    def test_new_prepare_requires_baseline_and_execute_forbids_override(self):
+        cases = [['--prepare-plan', '--own-source', '/frozen', '--own-revision', '1'*40,
+                  '--source-probe', '/probe.json'],
+                 ['--execute', '--runtime-baseline', str(self.path)]]
+        for arguments in cases:
+            with self.subTest(arguments=arguments), patch.object(sys, 'argv',
+                    ['controller', '--plan', '/unused-plan.json', *arguments]), patch.object(sys, 'stderr', io.StringIO()):
+                with self.assertRaises(SystemExit) as raised: STOCK.main()
+                self.assertEqual(raised.exception.code, 2)
+        self.fuser.assert_not_called()
+
+
+class ActualVaPixelRouteTests(unittest.TestCase):
+    def test_both_actual_script_and_host_reject_software_or_missing_pixel_format(self):
+        tree = ast.parse(STOCK.SCRIPT.replace('__CYCLES__', '2').replace('__DEINT__', 'bwdif'))
+        selected = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'selected')
+        module = ast.fix_missing_locations(ast.Module(body=[selected], type_ignores=[]))
+        labels = {'Player.Process(videodecoder)': 'ff-h264-vaapi',
+                  'Player.Process(deintmethod)': 'bwdif', 'Player.Process(pixformat)': 'vaapi'}
+        namespace = {'info': lambda: labels}
+        exec(compile(module, '<OWN original-API route predicate>', 'exec'), namespace)
+        self.assertTrue(STOCK.selected_va_route(labels, 'bwdif'))
+        self.assertIs(namespace['selected'](), labels)
+        for value in ('yuv420p', 'nv12', '', None):
+            with self.subTest(value=value):
+                labels['Player.Process(pixformat)'] = value
+                self.assertFalse(STOCK.selected_va_route(labels, 'bwdif'))
+                self.assertIsNone(namespace['selected']())
+        del labels['Player.Process(pixformat)']
+        self.assertFalse(STOCK.selected_va_route(labels, 'bwdif'))
+        self.assertIsNone(namespace['selected']())
+
+
 def fixture(count=750):
     rows = []
     for ordinal in range(1, count + 1):

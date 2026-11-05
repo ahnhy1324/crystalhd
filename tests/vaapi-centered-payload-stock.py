@@ -55,6 +55,11 @@ SCOPE = ('Unchanged Kodi22RC1/App FFmpeg, method0 and actual hardware deinterlac
          'two OWN small/composed/public NV12 checkpoints per normally retired decoder context. '
          'Actual media PTS-to-binding, GPU-reader return, scanout and release qualification NOT_OBSERVED.')
 POLL_KEYS = ('module', 'srcversion', 'ref', 'pin_net', 'force', 'session', 'power', 'aer', 'links', 'video_nodes')
+STABLE_SOURCE = '24a5182b988bb0fead4440d57ed0f72e4f70b68d'
+RUNTIME_RECEIPT = Path('/usr/share/crystalhd/runtime-components-v1.json')
+RUNTIME_VERSION = Path('/usr/share/crystalhd/VERSION')
+RUNTIME_PENDING = Path('/var/lib/crystalhd/runtime-install.pending')
+PROVENANCE = Path(__file__).resolve().parents[1] / 'scripts/crystalhd_provenance.py'
 BINDING = ('driver_instance', 'context', 'generation', 'token', 'decode_identity', 'submission_ordinal')
 BWDIF_SCOPE = ('Original Kodi22RC1/App FFmpeg, method7/actual bwdif, explicit OWN centered and post-filter observers; '
                'same-PID natural EOF/reopen and measured input/output metadata with selected same-input pixel reference. '
@@ -84,6 +89,99 @@ def load(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def validate_runtime_baseline(data):
+    """Validate root's approved DATA, without reading host/device state."""
+    require(type(data) is dict and set(data) == {
+        'schema', 'status', 'bundle', 'core_source', 'snapshot',
+        'runtime_receipt_path', 'runtime_receipt'}, 'runtime baseline keys differ')
+    require(type(data['schema']) is int and data['schema'] == 1 and
+            data['status'] == 'PASS_VERIFIED_OFFICIAL_STABLE_BASELINE' and
+            data['bundle'] == '1.3.0' and data['core_source'] == STABLE_SOURCE and
+            data['runtime_receipt_path'] == str(RUNTIME_RECEIPT),
+            'verified published stable1.3 baseline required')
+    snapshot = data['snapshot']
+    require(type(snapshot) is dict and set(snapshot) == set(POLL_KEYS) | {
+        'debug_rows', 'debug_sha256', 'firmware_sha256', 'installed_module_sha256'},
+        'full runtime boundary is required')
+    require(snapshot['module'] == '3.10.20' and type(snapshot['srcversion']) is str and
+            re.fullmatch(r'[0-9A-F]+', snapshot['srcversion']) is not None and
+            all(type(snapshot[k]) is int and snapshot[k] == 0 for k in ('ref', 'pin_net')) and
+            (snapshot['force'], snapshot['session'], snapshot['power']) == ('Y', 'N', 'on') and
+            snapshot['video_nodes'] == [] and type(snapshot['debug_rows']) is int and
+            snapshot['debug_rows'] > 0, 'stable module/idle/power boundary differs')
+    for key in ('debug_sha256', 'firmware_sha256', 'installed_module_sha256'):
+        require(type(snapshot[key]) is str and re.fullmatch(r'[0-9a-f]{64}', snapshot[key]) is not None,
+                'runtime boundary identity unavailable: ' + key)
+    ports = {'0000:02:00.0', '0000:00:1c.0'}
+    require(type(snapshot['links']) is dict and set(snapshot['links']) == ports and
+            all(type(v) is int and v == 0x42 for v in snapshot['links'].values()),
+            'approved PCIe link policy differs')
+    require(type(snapshot['aer']) is dict and set(snapshot['aer']) == ports and
+            all(type(rows) is dict and all(type(text) is str and
+                all(int(line.split()[-1]) == 0 for line in text.splitlines() if line.strip())
+                for text in rows.values()) for rows in snapshot['aer'].values()),
+            'approved endpoint AER boundary differs')
+    receipt = data['runtime_receipt']
+    require(type(receipt) is dict and type(receipt.get('schema')) is int and receipt['schema'] == 1 and
+            receipt.get('scope') == 'installed-userspace-files' and receipt.get('bundle') == '1.3.0' and
+            type(receipt.get('components')) is dict and
+            set(receipt['components']) == {'dil', 'gstreamer', 'vaapi', 'player'} and
+            type(receipt['components']['player']) is dict and
+            receipt['components']['player'].get('identity') == 'source-revision' and
+            receipt['components']['player'].get('source_id') == 'archive:' + STABLE_SOURCE,
+            'matched official stable userspace receipt required')
+    return data
+
+
+def read_runtime_baseline(path):
+    path = Path(path)
+    require(path.is_absolute() and not path.is_symlink() and path.is_file(),
+            'absolute regular runtime baseline file required')
+    require(path.stat().st_size <= 65536, 'runtime baseline exceeds its bounded DATA scope')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'duplicate runtime baseline key')
+            result[key] = value
+        return result
+    return validate_runtime_baseline(json.loads(path.read_text(), object_pairs_hook=unique))
+
+
+def frozen_runtime_baseline(binding):
+    require(type(binding) is dict and set(binding) == {'path', 'data'},
+            'explicit frozen runtime baseline is required; no historical13 fallback')
+    data = read_runtime_baseline(binding['path'])
+    require(data == binding['data'], 'frozen runtime baseline DATA changed')
+    return data
+
+
+def guard_runtime_baseline(data, boundary, provenance):
+    """Keep the qualified snapshot mechanism; replace only its old fixed DATA."""
+    validate_runtime_baseline(data)
+    occupied = subprocess.run(['sudo', '-n', 'fuser', '-s', '/dev/crystalhd'], timeout=3)
+    require(occupied.returncode == 1, 'card is owned or its ownership cannot be checked')
+    mains = [p for p in Path('/sys/class/power_supply').glob('*')
+             if (p / 'type').exists() and (p / 'type').read_text().strip() == 'Mains']
+    temps = [int(p.read_text()) for p in Path('/sys/class/thermal').glob('thermal_zone*/temp')]
+    require(mains and any((p / 'online').read_text().strip() == '1' for p in mains) and
+            temps and max(temps) < 75000, 'AC/temperature guard failed')
+    current = boundary.snapshot()
+    require(current == data['snapshot'], 'approved full runtime boundary changed')
+    require(not os.path.lexists(RUNTIME_PENDING), 'runtime installation is pending')
+    require(RUNTIME_VERSION.read_text().strip() == data['bundle'] and
+            json.loads(RUNTIME_RECEIPT.read_text()) == data['runtime_receipt'],
+            'installed stable VERSION/receipt changed')
+    messages, failed = provenance.verify_receipt(RUNTIME_RECEIPT, '/', data['bundle'], {})
+    require(not failed, 'installed runtime cohort differs: ' + json.dumps(messages))
+    return current
+
+
+def selected_va_route(labels, deintmethod):
+    return (labels.get('Player.Process(videodecoder)') == 'ff-h264-vaapi' and
+            labels.get('Player.Process(pixformat)') == 'vaapi' and
+            labels.get('Player.Process(deintmethod)') == deintmethod)
 
 
 def save(path, value):
@@ -229,7 +327,7 @@ try:
         wait(lambda:rpc('Player.GetProperties',{'playerid':playerid,'properties':['speed']})['speed']==0,2,'identity pause missing')
         def selected():
             labels=info()
-            return labels if labels.get('Player.Process(videodecoder)')=='ff-h264-vaapi' and labels.get('Player.Process(deintmethod)')=='__DEINT__' else None
+            return labels if labels.get('Player.Process(videodecoder)')=='ff-h264-vaapi' and labels.get('Player.Process(pixformat)')=='vaapi' and labels.get('Player.Process(deintmethod)')=='__DEINT__' else None
         labels=wait(selected,4,'actual original-stock VA decoder/deinterlace __DEINT__ absent')
         settings=rpc('Settings.GetSettingValue',{'setting':'videoplayer.prefervaapirender'})
         labels['actual_prefer_vaapi_renderer']=settings['value']
@@ -705,6 +803,8 @@ def main():
     p.add_argument('--plan', type=Path, required=True); p.add_argument('--case', default='stock-centered-off-01')
     p.add_argument('--case-root', type=Path, default=ROOT)
     p.add_argument('--own-source', type=Path); p.add_argument('--own-revision'); p.add_argument('--source-probe', type=Path)
+    p.add_argument('--runtime-baseline', type=Path,
+                   help='prepare-only: verified official stable1.3/module20 full boundary and installed receipt DATA')
     p.add_argument('--cycles', type=int, choices=(1, 2))
     p.add_argument('--scenario', choices=('off750', 'bwdif2997'))
     p.add_argument('--observe-packets', action='store_const', const=True, default=None,
@@ -717,7 +817,7 @@ def main():
                    help='prepare-only: request the existing eligible i915 WC path for a frozen BWDIF packet/cost/replay comparison')
     a = p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', a.case):p.error('fresh simple case name required')
-    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.cycles, a.scenario, a.observe_packets, a.observe_cost, a.observe_replay, a.i915_wc)):
+    if not a.prepare_plan and any(v is not None for v in (a.own_source, a.own_revision, a.source_probe, a.runtime_baseline, a.cycles, a.scenario, a.observe_packets, a.observe_cost, a.observe_replay, a.i915_wc)):
         p.error('source/revision/probe/cycles/scenario/packet/cost/replay/i915-WC mode belong only to --prepare-plan')
     case = a.case_root.resolve() / a.case
     config = scenario(a.scenario or 'off750') if a.prepare_plan else None
@@ -728,6 +828,8 @@ def main():
     if a.prepare_plan:
         if a.own_source is None or not re.fullmatch(r'[0-9a-f]{40}', a.own_revision or '') or a.source_probe is None:
             p.error('prepare needs own source/full revision and independent packet/frame probe JSON')
+        if a.runtime_baseline is None or not a.runtime_baseline.is_absolute():
+            p.error('prepare needs an absolute --runtime-baseline from the verified official installation')
         require(not a.plan.exists() and not case.exists(), 'fresh plan and case paths required')
     else:
         # Even helper/plan preflight failures get a concrete case/result.json.
@@ -739,7 +841,7 @@ def main():
               'qualification_failures': [],
               'actual_media_PTS_to_binding': 'NOT_OBSERVED', 'gpu_reader_return': 'NOT_OBSERVED',
               'stock_compatibility': 'NOT_QUALIFIED_BY_PRIVATE_OBSERVER'}
-    G = P = boundary = None; before = before_lean = None
+    G = P = boundary = provenance = baseline_data = None; before = before_lean = None
     kodi = kid = pidfd = weston = runtime = endpoint = udp = None
     files = []; audited_contexts = set(); due = 0; stop = []; previous_handlers = {}
     since = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
@@ -794,8 +896,10 @@ def main():
                     'own source HEAD differs from requested revision')
             require(not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain', '--untracked-files=all'], text=True),
                     'freeze needs a committed clean own source tree')
+            baseline_path = a.runtime_baseline.resolve(strict=True)
+            baseline_data = read_runtime_baseline(a.runtime_baseline)
             probe = a.source_probe.resolve(strict=True); metadata = source_metadata(json.loads(probe.read_text()), Path(config['fixture']), config['name'])
-            selected = [Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY,
+            selected = [Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY, PROVENANCE, baseline_path,
                         source / backend_image(observe_cost, observe_replay),
                         source / 'tests/vaapi-centered-payload-backend.cpp', source / 'tests/vaapi-centered-payload-observer.h',
                         source / 'filters/vaapi/crystalhd_drv_video.cpp', source / 'filters/vaapi/crystalhd-trace.h',
@@ -819,9 +923,10 @@ def main():
                           'case_directory': str(case), 'case': a.case, 'cycles': (2 if config['name'] == 'bwdif2997' else a.cycles or 1),
                           'scenario': config, 'observe_packets': observe_packets, 'observe_cost': observe_cost, 'observe_replay': observe_replay,
                           'experimental_i915_wc': experimental_i915_wc,
+                          'runtime_baseline': {'path': str(baseline_path), 'data': baseline_data},
                           'platform_directory': str(platform), 'gl_directory': str(gl), 'pins': pins,
                           'source_probe': str(probe), 'fixture': config['fixture'], 'source_metadata': metadata,
-                          'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_deintmethod': config['deintmethod'],
+                          'explicit_interlace_method': config['method'], 'expected_videodecoder': 'ff-h264-vaapi', 'expected_pixformat': 'vaapi', 'expected_deintmethod': config['deintmethod'],
                           'prefer_vaapi_renderer': config['prefer_vaapi_renderer'], 'centered_environment': CENTERED, 'slots_per_context': 2,
                           'maximum_decoder_contexts': 2, 'publication': 'selected-decoder-context-retirement',
                           'source_refs': [SOURCE_REF + 'xbmc/cores/VideoSettings.h', SOURCE_REF + 'xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp'],
@@ -833,6 +938,7 @@ def main():
         require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'owned shutdown requires pidfds')
         os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         plan = json.loads(a.plan.read_text())
+        baseline_data = frozen_runtime_baseline(plan.get('runtime_baseline'))
         config = scenario(plan.get('scenario', {}).get('name', 'off750'))
         observe_packets = packet_mode(plan.get('observe_packets', False), config['name'])
         observe_cost = cost_mode(plan.get('observe_cost', False), config['name'], observe_packets)
@@ -843,7 +949,7 @@ def main():
         require(plan['schema'] == 1 and plan['status'] == 'FROZEN_SOURCE_PLAN' and plan['case'] == a.case and
                 plan['case_directory'] == str(case), 'frozen case association differs')
         require(plan['cycles'] in (1, 2) and plan['explicit_interlace_method'] == config['method'] and
-                plan['expected_videodecoder'] == 'ff-h264-vaapi' and plan['expected_deintmethod'] == config['deintmethod'] and
+                plan['expected_videodecoder'] == 'ff-h264-vaapi' and plan['expected_pixformat'] == 'vaapi' and plan['expected_deintmethod'] == config['deintmethod'] and
                 plan['prefer_vaapi_renderer'] is config['prefer_vaapi_renderer'] and plan['centered_environment'] == CENTERED and
                 plan['slots_per_context'] == plan['maximum_decoder_contexts'] == 2 and
                 plan['publication'] == 'selected-decoder-context-retirement', 'frozen protocol differs')
@@ -853,7 +959,8 @@ def main():
         G.DIL = G.SOURCE / 'linux_lib/libcrystalhd/libcrystalhd.so.3.6'
         require(Path(__file__).resolve() == G.SOURCE / 'tests/vaapi-centered-payload-stock.py',
                 'executed runner outside frozen own checkout')
-        required = (Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY, G.VA, G.DIL,
+        required = (Path(__file__), BASE, READER, PROTOCOL, G.ROUTE_PATH, G.BOUNDARY, PROVENANCE,
+                    Path(plan['runtime_baseline']['path']), G.VA, G.DIL,
                     fixture, Path(plan['source_probe']), G.SOURCE / 'filters/vaapi/crystalhd_drv_video.cpp',
                     G.SOURCE / 'tests/vaapi-centered-payload-backend.cpp', G.SOURCE / 'tests/vaapi-centered-payload-observer.h',
                     G.SOURCE / 'tests/kernel-log-check.sh')
@@ -878,14 +985,15 @@ def main():
                       source_metadata=plan['source_metadata'], cycles=plan['cycles'], scenario=config,
                       observe_packets=observe_packets, observe_cost=observe_cost, observe_replay=observe_replay,
                       experimental_i915_wc=experimental_i915_wc,
+                      runtime_baseline=plan['runtime_baseline'],
                       scope=config['scope'], source_refs=plan['source_refs'], scheduling=plan['scheduling'])
         if config['name'] == 'bwdif2997':
             for signum in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[signum] = signal.getsignal(signum)
                 signal.signal(signum, lambda received, _frame: stop.append(received))
-        boundary = load('centered_initial_boundary', G.BOUNDARY); before = boundary.guard(); report['before'] = before
-        require(before['debug_rows'] == 85 and before['debug_sha256'] ==
-                '4e2758e4d68361f8783c48dbae8bd38ce06c380155a0f9de294d63d888c7a2f4', 'initial dynamic-debug policy differs')
+        boundary = load('centered_initial_boundary', G.BOUNDARY)
+        provenance = load('centered_installed_runtime_provenance', PROVENANCE)
+        before = guard_runtime_baseline(baseline_data, boundary, provenance); report['before'] = before
         before_lean = {k: before[k] for k in POLL_KEYS}
         require(all(int(line.split()[-1]) == 0 for text in before['aer']['0000:02:00.0'].values()
                     for line in text.splitlines() if line.strip()), 'initial endpoint AER nonzero')
@@ -1027,8 +1135,7 @@ def main():
                     gate('open-' + suffix)
                 elif phase == 'await-identity-' + suffix:
                     labels = value['info']
-                    require(labels['Player.Process(videodecoder)'] == 'ff-h264-vaapi' and
-                            labels['Player.Process(deintmethod)'] == config['deintmethod'] and value['source'] == '/fixture.mp4', 'actual stock VA deinterlace route differs')
+                    require(selected_va_route(labels, config['deintmethod']) and value['source'] == '/fixture.mp4', 'actual stock VA pixel/deinterlace route differs')
                     fds = G.owned_fds(kid['pid']); require(any(f['target'] == '/dev/crystalhd' for f in fds), 'hardware decoder FD absent')
                     check = {'cycle': cycle, 'info': labels, 'owned_fds': fds, 'same_app': same()}
                     require(type(labels.get('actual_prefer_vaapi_renderer')) is bool and
@@ -1107,8 +1214,12 @@ def main():
                     try:
                         end = time.monotonic() + 10; after = lean_snapshot()
                         while after != before_lean and time.monotonic() < end:time.sleep(.25); after = lean_snapshot()
-                        report['after'] = after; report['boundary_equal'] = after == before_lean
-                        require(report['boundary_equal'], 'terminal lean ownership/power boundary differs')
+                        report['after'] = after; report['lean_boundary_equal'] = after == before_lean
+                        report['boundary_equal'] = False
+                        require(report['lean_boundary_equal'], 'terminal lean ownership/power boundary differs')
+                        report['after_full'] = guard_runtime_baseline(baseline_data, boundary, provenance)
+                        report['boundary_equal'] = report['after_full'] == before
+                        require(report['boundary_equal'], 'terminal full runtime boundary differs')
                     except BaseException as error:report['errors'].append({'step': 'terminal-boundary', 'error': fault(error)})
                 if before is not None:
                     try:

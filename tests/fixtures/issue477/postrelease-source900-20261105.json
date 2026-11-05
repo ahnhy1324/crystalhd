@@ -1,0 +1,378 @@
+{
+  "schema": "crystalhd-postrelease-source900-results-v1",
+  "date": "2026-11-05",
+  "status": "SOURCE900_UNRESOLVED_ALL_RESEARCH_UNPROMOTED",
+  "official_release": {
+    "bundle": "1.3.0",
+    "module_package": "3.10.20",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "published": true,
+    "assets": 12,
+    "payloads_unchanged": true
+  },
+  "baseline_disposition": {
+    "state": "PASS_PERMANENT_OFFICIAL13_MODULE20_MATCHED_BASELINE",
+    "last_historical_host_module": "3.10.13/F76E163690F147B91495DDD",
+    "historical_installed_runtime_version_before_migration": "1.3.0-dev.1",
+    "current": {
+      "bundle": "1.3.0",
+      "core_source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+      "module": "3.10.20",
+      "srcversion": "0D63A770766C0ABB982FAB5",
+      "installed_kernels": ["7.0.0-38-generic", "7.0.0-42-generic"],
+      "hardware_kernel": "7.0.0-38-generic",
+      "kernel42_scope": "Build/install only; no kernel42 hardware acceptance.",
+      "runtime_version": "1.3.0",
+      "player_source_id": "archive:24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+      "runtime_components": ["dil", "gstreamer", "vaapi", "player"],
+      "installed_checker": {"ok": 18, "warn": 2, "fail": 0, "info": 20},
+      "installed_smoke": "PASS_INSTALLED_OFFICIAL_PLAYER_AND_CONTROLS",
+      "mapped_smoke_providers": ["/usr/lib/libcrystalhd.so.3.6", "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhd.so"],
+      "full_before_after_equal": true,
+      "ref": 0,
+      "pin_net": 0,
+      "kernel_exit": 0,
+      "handoff": null,
+      "maximum_temperature_mC": 49000,
+      "configs_preserved": true,
+      "browser_payload_matches_official": true,
+      "obsolete_own_setup_quarantined_not_executed": true,
+      "kept_installed_and_loaded20": true,
+      "scope": "Official installed-stack identity and Player/controls smoke; not BWDIF/source900 or kernel42 playback qualification."
+    },
+    "evidence": {
+      "installation": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/persistent-install-plan.json",
+      "smoke": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/installed-smoke.json",
+      "installed_check": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/installed-official-check.log",
+      "baseline_regular_file": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/official-stable-baseline.json"
+    },
+    "required": "Retain the matched official24a/module20/runtime baseline; future explicitly selected experiments restore it, never implicitly13. New plans require the approved regular baseline DATA file; the discovery symlink is not accepted.",
+    "preservation": "Historical13/temporary20 guards, plans, failed results and exact13-restoration journals are immutable comparison records, never a future automatic restore policy."
+  },
+  "workload": {
+    "source_pictures_each_play": 900,
+    "application": "Original supplied Kodi/App providers, method7/bwdif, two natural EOFs/reopen",
+    "preserved": [
+      "original discard policy",
+      "scheduling",
+      "input and geometry",
+      "native source criterion"
+    ],
+    "scope": "Sequential observations with different admitted populations; no causal speedup estimate, pixel/PTS/cadence transfer or global impossibility proof."
+  },
+  "cases": [
+    {
+      "case": "ordinary-native-01",
+      "change": "Ordinary backend + native trace only",
+      "source": "4e5f94c53201a9dbf502559718249a5c98672783",
+      "originals": [
+        798,
+        821
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 66000,
+      "evidence": "ordinary-native-01/result.json",
+      "integration": "MERGED_SOURCE_NATIVE_TRACE_CONTROL"
+    },
+    {
+      "case": "cpu-primary-stock-01",
+      "change": "Full CPU-primary canvas",
+      "source": "46532c63eb9f3876fc4c6a04969f3da8a561d3c6",
+      "originals": [
+        803,
+        806
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 66000,
+      "evidence": "cpu-primary-stock-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "cpu-combined-stock-01",
+      "change": "CPU-primary + immutable-small readback",
+      "source": "c3c686970905845b6390d0c5ac3af612f27ac644",
+      "originals": [
+        778,
+        817
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 71000,
+      "evidence": "cpu-combined-stock-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "firstfield-stock-02",
+      "change": "Private NV12 first-field staging on ordinary storage",
+      "source": "992ffeefef0f7be051123cdd896e55eaf297a0c5",
+      "originals": [
+        774,
+        803
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 69000,
+      "evidence": "firstfield-stock-02/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "cow-stock-01",
+      "change": "Memfd canvas + private COW DeriveImage",
+      "source": "20d548d1b868129097e4cad6b1a4bac1fcfcd637",
+      "originals": [
+        824,
+        853
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 68000,
+      "evidence": "cow-stock-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "cow-border-stock-01",
+      "change": "COW + first-field staging + epoch-qualified border reuse",
+      "source": "f3243355c7e3ef4b598483eb5bfc0abb70fa2233",
+      "originals": [
+        840,
+        860
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 72000,
+      "evidence": "cow-border-stock-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "mirror-stock-01",
+      "change": "Dual-store fields + proven final ROI-copy omission",
+      "source": "3fd175236531597ceced2e89875fb7b8bcd9c8c0",
+      "originals": [
+        882,
+        844
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 73000,
+      "evidence": "mirror-stock-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH"
+    },
+    {
+      "case": "mirror-ordinary-01",
+      "change": "Same dual-store source, ordinary backend + native trace only",
+      "source": "3fd175236531597ceced2e89875fb7b8bcd9c8c0",
+      "originals": [
+        null,
+        883
+      ],
+      "source900": "FAIL",
+      "maximum_temperature_mC": 71000,
+      "evidence": "mirror-ordinary-01/result.json",
+      "integration": "UNPROMOTED_RESEARCH",
+      "qualified_originals": [
+        null,
+        883
+      ],
+      "raw_distinct_full_submit_bindings": [
+        826,
+        883
+      ],
+      "ledger_status": [
+        "FAIL_INCOMPLETE_IDENTITY",
+        "PASS"
+      ],
+      "partial_output_rows_first_play": 4
+    },
+    {
+      "case": "mirror-module20-fixed-01",
+      "change": "Same3fd ordinary VA/DIL with temporary qualified legacy20 module",
+      "source": "3fd175236531597ceced2e89875fb7b8bcd9c8c0",
+      "originals": [
+        881,
+        null
+      ],
+      "qualified_originals": [
+        881,
+        null
+      ],
+      "raw_distinct_full_submit_bindings": [
+        881,
+        852
+      ],
+      "ledger_status": [
+        "PASS",
+        "FAIL_MULTIPLICITY"
+      ],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "kernel_module": "3.10.20/0D63A770766C0ABB982FAB5",
+      "duplicate_input_bindings_second_play": 8,
+      "raw_second_input_multiplicity": {
+        "1": 844,
+        "2": 8
+      },
+      "raw_second_dequeue_multiplicity": {
+        "2": 844,
+        "4": 8
+      },
+      "evidence": "mirror-module20-fixed-01/result.json"
+    }
+  ],
+  "latest_private_scope": {
+    "case": "mirror-stock-01",
+    "source": "3fd175236531597ceced2e89875fb7b8bcd9c8c0",
+    "all_native_M": [
+      882,
+      844
+    ],
+    "dual_store_and_final_ROI_copy_omitted": [
+      881,
+      843
+    ],
+    "normal_staged_fallback": [
+      1,
+      1
+    ],
+    "unmatched_M": 0,
+    "evidence": [
+      "mirror-stock-independent-review-B.json",
+      "mirror-stock-01/mirror-field-adoption.json"
+    ],
+    "selected_mirrored_public_pixels": {
+      "originals": 2,
+      "one_per_play": true,
+      "bytes_each": 3133440,
+      "native_M_sequences": [
+        44,
+        8018
+      ],
+      "full_composed_and_public_match_small_and_borders": true
+    },
+    "selected_cow_alias_pixels": {
+      "samples": 2,
+      "distinct_originals": 1,
+      "native_M_sequence": 38,
+      "scope": "Same first fallback original only; no selected mirrored-alias byte proof. Existing composed/public selected pixels and CPU oracles suffice for this fusion change; no extra resampling solely for alias selection."
+    },
+    "cost_v2": {
+      "events": 78176,
+      "capacity": 131072,
+      "complete": true,
+      "dropped": 0,
+      "legacy_v1_limit": 65536,
+      "old_raws_unchanged": true
+    },
+    "successful_memfd_compose_modes": {
+      "full_clear": 22,
+      "reused_border": 1702,
+      "scope": "Successful eligible Compose calls, not unique originals/M/source counts."
+    },
+    "completed_replay_inputs": [
+      0,
+      20
+    ],
+    "replay_fields": [
+      0,
+      40
+    ],
+    "controls": "PASS",
+    "four_scoped_audits": "PASS",
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "terminal_lean_equal": true,
+    "handoff": null
+  },
+  "ordinary_limits": {
+    "module13_case": "mirror-ordinary-01",
+    "module20_case": "mirror-module20-fixed-01",
+    "qualified_counts": {
+      "module13": [
+        null,
+        883
+      ],
+      "module20": [
+        881,
+        null
+      ]
+    },
+    "raw_submit_counts": {
+      "module13": [
+        826,
+        883
+      ],
+      "module20": [
+        881,
+        852
+      ]
+    },
+    "rule": "A full raw SubmitBind/M set does not qualify an incomplete/multiplicity-failed ledger. Extra/unknown rows are not guessed to be replay. Native dequeues do not prove parity, pixels or DIL releases.",
+    "scope": "Native trace only; no private packet/postfilter/cost/replay or selected-pixel qualification."
+  },
+  "temporary20_history": {
+    "evidence": "module20-arm-journal.json",
+    "status": "COMPLETED_SOURCE_FAIL_EXACT13_RESTORED",
+    "full20_before_after_equal": true,
+    "original13_global_boundary_and_inventory_restored": true,
+    "runtime_leaves": 36,
+    "whole_arm_kernel_exit": 0,
+    "meaning": "Actual historical rollback, not the current desired installation. Runtime36 denotes restored leaves, not a runtime version. No permanent official1.3 install is established by this comparison."
+  },
+  "retained_failures": {
+    "firstfield_thermal_case": "firstfield-stock-01/result.json",
+    "status": "FAIL_THERMAL_GUARD_75C",
+    "first_play_raw_observed": 810,
+    "second_play": "INTERRUPTED_NOT_QUALIFIED",
+    "later_same_source_case_does_not_relabel": true
+  },
+  "retained_implementation_scope": {
+    "firstfield": "Exact native-M per-picture disjoint first-stage plus complementary-converter CPU comparison is retained; lower maintained-work CPU is not current end-to-end/source900 proof.",
+    "cow": "Real native64/native32 kernel controls distinguish MAP_PRIVATE alone from prepared COW, preserve edited/mapped images and last-owner64MiB primary charge; unsupported semantic capability conservatively falls back. No physical Atom claim.",
+    "read_prefault": "No useful gain in the600-iterationABBA ordinary-copy batch; not adopted. Original wrong-include-path buildFAIL is preserved.",
+    "rx_sizing": "Existing compile-time output-aware DIL option is already implemented; new SIZED setup remains held/unexecuted after official baseline completion, with fixed/default16 unchanged."
+  },
+  "postrelease_audit": {
+    "status": "PASS_SOURCE_AUDIT_AND_TARGETED_CHECKS_INTEGRATION_PENDING",
+    "latest_maintained_base": "77ce8491ffa0bb539a412458e643669cdcdbbfed",
+    "completed": [
+      "Latest maintained-source and separate unpromoted-prototype audits with independent source review.",
+      "Explicit approved official baseline DATA with installed-cohort verification before/after the existing diagnostic flow; no historical13 fallback.",
+      "Actual VAAPI pixel-format qualification in the project-owned selection script and host predicate.",
+      "Obsolete project-owned browser setup-helper removal during upgrade; user-first published1.3 documentation and current-baseline policy."
+    ],
+    "source_unit_checks": {
+      "run": 56,
+      "failures": 0,
+      "retained_optional_skips": 1,
+      "evidence": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/stock-controller-tests.log"
+    },
+    "browser_checks": {
+      "tests": 95,
+      "failures": 0,
+      "skips": 0,
+      "staged_upgrade": "PASS_DISTINGUISHING_BROWSER_UPGRADE",
+      "released_installer_leaves_old_helper": true,
+      "fixed_installer_removes_old_helper": true,
+      "scope": "DESTDIR comparison only; no browser/profile execution.",
+      "evidence": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/browser-upgrade-receipt.json"
+    },
+    "separate_candidate_checks": {
+      "source_commit": "656b9e1d3931532e4f80b4cb5bb46b8107b82e1e",
+      "retained_branch": "research/postrelease-candidate-audit-20261105",
+      "native_suites": {"scaling": 0, "buffer-handles": 0, "vpp": 0, "replay": 0},
+      "scalar32_build_exit": 0,
+      "scalar32_native": {"exit": 0, "groups": 50, "checks": 247491, "failures": 0, "cow_groups_not_exercised": 0},
+      "qemu_pentium2": {"exit": 0, "groups": 50, "checks": 188912, "failures": 0, "cow_groups_not_exercised": 10},
+      "evidence": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-native-tests.json",
+      "scalar_native_log": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-scalar32-native.log",
+      "qemu_log": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-scalar32-pentium2.log",
+      "scope": "Source/CPU regression coverage of the separate unpromoted candidate; explicit COW-unavailable emulation still exercises DUMB fallback. No new physical900, Atom acceptance, performance benefit or promotion."
+    },
+    "integration": "Task PR and current-base CI gate remain pending."
+  },
+  "remaining": [
+    "Integrate the completed reviewed audit fixes through the task PR and current-base CI gate; the audit itself and its targeted checks are complete.",
+    "Retain the verified matched official stable baseline; keep SIZED held and select no further900 experiment in this audit batch.",
+    "Underlying900 shortage and exact NONREF/latency cause; whole-output/post-copy pixels, clocks/cadence, GPU return and broader lifetime/endurance remain separately scoped."
+  ],
+  "limits": [
+    "No external product/dependency patches, default discard or pool change, research promotion or new release artifacts.",
+    "The fixed original caller lacks postfilter EOF; its narrow tail boundary does not prove source900 globally impossible.",
+    "Ordinary real-time counts and no-clock900/API/reference-only1800 outputs are separate contracts; prior original failures retain their identities.",
+    "All17 released feature groups/defaults and published/registered source identities remain intact."
+  ]
+}

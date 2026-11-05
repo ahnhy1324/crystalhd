@@ -19,11 +19,12 @@ maintained components; isolated diagnostic probes retain their own scope.
 | Scope | Current state |
 | --- | --- |
 | Stable release | [1.3.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0), frozen source `24a5182b988b` / module-DKMS `3.10.20`, is published with 12 downloaded-and-verified assets. All 17 feature groups/defaults remain; fresh final archive/settings/install/native/delivery, current-base CI and independent review pass with explicitly scoped reuse. See [actual qualification](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/release-qualification.json) and [release record](RELEASING.md#published-stable-13-qualification). |
-| Retained fallback | Published [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0) / module-DKMS `3.10.13` and its source remain immutable for fallback/rollback. |
+| Historical comparison/rollback | Published [1.2.0](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.2.0) / module-DKMS `3.10.13` and its source remain immutable for explicitly selected comparison/rollback; they are not the current default host baseline. |
 | Published RC4 candidate | [1.3.0-rc.4](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.4), frozen source `1c8b0451c631` / module-DKMS `3.10.19`, is published with 12 downloaded-and-verified assets after #654 qualification/integration. Its actual outcomes and scoped reuse remain candidate19 evidence, not final20 results. Preserve its artifacts and registered payload. |
 | Published RC3 candidate | [1.3.0-rc.3](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.3), core `36ef4c681f49` / module-DKMS `3.10.18`, is published with 12 assets: complete core, settings ZIP and native V4L2/unmodified FFmpeg companion, including default-off Centered and every integrated opt-in. Current-equipment qualification is complete; see the [actual results](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0-rc.3/release-qualification.json) and [complete scope](RELEASING.md#rc3-complete-scope-and-candidate-preparation). RC4 and final20 promotion retain separate identities and qualification. |
 | Frozen published candidate | [1.3.0-rc.2](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.3.0-rc.2), frozen core 940/module 17 and 13 public assets. Current-equipment qualification and the separately identified [native companion](NATIVE-RUNTIME-DELIVERY.md) are complete. Frozen RC2 does not qualify a later package identity or stable promotion. |
-| Development master | Protected [#655 final1.3 integration](https://github.com/ahnhy1324/crystalhd/pull/655) follows RC4/#654. Published final source `24a5182b988b` stays immutable; later documentation/research does not replace its payload. The earlier #652/#653 source600/kernel18 quality results retain scoped reuse rather than new module20 attribution. |
+| Development master | Latest protected master includes [#663](https://github.com/ahnhy1324/crystalhd/pull/663) after final1.3/#655. The latest-source and separate prototype audits, reviewed fixes and targeted checks are complete; the task-PR/current-base CI rule governs integration. Published source `24a5182b988b` stays immutable; isolated CPU/COW/field/mirror candidates remain unpromoted. |
+| Installed host baseline | **Verified official1.3/source24a/module20**, retained after normal installation and installed Player/controls checks. DKMS20 is installed for kernels7.0.0-38 and7.0.0-42; actual playback uses38. VERSION1.3.0 and the complete installed runtime receipt agree, full before/after boundary is equal and kernel checking passes. The [post-release receipt](tests/fixtures/issue477/postrelease-source900-20261105.json) records the new baseline; the former13/dev.1 host and temporary20/research3fd comparison remain historical. |
 
 The [published stable claim map](https://github.com/ahnhy1324/crystalhd/releases/download/v1.3.0/complete-claim-map.json)
 binds all 17 feature groups to actual final20 checks or explicitly scoped reuse.
@@ -32,6 +33,12 @@ retains its historical attribution. Actual RC3 archive, installed/native,
 normal Centered and application checks are complete; older source or module13
 observations retain only their original scope.
 Do not replace published final1.3 or RC4/RC3/RC2 payloads and registered module20/19/18/17 sources with master.
+
+Use the [current-source/baseline rule](AGENTS.md#current-source-and-installed-baseline):
+new fixes start from latest maintained master, and persistent installation uses
+matching current official stable components. Preserve dated module13 restores
+as historical facts. The verified official installation now has its own full
+baseline receipt; future experiments restore that baseline, never implicitly13.
 
 <a id="current-priorities--2026-11-03"></a>
 <a id="tracked-work"></a>
@@ -48,9 +55,9 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [source 900 investigation](tests/fixtures/issue477/native900-20261104.json) implements immutable-pixel CPU readback and bounded retired-image reuse. Stock originals increase from 690/698 to 779/778 and then 804/805; **900 still FAILS**. Selected API bytes, ownership and native ledgers pass within their scopes. WC worsens the combined route and stays off; frontend-budget and generic-cache alternatives are not adopted. Natural completed replay is now observed. Continue sustained latency/notification attribution; full post-copy pixels, broader geometry/lifetime, GPU return and presentation remain open. The caller's missing filter EOF is a separate scoped known limitation. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [post-release results](tests/fixtures/issue477/postrelease-source900-20261105.json) retain every separate candidate failure. Dual-store field conversion/final ROI-copy omission is implemented but unpromoted: private882/844 still FAIL900; selected mirrored composed/public pixels pass for two originals. Ordinary module13 and temporary20 controls each have one unqualified ledger, kept separate from raw submits. The matched baseline and source/prototype audit are complete. Further attribution remains separate research; the caller's missing filter EOF remains a narrow limitation. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
-| 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Compare sized versus fixed allocation with 16/8 buffers on the current BCM70015 with paced input, then required native-planar, PM and format-change cases. Output-aware allocation is implemented. Preserve the conservative default and DMA quarantine. |
+| 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist, with dated lifecycle and stock-Kodi sized/fixed evidence. The newly prepared SIZED comparison remains held and unexecuted; completing the official baseline does not resume it. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator or promote its default. Preserve DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
 | 7 | [#530 field-GPU output](https://github.com/ahnhy1324/crystalhd/issues/530) | Remaining XID refill, congested writes/X11 calls, EGL/whole-window restart, absolute chroma reconstruction and live/endurance work. Existing setup/resize/handoff deadlines and selected NV12 field/pixel controls are complete. The hardware-GL LSan failure remains recorded. |
 | 8, parallel research | [#92 capabilities](https://github.com/ahnhy1324/crystalhd/issues/92), [#204 picture ownership](https://github.com/ahnhy1324/crystalhd/issues/204) | Establish a coherent firmware-owned acquire/hold/publish/complete/release boundary. Standalone scaler/CSC/DNR and hardware deinterlacing follow that contract; headers or host-register guesses are not proof. |
@@ -63,6 +70,80 @@ support scopes are not additional promotion gates. Nonblocking research continue
 <a id="packet-admission-and-next-decoder-attribution"></a>
 
 ### Source 900 investigation and remaining real-time boundary
+
+**900 originals remain unresolved.** The [compact post-release receipt](tests/fixtures/issue477/postrelease-source900-20261105.json)
+records the latest completed cases; the [earlier receipt](tests/fixtures/issue477/native900-20261104.json)
+retains its original source, failures and no-clock limits. All stock cases use
+the same900 input and unchanged original Kodi/App/discard policy. These serial
+counts are not causal speedup estimates. Every prototype below is unpromoted.
+
+| Separate source/arm | First play | Reopen | Disposition |
+| --- | ---: | ---: | --- |
+| Merged #663 readback/retired-image reuse | 804 | 805 | Source900 FAIL |
+| Ordinary #663, native trace only | 798 | 821 | Source900 FAIL; no private preloads |
+| CPU-primary full canvas | 803 | 806 | Source900 FAIL |
+| CPU-primary + immutable-small readback | 778 | 817 | Source900 FAIL |
+| Private NV12 first-field staging | 774 | 803 | Source900 FAIL |
+| Memfd COW, without field staging | 824 | 853 | Source900 FAIL |
+| COW + field staging + black-border reuse | 840 | 860 | Source900 FAIL |
+| Dual-store fields + final ROI-copy omission, private3fd | 882 | 844 | Source900 FAIL |
+| Same3fd ordinary, module13 | Unqualified; raw submits826 | 883 | First ledger incomplete; second FAIL900 |
+| Same3fd ordinary, temporary official legacy20 | 881 | Unqualified; raw submits852 | First FAIL900; second ledger multiplicity FAIL |
+
+The dual-store case joins881/882 and843/844 actual native materializations to
+both successful field stores and validated final ROI-copy omission; one first
+original per play uses the original staged-copy fallback. Existing payload
+captures independently match full composed/public NV12 for two actually
+mirrored originals, one per play. The two COW API samples instead cover the
+**same first fallback original**; they do not qualify mirrored-alias bytes or
+all frames. Preserve that gap for a future justified case, without resampling
+solely to obtain different samples. Private Small, early Bob, CPU/DMA ownership,
+COW and complete real pixels before READY/M remain required.
+
+All four private audits, ordinary controls, App0/kernel0 and the existing
+terminal ownership checks pass in that private case, maximum73C. Its cost-v2
+ledger is complete at78,176/131,072 events, dropped0; retained v1 stays capped
+65,536. Physical replay is observed separately:20 completed replay inputs and
+40 Duplicate fields in the second play are not additional originals.
+
+Ordinary module13 has full raw SubmitBind/M sets826/883, but four partial
+first-play dequeue records leave that entire strict ledger unqualified.
+Temporary20 has raw sets881/852; eight second-play bindings have duplicated
+input/dequeue multiplicity. Neither unknown rows nor duplicates are guessed
+to be replay or waived. The completed temporary20 comparison restored13;
+that journal is a historical result, **not the future default baseline**.
+Its unchanged3fd userspace was a research mount, not the official24a runtime.
+
+- [x] Merged readback/cache and isolated field/COW/fusion implementations,
+  meaningful ownership/byte/failure controls and bounded route observations.
+- [x] Real COW semantics on native64/native32; unsupported emulator advice
+  falls back rather than receiving a false PASS. No physical Atom claim.
+- [x] Complete the latest maintained-source and separate prototype audits,
+  reviewed source repairs and targeted checks, preserving defaults and original
+  failures. Candidate scaling/buffer/VPP/replay suites pass; scalar32 native
+  checks pass and PentiumII emulation retains explicit unsupported-COW fallback.
+- [x] Establish and retain the matched official1.3/source24a/module20 installation:
+  installed Player/controls pass with full boundary equality, ref/pin0 and
+  kernel0. Kernel42 has build/install coverage only. The previous13/dev.1 host
+  remains historical and the new SIZED setup remains held/unexecuted.
+- [ ] Whole900, underlying NONREF/latency cause, all post-copy/filter pixels,
+  source clocks/cadence, GPU return, presentation and broader endurance.
+
+The earlier first-field attempt that hit75C stays FAIL with observed810 and
+an interrupted second play; the later successful control flow did not fix it.
+READ-prefault had no useful copy-batch benefit and is not adopted. Original
+App FFmpeg is canonical9.0.2 plus supplier patches; the12cc SDK is a separate
+compatible-header fork. The fixed caller's absent filter EOF is a confirmed
+narrow tail boundary, separate from source900 and no proof of global
+impossibility. Stable1.3 payloads and every17-feature/default contract remain
+unchanged; this research does not replace their qualification.
+
+<details>
+<summary>Retained804/805 and earlier comparison details, with original sources and limits</summary>
+
+These recorded next-step statements belong to their earlier checkpoints.
+The completed implementation and current queue above supersede those plans;
+original measurements and failures below are preserved.
 
 The [current receipt](tests/fixtures/issue477/native900-20261104.json) separates
 actual candidate failures from the no-clock counterfactual. All use the retained
@@ -147,6 +228,9 @@ last 300 packets; they are not merely startup loss. A separate 49Hz whole-App
 profile is diagnostic, not a speed comparison or an impossibility proof.
 Continue the specific worker-notification handoff review without changing
 discard policy, surface semantics or the 900 criterion.
+
+
+</details>
 
 <a id="maintained-code-costs-and-next-replay-attribution"></a>
 
@@ -339,7 +423,9 @@ records.
 
 <a id="established-baseline"></a>
 
-- [Established baseline](docs/history/TODO-2026-11-03.md#established-baseline)
+The verified official1.3 baseline is tracked in [release and integration](#release-and-integration).
+The [previous established baseline](docs/history/TODO-2026-11-03.md#established-baseline)
+is an immutable historical record, not a restoration instruction for new work.
 
 <a id="ready--asynchronous-delivery-candidate"></a>
 
