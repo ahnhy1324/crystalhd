@@ -239,6 +239,8 @@ typedef struct _BC_NOTIFY_MODE {
  */
 #define BC_DRIVER_CAPS_ABI_VERSION	1U
 #define BC_DRIVER_CAP_RX_POLL		(1U << 0)
+/* No wait for picture arrival; command/session/semaphore locks may sleep. */
+#define BC_DRIVER_CAP_RX_NOWAIT		(1U << 1)
 
 typedef struct _BC_DRIVER_CAPS {
 	uint32_t		abi_version;
@@ -292,6 +294,7 @@ typedef enum _BC_DRV_CMD{
 	DRV_CMD_NOTIFY_MODE,	/* Notify the Mode to driver in which the application is Operating*/
 	DRV_CMD_RELEASE,		/* Notify the driver to release user handle and application resources */
 	DRV_CMD_QUERY_CAPS,	/* Query additive driver capabilities */
+	DRV_CMD_FETCH_RXBUFF_NOWAIT, /* Fetch ready RX only; never wait for arrival */
 
 	/* MUST be the last one.. */
 	DRV_CMD_END,			/* End of the List.. */
@@ -324,6 +327,7 @@ typedef enum _BC_DRV_CMD{
 #define	BCM_IOC_FW_DOWNLOAD		BC_IOC_IOWR(DRV_CMD_FW_DOWNLOAD, BC_IOCTL_MB)
 #define BCM_IOC_RELEASE			BC_IOC_IOWR(DRV_CMD_RELEASE, BC_IOCTL_MB)
 #define BCM_IOC_QUERY_CAPS		BC_IOC_IOWR(DRV_CMD_QUERY_CAPS, BC_IOCTL_MB)
+#define BCM_IOC_FETCH_RXBUFF_NOWAIT	BC_IOC_IOWR(DRV_CMD_FETCH_RXBUFF_NOWAIT, BC_IOCTL_MB)
 #define	BCM_IOC_END				BC_IOC_VOID
 
 /* Wrapper for main IOCTL data */

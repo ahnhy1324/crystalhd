@@ -457,7 +457,7 @@ static BC_STATUS bc_cproc_query_caps(struct crystalhd_cmd *ctx,
 	caps = &idata->udata.u.DriverCaps;
 	memset(caps, 0, sizeof(*caps));
 	caps->abi_version = BC_DRIVER_CAPS_ABI_VERSION;
-	caps->flags = BC_DRIVER_CAP_RX_POLL;
+	caps->flags = BC_DRIVER_CAP_RX_POLL | BC_DRIVER_CAP_RX_NOWAIT;
 	return BC_STS_SUCCESS;
 }
 
@@ -2073,7 +2073,11 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 		return BC_STS_INV_ARG;
 	}
 
-	sts = crystalhd_rx_dequeue(ctx, &result);
+	/* cmd is the kernel-normalized ioctl, not a field from the user envelope.
+	 * Preserve the legacy FETCH wait for old libraries. Both paths share every
+	 * receipt/format acknowledgement/registration retirement operation below. */
+	sts = idata->cmd == BCM_IOC_FETCH_RXBUFF_NOWAIT ?
+		crystalhd_rx_try_dequeue(ctx, &result) : crystalhd_rx_dequeue(ctx, &result);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
@@ -2397,6 +2401,7 @@ static const struct crystalhd_cmd_tbl	g_crystalhd_cproc_tbl[] = {
 	{ BCM_IOC_NOTIFY_MODE,		bc_cproc_notify_mode,	0},
 	{ BCM_IOC_RELEASE,			bc_cproc_release_user,  0},
 	{ BCM_IOC_QUERY_CAPS,		bc_cproc_query_caps,	0},
+	{ BCM_IOC_FETCH_RXBUFF_NOWAIT,	bc_cproc_fetch_frame,	1},
 	{ BCM_IOC_END,				NULL},
 };
 

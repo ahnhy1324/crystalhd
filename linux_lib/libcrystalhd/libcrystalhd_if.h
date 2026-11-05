@@ -888,8 +888,10 @@ Parameters:
 
     hDevice         Handle to device. This is obtained via a prior call to
                     DtsDeviceOpen.
-    milliSecWait    Timeout parameter. DtsProcOutput will fail is no picture
-                    is received in this time.
+    milliSecWait    With a negotiated RX_NOWAIT driver, zero on BCM70015
+                    does not wait for picture arrival (locks may still sleep).
+                    Positive waits, BCM70012 and older drivers retain the
+                    legacy driver wait; this is not an exact millisecond bound.
     *pOut           This is a pointer to the BC_DTS_PROC_OUT structure that is
                     allocated by the caller. The decoded picture is returned
                     in this structure. This structure is described in the
@@ -945,8 +947,10 @@ Parameters:
 
     hDevice         Handle to device. This is obtained via a prior call to
                     DtsDeviceOpen.
-    milliSecWait    Timeout parameter. DtsProcOoutput will fail is no picture
-                    is received in this time.
+    milliSecWait    With a negotiated RX_NOWAIT driver, zero on BCM70015
+                    does not wait for picture arrival (locks may still sleep).
+                    Positive waits, BCM70012 and older drivers retain the
+                    legacy driver wait; this is not an exact millisecond bound.
     *pOut           This is a pointer to the BC_DTS_PROC_OUT structure that is
                     allocated by the caller. The decoded picture is returned
                     in this structure.

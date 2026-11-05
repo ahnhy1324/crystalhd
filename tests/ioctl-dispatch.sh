@@ -8,7 +8,7 @@ cleanup()
 {
     rm -f "$ioctl_test_dir/check" "$ioctl_test_dir/ioctl-types.h" \
         "$ioctl_test_dir/ioctl-compat.h" "$ioctl_test_dir/ioctl-table.h" \
-        "$ioctl_test_dir/ioctl-functions.h"
+        "$ioctl_test_dir/ioctl-functions.h" "$ioctl_test_dir/ioctl-translation.h"
     rmdir "$ioctl_test_dir"
 }
 trap cleanup EXIT
@@ -30,6 +30,13 @@ awk '
     copying { sub(/struct PPB,/, "PPB,"); print }
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_compat_ioctl.h" > "$ioctl_test_dir/ioctl-compat.h"
+awk '
+    /^static void crystalhd_(ppb_to_compat|dec_out_to_compat)\(/ ||
+    /^static int crystalhd_compat_user_data\(/ { copying = 1; found++ }
+    copying { gsub(/struct PPB/, "PPB"); print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 3 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$ioctl_test_dir/ioctl-translation.h"
 awk '
     /^static const struct crystalhd_cmd_tbl[[:space:]]+g_crystalhd_cproc_tbl/ {
         copying = 1; found++

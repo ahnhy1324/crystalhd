@@ -96,6 +96,9 @@ _Static_assert(DRV_CMD_QUERY_CAPS == DRV_CMD_RELEASE + 1,
 	       "capability query must not renumber legacy commands");
 _Static_assert(BC_DRIVER_CAP_RX_POLL == 1U,
 	       "RX poll capability bit changed");
+_Static_assert(BC_DRIVER_CAP_RX_NOWAIT == 2U &&
+	       DRV_CMD_FETCH_RXBUFF_NOWAIT == DRV_CMD_QUERY_CAPS + 1,
+	       "NOWAIT is additive without renumbering old commands or bits");
 _Static_assert(_IOC_TYPE(BCM_IOC_GET_VERSION) == BC_IOC_BASE,
 	       "CrystalHD ioctl magic changed");
 _Static_assert(_IOC_NR(BCM_IOC_GET_VERSION) == DRV_CMD_VERSION,
@@ -110,6 +113,8 @@ _Static_assert(BCM_IOC_RELEASE == EXPECT_IOCTL_BASE + DRV_CMD_RELEASE,
 	       "CrystalHD RELEASE ioctl number changed");
 _Static_assert(BCM_IOC_QUERY_CAPS == EXPECT_IOCTL_BASE + DRV_CMD_QUERY_CAPS,
 	       "CrystalHD QUERY_CAPS ioctl number changed");
+_Static_assert(BCM_IOC_FETCH_RXBUFF_NOWAIT == EXPECT_IOCTL_BASE + DRV_CMD_FETCH_RXBUFF_NOWAIT,
+	       "CrystalHD NOWAIT uses the unchanged native/compat envelope");
 
 int main(void)
 {

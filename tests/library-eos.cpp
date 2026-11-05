@@ -80,6 +80,12 @@ extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t s
 
 extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 {
+    // Preserve the existing legacy-driver EOS scenarios without pretending
+    // that their syscall boundary implements the additive NOWAIT command.
+    if (detection.allow_output && fd == 99 && code == BCM_IOC_QUERY_CAPS) {
+        errno = ENOTTY;
+        return -1;
+    }
     if (detection.allow_output && fd == 99 && code == BCM_IOC_FETCH_RXBUFF) {
         va_list args;
         va_start(args, code);
