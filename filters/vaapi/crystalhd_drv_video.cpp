@@ -5533,9 +5533,12 @@ static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
 }
 
 static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
-                                 unsigned int max_attempts = 64) {
+                                 unsigned int max_attempts = 64,
+                                 bool *no_output = nullptr) {
+  if (no_output) *no_output = false;
   if (decode->ReplayFailed())
     return VA_STATUS_ERROR_DECODING_ERROR;
+  bool had_activity = false;
   for (unsigned int attempt = 0; attempt < max_attempts; ++attempt) {
     BC_DTS_STATUS decoder_status = {};
     // BCM70012's peek filters repeated/garbage READY entries before reporting
@@ -5552,10 +5555,14 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
           ? FailDecode(driver, decode,
                        "hardware status failed during an incomplete field pair")
           : VA_STATUS_ERROR_DECODING_ERROR;
-    if (decoder_status.ReadyListCount == 0)
-      return CompleteMpeg4EndOfStream(driver, decode);
+    if (decoder_status.ReadyListCount == 0) {
+      const VAStatus result = CompleteMpeg4EndOfStream(driver, decode);
+      if (no_output && result == VA_STATUS_SUCCESS) *no_output = !had_activity;
+      return result;
+    }
     bool activity = false;
     VAStatus va_status = ReceiveOne(driver, decode, 0, &activity);
+    had_activity = had_activity || activity;
     if (va_status != VA_STATUS_SUCCESS || !activity)
       return va_status;
   }
@@ -7448,7 +7455,10 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
       surface->trace_generation == decode->generation &&
       surface->trace_submission_ordinal == first.picture->trace_submission_ordinal &&
       (!first.picture->direct_backing || first.picture->direct_backing == surface);
-  if ((!bob && !exact) || idle < kDecodeBatchGraceNs || aux.pending ||
+  // Exact Sync already demands this genuine complement. Keep the progress
+  // turn passive (idle0), then let its existing empty RX turn provide bounded
+  // lookahead without the Bob/EOS inactivity delay. No output is fabricated.
+  if ((!bob && !exact) || (exact ? idle == 0 : idle < kDecodeBatchGraceNs) || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
       first.timestamp != surface->expected_timestamp ||
@@ -7773,7 +7783,8 @@ static VAStatus SyncDecodeSurface(
     // Explicit remapping retains its old harvest boundary before selecting a
     // payload: a smaller batch could select an older RX picture too early.
     const unsigned int receive_budget = decode->experimental_ready_remap ? 64 : 1;
-    VAStatus status = ReceiveAvailable(driver, decode.get(), receive_budget);
+    bool no_output = false;
+    VAStatus status = ReceiveAvailable(driver, decode.get(), receive_budget, &no_output);
     if (status == VA_STATUS_SUCCESS &&
         (surface->ready || presentation_ready()))
       break;
@@ -7847,7 +7858,13 @@ static VAStatus SyncDecodeSurface(
     if ((private_vpp_ready && private_demand) ||
         auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync) {
       const uint64_t before = decode->transport_progress;
-      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, idle,
+      // A duplicate, format event or other acquired output can leave the
+      // progress counter unchanged. Only the existing successful empty turn
+      // may enable early exact lookahead; Bob and EOS retain their old idle.
+      const uint64_t auxiliary_idle =
+          auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync && !no_output
+              ? 0 : idle;
+      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, auxiliary_idle,
                                auxiliary_demand);
       if (status != VA_STATUS_SUCCESS) return status;
       // A newly accepted real auxiliary input is progress, not an EOF trigger.
