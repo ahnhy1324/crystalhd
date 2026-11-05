@@ -20,7 +20,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='crystalhd-cost-pixels-') as directory:
         prefix = Path(directory) / 'cost'
         env = dict(os.environ, CRYSTALHD_CONFIG_DISABLE='1',
-                   CRYSTALHD_TEST_MAINTAINED_COST='v1',
+                   CRYSTALHD_TEST_MAINTAINED_COST='v2',
                    CRYSTALHD_TEST_MAINTAINED_COST_PREFIX=str(prefix))
         process = subprocess.Popen([str(args.binary.resolve(strict=True))], env=env)
         status = process.wait()

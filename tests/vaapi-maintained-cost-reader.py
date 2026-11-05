@@ -19,7 +19,8 @@ _spec = importlib.util.spec_from_file_location(
 P = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(P)
 require, integer = P.require, P.integer
-SCHEMA = "crystalhd-maintained-cost-v1"
+SCHEMA = "crystalhd-maintained-cost-v2"
+SCHEMA_CAPACITIES = {"crystalhd-maintained-cost-v1": 65536, SCHEMA: 131072}
 FORK_POLICY = "PARENT_PID_ONLY_CHILD_FORWARD_ONLY"
 SCOPE = "OWN_MAINTAINED_BACKEND_ONLY"
 CLOCKS = dict(wall="CLOCK_MONOTONIC", cpu="CLOCK_THREAD_CPUTIME_ID")
@@ -49,10 +50,19 @@ def parse_report(raw):
     require(type(raw) is bytes and len(raw) <= MAX_REPORT_BYTES and raw.endswith(b"\n"),
             "report exceeds quota or lacks final newline")
     lines = raw.splitlines()
-    require(2 <= len(lines) <= 65538 and all(lines), "invalid bounded JSONL records")
-    rows = [json.loads(line, object_pairs_hook=P.strict_object) for line in lines]
+    require(2 <= len(lines) <= max(SCHEMA_CAPACITIES.values()) + 2 and all(lines),
+            "invalid bounded JSONL records")
+    header = json.loads(lines[0], object_pairs_hook=P.strict_object)
+    require(len(lines) <= schema_capacity(header) + 2, "schema record capacity exceeded")
+    rows = [header, *[json.loads(line, object_pairs_hook=P.strict_object) for line in lines[1:]]]
     require(all(type(row) is dict for row in rows), "records must be objects")
     return rows
+
+
+def schema_capacity(header):
+    require(type(header) is dict and type(header.get("schema")) is str and
+            header["schema"] in SCHEMA_CAPACITIES, "unsupported schema")
+    return SCHEMA_CAPACITIES[header["schema"]]
 
 
 def binding_value(event):
@@ -75,10 +85,12 @@ def binding_value(event):
 def check_document(rows, expected_pid, report_path=None):
     """Validate complete publication, clocks and actual parent trees; raises."""
     integer(expected_pid, "expected PID", 1, (1 << 31)-1)
-    require(type(rows) is list and 2 <= len(rows) <= 65538 and
+    require(type(rows) is list and 2 <= len(rows) <= max(SCHEMA_CAPACITIES.values()) + 2 and
             all(type(r) is dict for r in rows), "invalid report document")
     header, footer = rows[0], rows[-1]
-    require(header.get("type") == "header" and header.get("schema") == SCHEMA and
+    maximum_capacity = schema_capacity(header)
+    require(len(rows) <= maximum_capacity + 2, "schema record capacity exceeded")
+    require(header.get("type") == "header" and
             footer.get("type") == "footer", "unsupported schema or missing header/footer")
     require(type(header.get("pid")) is int and header["pid"] == expected_pid,
             "foreign header PID")
@@ -91,7 +103,7 @@ def check_document(rows, expected_pid, report_path=None):
     require(type(header.get("flags")) is dict and set(header["flags"]) == set(FLAGS) and
             all(type(header["flags"][k]) is int and header["flags"][k] == v for k,v in FLAGS.items()),
             "flag contract differs")
-    capacity = integer(header.get("capacity"), "capacity", 1, 65536)
+    capacity = integer(header.get("capacity"), "capacity", 1, maximum_capacity)
     events = rows[1:-1]
     require(len(events) <= capacity, "event capacity exceeded")
     for key in ("events", "attempted_events", "dropped", "inflight", "unpublished", "clock_failures", "lifecycle_failures"):

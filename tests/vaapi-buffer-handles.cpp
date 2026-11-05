@@ -280,6 +280,147 @@ struct Fixture {
   }
 };
 
+// OWN public-vtable scaffold: actual Compose establishes the full canvas and
+// provenance, while a software-created DecodeContext supplies the known
+// geometry. No decoder/device or stock-client compatibility is exercised.
+static std::shared_ptr<Surface> CowPicture(Fixture &f) {
+  auto surface = std::make_shared<Surface>();
+  surface->width = 256; surface->height = 32; surface->fourcc = VA_FOURCC_NV12;
+  surface->pitch[0] = surface->pitch[1] = 256;
+  surface->cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(256U * 32U * 3U / 2U);
+  Require(bool(surface->cpu_primary_canvas), "allocate a real kernel COW canvas for image callbacks");
+  surface->planes[0] = surface->cpu_primary_canvas->Data();
+  surface->planes[1] = surface->planes[0] + 256U * 32U;
+  surface->id = 1; surface->rt_format = VA_RT_FORMAT_YUV420;
+  surface->cpu_primary = surface->direct_decode_eligible = true;
+  auto decoder = std::make_shared<DecodeContext>();
+  decoder->id = 1; decoder->generation = 1; decoder->width = 256; decoder->height = 32;
+  crystalhd_centered_output::Config config;
+  Require(crystalhd_centered_output::ParseConfig("128x16@256x32:limited", &config) &&
+              crystalhd_centered_output::BuildGeometry(config, 256, 32, 4, &decoder->centered_geometry),
+          "use exact supported Centered geometry in the callback scaffold");
+  auto picture = std::make_shared<Surface>();
+  picture->id = 1; picture->width = 256; picture->height = 32;
+  picture->centered_geometry = decoder->centered_geometry;
+  picture->centered_pixels = std::make_shared<Surface>();
+  Require(picture->centered_pixels->AllocateCpuNv12(128, 16), "allocate independent small input pixels");
+  std::fill(picture->centered_pixels->storage.begin(), picture->centered_pixels->storage.end(), 53);
+  for (Surface *item : {surface.get(), picture.get(), picture->centered_pixels.get()}) {
+    item->expected_timestamp = item->frame_timestamp = 100000;
+    item->decode_identity = item->trace_decode_identity = 901;
+    item->trace_context = item->trace_generation = item->trace_submission_ordinal = 1;
+    item->ready = true;
+  }
+  picture->direct_backing = surface;
+  surface->decode_picture = picture;
+  surface->ready = false; surface->frame_timestamp = 0;
+  f.driver->surfaces[1] = surface; f.driver->next_surface = 2;
+  f.driver->contexts[1] = decoder;
+  decoder->decoded_frames[100000] = picture;
+  Require(ComposeCenteredCanvas(*picture, surface.get(), false, true) &&
+              CpuPrimaryStorageMatches(*surface) && !surface->centered_readback.small.expired(),
+          "actual full Compose publishes valid COW derivation provenance");
+  return surface;
+}
+
+struct CowUnavailable {};
+static bool TestCowAvailable() {
+  static const bool available = [] {
+    auto canvas = crystalhd_cow_snapshot::Canvas::Create(4096);
+    if (canvas) return true;
+    const int error = errno;
+    if (error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP) return false;
+    throw std::runtime_error("COW capability operational failure errno=" + std::to_string(error));
+  }();
+  return available;
+}
+
+static void CowDerivedHandleAndResizeMaterialization() {
+  if (!TestCowAvailable()) throw CowUnavailable{};
+  const uint32_t baseline = crystalhd_cow_snapshot::LiveBytes();
+  {
+    Fixture f;
+    auto surface = CowPicture(f);
+    const uint64_t backing_epoch = surface->cpu_primary_canvas->WriteEpoch();
+    const uint64_t border_epoch = surface->centered_border.epoch;
+    const std::vector<uint8_t> source(surface->planes[0],
+        surface->planes[0] + surface->cpu_primary_canvas->Size());
+    const auto derive = [&]() {
+      VAImage image{};
+      Require(f.table.vaDeriveImage(&f.context, 1, &image) == VA_STATUS_SUCCESS &&
+                  f.driver->buffers.at(image.buf).cow_snapshot &&
+                  f.driver->buffers.at(image.buf).data.empty(),
+              "actual DeriveImage publishes a private COW image without an eager vector copy");
+      return image;
+    };
+    VAImage image = derive();
+    auto &buffer = f.driver->buffers.at(image.buf);
+    void *mapped = nullptr;
+    Require(f.table.vaMapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+            "legacy image mapping remains privately writable");
+    static_cast<uint8_t *>(mapped)[0] ^= 0x5a;
+    Require(f.table.vaUnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS,
+            "unmap privately edited COW image before resize");
+    std::vector<uint8_t> edited(buffer.Data(), buffer.Data() + buffer.Size());
+    const auto old_snapshot = buffer.cow_snapshot;
+    const size_t grown = image.data_size + 128U;
+    acquire_allocation_fault::snapshot_pixel_failure = false;
+    acquire_allocation_fault::snapshot_fail_bytes = grown;
+    Require(f.table.vaBufferSetNumElements(&f.context, image.buf, grown) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                acquire_allocation_fault::snapshot_pixel_failure && buffer.cow_snapshot == old_snapshot &&
+                buffer.Size() == image.data_size && buffer.elements == image.data_size &&
+                std::equal(edited.begin(), edited.end(), buffer.Data()),
+            "resize allocation failure preserves the alias, metadata and every private edit");
+    Require(f.table.vaBufferSetNumElements(&f.context, image.buf, grown) == VA_STATUS_SUCCESS &&
+                !buffer.cow_snapshot && buffer.data.size() == grown &&
+                std::equal(edited.begin(), edited.end(), buffer.data.begin()) &&
+                std::all_of(buffer.data.begin() + image.data_size, buffer.data.end(),
+                            [](uint8_t byte) { return byte == 0; }),
+            "successful resize materializes private bytes and initializes only the new tail");
+    Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "retire independently resized image");
+
+    image = derive();
+    auto &export_buffer = f.driver->buffers.at(image.buf);
+    Require(f.table.vaMapBuffer(&f.context, image.buf, &mapped) == VA_STATUS_SUCCESS,
+            "map a second COW image before handle materialization");
+    static_cast<uint8_t *>(mapped)[1] ^= 0x39;
+    Require(f.table.vaUnmapBuffer(&f.context, image.buf) == VA_STATUS_SUCCESS,
+            "release edited image mapping before handle acquisition");
+    const std::vector<uint8_t> exported_expected(export_buffer.Data(),
+        export_buffer.Data() + export_buffer.Size());
+    const auto export_alias = export_buffer.cow_snapshot;
+    acquire_allocation_fault::snapshot_pixel_failure = false;
+    acquire_allocation_fault::snapshot_fail_bytes = image.data_size;
+    VABufferInfo info{};
+    Require(f.Acquire(image.buf, &info) == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                acquire_allocation_fault::snapshot_pixel_failure &&
+                export_buffer.cow_snapshot == export_alias && !BufferBorrowed(export_buffer) &&
+                std::equal(exported_expected.begin(), exported_expected.end(), export_buffer.Data()),
+            "handle materialization OOM retains the complete original private image");
+    Require(f.Acquire(image.buf, &info) == VA_STATUS_SUCCESS && !export_buffer.cow_snapshot,
+            "successful handle acquisition materializes an independent existing GBM image store");
+    const int fd = static_cast<int>(info.handle);
+    std::vector<uint8_t> actual(image.data_size);
+    Require(pread(fd, actual.data(), actual.size(), 0) == static_cast<ssize_t>(actual.size()) &&
+                actual == exported_expected,
+            "exported image fd contains the client's private edits, not the primary canvas fd");
+    const uint8_t replacement = 0xa7;
+    Require(pwrite(fd, &replacement, 1, 2) == 1 && f.Release(image.buf) == VA_STATUS_SUCCESS &&
+                export_buffer.data[2] == replacement &&
+                surface->cpu_primary_canvas->WriteEpoch() == backing_epoch &&
+                surface->centered_border.epoch == border_epoch &&
+                std::equal(source.begin(), source.end(), surface->planes[0]),
+            "private-image edits/materialization/handle copyback leave primary pixels and backing border epoch unchanged");
+    Require(f.table.vaDestroyImage(&f.context, image.image_id) == VA_STATUS_SUCCESS,
+            "handle-backed former COW image retires normally");
+    // Break the fixture's explicit picture/backing cycle before Terminate.
+    f.driver->contexts.at(1)->decoded_frames.clear();
+  }
+  Require(crystalhd_cow_snapshot::LiveBytes() == baseline,
+          "materialization, retained aliases and driver retirement release the full primary charge");
+}
+
 static void Registration() {
   Fixture fixture;
   Check(fixture.table.vaAcquireBufferHandle && fixture.table.vaReleaseBufferHandle,
@@ -1177,6 +1318,16 @@ static void ExportLayouts() {
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--cow-images") == 0) {
+    try { CowDerivedHandleAndResizeMaterialization(); }
+    catch (const CowUnavailable &) {
+      std::puts("COW image callbacks NOT_EXERCISED: explicit unsupported capability; ordinary groups remain in full suite");
+      return 77;
+    }
+    catch (const std::exception &error) { Check(false, error.what()); }
+    std::printf("VAAPI COW image callbacks: %s (%u failed checks)\n", failures ? "FAIL" : "PASS", failures);
+    return failures ? 1 : 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--snapshot-cache") == 0) {
     try { SnapshotCacheContracts(); }
     catch (const std::exception &error) { Check(false, error.what()); }
@@ -1203,16 +1354,17 @@ int main(int argc, char **argv) {
     return failures ? 1 : 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "usage: %s [--snapshot-cache | --acquire-allocation raw|control | --release-allocation image|derived]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s [--cow-images | --snapshot-cache | --acquire-allocation raw|control | --release-allocation image|derived]\n", argv[0]);
     return 2;
   }
   for (auto test : {Registration, ExportLayouts, BorrowRoundTrip, InvalidAndMapped,
-                    SnapshotIsolation, ColdDerivedHandleWriteThrough,
+                    SnapshotIsolation, ColdDerivedHandleWriteThrough, CowDerivedHandleAndResizeMaterialization,
                     AcquireAllocationFailures, ReleaseAllocationFailures,
                     AcquireRollback, ReleaseFailureInvalidates,
                     DeriveFailureRollback, SnapshotCacheContracts, TerminateInvalidatesBorrow,
                     ReleaseWaitRehash, PendingReadIdentity}) {
     try { test(); }
+    catch (const CowUnavailable &) { std::puts("COW image callbacks NOT_EXERCISED: explicit unsupported capability; all ordinary image/handle groups continue"); }
     catch (const std::exception &error) { Check(false, error.what()); }
   }
   std::printf("VAAPI buffer handles: %s (%u failed checks)\n", failures ? "FAIL" : "PASS", failures);

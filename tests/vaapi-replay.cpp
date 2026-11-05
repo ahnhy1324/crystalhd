@@ -422,6 +422,7 @@ struct DecodeIoMock {
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int output_width = 16;
   unsigned int output_height = 16;
+  unsigned int output_pitch = 0; // Explicit LINK field padding; zero preserves existing mocks.
   unsigned int open_attempts = 0;
   unsigned int decoder_open_calls = 0;
   unsigned int capture_start_calls = 0;
@@ -753,8 +754,10 @@ extern "C" BC_STATUS __wrap_DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
     const unsigned int rows =
         (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0
             ? output->PicInfo.height / 2U : output->PicInfo.height;
-    decode_io_mock->pixels.resize(
-        static_cast<size_t>(output->PicInfo.width) * rows * 2U);
+    const unsigned int pitch = decode_io_mock->output_pitch
+        ? decode_io_mock->output_pitch : output->PicInfo.width;
+    decode_io_mock->invalid |= pitch < output->PicInfo.width;
+    decode_io_mock->pixels.resize(static_cast<size_t>(pitch) * rows * 2U);
     for (size_t offset = 0; offset < decode_io_mock->pixels.size(); offset += 2) {
       decode_io_mock->pixels[offset] = DecodeIoMock::Luma(timestamp);
       decode_io_mock->pixels[offset + 1] = 128;
@@ -1392,7 +1395,7 @@ static void EncryptedReceiveReleasesOnlyAcquiredOutput() {
 }
 
 struct H264FieldFixture {
-  Driver driver{-1};
+  Driver driver;
   DecodeContext decoder;
   std::shared_ptr<Surface> private_frame = std::make_shared<Surface>();
   std::shared_ptr<Surface> public_frame = std::make_shared<Surface>();
@@ -1401,8 +1404,9 @@ struct H264FieldFixture {
 
   explicit H264FieldFixture(bool direct = false, bool is_70012 = false,
                             uint32_t fourcc = VA_FOURCC_NV12,
-                            unsigned int width = 16, uint64_t token = 1)
-      : top((is_70012 ? 720 : width) * 16 * 2),
+                            unsigned int width = 16, uint64_t token = 1,
+                            int trace_fd = STDERR_FILENO)
+      : driver(-1, trace_fd), top((is_70012 ? 720 : width) * 16 * 2),
         bottom((is_70012 ? 720 : width) * 16 * 2) {
     decoder.id = 7;
     decoder.generation = 3;
@@ -2313,10 +2317,10 @@ static void H264FieldPartialStateClearsAtTeardownAndEos() {
   }
 }
 
-static void CenteredDirtySmallFieldReceiveOwnership() {
+static void CenteredNv12FirstFieldReceiveOwnership() {
   for (bool direct : {false, true})
     for (bool bottom_first : {false, true})
-      for (unsigned fault = 0; fault != 4; ++fault) {
+      for (unsigned fault = 0; fault != 5; ++fault) {
         DecodeIoMock io;
         H264FieldFixture fixture(direct, false, VA_FOURCC_NV12, 128);
         auto &d = fixture.decoder;
@@ -2345,8 +2349,10 @@ static void CenteredDirtySmallFieldReceiveOwnership() {
         pool->Recycle(std::move(dirty));
         Require(small->AllocateCpuNv12(128, 32, pool,
                     CrystalHDPrivateBackingPool::ReuseInitialization::OverwriteBeforeRead) &&
-                    small->storage.data() == retired,
-                "use retired dirty small bytes in actual packed field/release controls");
+                    small->storage.data() == retired &&
+                    std::all_of(small->storage.begin(), small->storage.end(),
+                                [](uint8_t byte) { return byte == 0xa5; }),
+                "reuse real retired dirty privateSmall bytes for actual field/release controls");
         auto first = fixture.Output(bottom_first, bottom_first,
                                      bottom_first ? &fixture.bottom : &fixture.top);
         auto second = fixture.Output(!bottom_first, bottom_first,
@@ -2354,58 +2360,75 @@ static void CenteredDirtySmallFieldReceiveOwnership() {
         first.PicInfo.width = second.PicInfo.width = 128;
         io.override_output = true;
         io.overridden_output = first;
+        io.events.reserve(8);
         MockDecodeScope scope(io);
         d.device = io.handle();
         if (fault == 1) io.output_release_status = BC_STS_ERROR;
         bool activity = false;
         const auto first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
-        Require(activity && io.released_outputs == 1 && !io.invalid && !small->ready &&
-                    std::all_of(small->storage.begin(), small->storage.end(),
-                                [](uint8_t byte) { return byte == 0xa5; }),
-                "the released packed first field never consumes dirty incomplete small pixels");
+        Require(activity && io.released_outputs == 1 && !io.invalid,
+                "first actual output lease returns exactly once");
+        for (unsigned plane = 0; plane != 2; ++plane)
+          for (unsigned row = unsigned(!bottom_first); row < (plane ? 16U : 32U); row += 2)
+            for (unsigned column = 0; column != 128; ++column)
+              Require(small->planes[plane][size_t{row} * small->pitch[plane] + column] == 0xa5,
+                      "opposite dirty parity remains unconsumed even when the first DIL release fails");
         if (fault == 1) {
           Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
                       !d.h264_first_field.valid && !fixture.public_frame->ready &&
                       fixture.public_frame->failed && fixture.private_frame->failed,
-                  "failed first release cannot publish unfinished dirty small or arm Bob");
+                  "failed first release cannot publish an unfinished staged field or leave a Bob latch");
           continue;
         }
-        Require(first_status == VA_STATUS_SUCCESS && d.h264_first_field.valid &&
-                    !d.h264_first_field.pixels.empty() && !fixture.public_frame->ready &&
-                    !fixture.private_frame->ready && d.replay.outstanding() == 1,
-                "only the genuine packed field is retained before its matching complement");
+        const auto &held = d.h264_first_field;
+        Require(first_status == VA_STATUS_SUCCESS && held.valid && held.nv12_staged &&
+                    held.pixels.empty() && held.nv12_small.lock() == small &&
+                    held.nv12_write_epoch == small->centered_write_epoch &&
+                    !small->ready && small->frame_timestamp == 0 &&
+                    !fixture.public_frame->ready && !fixture.private_frame->ready &&
+                    d.replay.outstanding() == 1,
+                "released first parity occupies only private NV12 and does not retire or publish its original");
         if (fault == 2) io.output_release_status = BC_STS_ERROR;
-        if (fault == 3) ++second.PicInfo.picture_number;
+        if (fault == 3) small->InvalidateCenteredReadback();
+        if (fault == 4) ++second.PicInfo.picture_number;
         io.overridden_output = second;
         activity = false;
         const auto second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
         Require(activity && io.released_outputs == 2 && !io.invalid &&
                     !d.h264_first_field.valid,
-                "complement releases once and clears the packed first-field identity");
+                "complement output releases once and clears the first-field identity");
         if (fault == 2) {
           Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
                       fixture.public_frame->ready && fixture.private_frame->ready,
-                  "second release failure preserves existing complete pixels and fails the decoder");
+                  "failed second release retains the existing completed pixels but fails the decoder and clears its latch");
           continue;
         }
         if (fault == 3) {
           Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      fixture.public_frame->failed && fixture.private_frame->failed,
+                  "an intervening small write fails closed without accepting a stale pair");
+          continue;
+        }
+        if (fault == 4) {
+          Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
                       fixture.public_frame->failed && fixture.private_frame->failed &&
-                      !small->ready && std::all_of(small->storage.begin(), small->storage.end(),
-                          [](uint8_t byte) { return byte == 0xa5; }),
-                  "mismatched complement fails without converting or publishing dirty small bytes");
+                      !fixture.public_frame->ready && !fixture.private_frame->ready && !small->ready,
+                  "mismatched complementary picture cannot publish staged private or public pixels");
           continue;
         }
         Require(second_status == VA_STATUS_SUCCESS && fixture.public_frame->ready &&
                     fixture.private_frame->ready && small->ready &&
                     small->frame_timestamp == 1 && fixture.public_frame->frame_timestamp == 1 &&
                     d.replay.outstanding() == 0 && d.pending.empty(),
-                "only the validated packed pair produces a complete real public canvas");
+                "only the validated pair produces real complete public NV12 after two released leases");
+        // Independent row oracle covers both parity orders, all active Y/UV
+        // bytes, and the full real canvas including every range-correct border.
         for (unsigned plane = 0; plane != 2; ++plane) {
-          const unsigned rows = plane ? 32 : 64, top = plane ? 8 : 16;
+          const unsigned rows = plane ? 32 : 64;
+          const unsigned top = plane ? 8 : 16;
           const unsigned active_rows = plane ? 16 : 32;
-          for (unsigned row = 0; row != rows; ++row)
-            for (unsigned x = 0; x != 256; ++x) {
+          for (unsigned row = 0; row < rows; ++row)
+            for (unsigned x = 0; x < 256; ++x) {
               uint8_t expected = plane ? 128 : 16;
               if (row >= top && row < top + active_rows && x >= 64 && x < 192) {
                 const unsigned y = row - top;
@@ -2416,10 +2439,198 @@ static void CenteredDirtySmallFieldReceiveOwnership() {
               }
               Require(fixture.public_frame->planes[plane][size_t{row} *
                           fixture.public_frame->pitch[plane] + x] == expected,
-                      "packed pair overwrites every ROI byte and preserves exact complete YUV borders");
+                      "split conversion and Compose preserve exact full-canvas Y and same-field UV bytes");
             }
         }
       }
+}
+
+static void CenteredMirroredFieldsReceiveAndRelease() {
+  // Capability failure is explicit and leaves the existing ordinary field
+  // controls above active on kernels/emulators without real MADV COW.
+  auto probe = crystalhd_cow_snapshot::Canvas::Create(4096);
+  if (!probe) {
+    const int error = errno;
+    Require(error == ENOTSUP || error == ENOSYS || error == EOPNOTSUPP,
+            "only explicit COW unavailability may omit new memfd field controls");
+    std::puts("Centered mirrored-field COW controls NOT_EXERCISED: unsupported capability");
+    return;
+  }
+  probe.reset();
+  TraceEnvironment trace_environment;
+  for (bool large : {false, true})
+   for (bool bottom_first : {false, true})
+    for (unsigned fault = 0; fault != (large ? 4U : 3U); ++fault) {
+      const unsigned width = large ? 1920U : 256U, height = large ? 1088U : 64U;
+      const unsigned capture_width = large ? 1280U : 128U, capture_height = large ? 720U : 32U;
+      struct TraceSink {
+        int fd = memfd_create("centered-mirror-fields-trace", MFD_CLOEXEC);
+        TraceSink() { Require(fd >= 0, "allocate native mirrored-field trace sink"); }
+        ~TraceSink() { close(fd); }
+      } trace;
+      DecodeIoMock io;
+      H264FieldFixture fixture(true, false, VA_FOURCC_NV12, capture_width, 1, trace.fd);
+      auto &d = fixture.decoder;
+      d.width = width; d.height = height;
+      crystalhd_centered_output::Config config;
+      config.enabled = true; config.capture_width = capture_width; config.capture_height = capture_height;
+      config.visible_width = width; config.visible_height = large ? 1080U : height;
+      Require(crystalhd_centered_output::BuildGeometry(config, width, height, 4,
+                                                      &d.centered_geometry),
+              "select real Centered separate-field geometry");
+      auto &target = *fixture.public_frame;
+      Require(target.AllocateCpuNv12(width, height), "size the full public canonical image");
+      target.cpu_primary_canvas = crystalhd_cow_snapshot::Canvas::Create(size_t{width} * height * 3 / 2);
+      Require(bool(target.cpu_primary_canvas), "allocate actual memfd full public storage");
+      target.cpu_primary = true;
+      std::vector<uint8_t>().swap(target.storage);
+      target.planes[0] = target.cpu_primary_canvas->Data();
+      target.planes[1] = target.planes[0] + size_t{target.pitch[0]} * height;
+      memset(target.planes[0], 0xa5, target.cpu_primary_canvas->Size());
+      Require(CpuPrimaryStorageMatches(target), "real CPU canvas satisfies production eligibility");
+      fixture.private_frame->width = width; fixture.private_frame->height = height;
+      fixture.private_frame->centered_geometry = d.centered_geometry;
+      fixture.private_frame->centered_pixels = std::make_shared<Surface>();
+      const auto small = fixture.private_frame->centered_pixels;
+      Require(small->AllocateCpuNv12(capture_width, capture_height), "allocate independent small field storage");
+      const auto untouched_small = small->storage;
+      if (large)
+        for (unsigned parity = 0; parity != 2; ++parity) {
+          auto &field = parity ? fixture.bottom : fixture.top;
+          field.resize(size_t{capture_width} * capture_height);
+          for (unsigned row = 0; row != capture_height / 2U; ++row)
+            for (unsigned x = 0; x != capture_width; x += 2) {
+              auto *pixel = field.data() + (size_t{row} * capture_width + x) * 2U;
+              pixel[0] = uint8_t(24U + (row * 7U + x * 3U + parity * 59U) % 208U);
+              pixel[2] = uint8_t(24U + (row * 7U + (x + 1U) * 3U + parity * 59U) % 208U);
+              pixel[1] = uint8_t(48U + (row * 5U + x / 2U + parity * 31U) % 160U);
+              pixel[3] = uint8_t(64U + (row * 3U + x / 2U + parity * 47U) % 160U);
+            }
+        }
+      const auto pixel_oracle = [&](unsigned plane, unsigned row, unsigned x) {
+        const auto &field = (row & 1U) ? fixture.bottom : fixture.top;
+        if (!plane) return field[(size_t{row / 2U} * capture_width + x) * 2U];
+        const size_t at = (size_t{(row / 2U) * 2U} * capture_width + (x & ~1U)) * 2U +
+            1U + (x & 1U) * 2U;
+        return uint8_t((unsigned(field[at]) + field[at + capture_width * 2U] + 1U) / 2U);
+      };
+      auto first = fixture.Output(bottom_first, bottom_first,
+                                   bottom_first ? &fixture.bottom : &fixture.top);
+      auto second = fixture.Output(!bottom_first, bottom_first,
+                                    bottom_first ? &fixture.top : &fixture.bottom);
+      first.PicInfo.width = second.PicInfo.width = capture_width;
+      first.PicInfo.height = second.PicInfo.height = capture_height;
+      io.override_output = true; io.overridden_output = first;
+      io.events.reserve(8);
+      MockDecodeScope scope(io); d.device = io.handle();
+      if (fault == 1) io.output_release_status = BC_STS_ERROR;
+      bool activity = false;
+      const VAStatus first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+      Require(activity && io.released_outputs == 1 && !target.ready &&
+                  target.frame_timestamp == 0 && CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 0,
+              "first mirrored field is released once with no public READY, timestamp or native M");
+      if (fault == 1) {
+        Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    !d.h264_first_field.valid && target.failed && !io.invalid,
+                "failed first release cannot turn partial mirrored bytes into a completed original");
+        continue;
+      }
+      Require(first_status == VA_STATUS_SUCCESS &&
+                  (large ? d.h264_first_field.nv12_deferred && !d.h264_first_field.nv12_staged
+                         : d.h264_first_field.nv12_staged) &&
+                  !small->ready && small->frame_timestamp == 0,
+              "actual ReceiveOne keeps the independent small first parity unpublished");
+      if (large)
+        Require(small->storage == untouched_small && small->centered_deferred.fields ==
+                    (1U << unsigned(bottom_first)) && small->centered_deferred.small_fields == 0,
+                "first released large parity has real public bytes and no fabricated private Small materialization");
+      PendingVpp bob;
+      bob.source = fixture.private_frame;
+      bob.decoder = std::shared_ptr<DecodeContext>(&d, [](DecodeContext *) {});
+      bob.source_timestamp = 1; bob.decoder_generation = 3;
+      bob.deinterlace.bob = true;
+      bob.deinterlace.field = bottom_first ? crystalhd_vpp_bob::FieldParity::kBottom
+                                          : crystalhd_vpp_bob::FieldParity::kTop;
+      std::shared_ptr<Surface> compact;
+      if (!large)
+        Require(PrepareFirstFieldBob(bob, &compact) == VA_STATUS_SUCCESS && compact &&
+                    compact->centered_pixels && compact->centered_pixels != small,
+                "early Bob retains independent compact small pixels even while public ROI is mirrored");
+      const auto bob_pixels = compact ? compact->centered_pixels->storage : std::vector<uint8_t>{};
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane ? capture_height / 2U : capture_height;
+        const unsigned top = plane ? d.centered_geometry.y / 2U : d.centered_geometry.y;
+        for (unsigned row = 0; row < rows; ++row) {
+          if ((row & 1U) != unsigned(bottom_first)) continue;
+          for (unsigned x = 0; x != capture_width; ++x) {
+            const uint8_t expected = pixel_oracle(plane, row, x);
+            Require((large || small->planes[plane][size_t{row} * small->pitch[plane] + x] == expected) &&
+                        target.planes[plane][size_t{row + top} * target.pitch[plane] +
+                                             d.centered_geometry.x + x] == expected,
+                    "first released field has exact independent packed-oracle Y/UV at each genuine destination");
+          }
+        }
+      }
+      if (fault == 2) small->InvalidateCenteredReadback();
+      if (fault == 3) io.output_release_status = BC_STS_ERROR;
+      bool release_saw_completion = false;
+      io.on_output_release = [&] {
+        release_saw_completion = target.ready && target.frame_timestamp == 1 &&
+            CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1;
+      };
+      io.overridden_output = second; activity = false;
+      const VAStatus second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+      Require(activity && io.released_outputs == 2 && !d.h264_first_field.valid && !io.invalid,
+              "second mirrored output preserves exactly-once hardware release and latch clearing");
+      Require(!compact || compact->centered_pixels->storage == bob_pixels,
+              "complement/failure never aliases or rewrites an already owned first-field Bob");
+      if (fault == 2) {
+        Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    !target.ready && CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 0,
+                "stale private-small pair cannot publish partial public mirrors or native M");
+        continue;
+      }
+      if (fault == 3) {
+        Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                    release_saw_completion && target.ready && target.frame_timestamp == 1 &&
+                    CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+                "failed real second release fails the decoder while preserving its already completed public picture");
+        continue;
+      }
+      Require(second_status == VA_STATUS_SUCCESS && target.ready &&
+                  release_saw_completion && target.frame_timestamp == 1 && d.replay.outstanding() == 0 &&
+                  CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+              "only the validated pair produces one M before its original successful release");
+      if (large) {
+        Require(!small->ready && small->frame_timestamp == 0 && small->storage == untouched_small &&
+                    small->centered_deferred.fields == 3 && small->centered_deferred.small_fields == 0,
+                "real pair release publishes full public pixels without falsely declaring deferred Small READY");
+        Require(MaterializeDeferredCenteredSmall(small.get()) && small->ready && small->frame_timestamp == 1 &&
+                    CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+                "later private demand preserves released source identity and emits no second materialization event");
+        for (unsigned plane = 0; plane != 2; ++plane)
+          for (unsigned row = 0; row != (plane ? capture_height / 2U : capture_height); ++row)
+            for (unsigned x = 0; x != capture_width; ++x)
+              Require(small->planes[plane][size_t{row} * small->pitch[plane] + x] == pixel_oracle(plane, row, x),
+                      "later-demanded genuine Small matches every independent nonuniform packed Y/UV byte");
+      }
+      for (unsigned plane = 0; plane != 2; ++plane) {
+        const unsigned rows = plane ? height / 2U : height;
+        const unsigned top = plane ? d.centered_geometry.y / 2U : d.centered_geometry.y;
+        const unsigned active_rows = plane ? capture_height / 2U : capture_height;
+        for (unsigned row = 0; row != rows; ++row)
+          for (unsigned x = 0; x != width; ++x) {
+            uint8_t expected = plane ? 128 : 16;
+            if (row >= top && row < top + active_rows && x >= d.centered_geometry.x &&
+                x < d.centered_geometry.x + capture_width) {
+              const unsigned y = row - top;
+              expected = pixel_oracle(plane, y, x - d.centered_geometry.x);
+            }
+            Require(target.planes[plane][size_t{row} * target.pitch[plane] + x] == expected,
+                    "actual release path retains every packed-oracle ROI and black-border byte");
+          }
+      }
+    }
 }
 
 static void H264FirstFieldAllocationFailureReleasesOutput() {
@@ -6197,7 +6408,8 @@ struct TeardownFixture {
   std::shared_ptr<DecodeContext> decoder = std::make_shared<DecodeContext>();
   std::vector<std::shared_ptr<Surface>> held;
 
-  explicit TeardownFixture(unsigned int pictures = 3) {
+  explicit TeardownFixture(unsigned int pictures = 3,
+                           int trace_fd = STDERR_FILENO) : driver(-1, trace_fd) {
     context.pDriverData = &driver;
     driver.contexts[1] = decoder;
     decoder->width = decoder->height = 16;
@@ -6256,8 +6468,9 @@ struct H264AdmissionFixture : TeardownFixture {
   explicit H264AdmissionFixture(size_t pictures = 2,
                                 size_t bytes = 1024 * 1024,
                                 unsigned int width = 16,
-                                unsigned int height = 32)
-      : TeardownFixture(0) {
+                                unsigned int height = 32,
+                                int trace_fd = STDERR_FILENO)
+      : TeardownFixture(0, trace_fd) {
     driver.StopWorkers();
     driver.stopping = false;
     decoder->id = decoder->config = 1;
@@ -12015,6 +12228,234 @@ static void OutputBacklogWorkerReleasesDriverMutex() {
          outputs_seen, kPictures, handoffs.load());
 }
 
+static void CenteredWorkerPairsOnlyNewlyReleasedFirstField() {
+  enum class Case { Pair, NoComplement, Preheld, NonCentered, Link,
+                    CompletedRepeat, FirstReleaseFailure, SecondReleaseFailure, EmptyReady };
+  TraceEnvironment environment;
+  for (bool bottom_first : {false, true})
+    for (Case test : {Case::Pair, Case::NoComplement, Case::Preheld,
+                      Case::NonCentered, Case::Link, Case::CompletedRepeat,
+                      Case::FirstReleaseFailure, Case::SecondReleaseFailure, Case::EmptyReady}) {
+      struct TraceSink {
+        int fd = memfd_create("centered-worker-pair-trace", MFD_CLOEXEC);
+        TraceSink() { Require(fd >= 0, "create bounded worker-pair native trace sink"); }
+        ~TraceSink() { close(fd); }
+      } trace;
+      H264AdmissionFixture f(8, 1024 * 1024, 256, 64, trace.fd);
+      if (test != Case::NonCentered) ConfigureCenteredAdmission(f);
+      if (test == Case::Link) {
+        f.decoder->is_70012 = true;
+        f.io.report_bcm70012 = true;
+        f.io.output_pitch = 720;
+      }
+      const unsigned originals = test == Case::EmptyReady ? 6U : 2U;
+      f.io.input_busy = test == Case::EmptyReady;
+      for (unsigned target = 1; target <= originals; ++target) {
+        f.Prepare(target);
+        f.decoder->picture.seq_fields.bits.frame_mbs_only_flag = 0;
+        f.decoder->picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+        Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+                "actual public submission admits a frame-coded field-capable sequence");
+      }
+      Require(f.io.inputs.size() == (test == Case::EmptyReady ? 0U : originals) &&
+                  f.decoder->replay.outstanding() == f.io.inputs.size(),
+              "worker-pair fixture retains actual input debt without invented output ownership");
+      f.io.input_busy = false;
+      const auto field = [&](uint64_t token, bool bottom) {
+        f.io.outputs.push_back(token);
+        f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+            (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+            (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0));
+      };
+      if (test == Case::Preheld || test == Case::CompletedRepeat) {
+        field(kTimestampStep, bottom_first);
+        if (test == Case::CompletedRepeat) field(kTimestampStep, !bottom_first);
+        Require(ReceiveAvailable(&f.driver, f.decoder.get(),
+                                  test == Case::CompletedRepeat ? 2U : 1U) == VA_STATUS_SUCCESS &&
+                    f.io.outputs.empty(),
+                "preheld field or completed original comes from actual acquire/release");
+      }
+      if (test == Case::Preheld) {
+        Require(f.decoder->h264_first_field.valid && !f.held[0]->ready,
+                "preheld control begins the worker with an existing uncompleted latch");
+        field(kTimestampStep, !bottom_first);
+        field(2 * kTimestampStep, bottom_first);
+      } else if (test != Case::EmptyReady) {
+        field(kTimestampStep, bottom_first);
+        if (test != Case::NoComplement) {
+          field(kTimestampStep, !bottom_first);
+          field(2 * kTimestampStep, bottom_first);
+        }
+      }
+      if (test == Case::CompletedRepeat)
+        Require(f.held[0]->ready && !f.decoder->replay.IsOutstanding(kTimestampStep),
+                "completed-repeat control has no outstanding replay debt for the repeated token");
+      if (test == Case::FirstReleaseFailure) f.io.output_release_status = BC_STS_ERROR;
+      if (test == Case::SecondReleaseFailure)
+        f.io.on_output_release = [&] {
+          f.io.on_output_release = [&] { f.io.output_release_status = BC_STS_ERROR; };
+        };
+      const unsigned releases_before = f.io.released_outputs.load();
+      const unsigned polls_before = f.io.output_polls;
+      const uint64_t progress_before = f.decoder->transport_progress;
+      const size_t materialized_before = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+      struct Observation {
+        bool seen = false, owns_lock = false, ready = false, first_valid = false, failed = false;
+        bool from_release_callback = false, handoff_seen = false;
+        unsigned releases = 0;
+        size_t queued = 0;
+        uint64_t front = 0;
+      } observed;
+      struct WorkerCleanup {
+        Driver &driver;
+        ~WorkerCleanup() { driver.StopWorkers(); decode_worker_turn = {}; }
+      } cleanup{f.driver};
+      if (test == Case::CompletedRepeat)
+        f.io.on_output_release = [&] {
+          // An ignored completed token makes no progress, so this control
+          // observes its real release instead of inventing a progress handoff.
+          observed.seen = observed.from_release_callback = true;
+          observed.ready = f.held[0]->ready;
+          observed.first_valid = f.decoder->h264_first_field.valid;
+          observed.failed = f.decoder->ReplayFailed();
+          observed.releases = f.io.released_outputs.load() - releases_before;
+          observed.queued = f.io.outputs.size();
+          observed.front = f.io.outputs.empty() ? 0 : f.io.outputs.front();
+          f.driver.stopping = true;
+          f.driver.condition.notify_all();
+        };
+      decode_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &lock) {
+        if (driver != &f.driver) return;
+        observed.handoff_seen = true;
+        if (observed.seen || test == Case::CompletedRepeat) return;
+        // This hook holds the real worker lock. No assertion, trace read or
+        // throwing operation runs on the worker: validate only after joining.
+        observed.seen = true; observed.owns_lock = lock.owns_lock();
+        observed.ready = f.held[0]->ready;
+        observed.first_valid = f.decoder->h264_first_field.valid;
+        observed.failed = f.decoder->ReplayFailed();
+        observed.releases = f.io.released_outputs.load() - releases_before;
+        observed.queued = f.io.outputs.size();
+        observed.front = f.io.outputs.empty() ? 0 : f.io.outputs.front();
+        driver->stopping = true;
+        driver->condition.notify_all();
+      };
+      f.driver.StartDecodeWorker();
+      bool finished;
+      {
+        std::unique_lock<std::mutex> lock(f.driver.mutex);
+        finished = f.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+          return observed.seen || f.decoder->ReplayFailed();
+        });
+      }
+      f.driver.StopWorkers();
+      decode_worker_turn = {};
+      const auto RequireControl = [&](bool valid, const char *why) {
+        if (!valid)
+          std::fprintf(stderr,
+              "worker-pair control failed case=%u BFF=%u release=%u ready=%u first=%u M=%zu queue=%zu front=%llu release_observer=%u handoff=%u: %s\n",
+              static_cast<unsigned>(test), unsigned(bottom_first),
+              f.io.released_outputs.load() - releases_before, unsigned(f.held[0]->ready),
+              unsigned(f.decoder->h264_first_field.valid),
+              CountTraceEvent(ReadTraceFd(trace.fd), "materialized"), f.io.outputs.size(),
+              static_cast<unsigned long long>(f.io.outputs.empty() ? 0 : f.io.outputs.front()),
+              unsigned(observed.from_release_callback), unsigned(observed.handoff_seen), why);
+        Require(valid, why);
+      };
+      RequireControl(finished && !f.io.invalid,
+              "one bounded real worker turn or terminal failure completes before coordination watchdog");
+      const size_t materialized = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+      if (test == Case::FirstReleaseFailure || test == Case::SecondReleaseFailure) {
+        const bool first_failure = test == Case::FirstReleaseFailure;
+        RequireControl(f.decoder->ReplayFailed() && !f.decoder->h264_first_field.valid &&
+                    f.io.released_outputs.load() - releases_before == (first_failure ? 1U : 2U) &&
+                    materialized == materialized_before + (first_failure ? 0U : 1U) &&
+                    f.decoder->transport_progress == progress_before + (first_failure ? 0U : 1U) &&
+                    f.io.outputs.size() == (first_failure ? 2U : 1U) &&
+                    f.io.outputs.back() == 2 * kTimestampStep &&
+                    !f.held[1]->ready &&
+                    (!first_failure || (!f.held[0]->ready && f.held[0]->failed)),
+                "release errors preserve first-field no-publication and the preexisting M-before-second-release ordering");
+        f.io.on_output_release = {}; f.io.output_release_status = BC_STS_SUCCESS;
+        f.io.outputs.clear(); f.io.picture_flags.clear();
+        f.driver.stopping = false;
+        RequireControl(DestroyContext(&f.context, 1) != VA_STATUS_SUCCESS && f.decoder->device == nullptr,
+                "failed worker context consumes its existing hardware owner without fabricating success");
+        continue;
+      }
+      RequireControl(observed.seen && !observed.failed &&
+                  (test == Case::CompletedRepeat
+                      ? observed.from_release_callback && !observed.handoff_seen
+                      : observed.owns_lock && observed.handoff_seen),
+              "controls observe either the real progress handoff or ignored-repeat release, then join normally");
+      if (test == Case::Pair) {
+        RequireControl(observed.releases == 2 && observed.ready && !observed.first_valid &&
+                    observed.queued == 1 && observed.front == 2 * kTimestampStep &&
+                    materialized == 1 && !f.held[1]->ready,
+                "new released first field receives only its complement before handoff; third output stays queued");
+      } else if (test == Case::EmptyReady) {
+        RequireControl(observed.releases == 0 && !observed.ready && !observed.first_valid &&
+                    f.io.output_polls == polls_before + 1 && f.io.inputs.size() == 4 &&
+                    materialized == 0,
+                "Ready0 keeps the unchanged Pump4/input-budget handoff and adds no receive turn");
+      } else if (test == Case::CompletedRepeat) {
+        RequireControl(observed.releases == 1 && observed.ready && !observed.first_valid &&
+                    observed.queued == 2 && materialized == 1 &&
+                    f.decoder->transport_progress == progress_before,
+                "ignored completed repeat releases once without a latch, progress or another harvest");
+      } else {
+        const bool completed = test == Case::Preheld;
+        RequireControl(observed.releases == 1 && observed.ready == completed &&
+                    observed.first_valid == !completed &&
+                    materialized == (completed ? 1U : 0U) &&
+                    observed.queued == (test == Case::NoComplement ? 0U :
+                                        test == Case::Preheld ? 1U : 2U),
+                "preheld, nonCentered, LINK and empty-complement controls preserve one output per turn");
+      }
+      f.io.on_output_release = {};
+      f.driver.stopping = false;
+      if (test == Case::EmptyReady) {
+        RequireControl(PumpDecodeInput(&f.driver, f.decoder.get(), 32) == VA_STATUS_SUCCESS,
+                "remaining accepted originals keep their existing transport budget");
+        for (unsigned picture = 1; picture <= originals; ++picture) {
+          field(picture * kTimestampStep, bottom_first);
+          field(picture * kTimestampStep, !bottom_first);
+        }
+      } else {
+        if (test == Case::NoComplement) {
+          field(kTimestampStep, !bottom_first);
+          field(2 * kTimestampStep, bottom_first);
+        }
+        field(2 * kTimestampStep, !bottom_first);
+      }
+      if (test != Case::Link) {
+        RequireControl(f.decoder->replay.outstanding() > 0 && !f.io.outputs.empty(),
+                "seal while genuine remaining originals still own their queued fields");
+        f.io.early_eos = true; // Existing mock queues the originals above only once.
+        RequireControl(SealDecodeBatch(&f.driver, f.decoder.get()) == VA_STATUS_SUCCESS &&
+                    f.decoder->ReplaySealed() && !f.io.outputs.empty() && f.io.outputs.back() == 0,
+                "explicit seal follows real remaining fields with the actual EOS marker");
+      }
+      RequireControl(ReceiveAvailable(&f.driver, f.decoder.get()) == VA_STATUS_SUCCESS &&
+                  f.io.outputs.empty() && f.io.picture_flags.empty() &&
+                  f.decoder->pending.empty() && f.decoder->replay.outstanding() == 0 &&
+                  CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == originals,
+              "later unchanged harvest completes every original exactly once without losing the queued third field");
+      for (unsigned index = 0; index < originals; ++index) {
+        if (test == Case::NonCentered) f.CheckPicture(index);
+        else CheckCenteredAdmissionPicture(f, index);
+      }
+      if (test != Case::Link) {
+        RequireControl(f.io.outputs.empty() && !f.decoder->ReplaySealed() &&
+                    std::count(f.io.events.begin(), f.io.events.end(), "eos") == 1,
+                "unchanged harvest consumes every remaining original and exactly one explicit EOS");
+      }
+      RequireControl(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS && f.decoder->device == nullptr &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "worker-pair and legacy controls retire the existing decoder owner normally");
+    }
+}
+
 static void WorkerPollAllocationFailure(unsigned allocation) {
   TeardownFixture f(8);
   const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -12326,8 +12767,12 @@ struct NeutralSyntaxReader {
   }
   uint32_t UE() {
     unsigned zeros = 0;
-    while (!Bits(1)) Require(++zeros < 31, "bounded neutral Exp-Golomb");
+    while (!Bits(1)) Require(++zeros < 32, "bounded neutral Exp-Golomb");
     return ((1U << zeros) - 1) + Bits(zeros);
+  }
+  int64_t SE() {
+    const uint32_t value = UE();
+    return (value & 1U) ? (int64_t{value} + 1) / 2 : -int64_t{value / 2U};
   }
   void End() {
     Require(Bits(1) == 1, "RBSP stop bit");
@@ -12419,6 +12864,67 @@ static void NeutralAuxSyntaxIsSelfContained() {
     Require(!BuildH264NeutralIntra(p, &rejected), "unsupported neutral syntax rejected");
   }
 }
+static void NeutralAuxFieldPocSyntax() {
+  // Syntax only: no H.264 decoder, firmware output or ordering is modeled.
+  const auto legacy_unchanged = [](VAPictureParameterBufferH264 p) {
+    std::vector<uint8_t> implicit, explicit_false, reference;
+    Require(BuildH264NeutralIntra(p, &implicit) &&
+                BuildH264NeutralIntra(p, &explicit_false, false),
+            "legacy neutral generation remains available independently of bottom POC");
+    p.CurrPic.BottomFieldOrderCnt = p.CurrPic.TopFieldOrderCnt;
+    Require(BuildH264NeutralIntra(p, &reference, false) &&
+                implicit == explicit_false && implicit == reference,
+            "legacy default/false bytes ignore only bottom POC, including field-mode rejection cases");
+    auto nals = NeutralParseNals(implicit);
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(2) == 0,
+            "legacy PPS keeps bottom-POC presence disabled");
+  };
+  const int32_t maximum = std::numeric_limits<int32_t>::max();
+  const int32_t minimum = std::numeric_limits<int32_t>::min();
+  for (const auto &counts : {std::make_pair(int32_t{0}, int32_t{0}),
+                             {0, 1}, {1, 0}, {0, maximum}, {maximum, 0}}) {
+    auto p = NeutralPicture(16, 32);
+    p.CurrPic.TopFieldOrderCnt = counts.first;
+    p.CurrPic.BottomFieldOrderCnt = counts.second;
+    std::vector<uint8_t> bytes;
+    Require(BuildH264NeutralIntra(p, &bytes, true),
+            "field-pair neutral syntax admits zero, signed unit and both bounded POC delta extremes");
+    auto nals = NeutralParseNals(bytes);
+    Require(nals[0].first == 9 && nals[1].first == 0x68 && nals[2].first == 1,
+            "field POC syntax retains only AUD, reserved PPS and nonreference nonIDR I");
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(2) == 1 &&
+                pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 && pps.Bits(3) == 0 &&
+                pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 && pps.Bits(3) == 4,
+            "only the bottom POC presence flag changes the neutral PPS contract");
+    pps.End();
+    auto &slice = nals[2].second;
+    Require(slice.UE() == 0 && slice.UE() == 2 && slice.UE() == 254 &&
+                slice.Bits(4) == p.frame_num && slice.Bits(1) == 0 &&
+                slice.Bits(6) == (static_cast<uint32_t>(counts.first) & 63U) &&
+                slice.SE() == int64_t{counts.second} - counts.first &&
+                slice.SE() == 0 && slice.UE() == 1,
+            "actual SE bytes preserve the signed bottom-minus-top delta before unchanged QP/deblock syntax");
+    Require(slice.Bits(1) == 1, "field decoding remains selected for the MBAFF pair");
+    for (unsigned mb = 0; mb != 2; ++mb)
+      Require(slice.UE() == 3 && slice.UE() == 0 && slice.SE() == 0 && slice.Bits(1) == 1,
+              "field POC changes do not alter neutral I16 DC macroblock syntax");
+    slice.End();
+    legacy_unchanged(p);
+  }
+  for (const auto &counts : {std::make_pair(int32_t{0}, minimum), {1, minimum}, {maximum, minimum}}) {
+    auto p = NeutralPicture(16, 32);
+    p.CurrPic.TopFieldOrderCnt = counts.first;
+    p.CurrPic.BottomFieldOrderCnt = counts.second;
+    const std::vector<uint8_t> sentinel = {0x7b, 0xa5};
+    auto bytes = sentinel;
+    Require(!BuildH264NeutralIntra(p, &bytes, true) && bytes == sentinel,
+            "INT32_MIN or widened POC underflow is rejected before mutating caller output");
+    legacy_unchanged(p);
+  }
+}
+
 constexpr uint64_t kNeutralAuxToken = 2 * kTimestampStep;
 
 static void NeutralAuxBegin(H264WeaveFixture *fixture, DecodeIoMock *io) {
@@ -13211,7 +13717,7 @@ static void CenteredExactSyncUsesPrivateLookahead() {
     const size_t input_calls = fixture.io.input_calls.size();
     const auto ordinal = d.next_submission_ordinal;
     std::vector<uint8_t> expected_aux;
-    Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected_aux),
+    Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected_aux, true),
             "accepted immutable syntax supports the existing nonreference I auxiliary");
     Require(SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT &&
                 fixture.io.input_calls.size() == input_calls && !d.auxiliary.pending,
@@ -13232,9 +13738,26 @@ static void CenteredExactSyncUsesPrivateLookahead() {
               "public full Sync accepts private lookahead without public completion or EOS");
       queue(kTimestampStep, second);
     };
+    std::function<void()> supply_after_grace;
+    supply_after_grace = [&] {
+      if (d.auxiliary.pending) {
+        supply_complement();
+        return;
+      }
+      Require(d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+                  fixture.io.released_outputs == 1 && fixture.io.input_calls.size() == input_calls &&
+                  !d.auxiliary.ever && !d.auxiliary.needs_eos && !d.replay.sealed() &&
+                  !source->ready && !fixture.held[0]->ready && fixture.held[0]->storage == original &&
+                  d.next_submission_ordinal == ordinal && fixture.io.outputs.empty(),
+              "early exact-Sync turns remain passive until actual auxiliary acceptance");
+      // This callback replaces SyncDecodeSurface's usleep(1000). Preserve that
+      // real waiting turn while rearming; never advance a clock or RX state.
+      __real_usleep(1000);
+      fixture.io.on_sleep = supply_after_grace;
+    };
     fixture.io.on_sleep = [&] {
       if (preheld) {
-        supply_complement();
+        supply_after_grace();
         return;
       }
       Require(d.h264_first_field.valid && fixture.io.released_outputs == 1 &&
@@ -13242,9 +13765,8 @@ static void CenteredExactSyncUsesPrivateLookahead() {
                   !source->ready,
               "new first-field release is a progress turn with idle0 and no auxiliary");
       held = d.h264_first_field.pixels;
-      // No test clock advance or arbitrary sleep: the next existing RX turn
-      // sees the actual empty mock queue and must use early exact lookahead.
-      fixture.io.on_sleep = supply_complement;
+      // Subsequent real empty turns may deliberately remain inside the guard.
+      fixture.io.on_sleep = supply_after_grace;
     };
     Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS && source->ready &&
                 fixture.held[0]->ready && !d.h264_first_field.valid &&
@@ -13253,31 +13775,29 @@ static void CenteredExactSyncUsesPrivateLookahead() {
             "only the genuine complementary output completes actual public full Sync");
     CheckCenteredAdmissionPicture(fixture, 0);
     const auto completed = fixture.held[0]->storage;
-    H264WeaveFixture auxiliary(false, VA_FOURCC_NV12, d.CaptureWidth());
-    const size_t auxiliary_bytes = size_t{d.CaptureWidth()} * d.CaptureHeight() * 2U;
-    auxiliary.pixels.assign(auxiliary_bytes + 160U, 0);
-    auxiliary.output.Ybuff = auxiliary.pixels.data();
-    auxiliary.output.YBuffDoneSz = auxiliary.pixels.size() / 4U;
-    auxiliary.output.PicInfo.height = d.CaptureHeight();
-    auxiliary.output.PicInfo.timeStamp = 2 * kTimestampStep;
-    auxiliary.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
-    auxiliary.raw.height = d.CaptureHeight();
-    auxiliary.raw.timeStamp = 2 * kTimestampStep / 20000U;
-    auxiliary.raw.flags = VDEC_FLAG_FIELDPAIR;
-    memcpy(auxiliary.pixels.data() + auxiliary_bytes,
-           &auxiliary.output.PicInfo.picture_number, sizeof(uint32_t));
-    memcpy(auxiliary.pixels.data() + auxiliary_bytes + sizeof(uint32_t),
-           &auxiliary.raw, offsetof(BC_PIC_INFO_BLOCK, other));
-    auxiliary.WriteWord(auxiliary.pixels.size() - 8U, d.CaptureWidth());
-    auxiliary.WriteWord(auxiliary.pixels.size() - 4U, d.CaptureHeight());
+    std::vector<uint8_t> auxiliary_pixels(size_t{d.CaptureWidth()} * d.CaptureHeight(), 0);
+    BC_DTS_PROC_OUT auxiliary = {};
+    auxiliary.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    auxiliary.b422Mode = OUTPUT_MODE422_YUY2;
+    auxiliary.Ybuff = auxiliary_pixels.data();
+    auxiliary.YBuffDoneSz = auxiliary_pixels.size() / 4U;
+    auxiliary.PicInfo.width = d.CaptureWidth();
+    auxiliary.PicInfo.height = d.CaptureHeight();
+    auxiliary.PicInfo.timeStamp = 2 * kTimestampStep;
     fixture.io.override_output = true;
-    fixture.io.overridden_output = auxiliary.output;
-    bool activity = false;
-    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
-                activity && !d.auxiliary.pending && d.auxiliary.needs_eos &&
-                fixture.held[0]->storage == completed && d.replay.outstanding() == 0 &&
-                d.next_submission_ordinal == ordinal && fixture.io.released_outputs == 3,
-            "private auxiliary release cannot publish a picture or pay actual EOS debt");
+    for (bool bottom : {false, true}) {
+      auxiliary.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD);
+      fixture.io.overridden_output = auxiliary;
+      bool activity = false;
+      Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
+                  activity && d.auxiliary.pending == !bottom &&
+                  d.auxiliary.output_released == bottom && d.auxiliary.needs_eos &&
+                  d.auxiliary.output.fields == (bottom ? 3U : 1U) &&
+                  fixture.held[0]->storage == completed && d.replay.outstanding() == 0 &&
+                  d.next_submission_ordinal == ordinal && fixture.io.released_outputs == (bottom ? 4U : 3U),
+              "each private auxiliary field releases without public completion or actual EOS payment");
+    }
     fixture.io.override_output = false;
     for (unsigned id : {2U, 3U}) {
       const uint64_t token = (id + 1U) * kTimestampStep; // Auxiliary owns token2.
@@ -13319,10 +13839,620 @@ static void CenteredExactSyncUsesPrivateLookahead() {
                 d.device == nullptr && d.retired &&
                 std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
                 std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
-                fixture.io.open_attempts == 0 && fixture.io.released_outputs == 8 &&
+                fixture.io.open_attempts == 0 && fixture.io.released_outputs == 9 &&
                 fixture.held[0]->storage == completed && !fixture.io.invalid,
-            "explicit close consumes the actual terminal EOS after all seven picture leases");
+            "explicit close consumes the actual terminal EOS after all eight picture leases");
   }
+}
+
+static void CenteredAuxiliaryIdleGrace() {
+  H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+  ConfigureCenteredAdmission(f);
+  auto &d = *f.decoder;
+  d.auto_h264_prefeed = true;
+  f.Prepare(1);
+  d.picture = NeutralPicture(256, 64);
+  d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+  Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+          "idle guard starts with genuine accepted Centered original syntax");
+  f.io.outputs.push_back(kTimestampStep);
+  f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+  Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+              d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+          "idle guard owns one genuinely validated and released original first field");
+  bool quiet = false;
+  Require(ReceiveAvailable(&f.driver, &d, 1, &quiet) == VA_STATUS_SUCCESS && quiet &&
+              f.io.outputs.empty() && f.io.released_outputs == 1,
+          "the existing successful empty RX turn supplies real quiet-queue evidence");
+  const auto pixels = f.held[0]->storage;
+  const auto held = d.h264_first_field.pixels;
+  const auto ordinal = d.next_submission_ordinal;
+  const auto token = d.next_timestamp;
+  const auto progress = d.transport_progress;
+  const auto calls = f.io.input_calls.size();
+  std::vector<uint8_t> expected;
+  Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected, true),
+          "the threshold uses the same POC-preserving field-coded auxiliary bytes");
+  for (uint64_t idle : {UINT64_C(7000000), UINT64_C(9999999)}) {
+    const VAStatus status = TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, idle,
+        H264AuxiliaryDemand::CenteredExactSync);
+    const bool passive = status == VA_STATUS_SUCCESS && f.io.input_calls.size() == calls &&
+        d.next_timestamp == token && d.prefed_timestamp == token && !d.pending_prefeed_timestamp &&
+        d.next_submission_ordinal == ordinal && d.transport_progress == progress &&
+        !d.auxiliary.ever && !d.auxiliary.pending && !d.auxiliary.needs_eos &&
+        !d.auxiliary.output_released && d.h264_first_field.valid &&
+        d.h264_first_field.timestamp == kTimestampStep && d.h264_first_field.pixels == held &&
+        !f.held[0]->ready && f.held[0]->storage == pixels &&
+        d.pending.size() == 1 && d.replay.outstanding() == 1 && !d.replay.sealed() &&
+        f.io.outputs.empty() && f.io.released_outputs == 1;
+    if (!passive)
+      Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "old sub-ten-ms auxiliary acceptance closes its finite mock channel before the guard verdict");
+    Require(passive,
+            "Centered exact auxiliary must preserve original state and submit no private input below ten milliseconds");
+  }
+  Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, UINT64_C(10000000),
+              H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+              f.io.input_calls.size() == calls + 2 && f.io.input_calls[calls].accepted &&
+              f.io.input_calls[calls].timestamp == 0 && f.io.input_calls[calls].bytes == expected &&
+              f.io.input_calls.back().accepted && f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+              f.io.input_calls.back().timestamp == token + kTimestampStep &&
+              d.auxiliary.timestamp == token && d.auxiliary.pending && d.auxiliary.needs_eos &&
+              d.auxiliary.output.field_pairs && d.auxiliary.output.fields == 0 &&
+              !d.auxiliary.output_released && !d.auxiliary.ended &&
+              d.next_timestamp == token + kTimestampStep && d.next_submission_ordinal == ordinal &&
+              d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+              !f.held[0]->ready && f.held[0]->storage == pixels &&
+              d.pending.size() == 1 && d.replay.outstanding() == 1 && !d.replay.sealed() &&
+              f.io.outputs.empty() && f.io.released_outputs == 1,
+          "exactly ten milliseconds permits only the same private field-pair input and unpaid EOS debt");
+  Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+              f.io.device_close_calls == 1 && !f.io.invalid &&
+              std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 &&
+              std::count(f.io.events.begin(), f.io.events.end(), "eos") == 0,
+          "the idle guard probe consumes its mock channel without fabricating output or EOS");
+}
+
+static void CenteredAuxiliaryFieldLayout() {
+  // Real own admission, neutral-byte generation, field validation and release;
+  // the mock supplies scalar output and never decodes H.264 or models its DPB.
+  for (bool original_bottom_first : {false, true})
+  for (bool auxiliary_bottom_first : {false, true}) {
+    H264AdmissionFixture f(16, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(f);
+    auto &d = *f.decoder;
+    d.auto_h264_prefeed = true;
+    const uint32_t order = original_bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+    const auto queue = [&](uint64_t token, bool bottom) {
+      f.io.outputs.push_back(token);
+      f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    };
+    const auto submit = [&](VASurfaceID id, unsigned type) {
+      f.Prepare(id);
+      d.picture = NeutralPicture(256, 64);
+      d.picture.num_ref_frames = 4;
+      d.picture.frame_num = id - 1;
+      d.picture.CurrPic.picture_id = id;
+      d.picture.CurrPic.TopFieldOrderCnt = id == 1 ? 0 : id == 2 ? 6 : 2;
+      d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+      d.picture.pic_fields.bits.reference_pic_flag = type != 1;
+      if (id > 1) {
+        d.picture.ReferenceFrames[0].picture_id = 1;
+        d.picture.ReferenceFrames[0].flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+      }
+      d.slices.front().slice_type = type;
+      d.slice_data.front() = {static_cast<uint8_t>(type == 2 ? 0x65 : type == 1 ? 0x01 : 0x41),
+                              0x88, static_cast<uint8_t>(0x80 + id)};
+      f.io.input_busy = true;
+      Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS && d.replay.NextInput(),
+              "field-layout control genuinely admits immutable original I/P/B bytes");
+      const auto immutable = d.replay.NextInput()->bytes;
+      const auto calls = f.io.input_calls.size();
+      f.io.input_busy = false;
+      Require(PumpDecodeInput(&f.driver, &d) == VA_STATUS_SUCCESS &&
+                  f.io.input_calls.at(calls).accepted &&
+                  f.io.input_calls.at(calls).bytes == immutable,
+              "normal pump preserves every accepted original byte independently of private layout");
+    };
+    const auto check_public = [&](unsigned index, uint64_t token) {
+      const auto &surface = f.held.at(index);
+      const auto &g = d.centered_geometry;
+      Require(surface->ready && !surface->failed && surface->expected_timestamp == token &&
+                  surface->frame_timestamp == token,
+              "only the exact original token owns a completed Centered public picture");
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != surface->height / (plane ? 2U : 1U); ++row)
+          for (unsigned x = 0; x != surface->width; ++x) {
+            const bool roi = row >= g.y / (plane ? 2U : 1U) &&
+                row < (g.y + g.capture_height) / (plane ? 2U : 1U) &&
+                x >= g.x && x < g.x + g.capture_width;
+            Require(surface->planes[plane][size_t{row} * surface->pitch[plane] + x] ==
+                        (plane ? 128 : roi ? DecodeIoMock::Luma(token) : 16),
+                    "every active original Y/UV ROI and border byte remains scalar-exact");
+          }
+      Require(SyncSurface2(&f.context, surface->id, 0) == VA_STATUS_SUCCESS,
+              "completed original remains passively downloadable");
+    };
+    submit(1, 2);
+    queue(kTimestampStep, original_bottom_first);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+            "the demand begins with one genuinely validated and released original first field");
+    const auto held = d.h264_first_field.pixels;
+    const auto original = f.held[0]->storage;
+    const auto ordinal = d.next_submission_ordinal;
+    const auto syntax = d.auxiliary.candidate.picture;
+    const auto calls = f.io.input_calls.size();
+    Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, kDecodeBatchGraceNs,
+                H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                d.auxiliary.pending && d.auxiliary.needs_eos && !d.auxiliary.output_released &&
+                d.auxiliary.timestamp == 2 * kTimestampStep &&
+                f.io.input_calls.size() == calls + 2 &&
+                f.io.input_calls[calls].accepted && f.io.input_calls[calls].timestamp == 0 &&
+                f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                f.io.input_calls.back().timestamp == 3 * kTimestampStep,
+            "actual exact-Sync auxiliary consumes one prefix without acquiring original ownership");
+    const auto payload = f.io.input_calls[calls].bytes;
+    H264FieldFixture auxiliary(false, false, VA_FOURCC_NV12, d.CaptureWidth(), 2 * kTimestampStep);
+    auto first = auxiliary.Output(auxiliary_bottom_first, auxiliary_bottom_first,
+        auxiliary_bottom_first ? &auxiliary.bottom : &auxiliary.top);
+    auto second = auxiliary.Output(!auxiliary_bottom_first, auxiliary_bottom_first,
+        auxiliary_bottom_first ? &auxiliary.top : &auxiliary.bottom);
+    first.b422Mode = second.b422Mode = OUTPUT_MODE422_YUY2;
+    Require(ClassifyH264InterlacedPayload(first) == H264InterlacedPayload::Field &&
+                ClassifyH264InterlacedPayload(second) == H264InterlacedPayload::Field,
+            "two actual scalar records have independent half-height field extents and complementary parity");
+    f.io.override_output = true;
+    f.io.overridden_output = first;
+    bool activity = false;
+    const VAStatus first_status = ReceiveOne(&f.driver, &d, 0, &activity);
+    if (first_status != VA_STATUS_SUCCESS) {
+      f.io.override_output = false;
+      Require(activity && f.io.released_outputs == 2 &&
+                  d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "old full-Weave validator rejection releases its field and closes the finite mock channel");
+    }
+    Require(first_status == VA_STATUS_SUCCESS,
+            "exact-Sync field-coded private auxiliary must validate and release its first field without rejecting the layout");
+    Require(activity && f.io.released_outputs == 2 && d.auxiliary.pending &&
+                !d.auxiliary.output_released && d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                d.h264_first_field.valid && d.h264_first_field.timestamp == kTimestampStep &&
+                d.h264_first_field.pixels == held && !f.held[0]->ready &&
+                f.held[0]->storage == original && d.next_submission_ordinal == ordinal &&
+                d.pending.size() == 1 && d.replay.outstanding() == 1 && !d.replay.sealed(),
+            "first private field payment preserves original field pixels, public readiness, ordinal and real EOS debt");
+    // Independent parser checks accepted bytes, not a call to a new builder API.
+    auto nals = NeutralParseNals(payload);
+    Require(nals[0].first == 9 && nals[1].first == 0x68 && nals[2].first == 1,
+            "private layout retains AUD/PPS254/nonreference nonIDR I without changing original SPS");
+    auto &pps = nals[1].second;
+    Require(pps.UE() == 254 && pps.UE() == 0 && pps.Bits(1) == 0,
+            "field-coded private PPS retains reserved identity and CAVLC");
+    const bool bottom_poc_present = pps.Bits(1) != 0;
+    Require(pps.UE() == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.Bits(3) == 0 && pps.UE() == 0 && pps.UE() == 0 &&
+                pps.UE() == 0 && pps.Bits(3) == 4,
+            "field-coded private PPS keeps the remaining original neutral syntax");
+    pps.End();
+    if (!bottom_poc_present) {
+      f.io.override_output = false;
+      Require(d.Close(0) == BC_STS_SUCCESS && !d.device &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "old missing-bottom-POC declaration closes its finite mock channel without fabricating EOS");
+    }
+    Require(bottom_poc_present,
+            "field-coded private PPS must declare the accepted bottom-minus-top POC delta");
+    auto &slice = nals[2].second;
+    const unsigned frame_bits = syntax.seq_fields.bits.log2_max_frame_num_minus4 + 4;
+    const unsigned poc_bits = syntax.seq_fields.bits.log2_max_pic_order_cnt_lsb_minus4 + 4;
+    Require(slice.UE() == 0 && slice.UE() == 2 && slice.UE() == 254 &&
+                slice.Bits(frame_bits) == syntax.frame_num && slice.Bits(1) == 0 &&
+                slice.Bits(poc_bits) == (static_cast<uint32_t>(syntax.CurrPic.TopFieldOrderCnt) & ((1U << poc_bits) - 1)),
+            "private slice keeps accepted frame/POC and frame-picture syntax rather than inventing PAFF pictures");
+    const uint32_t delta_code = slice.UE();
+    const int64_t bottom_delta = (delta_code & 1U)
+        ? (int64_t{delta_code} + 1) / 2 : -int64_t{delta_code / 2U};
+    Require(bottom_delta == int64_t{syntax.CurrPic.BottomFieldOrderCnt} - syntax.CurrPic.TopFieldOrderCnt &&
+                slice.UE() == 0 && slice.UE() == 1,
+            "field-coded private slice preserves the exact signed bottom-minus-top POC before QP and deblocking");
+    for (unsigned mb = 0; mb < (256U / 16U) * (64U / 16U); ++mb) {
+      if (!(mb & 1U)) Require(slice.Bits(1) == 1, "every private MBAFF pair uses field decoding");
+      Require(slice.UE() == 3 && slice.UE() == 0 && slice.UE() == 0 && slice.Bits(1) == 1,
+              "field-coded private I16 DC blocks retain zero residual syntax");
+    }
+    slice.End();
+    f.io.overridden_output = second;
+    activity = false;
+    Require(ReceiveOne(&f.driver, &d, 0, &activity) == VA_STATUS_SUCCESS && activity &&
+                f.io.released_outputs == 3 && !d.auxiliary.pending && d.auxiliary.output_released &&
+                d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+                !f.held[0]->ready && f.held[0]->storage == original &&
+                d.next_submission_ordinal == ordinal && d.pending.size() == 1 && d.replay.outstanding() == 1,
+            "only the second successfully released private field pays auxiliary output debt, never original completion or EOS");
+    f.io.override_output = false;
+    queue(kTimestampStep, !original_bottom_first);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                f.io.released_outputs == 4 && !d.h264_first_field.valid && !d.replay.outstanding(),
+            "only the genuine original complementary field completes its original picture");
+    check_public(0, kTimestampStep);
+    const auto completed = f.held[0]->storage;
+    for (unsigned id : {2U, 3U}) {
+      submit(id, id == 2 ? 0 : 1);
+      const uint64_t token = (id + 1U) * kTimestampStep;
+      queue(token, original_bottom_first); queue(token, !original_bottom_first);
+      Require(ReceiveAvailable(&f.driver, &d, 2) == VA_STATUS_SUCCESS &&
+                  d.next_submission_ordinal == ordinal + id - 1 &&
+                  d.auxiliary.needs_eos && !d.auxiliary.ended && f.held[0]->storage == completed,
+              "following original reference/B input and output retain exact ordinal and unpaid private EOS debt");
+      check_public(id - 1, token);
+    }
+    f.io.early_eos = true;
+    Require(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS && !d.device && d.retired &&
+                f.io.released_outputs == 9 && f.io.device_close_calls == 1 &&
+                std::count(f.io.events.begin(), f.io.events.end(), "seal") == 1 &&
+                std::count(f.io.events.begin(), f.io.events.end(), "eos") == 1 &&
+                f.held[0]->storage == completed && !f.io.invalid,
+            "explicit terminal close consumes actual EOS after both private fields and every original lease");
+  }
+}
+
+static void CenteredAuxiliaryFieldFaults() {
+  TraceEnvironment environment;
+  enum Fault { Generation, Device, Weave, Duplicate, Order, Picture, Session,
+               Metadata, PrematureEos, FirstRelease, SecondRelease, Mode, Extent };
+  for (unsigned fault = Generation; fault <= Extent; ++fault) {
+    struct TraceSink {
+      int fd = memfd_create("centered-aux-field-fault", MFD_CLOEXEC);
+      TraceSink() { Require(fd >= 0, "create bounded private-field fault trace"); }
+      ~TraceSink() { close(fd); }
+    } trace;
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64, trace.fd);
+    ConfigureCenteredAdmission(f);
+    auto &d = *f.decoder;
+    d.auto_h264_prefeed = true;
+    f.Prepare(1); d.picture = NeutralPicture(256, 64);
+    Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+            "field fault begins with actually admitted original syntax");
+    f.io.outputs.push_back(kTimestampStep);
+    f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS && d.h264_first_field.valid,
+            "field fault retains a genuinely released original first field");
+    Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr, kDecodeBatchGraceNs,
+                H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                d.auxiliary.pending && d.auxiliary.output.field_pairs && d.auxiliary.output.fields == 0,
+            "field fault uses an actually accepted new-mode private transport ledger");
+    const auto pixels = f.held[0]->storage;
+    const auto ordinal = d.next_submission_ordinal;
+    H264FieldFixture auxiliary(false, false, VA_FOURCC_NV12, d.CaptureWidth(), 2 * kTimestampStep);
+    auto first = auxiliary.Output(false, false, &auxiliary.top);
+    auto second = auxiliary.Output(true, false, &auxiliary.bottom);
+    first.b422Mode = second.b422Mode = OUTPUT_MODE422_YUY2;
+    f.io.override_output = true;
+    const auto receive = [&](const BC_DTS_PROC_OUT &output, bool fail_release, bool watch_commit) {
+      f.io.overridden_output = output;
+      f.io.output_release_status = fail_release ? BC_STS_ERROR : BC_STS_SUCCESS;
+      const auto before = d.auxiliary.output.fields;
+      bool prior_ledger_at_release = false;
+      if (watch_commit) f.io.on_output_release = [&] {
+        prior_ledger_at_release = d.auxiliary.pending && !d.auxiliary.output_released &&
+            d.auxiliary.output.fields == before;
+      };
+      bool activity = false;
+      const auto releases = f.io.released_outputs.load();
+      const VAStatus status = ReceiveOne(&f.driver, &d, 0, &activity);
+      f.io.on_output_release = {};
+      Require(activity && f.io.released_outputs == releases + 1 && !f.io.invalid &&
+                  (!watch_commit || prior_ledger_at_release),
+              "actual private lease releases before any accepted field-ledger commit");
+      return status;
+    };
+    H264WeaveFixture weave(false, VA_FOURCC_NV12, d.CaptureWidth());
+    VAStatus status;
+    if (fault == FirstRelease) {
+      status = receive(first, true, true);
+    } else {
+      Require(receive(first, false, true) == VA_STATUS_SUCCESS &&
+                  d.auxiliary.output.fields == 1 && d.auxiliary.pending &&
+                  !d.auxiliary.output_released && d.auxiliary.needs_eos &&
+                  d.h264_first_field.valid && !f.held[0]->ready && f.held[0]->storage == pixels,
+              "one successfully released private field commits only its own pending bit");
+      switch (fault) {
+        case Generation: ++d.auxiliary.generation; break;
+        case Device: d.auxiliary.device = nullptr; break;
+        case Weave:
+          weave.output.PicInfo.timeStamp = d.auxiliary.timestamp;
+          weave.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+          weave.raw.timeStamp = d.auxiliary.timestamp / 20000U;
+          weave.raw.flags = VDEC_FLAG_FIELDPAIR;
+          weave.WritePib(); second = weave.output;
+          Require(ClassifyH264InterlacedPayload(second) == H264InterlacedPayload::Weave,
+                  "wrong-layout negative is a valid legacy full-height Weave, not malformed bytes");
+          break;
+        case Duplicate: second = first; break;
+        case Order: second.PicInfo.flags |= VDEC_FLAG_BOTTOM_FIRST; break;
+        case Picture: ++second.PicInfo.picture_number; break;
+        case Session: ++second.PicInfo.sess_num; break;
+        case Metadata: ++second.PicInfo.picture_meta_payload; break;
+        case PrematureEos: second = {}; second.PicInfo.flags = VDEC_FLAG_EOS; break;
+        case Mode: second.b422Mode = 0; break;
+        case Extent: --second.YBuffDoneSz; break;
+        default: break;
+      }
+      status = receive(second, fault == SecondRelease, fault == SecondRelease);
+    }
+    f.io.override_output = false;
+    f.io.output_release_status = BC_STS_SUCCESS;
+    const auto native = ReadTraceFd(trace.fd);
+    Require(status == VA_STATUS_ERROR_DECODING_ERROR && d.ReplayFailed() &&
+                !d.auxiliary.pending && !d.auxiliary.output_released &&
+                d.auxiliary.output.fields == 0 && !d.auxiliary.output.field_pairs &&
+                !d.auxiliary.output.width && !d.auxiliary.output.height &&
+                !HasAutonomousDecodeWork(f.decoder) && !f.held[0]->ready &&
+                f.held[0]->storage == pixels && d.next_submission_ordinal == ordinal &&
+                d.pending.size() == 1 && d.replay.outstanding() == 1 &&
+                CountTraceEvent(native, "submit_bind") == 1 && CountTraceEvent(native, "input_sent") == 1 &&
+                CountTraceEvent(native, "output_dequeued") == 1 && CountTraceEvent(native, "materialized") == 0,
+            "bad private identity/parity/layout/EOS/release aborts and resets debt without public progress or a worker certificate");
+    Require(d.Close(0) == BC_STS_SUCCESS && !d.device && f.io.device_close_calls == 1 &&
+                d.auxiliary.output.fields == 0 && !d.auxiliary.output.field_pairs && !f.io.invalid,
+            "field-fault cleanup consumes the finite channel and leaves no stale private field ledger");
+  }
+}
+
+static void CenteredWorkerPairsAfterReleasedAuxiliary() {
+  // Execute the real own admission/auxiliary validation/release/worker paths.
+  // DecodeIoMock forwards known scalar pixels; it does not decode firmware
+  // reference pictures or qualify the original application's performance.
+  TraceEnvironment environment;
+  for (bool bottom_first : {false, true})
+   for (bool fail_aux_release : {false, true}) {
+    struct TraceSink {
+      int fd = memfd_create("centered-worker-postaux-trace", MFD_CLOEXEC);
+      TraceSink() { Require(fd >= 0, "create finite post-aux worker native trace sink"); }
+      ~TraceSink() { close(fd); }
+    } trace;
+    H264AdmissionFixture f(16, 1024 * 1024, 256, 64, trace.fd);
+    ConfigureCenteredAdmission(f);
+    auto &d = *f.decoder;
+    d.auto_h264_prefeed = true;
+    const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+    const auto queue = [&](uint64_t token, bool bottom) {
+      f.io.outputs.push_back(token);
+      f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order |
+          (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD));
+    };
+    const auto submit = [&](VASurfaceID id) {
+      f.Prepare(id);
+      d.picture = NeutralPicture(256, 64);
+      d.picture.num_ref_frames = 4;
+      d.picture.frame_num = id - 1;
+      d.picture.CurrPic.picture_id = id;
+      d.picture.CurrPic.TopFieldOrderCnt = (id - 1) * 2;
+      d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+      d.picture.pic_fields.bits.reference_pic_flag = 1;
+      if (id > 1) {
+        d.picture.ReferenceFrames[0].picture_id = 1;
+        d.picture.ReferenceFrames[0].flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+      }
+      d.slices.front().slice_type = id == 1 ? 2 : 0;
+      d.slice_data.front() = {static_cast<uint8_t>(id == 1 ? 0x65 : 0x41),
+                              0x88, static_cast<uint8_t>(0x80 + id)};
+      f.io.input_busy = true;
+      Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS && d.replay.NextInput(),
+              "post-aux control really admits immutable original bytes before transport");
+      f.io.input_busy = false;
+      Require(PumpDecodeInput(&f.driver, &d) == VA_STATUS_SUCCESS,
+              "post-aux control submits original and accepted successor prefix normally");
+    };
+    const auto check_public = [&](unsigned index, uint64_t token) {
+      const auto &surface = f.held.at(index);
+      const auto &g = d.centered_geometry;
+      Require(surface->ready && !surface->failed && surface->expected_timestamp == token &&
+                  surface->frame_timestamp == token,
+              "post-aux worker publishes only the actual original's accepted token");
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != surface->height / (plane ? 2U : 1U); ++row)
+          for (unsigned x = 0; x != surface->width; ++x) {
+            const bool roi = row >= g.y / (plane ? 2U : 1U) &&
+                row < (g.y + g.capture_height) / (plane ? 2U : 1U) &&
+                x >= g.x && x < g.x + g.capture_width;
+            Require(surface->planes[plane][size_t{row} * surface->pitch[plane] + x] ==
+                        (plane ? 128 : roi ? DecodeIoMock::Luma(token) : 16),
+                    "every post-aux original scalar Y/UV and centered border byte remains exact");
+          }
+    };
+    submit(1);
+    queue(kTimestampStep, bottom_first);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+            "actual released first field supplies the exact private-lookahead demand");
+    Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr,
+                            kDecodeBatchGraceNs, H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                d.auxiliary.ever && d.auxiliary.pending && d.auxiliary.needs_eos &&
+                !d.auxiliary.output_released && d.auxiliary.timestamp == 2 * kTimestampStep,
+            "real accepted auxiliary owns transport/EOS debt but no output-release certificate");
+    queue(kTimestampStep, !bottom_first);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                !d.h264_first_field.valid && f.io.released_outputs == 2 &&
+                !d.auxiliary.output_released && d.auxiliary.pending,
+            "real original complement cannot certify the still-pending private auxiliary");
+    check_public(0, kTimestampStep);
+    const auto original_pixels = f.held[0]->storage;
+    std::vector<uint8_t> auxiliary_pixels(size_t{d.CaptureWidth()} * d.CaptureHeight(), 0);
+    const auto receive_auxiliary = [&](uint64_t token, bool fail_release) {
+      BC_DTS_PROC_OUT auxiliary = {};
+      auxiliary.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+      auxiliary.b422Mode = OUTPUT_MODE422_YUY2;
+      auxiliary.Ybuff = auxiliary_pixels.data();
+      auxiliary.YBuffDoneSz = auxiliary_pixels.size() / 4U;
+      auxiliary.PicInfo.width = d.CaptureWidth();
+      auxiliary.PicInfo.height = d.CaptureHeight();
+      auxiliary.PicInfo.timeStamp = token;
+      f.io.override_output = true;
+      VAStatus status = VA_STATUS_SUCCESS;
+      for (unsigned field = 0; field != 2; ++field) {
+        const bool bottom = field == 0 ? bottom_first : !bottom_first;
+        auxiliary.PicInfo.flags = VDEC_FLAG_INTERLACED_SRC | order |
+            (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD);
+        f.io.overridden_output = auxiliary;
+        f.io.output_release_status = fail_release && field == 1 ? BC_STS_ERROR : BC_STS_SUCCESS;
+        const auto prior_fields = d.auxiliary.output.fields;
+        bool release_saw_uncertified = false;
+        f.io.on_output_release = [&] {
+          release_saw_uncertified = d.auxiliary.pending && d.auxiliary.needs_eos &&
+              !d.auxiliary.output_released && d.auxiliary.output.fields == prior_fields;
+        };
+        bool activity = false;
+        status = ReceiveOne(&f.driver, &d, 0, &activity);
+        f.io.on_output_release = {};
+        Require(activity && release_saw_uncertified && !f.io.invalid,
+                "each actual private DIL release precedes its field-ledger or completion certificate publication");
+        if (status != VA_STATUS_SUCCESS) break;
+        Require(d.auxiliary.pending == (field == 0) && d.auxiliary.output_released == (field == 1),
+                "only the second real private field release grants the worker certificate");
+      }
+      f.io.override_output = false;
+      f.io.output_release_status = BC_STS_SUCCESS;
+      return status;
+    };
+    const VAStatus auxiliary_status = receive_auxiliary(2 * kTimestampStep, fail_aux_release);
+    Require(f.io.released_outputs == 4 && f.held[0]->storage == original_pixels &&
+                CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == 1,
+            "both private fields release without adding a public original or changing its pixels");
+    if (fail_aux_release) {
+      Require(auxiliary_status == VA_STATUS_ERROR_DECODING_ERROR && d.ReplayFailed() &&
+                  !d.auxiliary.output_released && !d.h264_first_field.valid &&
+                  !HasAutonomousDecodeWork(f.decoder),
+              "real auxiliary release failure grants no certificate or autonomous pair opportunity");
+      f.io.early_eos = true;
+      Require(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS && d.device == nullptr &&
+                  f.driver.contexts.find(1) == f.driver.contexts.end() &&
+                  f.io.device_close_calls == 1 && !d.auxiliary.output_released &&
+                  f.held[0]->storage == original_pixels && !f.io.invalid,
+              "normal consuming close retires the already-reported private failure and preserves completed original pixels");
+      continue;
+    }
+    Require(auxiliary_status == VA_STATUS_SUCCESS && d.auxiliary.output_released &&
+                !d.auxiliary.pending && d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                !d.auxiliary.eos_only && d.auxiliary.generation == d.generation &&
+                d.auxiliary.device == d.device,
+            "only real validated auxiliary release certifies same-generation transport while preserving actual EOS debt");
+    submit(2); submit(3);
+    const uint64_t next = 3 * kTimestampStep, third = 4 * kTimestampStep;
+    Require(f.held[1]->expected_timestamp == next && f.held[2]->expected_timestamp == third &&
+                d.replay.outstanding() == 2 && d.auxiliary.output_released && d.auxiliary.needs_eos,
+            "following real originals own their actual post-auxiliary prefed timestamps");
+    queue(next, bottom_first); queue(next, !bottom_first); queue(third, bottom_first);
+    const unsigned releases_before = f.io.released_outputs.load();
+    const size_t materialized_before = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+    struct Observation {
+      bool seen = false, owns_lock = false, ready = false, first_valid = false, failed = false;
+      unsigned releases = 0;
+      size_t queued = 0;
+      uint64_t front = 0;
+    } observed;
+    struct WorkerCleanup {
+      Driver &driver;
+      ~WorkerCleanup() { driver.StopWorkers(); decode_worker_turn = {}; }
+    } cleanup{f.driver};
+    decode_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &lock) {
+      if (driver != &f.driver || observed.seen) return;
+      observed.seen = true; observed.owns_lock = lock.owns_lock();
+      observed.ready = f.held[1]->ready;
+      observed.first_valid = d.h264_first_field.valid;
+      observed.failed = d.ReplayFailed();
+      observed.releases = f.io.released_outputs.load() - releases_before;
+      observed.queued = f.io.outputs.size();
+      observed.front = f.io.outputs.empty() ? 0 : f.io.outputs.front();
+      driver->stopping = true;
+      driver->condition.notify_all();
+    };
+    f.driver.StartDecodeWorker();
+    bool finished;
+    {
+      std::unique_lock<std::mutex> lock(f.driver.mutex);
+      finished = f.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+        return observed.seen || d.ReplayFailed();
+      });
+    }
+    f.driver.StopWorkers(); decode_worker_turn = {};
+    const size_t materialized = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+    const bool paired = finished && observed.seen && observed.owns_lock && !observed.failed &&
+        observed.releases == 2 && observed.ready && !observed.first_valid &&
+        observed.queued == 1 && observed.front == third && materialized == materialized_before + 1 &&
+        !f.held[2]->ready && d.auxiliary.output_released && d.auxiliary.needs_eos && !f.io.invalid;
+    if (!paired)
+      std::fprintf(stderr, "post-aux first handoff BFF=%u release=%u ready=%u first=%u M_delta=%zu queue=%zu front=%llu\n",
+          unsigned(bottom_first), observed.releases, unsigned(observed.ready), unsigned(observed.first_valid),
+          materialized - materialized_before, observed.queued, static_cast<unsigned long long>(observed.front));
+    Require(paired,
+            "post-aux first handoff receives exactly the complement before yielding, with one new M and third field still queued");
+    check_public(1, next);
+    Require(f.held[0]->storage == original_pixels, "post-aux worker preserves the earlier actual original bytes");
+    f.driver.stopping = false;
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && d.h264_first_field.timestamp == third && f.io.outputs.empty(),
+            "helper phase controls begin only after the queued third first field's actual successful release");
+    {
+      std::lock_guard<std::mutex> lock(f.driver.mutex);
+      const auto picture = d.h264_first_field.picture;
+      Require(CenteredWorkerFirstTarget(&f.driver, f.decoder, picture) == f.held[2],
+              "genuine post-aux first owner is eligible before isolated phase-negative controls");
+      const auto saved_aux = d.auxiliary;
+      const auto saved_close = d.retained_close_status;
+      const unsigned releases = f.io.released_outputs.load();
+      const uint64_t progress = d.transport_progress;
+      for (unsigned fault = 0; fault != 12; ++fault) {
+        d.auxiliary = saved_aux;
+        switch (fault) {
+          case 0: d.auxiliary.output_released = false; break; // pending already false is insufficient.
+          case 1: d.auxiliary.pending = true; break;
+          case 2: d.auxiliary.needs_eos = false; break;
+          case 3: d.auxiliary.eos_only = true; break;
+          case 4: d.auxiliary.ended = true; break;
+          case 5: ++d.auxiliary.generation; break;
+          case 6: d.auxiliary.device = reinterpret_cast<HANDLE>(uintptr_t{1}); break;
+          case 7: d.auxiliary.timestamp = 0; break;
+          case 8: d.auxiliary.timestamp = third; break;
+          case 9: d.auxiliary.timestamp = third + kTimestampStep; break;
+          case 10: d.retained_close_status = BC_STS_ERROR; break;
+          case 11: d.auxiliary.device = nullptr; break;
+        }
+        Require(!CenteredWorkerFirstTarget(&f.driver, f.decoder, picture),
+                "uncertified, pending, EOS, foreign generation/device/token or failed-close phase cannot pair");
+        d.retained_close_status = saved_close;
+      }
+      d.auxiliary = saved_aux;
+      Require(f.io.released_outputs == releases && d.transport_progress == progress &&
+                  !f.held[2]->ready && f.io.outputs.empty(),
+              "helper-only phase negatives invent no output, worker progress, release or public completion");
+    }
+    Require(TryH264Auxiliary(&f.driver, &d, f.held[2], nullptr,
+                            kDecodeBatchGraceNs, H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                d.auxiliary.pending && d.auxiliary.needs_eos && !d.auxiliary.output_released &&
+                d.auxiliary.timestamp == 5 * kTimestampStep &&
+                d.auxiliary.output.field_pairs && d.auxiliary.output.fields == 0,
+            "a genuinely accepted later auxiliary clears the preceding output-release certificate");
+    queue(third, !bottom_first);
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS && !d.h264_first_field.valid,
+            "third original's genuine complement remains complete before another auxiliary returns");
+    check_public(2, third);
+    Require(receive_auxiliary(5 * kTimestampStep, false) == VA_STATUS_SUCCESS &&
+                d.auxiliary.output_released && !d.auxiliary.pending && d.auxiliary.needs_eos &&
+                d.replay.outstanding() == 0 && f.held[0]->storage == original_pixels,
+            "new private auxiliary regains its own certificate without paying terminal EOS or modifying originals");
+    f.io.early_eos = true;
+    Require(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS && d.device == nullptr && d.retired &&
+                std::count(f.io.events.begin(), f.io.events.end(), "seal") == 1 &&
+                std::count(f.io.events.begin(), f.io.events.end(), "eos") == 1 &&
+                f.io.released_outputs == 11 && !d.auxiliary.output.field_pairs &&
+                d.auxiliary.output.fields == 0 && !f.io.invalid,
+            "post-aux bounded turns retain the real one-EOS terminal close and all ten payload releases");
+   }
 }
 
 static void CenteredExactSyncRejectsUnqualifiedLookahead() {
@@ -13431,7 +14561,7 @@ static void AuxiliaryPendingPrefixWakesArmedWorker() {
                   f.io.outputs.empty(),
               "the worker is armed while both real control/RX descriptors are quiet");
       std::vector<uint8_t> auxiliary;
-      Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &auxiliary),
+      Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &auxiliary, true),
               "accepted original syntax supplies the actual auxiliary input bytes");
       f.io.prefeed_busy_once = prefix_busy;
       if (!prefix_busy) {
@@ -13499,12 +14629,17 @@ static void NeutralAuxiliaryContracts() {
   ReceiveAvailableQuietHintPreservesActivity();
   CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
+  CenteredAuxiliaryIdleGrace();
+  CenteredAuxiliaryFieldLayout();
+  CenteredAuxiliaryFieldFaults();
+  CenteredWorkerPairsAfterReleasedAuxiliary();
   CenteredExactSyncRejectsUnqualifiedLookahead();
   NeutralAuxAdmissionSnapshotsPolicyAndSyntax();
   NeutralAuxiliaryTriggerOwnsOnlyTransport();
   NeutralAuxFiniteActualEosPermitsContinuation();
   NeutralAuxRestartRejectsUnpaidDebt();
   NeutralAuxSyntaxIsSelfContained();
+  NeutralAuxFieldPocSyntax();
   NeutralAuxWeavePreservesHeldOriginal();
   NeutralAuxWeaveFaultsFailClosed();
   NeutralAuxSequentialRetirementIsBounded();
@@ -13514,8 +14649,26 @@ static void NeutralAuxiliaryContracts() {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::strcmp(argv[1], "--centered-aux-idle-grace") == 0) {
+      CenteredAuxiliaryIdleGrace();
+      std::puts("VA-API Centered exact auxiliary: deterministic ten-ms idle guard and unchanged field-pair ownership PASS");
+      return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--centered-aux-field-layout") == 0) {
+      CenteredAuxiliaryFieldLayout();
+      CenteredAuxiliaryFieldFaults();
+      NeutralAuxFieldPocSyntax();
+      std::puts("VA-API Centered private field layout: independent syntax, two-release debt and unchanged original pixels/EOS PASS");
+      return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--centered-firstfield") == 0) {
+      CenteredNv12FirstFieldReceiveOwnership();
+      CenteredMirroredFieldsReceiveAndRelease();
+      std::puts("VA-API centered NV12 first-field staging: exact bytes, release and stale-write ownership PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
-      CenteredDirtySmallFieldReceiveOwnership();
+      CenteredNv12FirstFieldReceiveOwnership();
       CenteredAdmissionSubmitsBeforeReadyOutput();
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
@@ -13526,6 +14679,12 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && std::strcmp(argv[1], "--worker-allocation-failure") == 0) {
       WorkerPollAllocationFailuresAreContained();
+      return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--centered-worker-pair") == 0) {
+      CenteredWorkerPairsOnlyNewlyReleasedFirstField();
+      CenteredWorkerPairsAfterReleasedAuxiliary();
+      puts("VA-API Centered worker field pair: bounded complement, real post-aux release certificate, exact release/pixel/M and legacy exclusions PASS");
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--output-worker-handoff") == 0) {
@@ -13601,7 +14760,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--centered-aux-idle-grace|--centered-aux-field-layout|--centered-worker-pair|--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -13633,7 +14792,8 @@ int main(int argc, char **argv) {
     H264FieldPairRejectsPartialOrMismatchedOutput();
     H264FieldPartialStateClearsAtTeardownAndEos();
     H264FirstFieldAllocationFailureReleasesOutput();
-    CenteredDirtySmallFieldReceiveOwnership();
+    CenteredNv12FirstFieldReceiveOwnership();
+    CenteredMirroredFieldsReceiveAndRelease();
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();
@@ -13722,6 +14882,7 @@ int main(int argc, char **argv) {
     TerminalPromotionFailureGrantsNoLeases();
     TerminalCloseDoesNotBlockReadySync();
     TerminateJoinsAnUnlockedTerminalDestroy();
+    CenteredWorkerPairsOnlyNewlyReleasedFirstField();
     OutputBacklogWorkerReleasesDriverMutex();
     BudgetedWorkerReleasesDriverMutex();
     WorkerPollAllocationFailuresAreContained();
