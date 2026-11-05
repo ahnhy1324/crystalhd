@@ -72,7 +72,8 @@ static uint64_t Number(const std::string &text,const char *name) {
 static void VerifyPublished(const std::string &prefix,pid_t pid,bool complete,unsigned expected) {
   const std::string path=prefix+"-"+std::to_string(pid)+".jsonl";
   const std::string report=Read(path);
-  Require(report.find("\"schema\":\"crystalhd-maintained-cost-v1\"")!=std::string::npos,"versioned report");
+  Require(report.find("\"schema\":\"crystalhd-maintained-cost-v2\"")!=std::string::npos,"versioned report");
+  Require(Number(report,"capacity")==64,"reduced CPU-control capacity is explicit");
   Require(report.find("\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\"")!=std::string::npos,"explicit process scope");
   Require(report.find(complete?"\"complete\":true":"\"complete\":false")!=std::string::npos,"honest completion gate");
   Require(Number(report,"events")==expected,"published fixed ready-event count");
@@ -85,6 +86,14 @@ static void RecordOne() {
   scope.Result(0);errno=88;
 }
 static int Child(const char *mode,const char *self) {
+  if (!std::strcmp(mode,"legacy-marker")) {
+    Require(!cost::state.enabled,"v1 marker cannot enable a v2 collector");
+    RecordOne();cost::state.Publish();
+    const std::string prefix=std::getenv("CRYSTALHD_TEST_MAINTAINED_COST_PREFIX");
+    const std::string path=prefix+"-"+std::to_string(getpid())+".jsonl";
+    Require(cost::state.attempted==0 && access(path.c_str(),F_OK)!=0,"disabled marker records/publishes nothing");
+    return 0;
+  }
   Require(cost::state.enabled,"child uses explicit diagnostic marker");
   const std::string prefix=std::getenv("CRYSTALHD_TEST_MAINTAINED_COST_PREFIX");
   const std::string report_path=prefix+"-"+std::to_string(getpid())+".jsonl";
@@ -206,12 +215,12 @@ int main(int argc,char **argv) {
   char directory[]="/tmp/crystalhd-cost-cpu-XXXXXX";Require(mkdtemp(directory)!=nullptr,"private control directory");
   const char *modes[]={"normal-no-allocation","nested","early-return","exception","identity-refinement", "explicit-surface",
     "bootstrap-trace","finish-before-next-operation","threads","overflow","out-of-order","wrong-thread","inflight","existing",
-    "fork-copy","fork-exec","wall-fail","cpu-fail","clock-regress","cpu-exceeds-wall"};
+    "fork-copy","fork-exec","wall-fail","cpu-fail","clock-regress","cpu-exceeds-wall","legacy-marker"};
   for (const char *mode:modes) {
     const std::string prefix=std::string(directory)+"/"+mode;
     const pid_t child=fork();Require(child>=0,"control launcher fork");
     if (child==0) {
-      Require(setenv("CRYSTALHD_TEST_MAINTAINED_COST","v1",1)==0 &&
+      Require(setenv("CRYSTALHD_TEST_MAINTAINED_COST",!std::strcmp(mode,"legacy-marker")?"v1":"v2",1)==0 &&
           setenv("CRYSTALHD_TEST_MAINTAINED_COST_PREFIX",prefix.c_str(),1)==0,"control environment");
       execl(argv[0],argv[0],"--child",mode,static_cast<char *>(nullptr));_exit(2);
     }

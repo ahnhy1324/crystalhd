@@ -190,6 +190,8 @@ void CheckSuccessfulRoute(bool direct, unsigned physical_height, unsigned public
   Require(!slot.materialized, "unrelated public owner cannot qualify a snapshot");
   state->Materialized(fixture.Fields());
   Require(State::Complete(slot), "successful exact public binding qualifies only after materialized");
+  Require(state->NeedsIndependentSmall(3, 4),
+          "one genuinely complete selected slot cannot disable the independent Small oracle");
   Require(state->Select(fixture.picture, canvas, *fixture.small, false, direct) == nullptr &&
           slot.binding.token == fixture.picture.expected_timestamp,
           "selected source binding cannot be overwritten by a repeat");
@@ -225,6 +227,8 @@ void CheckFailedEnd(bool direct, EndFailure failure) {
   Require(state->streams[0].slots[1].binding.token == second.picture.expected_timestamp &&
           state->streams[0].slots[0].binding.token == fixture.picture.expected_timestamp,
           "first two distinct selected bindings stay fixed after a failed first sample");
+  Require(state->NeedsIndependentSmall(3, 4),
+          "failed selected END keeps independent Small eager despite later successful compositions");
   const int index = state->Retire(3, 4, 0);
   Require(index == 0 && state->streams[0].sealed && !state->Complete(state->streams[0]),
           "incomplete failed stream is permanently sealed at consuming retirement");
@@ -785,6 +789,8 @@ void CheckTargetRoute(bool direct, unsigned physical_height, unsigned public_hei
             SameGeometry(slot.composed, slot.copy_source), "target mode preserves actual private/public geometry and epoch");
     CheckTails(*fixture.small); CheckTails(canvas); CheckTails(fixture.public_canvas);
   }
+  Require(state->NeedsIndependentSmall(3, 4) && !state->RecordDeferredUnobserved(3, 4),
+          "content-selected source90/91 stays eager after both real slots complete and never reports deferred omission");
   const int index = state->Retire(3, 4, 0);
   Require(index == 0 && state->Complete(state->streams[0]), "two complete fixed targets qualify consuming retirement");
   state->PrintStatus(index); state->Flush(index);
@@ -904,6 +910,46 @@ void CheckTargetBeginLimit(bool fail_read) {
   Require(ComposeObserved(state.get(), &fixture, true) && state->streams[0].slots[0].selected,
           "later leased observation is first recognizable target, not evidence about failed-BEGIN pixels");
 }
+void CheckIndependentSmallDemandQuery() {
+  using namespace centered_payload;
+  std::unique_ptr<State> state(new State(360));
+  allocation_fault::fail_next = true;
+  const bool fresh = state->NeedsIndependentSmall(3, 4) && state->NeedsIndependentSmall(3, 5) &&
+      !state->RecordDeferredUnobserved(3, 4);
+  const bool allocation_unused = allocation_fault::fail_next;
+  allocation_fault::fail_next = false;
+  Require(fresh && allocation_unused,
+          "prospective field query is conservative, allocation-free and cannot create an observer stream");
+  for (const auto &stream : state->streams)
+    Require(!stream.used && stream.candidates == 0 && stream.rejected == 0 &&
+                stream.deferred_unobserved == 0 && !stream.slots[0].selected && !stream.slots[1].selected,
+            "pure query and rejected omission leave every unreserved stream and slot untouched");
+  CenteredFixture first(1, 1088, 1088), second(2, 1088, 1088);
+  Require(ComposeObserved(state.get(), &first, true), "real first selected composition before query");
+  state->Materialized(first.Fields());
+  Require(state->NeedsIndependentSmall(3, 4), "first complete slot still requires the second genuine Small payload");
+  Require(ComposeObserved(state.get(), &second, true) && state->NeedsIndependentSmall(3, 4),
+          "two copied slots still stay eager before the second exact materialized binding");
+  state->Materialized(second.Fields());
+  auto &stream = state->streams[0];
+  const auto candidates = stream.candidates, rejected = stream.rejected;
+  const auto first_token = stream.slots[0].binding.token, second_token = stream.slots[1].binding.token;
+  Require(!state->NeedsIndependentSmall(3, 4) && state->NeedsIndependentSmall(3, 5) &&
+              stream.candidates == candidates && stream.rejected == rejected && stream.deferred_unobserved == 0 &&
+              !state->streams[1].used,
+          "only two genuinely complete default slots allow deferral; query neither counts nor reserves another lifetime");
+  Require(state->RecordDeferredUnobserved(3, 4) && stream.candidates == candidates + 1 &&
+              stream.deferred_unobserved == 1 && stream.rejected == rejected &&
+              stream.slots[0].binding.token == first_token && stream.slots[1].binding.token == second_token &&
+              State::Complete(stream.slots[0]) && State::Complete(stream.slots[1]),
+          "explicit deferred status counts one real attempt without forging rejected, selected or Small payload evidence");
+  const int retired = state->Retire(3, 4, 0);
+  Require(retired == 0 && state->NeedsIndependentSmall(3, 4) &&
+              !state->RecordDeferredUnobserved(3, 4) && stream.candidates == candidates + 1 &&
+              stream.deferred_unobserved == 1,
+          "sealed lifetime cannot accept a later deferred attempt or change its frozen counts");
+}
+
 void CheckSelectionInitialization() {
   using namespace centered_payload;
   std::unique_ptr<State> ordinary(new State(350));
@@ -1026,6 +1072,7 @@ int main() {
       CheckTargetFailedEnd(false, failure, failure_session++);
     CheckTargetPublicMismatch(false); CheckTargetPublicMismatch(true);
     CheckTargetBeginLimit(false); CheckTargetBeginLimit(true);
+    CheckIndependentSmallDemandQuery();
     CheckSelectionInitialization();
     Require(centered_payload::active == nullptr, "no active observer survives CPU controls");
     std::printf("VA centered payload CPU controls: %u checks PASS\n", checks);

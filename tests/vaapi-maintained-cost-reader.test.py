@@ -28,9 +28,9 @@ def event(number,parent,stage,wall,cpu,kind="full",phase="inherited",detail=0,fl
         detail=detail,flags=flags,result=result,**binding)
 
 
-def document(events):
-    return [dict(type="header",schema=R.SCHEMA,pid=PID,fork_policy=R.FORK_POLICY,scope=R.SCOPE,
-        capacity=65536,clock_names=dict(R.CLOCKS),stages=list(R.STAGES),flags=dict(R.FLAGS)),
+def document(events, schema=R.SCHEMA):
+    return [dict(type="header",schema=schema,pid=PID,fork_policy=R.FORK_POLICY,scope=R.SCOPE,
+        capacity=R.SCHEMA_CAPACITIES[schema],clock_names=dict(R.CLOCKS),stages=list(R.STAGES),flags=dict(R.FLAGS)),
         *events,dict(type="footer",events=len(events),attempted_events=len(events),dropped=0,inflight=0,
                     unpublished=0,clock_failures=0,lifecycle_failures=0,fork_seen=False,complete=True)]
 
@@ -142,6 +142,39 @@ class MaintainedCostReaderTests(unittest.TestCase):
     def test_capacity_overflow_and_boolean_counter_reject(self):
         self.rows[0]["capacity"]=2;self.invalid("capacity")
         self.rows=fixture();self.rows[-1]["events"]=True;self.invalid("integer")
+
+    def test_v1_and_v2_capacity_bounds_stay_version_specific(self):
+        for schema, maximum in (("crystalhd-maintained-cost-v1", 65536),
+                                ("crystalhd-maintained-cost-v2", 131072)):
+            with self.subTest(schema=schema):
+                self.rows=document(fixture()[1:-1],schema)
+                self.assertEqual(self.valid()["header"]["capacity"],maximum)
+                self.rows[0]["capacity"]=maximum+1;self.invalid("capacity")
+                self.rows[0]["capacity"]=True;self.invalid("integer")
+        self.rows=fixture();self.rows[0]["schema"]="crystalhd-maintained-cost-v3"
+        self.invalid("unsupported schema")
+
+    def test_v1_cannot_claim_v2_capacity_even_with_a_short_complete_ledger(self):
+        self.rows[0]["schema"]="crystalhd-maintained-cost-v1"
+        self.rows[0]["capacity"]=65537
+        self.invalid("capacity")
+        self.rows[0]["schema"]="crystalhd-maintained-cost-v2"
+        self.assertEqual(len(self.valid()["events"]),13)
+        self.rows[-1]["dropped"]=1;self.invalid("incomplete")
+
+    def test_jsonl_record_quota_is_selected_by_header_not_newest_schema(self):
+        # Tiny objects exercise parser row quotas, not fabricated valid scopes.
+        def raw(schema,count):
+            return (json.dumps(dict(schema=schema)).encode()+b"\n"+
+                    b"{}\n"*count+b"{}\n")
+        old="crystalhd-maintained-cost-v1";new="crystalhd-maintained-cost-v2"
+        self.assertEqual(len(R.parse_report(raw(old,65536))),65538)
+        with self.assertRaisesRegex(ValueError,"schema record capacity"):
+            R.parse_report(raw(old,65537))
+        self.assertEqual(len(R.parse_report(raw(new,65537))),65539)
+        self.assertEqual(len(R.parse_report(raw(new,131072))),131074)
+        with self.assertRaisesRegex(ValueError,"bounded JSONL"):
+            R.parse_report(raw(new,131073))
 
     def test_missing_duplicate_or_reordered_scope_sequence_rejected(self):
         self.rows[3]["id"]=1;self.invalid("scope ID")
