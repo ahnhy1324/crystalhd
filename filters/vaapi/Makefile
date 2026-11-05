@@ -188,12 +188,13 @@ clean: maintained-cost-observer-clean
 .PHONY: replay-disposition-observer check-replay-disposition-observer replay-disposition-observer-clean
 replay-disposition-observer: $(ROOTDIR)/tests/vaapi-replay-disposition-backend.cpp \
 		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
+		$(ROOTDIR)/tests/vaapi-api-admission-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-readback-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-cow-image-observer.h \
 		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
 		$(ROOTDIR)/tests/vaapi-centered-payload-observer.h crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
 	mkdir -p replay-disposition-observer
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o replay-disposition-observer/crystalhd_drv_video.so \
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DCRYSTALHD_VAAPI_TEST_API_ADMISSION=1 $< -o replay-disposition-observer/crystalhd_drv_video.so \
 		-shared -Wl,--build-id=sha1 -L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 replay-disposition-observer/collector-test: $(ROOTDIR)/tests/vaapi-replay-disposition.cpp \

@@ -107,6 +107,15 @@ static const char managed_defaults_reader[] __attribute__((used)) =
 #define CH_REPLAY_ONLY(...) do {} while (false)
 #endif
 
+#if defined(CRYSTALHD_VAAPI_TEST_API_ADMISSION)
+#include "../../tests/vaapi-api-admission-observer.h"
+#else
+#define CH_API_ADMISSION_SCOPE(name, api, context) do {} while (false)
+#define CH_API_ADMISSION_ACQUIRED(name, driver) do {} while (false)
+#define CH_API_ADMISSION_DRIVER_OPENED() do {} while (false)
+#define CH_API_ADMISSION_DRIVER_CLOSED() do {} while (false)
+#endif
+
 #if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST)
 #include "../../tests/vaapi-maintained-cost-observer.h"
 #define CH_COST_SCOPE(name, stage, identity) \
@@ -3247,6 +3256,7 @@ struct Driver {
       : trace(trace_output_fd), drm_fd(requested_drm_fd),
         experimental_i915_wc(ExperimentalI915WcRequested(
             crystalhd_config::Environment("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+    CH_API_ADMISSION_DRIVER_OPENED();
 #if defined(CRYSTALHD_VAAPI_TEST_CENTERED_PAYLOAD)
     if (trace.enabled()) {
       try {
@@ -3302,6 +3312,7 @@ struct Driver {
     if (gbm != nullptr)
       gbm_device_destroy(gbm);
     trace.Emit(crystalhd_vaapi_trace::Event::SessionDestroy);
+    CH_API_ADMISSION_DRIVER_CLOSED();
   }
   void NotifyDecodeWorker() {
     if (decode_control_fd >= 0) {
@@ -10446,7 +10457,9 @@ static VAStatus BufferInfo(VADriverContextP context, VABufferID buffer_id,
 static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
                              VASurfaceID target) {
   Driver *driver = GetDriver(context);
+  CH_API_ADMISSION_SCOPE(api_admission, BeginPicture, context_id);
   std::unique_lock<std::mutex> lock(driver->mutex);
+  CH_API_ADMISSION_ACQUIRED(api_admission, driver->trace.session());
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -10920,7 +10933,9 @@ static VAStatus CaptureDecodeProcessing(Driver *driver, DecodeContext *decode,
 static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
                               VABufferID *buffer_ids, int count) {
   Driver *driver = GetDriver(context);
+  CH_API_ADMISSION_SCOPE(api_admission, RenderPicture, context_id);
   std::lock_guard<std::mutex> lock(driver->mutex);
+  CH_API_ADMISSION_ACQUIRED(api_admission, driver->trace.session());
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -11184,7 +11199,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
 
 static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   Driver *driver = GetDriver(context);
+  CH_API_ADMISSION_SCOPE(api_admission, EndPicture, context_id);
   std::unique_lock<std::mutex> lock(driver->mutex);
+  CH_API_ADMISSION_ACQUIRED(api_admission, driver->trace.session());
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
