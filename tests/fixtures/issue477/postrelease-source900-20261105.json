@@ -19,15 +19,31 @@
       "core_source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
       "module": "3.10.20",
       "srcversion": "0D63A770766C0ABB982FAB5",
-      "installed_kernels": ["7.0.0-38-generic", "7.0.0-42-generic"],
+      "installed_kernels": [
+        "7.0.0-38-generic",
+        "7.0.0-42-generic"
+      ],
       "hardware_kernel": "7.0.0-38-generic",
       "kernel42_scope": "Build/install only; no kernel42 hardware acceptance.",
       "runtime_version": "1.3.0",
       "player_source_id": "archive:24a5182b988bb0fead4440d57ed0f72e4f70b68d",
-      "runtime_components": ["dil", "gstreamer", "vaapi", "player"],
-      "installed_checker": {"ok": 18, "warn": 2, "fail": 0, "info": 20},
+      "runtime_components": [
+        "dil",
+        "gstreamer",
+        "vaapi",
+        "player"
+      ],
+      "installed_checker": {
+        "ok": 18,
+        "warn": 2,
+        "fail": 0,
+        "info": 20
+      },
       "installed_smoke": "PASS_INSTALLED_OFFICIAL_PLAYER_AND_CONTROLS",
-      "mapped_smoke_providers": ["/usr/lib/libcrystalhd.so.3.6", "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhd.so"],
+      "mapped_smoke_providers": [
+        "/usr/lib/libcrystalhd.so.3.6",
+        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstcrystalhd.so"
+      ],
       "full_before_after_equal": true,
       "ref": 0,
       "pin_net": 0,
@@ -216,9 +232,18 @@
       "case": "current-mirror-01",
       "source": "e4d84809413334f1f6553842a197d5b2df29644c",
       "change": "Current full unpromoted research candidate on permanent official20 baseline",
-      "originals": [837, 830],
-      "ledger_status": ["PASS", "PASS"],
-      "completed_replay_inputs": [0, 0],
+      "originals": [
+        837,
+        830
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH",
       "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/current-mirror-01/result.json"
@@ -227,10 +252,22 @@
       "case": "sized-current-01",
       "source": "e4d84809413334f1f6553842a197d5b2df29644c",
       "change": "Same research candidate with existing compile-time SIZED16 DIL option",
-      "originals": [864, 854],
-      "ledger_status": ["PASS", "PASS"],
-      "completed_replay_inputs": [0, 10],
-      "replay_fields": [0, 20],
+      "originals": [
+        864,
+        854
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        10
+      ],
+      "replay_fields": [
+        0,
+        20
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH",
       "scope": "Existing coupled output-sized/deferred-allocation/DONTNEED implementation, not a new allocator, changed default or causal performance comparison.",
@@ -240,9 +277,18 @@
       "case": "profile-stock-01",
       "source": "e4d84809413334f1f6553842a197d5b2df29644c",
       "change": "Original supplied App/current SIZED16 research process under49Hz all-thread CPU sampling",
-      "originals": [876, 878],
-      "ledger_status": ["PASS", "PASS"],
-      "completed_replay_inputs": [0, 0],
+      "originals": [
+        876,
+        878
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH_DIAGNOSTIC_PROFILE_ONLY",
       "scope": "Sampling changes execution overhead; not a speedup or ordinary-backend performance comparison.",
@@ -252,45 +298,142 @@
       "case": "tx-preflight-01",
       "source": "9d9a6272e3a4b50d457d8a886b7772e5d7d26db7",
       "change": "Bounded TX-before-RX on the full research candidate",
-      "originals": [881, 877],
-      "ledger_status": ["PASS", "PASS"],
-      "completed_replay_inputs": [0, 0],
+      "originals": [
+        881,
+        877
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH",
-      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/tx-preflight-01/result.json"
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/tx-preflight-01/result.json",
+      "actual_DIL_allocation_mode": "FIXED_DEFAULT; final observer prerequisite rebuilt the DIL without the intended experimental sizing macro. Frozen plan matches this final artifact; original result/plan retained."
     },
     {
       "case": "input-small-01",
       "source": "8fac62153c8417cefa53b75989c33ac71a7a1618",
       "change": "TX ordering and tight retired private-small clear-elision with the full research stack",
-      "originals": [897, 894],
-      "ledger_status": ["PASS", "PASS"],
-      "completed_replay_inputs": [0, 0],
+      "originals": [
+        897,
+        894
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH",
-      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/input-small-01/result.json"
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/input-small-01/result.json",
+      "actual_DIL_allocation_mode": "FIXED_DEFAULT; final observer prerequisite rebuilt the DIL without the intended experimental sizing macro. Frozen plan matches this final artifact; original result/plan retained."
     },
     {
       "case": "ordinary-input-small-01",
       "source": "8fac62153c8417cefa53b75989c33ac71a7a1618",
       "change": "Same full8fac source, ordinary backend/native trace only",
-      "originals": [null, null],
-      "qualified_originals": [null, null],
-      "raw_distinct_full_submit_bindings": [876, 886],
-      "raw_input_sent_records": [880, 896],
-      "raw_output_dequeued_records": [1760, 1792],
-      "ledger_status": ["FAIL_MULTIPLICITY", "FAIL_INCOMPLETE_IDENTITY"],
+      "originals": [
+        null,
+        null
+      ],
+      "qualified_originals": [
+        null,
+        null
+      ],
+      "raw_distinct_full_submit_bindings": [
+        876,
+        886
+      ],
+      "raw_input_sent_records": [
+        880,
+        896
+      ],
+      "raw_output_dequeued_records": [
+        1760,
+        1792
+      ],
+      "ledger_status": [
+        "FAIL_MULTIPLICITY",
+        "FAIL_INCOMPLETE_IDENTITY"
+      ],
       "source900": "FAIL",
       "integration": "UNPROMOTED_RESEARCH",
       "scope": "No private observers, replay classification or pixels. Raw submits are not qualified source counts; unknown/multiple rows remain strict failures.",
-      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/ordinary-input-small-01/result.json"
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/ordinary-input-small-01/result.json",
+      "actual_DIL_allocation_mode": "FIXED_DEFAULT; final observer prerequisite rebuilt the DIL without the intended experimental sizing macro. Frozen plan matches this final artifact; original result/plan retained."
+    },
+    {
+      "case": "main-input-ordinary-01",
+      "source": "12300273f22500378f2d739ac5c80af832e6ae85",
+      "change": "Minimal PR665 main packed-field port, ordinary backend/default DIL",
+      "originals": [
+        828,
+        819
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "source900": "FAIL",
+      "integration": "MINIMAL_CHANGES_MERGED_PR665",
+      "controls": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_official20_boundary_equal": true,
+      "handoff": null,
+      "maximum_temperature_mC": 68000,
+      "scope": "Native trace only; no private pixel/replay audit.",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/main-input-ordinary-01/result.json"
+    },
+    {
+      "case": "nowait21-sized-private-01",
+      "source": "c6b92ed21571f41c5fe939e4d1fa6fe35d68594e",
+      "kernel_source": "73249577ba870bafd37b9646673bdb308264462f",
+      "loaded_experimental_module": "3.10.21/99C610ED7BFC63B60BE2250",
+      "change": "Full research stack, final confirmed SIZED16 DIL and negotiated zero-wait receive",
+      "actual_DIL_allocation_mode": "SIZED16; backend build precedes final explicit SIZED DIL build",
+      "originals": [
+        870,
+        875
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        4,
+        10
+      ],
+      "replay_fields": [
+        8,
+        20
+      ],
+      "source900": "FAIL",
+      "integration": "FULL_RESEARCH_UNPROMOTED; minimal RX fix separate PR666",
+      "controls_and_four_private_audits": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_experimental21_boundary_equal": true,
+      "normal_restore_official20_full_guard": "PASS",
+      "handoff": null,
+      "maximum_temperature_mC": 68000,
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/nowait21-sized-private-01/result.json",
+      "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-transition-restore20.json"
     }
   ],
   "current_source_checkpoint": {
-    "latest_private_case": "input-small-01",
-    "latest_ordinary_case": "ordinary-input-small-01",
-    "host": "Permanent matched official1.3/source24a/module20 baseline retained; every new case has controls PASS, App0, kernel0, full boundary equality and no handoff.",
-    "private_audits": "All five new private cases have the four scoped observation audits PASS; these audits do not waive source900.",
+    "latest_private_case": "nowait21-sized-private-01",
+    "latest_ordinary_case": "main-input-ordinary-01",
+    "host": "Official1.3/source24a/module20 remains the permanent matched installation. The actual21 experiment has its own frozen artifact/snapshot; normal restore20 passes the original full baseline guard.",
+    "private_audits": "Current private cases retain the four scoped observation audits PASS; these audits do not waive source900. The explicit21 case/restoration has its own receipt.",
     "ordinary_audits": "NOT_RUN; strict native-only ledger failures remain unqualified.",
     "minimal_maintained_changes": [
       "One bounded H264/Flea/Centered TX pump before unchanged RX64 and post-RX pump.",
@@ -298,11 +441,15 @@
       "Explicit default-clear opt-in only for exact-size retired tight privateSmall after confirmed open/started Flea; fresh/padded/generic/public/image/compact initialization stays zero."
     ],
     "main_port": "Only those three maintained changes, with packed-first-field regression controls; no COW, NV12 first-field staging, border reuse, mirror stores or full research merge.",
-    "main_port_check_status": "PASS_AFFECTED_CPU_CHECKS_CURRENT_BASE_CI_PENDING",
+    "main_port_check_status": "MERGED_PR665_CURRENT_BASE_CI_PASS",
     "main_port_checks": {
       "pool_port_commit": "4dcbc71",
       "default_dil_and_ordinary_va_strict_build": "PASS",
-      "packed_path_scaling": {"groups": 39, "checks": 190061, "failures": 0},
+      "packed_path_scaling": {
+        "groups": 39,
+        "checks": 190061,
+        "failures": 0
+      },
       "full_replay": "PASS",
       "private_backing": "PASS",
       "unchanged_parser_reuse": {
@@ -314,9 +461,31 @@
         "scalar32_native": "PASS",
         "pentium2_emulation": "PASS"
       },
-      "integration": "Independent source review complete; task PR/current-base CI remain pending. CPU-only checks do not establish current stock source900 or promote the full research stack."
+      "integration": "Merged PR665/ad86ac8 after current-base run41958232421:15 success/2 intended skips including CI gate. Fresh main ordinary828/819 still FAIL900."
     },
-    "outcome": "Source900 remains unresolved. Sequential counts are not a causal speedup, external defect, global impossibility or issue closure."
+    "outcome": "Source900 remains unresolved. Sequential counts are not a causal speedup, external defect, global impossibility or issue closure.",
+    "rx_nowait": {
+      "PR": 666,
+      "status": "PASS_AFFECTED_BUILD_CPU_REVIEW_AND_SCOPED_PHYSICAL_API_CONTROL; current-base integration pending",
+      "change": "Append negotiated ready-only RX command, Flea wait0 only; legacy command numbers/layouts, compat32 translations, LINK EOS, ownership and positive waits preserved.",
+      "checks": "Strict normal DIL/module21 build; full library-check; UAPI32/64, actual ioctl translation/dispatch and RX ownership/fetch-wait with sanitizer variants PASS. Test-only legacy-selector mutation produces14 expected semantic assertion failures; independent source review PASS.",
+      "physical_empty_API": {
+        "candidate21_exit": 0,
+        "wait0_elapsed_ns": [
+          38065,
+          14248
+        ],
+        "wait0_commands": "One ready-only FETCH per call; capability queried once then cached. No borrowed pointers or manufactured EOS.",
+        "positive_wait1_elapsed_ns": 2060747059,
+        "positive_wait1": "Legacy FETCH/TIMEOUT remains unchanged.",
+        "kernel_checker_exit": 1,
+        "kernel_disposition": "Exactly one deliberate no-input positive legacy FETCH TIMEOUT. Retain negative checker finding; not kernel-clean playback/release evidence.",
+        "legacy20_control": "About2.04s for wait0 with legacy FETCH. Original wrapper fails after child/guards due non-executable kernel checker; null saved child exit and raw EMPTY_OUTPUT_PASS remain separate, not a whole-case PASS.",
+        "followup": "/home/mache/.cache/crystalhd-source900-current-20261105/empty-output-legacy20-followup.json",
+        "candidate_receipt": "/home/mache/.cache/crystalhd-source900-current-20261105/empty-output-candidate21.json"
+      },
+      "limits": "No picture-arrival wait is not a hard semaphore/callback bound. The separate870/875 actual playback still FAILS900; timeout repair is not proved the missing-original cause."
+    }
   },
   "latest_private_scope": {
     "scope_label": "Retained3fd historical checkpoint; current_source_checkpoint identifies the newer cases without rewriting these original measurements.",
@@ -459,10 +628,27 @@
     "separate_candidate_checks": {
       "source_commit": "656b9e1d3931532e4f80b4cb5bb46b8107b82e1e",
       "retained_branch": "research/postrelease-candidate-audit-20261105",
-      "native_suites": {"scaling": 0, "buffer-handles": 0, "vpp": 0, "replay": 0},
+      "native_suites": {
+        "scaling": 0,
+        "buffer-handles": 0,
+        "vpp": 0,
+        "replay": 0
+      },
       "scalar32_build_exit": 0,
-      "scalar32_native": {"exit": 0, "groups": 50, "checks": 247491, "failures": 0, "cow_groups_not_exercised": 0},
-      "qemu_pentium2": {"exit": 0, "groups": 50, "checks": 188912, "failures": 0, "cow_groups_not_exercised": 10},
+      "scalar32_native": {
+        "exit": 0,
+        "groups": 50,
+        "checks": 247491,
+        "failures": 0,
+        "cow_groups_not_exercised": 0
+      },
+      "qemu_pentium2": {
+        "exit": 0,
+        "groups": 50,
+        "checks": 188912,
+        "failures": 0,
+        "cow_groups_not_exercised": 10
+      },
       "evidence": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-native-tests.json",
       "scalar_native_log": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-scalar32-native.log",
       "qemu_log": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-scalar32-pentium2.log",
@@ -471,7 +657,7 @@
     "integration": "Audit fixes merged through PR664 at maintained master46e5dd8. The current minimal three-change port is a separate task branch with its own affected checks/current-base CI; no unpromoted full research stack is implied."
   },
   "remaining": [
-    "Complete task-PR/current-base CI for the reviewed minimal three-change port; affected CPU checks are complete, but no source900 repair is established by them or its research counts.",
+    "Complete RX-NOWAIT PR666 on current protected master/current-base CI; PR665 is merged. Keep the actual870/875 failure and all other open source900/pixel/clock/GPU/endurance scopes.",
     "Retain the verified matched official stable baseline and all actual fixed/SIZED/profile/private/ordinary failures; preserve the existing RX option/default and provenance.",
     "Underlying900 shortage and exact NONREF/latency cause; whole-output/post-copy pixels, clocks/cadence, GPU return and broader lifetime/endurance remain separately scoped."
   ],

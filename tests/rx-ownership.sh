@@ -111,12 +111,12 @@ awk '
 	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_try_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||
 	/^static BC_STATUS crystalhd_rx_dequeue_common\(/ ||
 	/^static void bc_cproc_copy_pib\(/ ||
-	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fetch_frame|start_capture|flush_cap_buffs)\(/ {
+	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fetch_frame|start_capture|flush_cap_buffs|query_caps)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-	END { if (found != 13 || copying) exit 1 }
+	END { if (found != 14 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-command.h"
 awk '
     /^BC_STATUS crystalhd_(flea|link)_hw_post_cap_buff\(/ {

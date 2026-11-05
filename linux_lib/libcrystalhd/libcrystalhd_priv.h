@@ -285,6 +285,10 @@ typedef struct _DTS_LIB_CONTEXT{
 	 * thread related race conditions.
 	 */
 	BC_IOCTL_DATA	*pOutData;		/* Current Active Proc Out Buffer */
+	/* Lazy driver negotiation belongs to this descriptor/context lifetime.
+	 * Only the exclusive admitted output caller reads/writes this cache. */
+	bool driverCapsQueried;
+	uint32_t driverCapsFlags;
 
 	/* Place Holder for FW file paths */
 	char			StreamFile[MAX_PATH+1];
