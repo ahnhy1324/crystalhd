@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "FINITE_SYNC_DEADLINE_CPU_PASS_SOURCE900_UNRESOLVED",
+  "owning_issues": [477, 436],
+  "owner_disposition": "All thirteen owners retain their remaining scopes. This finite-wait correction does not complete source900 or establish a new release qualification.",
+  "maintained_fix": {
+    "source": "06f6da993e52222cb4191dbdfd17bf36982f3133",
+    "base": "fe0e21fb2b1bdb4cd94eaba4dd6ddf25ea90fb6d",
+    "component": "filters/vaapi/crystalhd_drv_video.cpp: SyncDecodeSurface",
+    "trigger": "A pending finite500ms Sync sleeps for a real510ms; its genuine complementary field is queued only after the deadline. The old next RX turn consumed it and returned success to the expired caller.",
+    "change": "Clip the existing negotiated CV wait to the freshly computed finite remaining budget. After waking, check the finite deadline while still pending, before another RX/input turn.",
+    "preserved": "Binding, cancellation, state errors, stopping and already-ready public/private Bob results retain precedence. Infinite10s behavior, the1ms fallback, ordinary10ms auxiliary grace, Bob100ms, six-argument Try API, worker budgets, private field/POC/EOS rules and CPU/COW storage are unchanged.",
+    "compiled_content_provenance": "The validated code/test contents were unchanged across the ancestry-only update from43da405e6f4bce78517040c1efb429d619e60099 to merged masterfe0e21f before commit06f6da9. This is not a claim of a second build after that ancestry update.",
+    "integration_at_capture": "Task-branch CPU/source validation is complete. Its own normal PR, independent review and existing current-base CI integration are still required; no task PR number is assigned by this receipt."
+  },
+  "distinguishing_CPU_regression": {
+    "fixture": "tests/vaapi-replay.cpp: CenteredSyncDeadlineLeavesQueuedComplement",
+    "focus_environment": "CRYSTALHD_TEST_SYNC_DEADLINE_FOCUS=1",
+    "old_source": "43da405e6f4bce78517040c1efb429d619e60099",
+    "old_O0_build_exit": 0,
+    "old_O0_focused_exit": 1,
+    "expected_old_failure": "expired finite Sync must leave the newly queued genuine complement unacquired and the original unpublished",
+    "old_cleanup": "The finite mock channel closes before the intended assertion; the original failure, literal source, test, binary and logs are retained.",
+    "fixed_O0_build_exit": 0,
+    "fixed_O0_focused_exit": 0,
+    "fixed_O0_full_replay_exit": 0,
+    "fixed_strict_O2_ordinary_private_and_replay_build_exit": 0,
+    "fixed_O2_full_replay_exit": 0,
+    "observed_fixed_behavior": "The expired caller returns VA_STATUS_ERROR_TIMEDOUT with one genuine field still held and its complement still queued. No additional RX/release, input, auxiliary acceptance, public completion or submission-ordinal change occurs. A fresh Sync consumes the real complement, completes the same original and verifies all active Centered Y/UV and border bytes.",
+    "scope": "Actual maintained own callbacks and release/lifetime paths under the existing mocked DIL. The fixture does not decode H.264, execute firmware, measure a playback speedup or qualify an original application.",
+    "independent_source_review": "PASS for the finite-only implementation and old/fixed regression."
+  },
+  "explicit_reuse": {
+    "full_port_source": "16bbc04368d65f2e89f2c278910ad30443412d2a",
+    "receipt": "tests/fixtures/issue477/centered-cpu-canvas-20261106.json",
+    "unchanged_checks": "Reuse the source16bbc full52-group scaling/21,094,879 checks, VPP, buffer handles, real COW/native32 controls and four observer contracts. These suites were not rerun for the finite-only fix.",
+    "portable_offset_source": "43da405e6f4bce78517040c1efb429d619e60099",
+    "portable_offset_validation": "Fresh strict native32 VPP syntax and native64 full VPP build/run PASS; no physical32-bit playback claim.",
+    "full_port_integration": {
+      "PR": "https://github.com/ahnhy1324/crystalhd/pull/674",
+      "merged_base": "fe0e21fb2b1bdb4cd94eaba4dd6ddf25ea90fb6d",
+      "independent_review": "PASS",
+      "current_base_CI": {"completed_jobs": 17, "success": 15, "intended_skips": 2, "existing_gate": "PASS"}
+    },
+    "physical_source900": {"source": "16bbc04368d65f2e89f2c278910ad30443412d2a", "originals": [893, 895], "source900": "FAIL", "fresh_for_this_deadline_fix": false},
+    "earlier_research6a": {"source": "6a293fff3d49ff5d04e73df24d9b323f54a7227e", "originals": [900, 900], "source900": "PASS for that recorded case only; later same-product failures prevent a repeatability claim"}
+  },
+  "separate_unpromoted_research": {
+    "pre_first_source": "1b7166e",
+    "pre_first_disposition": "Unpromoted; accepted pre-first auxiliary input was not exercised by its actual component run.",
+    "adaptive_pacing_source": "48ca434a991c6141724c9c2cb21ccaba196e375d",
+    "adaptive_pacing_disposition": "Frozen and unpromoted without demonstrated benefit. Its40ms/1ms pacing, retry hints and qualification markers are not part of the finite-only fix.",
+    "prefix75": {
+      "status": "PASS_SCOPED_LATE_SYNC_PREFIX75_CONTINUATION",
+      "actual_route": "LATE_ADAPTIVE_PRIVATE_FIELDS",
+      "all75_visible_NV12_bytes_equal": true,
+      "all75_raw_frame_metadata_equal": true,
+      "scope": "Actual mechanism adoption and byte/metadata continuation only; not matched timing, source900, stock compatibility or release qualification."
+    },
+    "original900": {
+      "case": "late-sync22-fixed-private-01",
+      "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+      "originals": [891, 896],
+      "genuine_original_fields_and_successful_releases": [1782, 1792],
+      "strict_native_ledgers": ["PASS", "PASS"],
+      "four_scoped_audits_controls_and_safety": "PASS",
+      "completed_replay_inputs": [0, 0],
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_boundary_equal": true,
+      "live_resource_handoff": null,
+      "max_temperature_mC": 64000,
+      "AC_present_throughout": true,
+      "official20_restoration": "PASS"
+    }
+  },
+  "persistent_host": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "module": "3.10.20",
+    "scope": "Matched stable baseline preserved; no hardware/media run or module transition is added by this finite-only CPU correction."
+  },
+  "remaining_limits": [
+    "No fresh source900 run or physical playback claim for06f6da9; the original shortages and failed adaptive-pacing observations remain failures.",
+    "Continue existing-data source/selection attribution. No confirmed external defect, global impossibility or matched performance benefit is established.",
+    "Independent broader pixels, clocks/cadence, GPU return, lifetime/endurance, inputs and original filter-EOF work retain their owning scopes.",
+    "Source-qualified no-drift logs satisfy A/V for their recorded route; accepted renderer/QoS losses do not create a universal zero-loss release gate.",
+    "Centered stays default-off; no external product edits, new user settings or replacement of frozen1.3 artifacts."
+  ],
+  "artifact_root": "/home/mache/.cache/crystalhd-source900-current-20261105",
+  "original_artifacts_relative_to_root": {
+    "old_CPU_status": "sync-deadline-old-O0-status.json",
+    "old_literal_backend": "sync-deadline-literal43-backend.cpp",
+    "old_O0_focused_log": "sync-deadline-old-O0-focused-01.log",
+    "fixed_CPU_status": "sync-deadline-fixed-CPU-status.json",
+    "fixed_O0_focused_log": "sync-deadline-fixed-O0-focused-01.log",
+    "fixed_O0_full_replay_log": "sync-deadline-fixed-O0-full-01.log",
+    "fixed_O2_build_log": "sync-deadline-fixed-O2-build-01.log",
+    "fixed_O2_full_replay_log": "sync-deadline-fixed-O2-full-01.log",
+    "portable_offset_CPU_status": "CI674-offset32-fix-status.json",
+    "adaptive_prefix75_comparison": "late-sync-native-owner-comparison-01.json",
+    "adaptive_original900_summary": "late-sync22-case-summary.json"
+  }
+}
