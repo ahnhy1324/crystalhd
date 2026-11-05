@@ -427,10 +427,98 @@
       "maximum_temperature_mC": 68000,
       "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/nowait21-sized-private-01/result.json",
       "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-transition-restore20.json"
+    },
+    {
+      "case": "nowait21-fixed-private-01",
+      "source": "c6b92ed21571f41c5fe939e4d1fa6fe35d68594e",
+      "kernel_source": "73249577ba870bafd37b9646673bdb308264462f",
+      "loaded_experimental_module": "3.10.21/99C610ED7BFC63B60BE2250",
+      "change": "Same fullc6b and reviewed module21, separately frozen default/fixed DIL control",
+      "actual_DIL_allocation_mode": "FIXED/default; separate from the SIZED16 comparison",
+      "originals": [
+        892,
+        860
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        20
+      ],
+      "replay_fields": [
+        0,
+        40
+      ],
+      "successful_restarts": [
+        0,
+        2
+      ],
+      "source900": "FAIL",
+      "controls_and_four_private_audits": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_experimental21_boundary_equal": true,
+      "normal_restore_official20_full_guard": "PASS",
+      "handoff": null,
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/nowait21-fixed-private-01/result.json",
+      "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-fixed-transition-restore20.json"
+    },
+    {
+      "case": "sync-lookahead21-fixed-private-01",
+      "source": "baa1d3eda3d85f4a2cf38bddc0f3db89499f450f",
+      "kernel_source": "73249577ba870bafd37b9646673bdb308264462f",
+      "loaded_experimental_module": "3.10.21/99C610ED7BFC63B60BE2250",
+      "change": "Full research with narrow ordinary exact-Centered-Sync lookahead, default/fixed DIL and reviewed module21",
+      "actual_DIL_allocation_mode": "FIXED/default; separate from the SIZED16 comparison",
+      "originals": [
+        879,
+        861
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "replay_fields": [
+        0,
+        0
+      ],
+      "successful_restarts": [
+        0,
+        0
+      ],
+      "source900": "FAIL",
+      "controls_and_four_private_audits": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_experimental21_boundary_equal": true,
+      "normal_restore_official20_full_guard": "PASS",
+      "handoff": null,
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead21-fixed-private-01/result.json",
+      "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-lookahead-stock-transition-restore20.json",
+      "maximum_temperature_mC": 73000,
+      "postfilter_inputs": [
+        879,
+        861
+      ],
+      "postfilter_outputs": [
+        1756,
+        1720
+      ],
+      "source_null_or_close_calls": [
+        0,
+        0
+      ],
+      "scope": "Original supplied Kodi method7, two natural EOFs. All audits/cleanup pass within scope; neither900 originals nor caller filter EOF is repaired."
     }
   ],
   "current_source_checkpoint": {
-    "latest_private_case": "nowait21-sized-private-01",
+    "latest_private_case": "sync-lookahead21-fixed-private-01",
     "latest_ordinary_case": "main-input-ordinary-01",
     "host": "Official1.3/source24a/module20 remains the permanent matched installation. The actual21 experiment has its own frozen artifact/snapshot; normal restore20 passes the original full baseline guard.",
     "private_audits": "Current private cases retain the four scoped observation audits PASS; these audits do not waive source900. The explicit21 case/restoration has its own receipt.",
@@ -466,7 +554,7 @@
     "outcome": "Source900 remains unresolved. Sequential counts are not a causal speedup, external defect, global impossibility or issue closure.",
     "rx_nowait": {
       "PR": 666,
-      "status": "PASS_AFFECTED_BUILD_CPU_REVIEW_AND_SCOPED_PHYSICAL_API_CONTROL; current-base integration pending",
+      "status": "MERGED_PR666; affected checks and scoped API evidence retained",
       "change": "Append negotiated ready-only RX command, Flea wait0 only; legacy command numbers/layouts, compat32 translations, LINK EOS, ownership and positive waits preserved.",
       "checks": "Strict normal DIL/module21 build; full library-check; UAPI32/64, actual ioctl translation/dispatch and RX ownership/fetch-wait with sanitizer variants PASS. Test-only legacy-selector mutation produces14 expected semantic assertion failures; independent source review PASS.",
       "physical_empty_API": {
@@ -484,7 +572,117 @@
         "followup": "/home/mache/.cache/crystalhd-source900-current-20261105/empty-output-legacy20-followup.json",
         "candidate_receipt": "/home/mache/.cache/crystalhd-source900-current-20261105/empty-output-candidate21.json"
       },
-      "limits": "No picture-arrival wait is not a hard semaphore/callback bound. The separate870/875 actual playback still FAILS900; timeout repair is not proved the missing-original cause."
+      "limits": "No picture-arrival wait is not a hard semaphore/callback bound. The separate870/875 SIZED and892/860 fixed actual playbacks still FAIL900; timeout repair is not proved the missing-original cause."
+    },
+    "sync_lookahead_candidate": {
+      "status": "COMPONENT_PREFIX75_DIFFERENTIAL_PASS; STOCK879_861_SOURCE900_FAIL",
+      "narrow_source": "1ebc59fd3c38b3bd4366d89bcc7752881e0ab272",
+      "no_aux_parent_source": "6f813a024a53ada3204a30e035314838e4209d5b",
+      "implementation": "Explicit full-Sync demand for an exact live public Centered H264/Flea owner with a genuine released first field. Reuse existing nonreference intra auxiliary, unchanged100ms inactivity/accepted-syntax/private-output/actual-EOS fences; no fabricated Bob demand; auxiliary never acquires original/public picture ownership.",
+      "geometry_correction": {
+        "actual_context": "Source inference plus original-provider native debug/public pool establishes coded1088 context/config; visible_height1080 is a separate value.",
+        "withdrawn_claim": "Actual stock necessarily used config.canvas_height1080/public1088 and therefore the old predicate never triggered.",
+        "supported_API_layouts": "Actual coded1088 context may admit visible1080 or coded1088 public targets; Submit changes only accepted canvas extent while preserving visible/ROI/capture/range.",
+        "retained_old_control": "Earlier old-predicate failure used a manually mutated cfg1080/public1088 synthetic fixture. Preserve it; it is not stock activation proof.",
+        "corrected_control": {
+          "scope": "Unmodified coded1088 BuildGeometry config; actual public1080/1088 Submit/Sync, TFF/BFF plus geometry negatives",
+          "strict_build": "PASS",
+          "focused_live_bob_tail": "PASS",
+          "full_replay": "PASS",
+          "old_predicate_build_exit": 0,
+          "old_predicate_test_exit": 1,
+          "semantic_failure_verified": true,
+          "expected_failure_scope": "Only old geometry predicates restored: admitted visible1080 target fails. This is not evidence the real coded1088 stock target was blocked.",
+          "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-coded-context-visible-target-old-predicate-control/result.json"
+        },
+        "review": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead-geometry-scope-correction-C.json"
+      },
+      "actual_firmware_prefix75": {
+        "scope": "OWN unpaced/default-discard original-provider client, no renderer/media clock/BWDIF; exact retained900 fixture first75 AUs, not full input EOF or stock900.",
+        "arms": [
+          "sync-lookahead-native-owner-baseline-01",
+          "sync-lookahead-native-owner-candidate-01"
+        ],
+        "originals_each": 75,
+        "visible_NV12": [
+          1920,
+          1080
+        ],
+        "bytes_each_frame": 3110400,
+        "bundle_bytes_each_arm": 233280000,
+        "all75_actual_visible_bytes_and_public_metadata_equal": true,
+        "auxiliary": {
+          "source_token": 1200000,
+          "private_token": 1300000,
+          "bytes": 8695,
+          "idle_ns": 101323322,
+          "original_native_outputs": 2,
+          "original_M": 1,
+          "auxiliary_public_owners": 0,
+          "release_after_selected_Sync": true,
+          "later_actual_EOS": true
+        },
+        "following_original_admissions": 63,
+        "next_IDR_packet_ordinals": [
+          26,
+          51
+        ],
+        "actual_P_and_B_before_next_IDR": true,
+        "candidate_channel_restart_before_prefix_drain": false,
+        "native_populations": {
+          "parent": {
+            "submits": 75,
+            "input_sent": 87,
+            "output_fields": 174,
+            "M": 75
+          },
+          "candidate": {
+            "submits": 75,
+            "input_sent": 75,
+            "output_fields": 150,
+            "M": 75
+          }
+        },
+        "parent_extra_population": "12 completed reference-prefix replay inputs/24 fields after its seal/restart; do not count them as extra originals.",
+        "executors": "Both actual exits0/live mapped identities/kernel0/full21 boundary/no handoff; normal official20 full restoration PASS.",
+        "comparison": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead-native-owner-comparison.json",
+        "independent_review": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead-native-owner-actual-review-A.json",
+        "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-native-owner-transition-restore20.json",
+        "limits": [
+          "Visible1080 bytes only; coded1088-only padding excluded.",
+          "Same-hardware no-aux differential, not independent normative pixel golden or universal firmware DPB proof.",
+          "No Kodi private timestamp mapping, cadence, source900, stock/release acceptance or causal speedup follows."
+        ]
+      },
+      "preserved_nonqualifications": [
+        "Initial returned-frame baseline wrapper failed because immutable S.save was reused for a mutable journal; later child bytes do not upgrade its absent outer monitoring.",
+        "Correctly monitored returned-frame candidate02 has75 images but gap9.3ms/aux0: NOT_EXERCISED.",
+        "Old private research, ordinary failed ledgers and every900 shortage remain unchanged."
+      ],
+      "actual_stock_followup": {
+        "case": "sync-lookahead21-fixed-private-01",
+        "source": "baa1d3eda3d85f4a2cf38bddc0f3db89499f450f",
+        "originals": [
+          879,
+          861
+        ],
+        "source900": "FAIL",
+        "completed_replay_inputs": [
+          0,
+          0
+        ],
+        "successful_restarts": [
+          0,
+          0
+        ],
+        "controls_and_four_audits": "PASS",
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "maximum_temperature_mC": 73000,
+        "official20_full_restore": "PASS",
+        "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead21-fixed-private-01/result.json"
+      },
+      "remaining": "Substantiate/fix original Kodi900 shortage and decoder skip/latency without external product changes or criterion relaxation; preserve separate caller filter-EOF, pixel/clock, GPU-return and endurance boundaries."
     }
   },
   "latest_private_scope": {

@@ -55,7 +55,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current results](tests/fixtures/issue477/postrelease-source900-20261105.json) still fail900: full research8fac returns897/894 originals; its ordinary control has two failed ledgers, so raw876/886 are unqualified. The three minimal maintained changes are merged in #665; their ordinary828/819 case still fails900. The separate zero-wait fix #666 passes scoped controls, but full research/module21/SIZED16 still fails870/875 and restores official20 normally. Keep COW/field/mirror prototypes unpromoted and continue the actual shortage/latency investigation; neither this bounded progress nor the caller's separate filter-EOF limitation closes either issue. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current results](tests/fixtures/issue477/postrelease-source900-20261105.json) still fail900: the latest full-Sync lookahead arm returns879/861 originals, with balanced ledgers/four audits, no replay and normal official20 restoration. Its separate original-provider75-picture continuation/pixel differential passes, but does not establish stock900. Keep COW/field/mirror prototypes unpromoted and earlier ordinary failed ledgers unqualified; continue the shortage/latency investigation and retain the separate caller filter-EOF limit. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist. The current matched-baseline SIZED16 arm completes864/854 originals and still fails900; sequential counts do not prove a performance gain or justify changing the default. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator. Preserve DMA quarantine and the coupled defer-allocation/DONTNEED scope. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -88,6 +88,8 @@ official1.3/source24a/module20; isolated research artifacts do not replace it.
 | Same8fac ordinary backend, native trace only | Unqualified; raw submits876 | Unqualified; raw submits886 | Both strict ledgers FAIL; no replay/unknown-row waiver |
 | Minimal maintained #665, ordinary/default DIL | 828 | 819 | Balanced native ledgers; Source900 FAIL |
 | Fullc6b, confirmed SIZED16 + temporary reviewed module21 | 870 | 875 | Strict ledgers/four audits PASS; Source900 FAIL; normal official20 restoration PASS |
+| Samec6b/module21, separately frozen default/fixed DIL | 892 | 860 | Source900 FAIL; second play has20 completed replay inputs, not extra originals |
+| Full research + narrow full-Sync lookahead, default DIL/module21 | 879 | 861 | Source900 FAIL; strict ledgers/four audits PASS; no replay; maximum73C and normal official20 restoration PASS |
 
 Private cases retain their scoped packet/postfilter/cost/replay audits, controls,
 App0/kernel0 and full official-baseline equality. The retained8fac ordinary arm has no private
@@ -110,12 +112,30 @@ Actual empty-input controls return in38µs/14µs instead of the legacy approxima
 positive waits and LINK EOS keep legacy behavior. The deliberate positive-timeout
 control retains its expected kernel-check finding; it is not clean-playback proof.
 Full library/UAPI/compat/ownership checks and independent review pass, while its
-current-base integration is pending. The full research21/SIZED16 playback still
+PR #666 is merged. The full research21/SIZED16 playback still
 fails870/875 despite four scoped audits/control/kernel0/cleanup passing;4/10
 completed replay inputs are separate. The exact official20 installation is restored
 with the original full guard. The actual shortage, decoder skip/latency,
 full post-copy pixels/clocks, GPU return and endurance remain open. Preserve the
 original missing-filter-EOF and no-clock limits without claiming impossibility.
+
+The narrow **full-Sync lookahead candidate** reuses the existing non-reference
+intra auxiliary for a genuine missing complementary field on the exact live
+public Centered owner after the unchanged 100 ms inactivity grace; it does not
+fabricate Bob demand, publish auxiliary pixels or remove actual-EOS debt.
+An OWN/default-discard diagnostic actually exercises one auxiliary, continues
+63 originals on the same channel including P/B pictures before IDR, and matches
+all 75 visible1920x1080 NV12 images/public metadata against its no-aux parent.
+That bounded firmware differential excludes coded1088-only padding and is not
+a normative golden, stock cadence or a900 fix. The corrected CPU controls keep
+the real coded1088 config while admitting public1080/1088; the earlier manually
+mutated cfg1080 failure is retained as synthetic evidence, not a stock-activation
+cause. The new original Kodi two-EOF case still fails879/861, despite controls,
+four audits, App0/kernel0, no replay and full official20 restoration passing;
+its peak is73C and the caller still sends no filter EOF. Continue the actual
+shortage/skip investigation; preserve the old returned-frame NOT_EXERCISED and
+wrapper failure, all original900 failures and the remaining pixel/clock,
+GPU-return and endurance boundaries.
 
 <details>
 <summary>Retained pre-current field/COW/mirror checkpoints and historical host comparisons</summary>
