@@ -13116,7 +13116,257 @@ static void NeutralAuxRestartRejectsUnpaidDebt() {
   }
 }
 
+static void CenteredExactSyncUsesPrivateLookahead() {
+  // Production API/lease/pixel-forwarding control, not a firmware DPB model.
+  // Actual post-aux reference/B-frame decode bytes require the separate
+  // unchanged-provider diagnostic; this mock never decodes compressed data.
+  for (unsigned public_height : {64U, 1080U, 1088U})
+  for (bool bottom_first : {false, true}) {
+    const unsigned coded_width = public_height == 64 ? 256 : 1920;
+    const unsigned coded_height = public_height == 64 ? 64 : 1088;
+    H264AdmissionFixture fixture(16, 1024 * 1024, coded_width, coded_height);
+    if (public_height == 64) {
+      ConfigureCenteredAdmission(fixture);
+    } else {
+      crystalhd_centered_output::Config config;
+      config.enabled = true;
+      config.visible_width = 1920;
+      config.visible_height = 1080;
+      config.capture_width = 1280;
+      config.capture_height = 720;
+      Require(crystalhd_centered_output::BuildGeometry(
+                  config, 1920, 1088, 4, &fixture.decoder->centered_geometry),
+              "build the real visible1080/coded1088 centered geometry");
+      // Reproduce the actual config-versus-admitted-surface distinction:
+      // Submit must keep ROI/visible fields and normalize only canvas extent.
+      fixture.decoder->centered_geometry.canvas_height = 1080;
+      fixture.io.output_width = 1280;
+      fixture.io.output_height = 720;
+    }
+    auto &d = *fixture.decoder;
+    d.auto_h264_prefeed = true;
+    const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+    const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD;
+    const uint32_t second = bottom_first ? VDEC_FLAG_TOPFIELD : VDEC_FLAG_BOTTOMFIELD;
+    const auto submit = [&](VASurfaceID id, unsigned type) {
+      if (public_height != coded_height && fixture.driver.surfaces.count(id) == 0) {
+        auto target = std::make_shared<Surface>();
+        Require(target->AllocateInternal(nullptr, -1, coded_width, public_height,
+                                         VA_FOURCC_NV12),
+                "allocate the admitted visible-height public target");
+        target->id = id;
+        memset(target->storage.data(), 99, target->storage.size());
+        fixture.driver.surfaces[id] = target;
+        fixture.held.push_back(target);
+      }
+      fixture.Prepare(id);
+      d.picture = NeutralPicture(coded_width, coded_height);
+      d.picture.num_ref_frames = 4;
+      d.picture.frame_num = id - 1;
+      d.picture.CurrPic.picture_id = id;
+      d.picture.CurrPic.TopFieldOrderCnt = id == 1 ? 0 : id == 2 ? 6 : 2;
+      d.picture.CurrPic.BottomFieldOrderCnt = d.picture.CurrPic.TopFieldOrderCnt + 1;
+      d.picture.pic_fields.bits.reference_pic_flag = type != 1;
+      if (id > 1) {
+        d.picture.ReferenceFrames[0].picture_id = 1;
+        d.picture.ReferenceFrames[0].flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+      }
+      d.slices.front().slice_type = type;
+      d.slice_data.front() = {static_cast<uint8_t>(type == 2 ? 0x65 :
+                                                   type == 1 ? 0x01 : 0x41),
+                              0x88, static_cast<uint8_t>(0x80 + id)};
+      fixture.io.input_busy = true;
+      Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS,
+              "actual admission retains original I/P/B metadata while transport is BUSY");
+      const auto pending = d.replay.NextInput();
+      Require(pending != nullptr, "admitted original has immutable compressed bytes");
+      const auto accepted = pending->bytes;
+      fixture.io.input_busy = false;
+      Require(PumpDecodeInput(&fixture.driver, &d) == VA_STATUS_SUCCESS,
+              "real pump submits the original immutable bytes and successor prefix");
+      return accepted;
+    };
+    const auto queue = [&](uint64_t token, uint32_t parity) {
+      fixture.io.outputs.push_back(token);
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | parity);
+    };
+    submit(1, 2);
+    const auto source = d.decoded_frames.at(kTimestampStep);
+    Require(source->centered_geometry.canvas_height == public_height &&
+                fixture.held[0]->height == public_height &&
+                (public_height == 64 || d.centered_geometry.canvas_height == 1080),
+            "actual Submit owns the precise visible or coded public canvas extent");
+    const auto original = fixture.held[0]->storage;
+    queue(kTimestampStep, first);
+    Require(ReceiveAvailable(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && !source->ready &&
+                fixture.io.released_outputs == 1,
+            "only a successfully released genuine first field qualifies full Sync");
+    const auto held = d.h264_first_field.pixels;
+    const size_t input_calls = fixture.io.input_calls.size();
+    const auto ordinal = d.next_submission_ordinal;
+    std::vector<uint8_t> expected_aux;
+    Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected_aux),
+            "accepted immutable syntax supports the existing nonreference I auxiliary");
+    Require(SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+                fixture.io.input_calls.size() == input_calls && !d.auxiliary.pending,
+            "passive exact Sync cannot submit private lookahead");
+    const auto supply_complement = [&] {
+      Require(d.auxiliary.pending && d.auxiliary.needs_eos &&
+                  d.auxiliary.timestamp == 2 * kTimestampStep &&
+                  fixture.io.input_calls.size() == input_calls + 2 &&
+                  fixture.io.input_calls[input_calls].bytes == expected_aux &&
+                  fixture.io.input_calls[input_calls].timestamp == 0 &&
+                  fixture.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                  fixture.io.input_calls.back().timestamp == 3 * kTimestampStep &&
+                  d.h264_first_field.pixels == held && !source->ready &&
+                  !fixture.held[0]->ready && fixture.held[0]->storage == original &&
+                  d.next_submission_ordinal == ordinal && d.pending.size() == 1 &&
+                  d.replay.outstanding() == 1 &&
+                  std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0,
+              "public full Sync accepts private lookahead without public completion or EOS");
+      queue(kTimestampStep, second);
+    };
+    fixture.io.on_sleep = [&] {
+      if (d.auxiliary.pending) {
+        supply_complement();
+        return;
+      }
+      Require(fixture.io.input_calls.size() == input_calls && !source->ready,
+              "the unchanged inactivity grace expires before auxiliary input");
+      std::this_thread::sleep_for(std::chrono::nanoseconds(kDecodeBatchGraceNs) +
+                                  std::chrono::milliseconds(1));
+      fixture.io.on_sleep = supply_complement;
+    };
+    Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS && source->ready &&
+                fixture.held[0]->ready && !d.h264_first_field.valid &&
+                d.replay.outstanding() == 0 && d.auxiliary.pending &&
+                !d.replay.sealed() && fixture.io.released_outputs == 2,
+            "only the genuine complementary output completes actual public full Sync");
+    CheckCenteredAdmissionPicture(fixture, 0);
+    const auto completed = fixture.held[0]->storage;
+    H264WeaveFixture auxiliary(false, VA_FOURCC_NV12, d.CaptureWidth());
+    const size_t auxiliary_bytes = size_t{d.CaptureWidth()} * d.CaptureHeight() * 2U;
+    auxiliary.pixels.assign(auxiliary_bytes + 160U, 0);
+    auxiliary.output.Ybuff = auxiliary.pixels.data();
+    auxiliary.output.YBuffDoneSz = auxiliary.pixels.size() / 4U;
+    auxiliary.output.PicInfo.height = d.CaptureHeight();
+    auxiliary.output.PicInfo.timeStamp = 2 * kTimestampStep;
+    auxiliary.output.PicInfo.flags &= ~VDEC_FLAG_UNKNOWN_SRC;
+    auxiliary.raw.height = d.CaptureHeight();
+    auxiliary.raw.timeStamp = 2 * kTimestampStep / 20000U;
+    auxiliary.raw.flags = VDEC_FLAG_FIELDPAIR;
+    memcpy(auxiliary.pixels.data() + auxiliary_bytes,
+           &auxiliary.output.PicInfo.picture_number, sizeof(uint32_t));
+    memcpy(auxiliary.pixels.data() + auxiliary_bytes + sizeof(uint32_t),
+           &auxiliary.raw, offsetof(BC_PIC_INFO_BLOCK, other));
+    auxiliary.WriteWord(auxiliary.pixels.size() - 8U, d.CaptureWidth());
+    auxiliary.WriteWord(auxiliary.pixels.size() - 4U, d.CaptureHeight());
+    fixture.io.override_output = true;
+    fixture.io.overridden_output = auxiliary.output;
+    bool activity = false;
+    Require(ReceiveOne(&fixture.driver, &d, 0, &activity) == VA_STATUS_SUCCESS &&
+                activity && !d.auxiliary.pending && d.auxiliary.needs_eos &&
+                fixture.held[0]->storage == completed && d.replay.outstanding() == 0 &&
+                d.next_submission_ordinal == ordinal && fixture.io.released_outputs == 3,
+            "private auxiliary release cannot publish a picture or pay actual EOS debt");
+    fixture.io.override_output = false;
+    for (unsigned id : {2U, 3U}) {
+      const uint64_t token = (id + 1U) * kTimestampStep; // Auxiliary owns token2.
+      const size_t before = fixture.io.input_calls.size();
+      const auto admitted = submit(id, id == 2 ? 0 : 1);
+      const auto sent = std::find_if(fixture.io.input_calls.begin() + before,
+                                    fixture.io.input_calls.end(),
+                                    [](const DecodeIoMock::InputCall &call) {
+                                      return call.accepted && call.timestamp == 0;
+                                    });
+      Require(sent != fixture.io.input_calls.end() &&
+                  d.decoded_frames.count(token) == 1 &&
+                  d.decoded_frames.at(token)->expected_timestamp == token &&
+                  d.next_submission_ordinal == ordinal + id - 1,
+              "subsequent real reference/B inputs consume only their own prefed token");
+      Require(sent->bytes == admitted,
+              "following original reference/B compressed bytes are unchanged by auxiliary input");
+      queue(token, first);
+      queue(token, second);
+      Require(SyncSurface(&fixture.context, id) == VA_STATUS_SUCCESS &&
+                  fixture.held[id - 1]->frame_timestamp == token &&
+                  fixture.held[0]->storage == completed && !d.replay.sealed(),
+              "future original reference/B outputs retain real tokens and earlier pixels");
+      const auto &g = d.centered_geometry;
+      const auto &surface = fixture.held[id - 1];
+      for (unsigned plane = 0; plane != 2; ++plane)
+        for (unsigned row = 0; row != surface->height / (plane ? 2 : 1); ++row)
+          for (unsigned column = 0; column != surface->width; ++column) {
+            const bool roi = row >= g.y / (plane ? 2 : 1) &&
+                row < (g.y + g.capture_height) / (plane ? 2 : 1) &&
+                column >= g.x && column < g.x + g.capture_width;
+            Require(surface->planes[plane][size_t{row} * surface->pitch[plane] + column] ==
+                        (plane ? 128 : roi ? DecodeIoMock::Luma(token) : 16),
+                    "every following mocked original Y/UV and centered border byte is exact");
+          }
+    }
+    fixture.io.early_eos = true;
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+                d.device == nullptr && d.retired &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+                fixture.io.open_attempts == 0 && fixture.io.released_outputs == 8 &&
+                fixture.held[0]->storage == completed && !fixture.io.invalid,
+            "explicit close consumes the actual terminal EOS after all seven picture leases");
+  }
+}
+
+static void CenteredExactSyncRejectsUnqualifiedLookahead() {
+  for (unsigned fault = 0; fault != 13; ++fault) {
+    H264AdmissionFixture fixture(8, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(fixture);
+    auto &d = *fixture.decoder;
+    d.auto_h264_prefeed = true;
+    fixture.Prepare(1);
+    d.picture = NeutralPicture(256, 64);
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS,
+            "negative full-Sync cases begin with actual accepted immutable syntax");
+    fixture.io.outputs.push_back(kTimestampStep);
+    fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+    if (fault == 8) fixture.io.output_release_status = BC_STS_ERROR;
+    const VAStatus received = ReceiveAvailable(&fixture.driver, &d, 1);
+    Require(received == (fault == 8 ? VA_STATUS_ERROR_DECODING_ERROR : VA_STATUS_SUCCESS),
+            "first-field release failure follows the original terminal error path");
+    switch (fault) {
+      case 0: d.centered_geometry.enabled = false; break;
+      case 1: fixture.held[0]->centered_allocation_exposed = true; break;
+      case 2: fixture.held[0]->export_waiters = 1; break;
+      case 3: fixture.held[0]->decode_picture.reset(); break;
+      case 4: d.pending[kTimestampStep] = 99; break;
+      case 5: d.auxiliary.candidate.picture.seq_fields.bits.frame_mbs_only_flag = 1; break;
+      case 6: d.closing = true; break;
+      case 7: d.h264_first_field.valid = false; break;
+      case 9: d.h264_first_field.picture->centered_geometry.canvas_height -= 4; break;
+      case 10: d.h264_first_field.picture->centered_geometry.visible_height -= 4; break;
+      case 11: d.h264_first_field.picture->centered_geometry.x += 2; break;
+      case 12: d.h264_first_field.picture->centered_geometry.full_range =
+                   !d.h264_first_field.picture->centered_geometry.full_range; break;
+      default: break;
+    }
+    const auto calls = fixture.io.input_calls.size();
+    const auto bytes = fixture.held[0]->storage;
+    Require(TryH264Auxiliary(&fixture.driver, &d, fixture.held[0], nullptr,
+                            kDecodeBatchGraceNs,
+                            H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                fixture.io.input_calls.size() == calls && !d.auxiliary.ever &&
+                !fixture.held[0]->ready && fixture.held[0]->storage == bytes,
+            "unsupported, exposed, stale, closing or unreleased first fields never inject lookahead");
+    // Restore only scaffold guard mutations for ordinary fixture cleanup.
+    d.closing = false;
+    fixture.held[0]->export_waiters = 0;
+    d.pending[kTimestampStep] = 1;
+  }
+}
+
 static void NeutralAuxiliaryContracts() {
+  CenteredExactSyncUsesPrivateLookahead();
+  CenteredExactSyncRejectsUnqualifiedLookahead();
   NeutralAuxAdmissionSnapshotsPolicyAndSyntax();
   NeutralAuxiliaryTriggerOwnsOnlyTransport();
   NeutralAuxFiniteActualEosPermitsContinuation();

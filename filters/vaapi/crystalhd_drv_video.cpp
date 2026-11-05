@@ -7964,15 +7964,54 @@ static VAStatus PrepareFirstFieldBob(const PendingVpp &operation,
   return VA_STATUS_SUCCESS;
 }
 
+enum class H264AuxiliaryDemand { ComplementaryBob, CenteredExactSync };
+
 static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
                                const std::shared_ptr<Surface> &surface,
-                               const VppDeinterlace *demand, uint64_t idle) {
+                               const VppDeinterlace *demand, uint64_t idle,
+                               H264AuxiliaryDemand request =
+                                   H264AuxiliaryDemand::ComplementaryBob) {
   auto &aux = decode->auxiliary;
   const auto &first = decode->h264_first_field;
-  if (!demand || !demand->bob || idle < kDecodeBatchGraceNs || aux.pending ||
+  const bool bob = request == H264AuxiliaryDemand::ComplementaryBob &&
+      demand && demand->bob &&
+      first.bottom != (demand->field == crystalhd_vpp_bob::FieldParity::kBottom);
+  auto accepted_geometry = decode->centered_geometry;
+  if (surface) {
+    // SubmitPicture normalizes only these extents to the admitted VA target;
+    // a visible1080 config may own a coded1088 canvas. Keep every ROI, range,
+    // capture and visible field unchanged when checking that exact picture.
+    accepted_geometry.canvas_width = surface->width;
+    accepted_geometry.canvas_height = surface->height;
+  }
+  // A full CPU Sync asks for the genuine complement, not a fabricated Bob
+  // field. Keep this additional trigger on the exact live public Centered
+  // owner; private/VPP/alias/export waits retain their previous policy.
+  const bool exact = request == H264AuxiliaryDemand::CenteredExactSync &&
+      !demand && surface && first.picture && decode->centered_geometry.enabled &&
+      CenteredStorageMatches(*first.picture) &&
+      SameCenteredGeometry(first.picture->centered_geometry,
+                           accepted_geometry) &&
+      surface->width == decode->width &&
+      surface->height >= accepted_geometry.visible_height &&
+      surface->height <= decode->height && (surface->height & 3U) == 0 &&
+      (surface->height == accepted_geometry.visible_height ||
+       surface->height == decode->height) &&
+      surface->fourcc == VA_FOURCC_NV12 &&
+      surface->backing_owner == VA_INVALID_SURFACE &&
+      !surface->ready && !surface->frame_timestamp && !surface->failed &&
+      !surface->destroyed && !surface->image_write_locked &&
+      !surface->vpp_writers && !surface->export_waiters &&
+      !surface->centered_allocation_exposed &&
+      surface->decode_picture.lock() == first.picture &&
+      surface->decode_identity == first.decode_identity &&
+      surface->trace_context == TraceId(decode->id, VA_INVALID_ID) &&
+      surface->trace_generation == decode->generation &&
+      surface->trace_submission_ordinal == first.picture->trace_submission_ordinal &&
+      (!first.picture->direct_backing || first.picture->direct_backing == surface);
+  if ((!bob && !exact) || idle < kDecodeBatchGraceNs || aux.pending ||
       !H264AuxiliaryPolicy(*decode, aux.candidate.prefeed) ||
       !aux.candidate_timestamp || !first.valid || first.replay_duplicate ||
-      first.bottom == (demand->field == crystalhd_vpp_bob::FieldParity::kBottom) ||
       first.timestamp != surface->expected_timestamp ||
       aux.candidate_timestamp < first.timestamp ||
       aux.candidate.generation != decode->generation ||
@@ -7989,6 +8028,12 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
     return VA_STATUS_SUCCESS;
   const auto picture = decode->decoded_frames.find(first.timestamp);
   const auto pending = decode->pending.find(first.timestamp);
+  if (exact) {
+    const auto owner = driver->surfaces.find(surface->id);
+    if (pending == decode->pending.end() || pending->second != surface->id ||
+        owner == driver->surfaces.end() || owner->second != surface)
+      return VA_STATUS_SUCCESS;
+  }
   if (picture == decode->decoded_frames.end() || pending == decode->pending.end() ||
       picture->second != first.picture || first.decode_identity == 0 ||
       first.decode_identity != picture->second->decode_identity)
@@ -8159,7 +8204,8 @@ static VAStatus SyncDecodeSurface(
     std::unique_lock<std::mutex> *driver_lock, uint64_t timeout_ns,
     const std::function<bool()> &canceled = {},
     const std::function<VAStatus(bool *)> &private_vpp_ready = {},
-    const VppDeinterlace *private_demand = nullptr) {
+    const VppDeinterlace *private_demand = nullptr,
+    H264AuxiliaryDemand auxiliary_demand = H264AuxiliaryDemand::ComplementaryBob) {
   if (driver_lock == nullptr || !driver_lock->owns_lock())
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (canceled && canceled())
@@ -8359,9 +8405,11 @@ static VAStatus SyncDecodeSurface(
     }
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
-    if (private_vpp_ready && private_demand) {
+    if ((private_vpp_ready && private_demand) ||
+        auxiliary_demand == H264AuxiliaryDemand::CenteredExactSync) {
       const uint64_t before = decode->transport_progress;
-      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, idle);
+      status = TryH264Auxiliary(driver, decode.get(), surface, private_demand, idle,
+                               auxiliary_demand);
       if (status != VA_STATUS_SUCCESS) return status;
       // A newly accepted real auxiliary input is progress, not an EOF trigger.
       if (before != decode->transport_progress) {
@@ -11653,7 +11701,11 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
       return finish(VA_STATUS_SUCCESS);
   }
   const VAStatus status =
-      SyncDecodeSurface(driver, synchronized_surface, &lock, timeout_ns);
+      SyncDecodeSurface(driver, synchronized_surface, &lock, timeout_ns,
+                        {}, {}, nullptr,
+                        requested_surface == synchronized_surface
+                            ? H264AuxiliaryDemand::CenteredExactSync
+                            : H264AuxiliaryDemand::ComplementaryBob);
   if (status == VA_STATUS_SUCCESS)
     ConsumeExperimentalExact(driver, synchronized_surface);
   return finish(status);
