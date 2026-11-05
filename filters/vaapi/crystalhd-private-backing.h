@@ -16,6 +16,7 @@ class CrystalHDPrivateBackingPool {
   static constexpr size_t kBuffers = 4;
   static constexpr size_t kBytes = 16U * 1024U * 1024U;
   struct Usage { size_t buffers = 0, bytes = 0; };
+  enum class ReuseInitialization { Clear, OverwriteBeforeRead };
 
   Usage Cached() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -27,7 +28,8 @@ class CrystalHDPrivateBackingPool {
     return usage;
   }
 
-  std::vector<uint8_t> Acquire(size_t bytes) {
+  std::vector<uint8_t> Acquire(
+      size_t bytes, ReuseInitialization initialization = ReuseInitialization::Clear) {
     std::vector<uint8_t> storage;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -40,8 +42,9 @@ class CrystalHDPrivateBackingPool {
     }
     if (storage.empty())
       storage.resize(bytes);
-    else
+    else if (initialization == ReuseInitialization::Clear)
       // resize on an already-sized vector does NOT clear old crop/padding.
+      // Only an explicit internal full-overwrite consumer may retain bytes.
       std::fill(storage.begin(), storage.end(), uint8_t{0});
     return storage;
   }

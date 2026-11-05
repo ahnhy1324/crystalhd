@@ -2297,6 +2297,115 @@ static void H264FieldPartialStateClearsAtTeardownAndEos() {
   }
 }
 
+static void CenteredDirtySmallFieldReceiveOwnership() {
+  for (bool direct : {false, true})
+    for (bool bottom_first : {false, true})
+      for (unsigned fault = 0; fault != 4; ++fault) {
+        DecodeIoMock io;
+        H264FieldFixture fixture(direct, false, VA_FOURCC_NV12, 128);
+        auto &d = fixture.decoder;
+        d.width = 256; d.height = 64;
+        crystalhd_centered_output::Config config;
+        config.enabled = true; config.capture_width = 128; config.capture_height = 32;
+        config.visible_width = 256; config.visible_height = 64;
+        Require(crystalhd_centered_output::BuildGeometry(config, 256, 64, 4,
+                                                        &d.centered_geometry),
+                "prepare exact Centered field/canvas geometry");
+        Require(fixture.public_frame->AllocateCpuNv12(256, 64),
+                "allocate the real public test canvas");
+        if (!direct)
+          Require(fixture.private_frame->AllocateCpuNv12(256, 64),
+                  "allocate the independent private test canvas");
+        else {
+          fixture.private_frame->width = 256;
+          fixture.private_frame->height = 64;
+        }
+        fixture.private_frame->centered_geometry = d.centered_geometry;
+        fixture.private_frame->centered_pixels = std::make_shared<Surface>();
+        const auto small = fixture.private_frame->centered_pixels;
+        auto pool = std::make_shared<CrystalHDPrivateBackingPool>();
+        std::vector<uint8_t> dirty(size_t{128} * (32U + 16U), 0xa5);
+        uint8_t *const retired = dirty.data();
+        pool->Recycle(std::move(dirty));
+        Require(small->AllocateCpuNv12(128, 32, pool,
+                    CrystalHDPrivateBackingPool::ReuseInitialization::OverwriteBeforeRead) &&
+                    small->storage.data() == retired,
+                "use retired dirty small bytes in actual packed field/release controls");
+        auto first = fixture.Output(bottom_first, bottom_first,
+                                     bottom_first ? &fixture.bottom : &fixture.top);
+        auto second = fixture.Output(!bottom_first, bottom_first,
+                                      bottom_first ? &fixture.top : &fixture.bottom);
+        first.PicInfo.width = second.PicInfo.width = 128;
+        io.override_output = true;
+        io.overridden_output = first;
+        MockDecodeScope scope(io);
+        d.device = io.handle();
+        if (fault == 1) io.output_release_status = BC_STS_ERROR;
+        bool activity = false;
+        const auto first_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+        Require(activity && io.released_outputs == 1 && !io.invalid && !small->ready &&
+                    std::all_of(small->storage.begin(), small->storage.end(),
+                                [](uint8_t byte) { return byte == 0xa5; }),
+                "the released packed first field never consumes dirty incomplete small pixels");
+        if (fault == 1) {
+          Require(first_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      !d.h264_first_field.valid && !fixture.public_frame->ready &&
+                      fixture.public_frame->failed && fixture.private_frame->failed,
+                  "failed first release cannot publish unfinished dirty small or arm Bob");
+          continue;
+        }
+        Require(first_status == VA_STATUS_SUCCESS && d.h264_first_field.valid &&
+                    !d.h264_first_field.pixels.empty() && !fixture.public_frame->ready &&
+                    !fixture.private_frame->ready && d.replay.outstanding() == 1,
+                "only the genuine packed field is retained before its matching complement");
+        if (fault == 2) io.output_release_status = BC_STS_ERROR;
+        if (fault == 3) ++second.PicInfo.picture_number;
+        io.overridden_output = second;
+        activity = false;
+        const auto second_status = ReceiveOne(&fixture.driver, &d, 0, &activity);
+        Require(activity && io.released_outputs == 2 && !io.invalid &&
+                    !d.h264_first_field.valid,
+                "complement releases once and clears the packed first-field identity");
+        if (fault == 2) {
+          Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      fixture.public_frame->ready && fixture.private_frame->ready,
+                  "second release failure preserves existing complete pixels and fails the decoder");
+          continue;
+        }
+        if (fault == 3) {
+          Require(second_status == VA_STATUS_ERROR_DECODING_ERROR && d.replay.failed() &&
+                      fixture.public_frame->failed && fixture.private_frame->failed &&
+                      !small->ready && std::all_of(small->storage.begin(), small->storage.end(),
+                          [](uint8_t byte) { return byte == 0xa5; }),
+                  "mismatched complement fails without converting or publishing dirty small bytes");
+          continue;
+        }
+        Require(second_status == VA_STATUS_SUCCESS && fixture.public_frame->ready &&
+                    fixture.private_frame->ready && small->ready &&
+                    small->frame_timestamp == 1 && fixture.public_frame->frame_timestamp == 1 &&
+                    d.replay.outstanding() == 0 && d.pending.empty(),
+                "only the validated packed pair produces a complete real public canvas");
+        for (unsigned plane = 0; plane != 2; ++plane) {
+          const unsigned rows = plane ? 32 : 64, top = plane ? 8 : 16;
+          const unsigned active_rows = plane ? 16 : 32;
+          for (unsigned row = 0; row != rows; ++row)
+            for (unsigned x = 0; x != 256; ++x) {
+              uint8_t expected = plane ? 128 : 16;
+              if (row >= top && row < top + active_rows && x >= 64 && x < 192) {
+                const unsigned y = row - top;
+                expected = plane
+                    ? uint8_t(((y & 1U) ? ((x & 1U) ? 160 : 140)
+                                        : ((x & 1U) ? 60 : 40)) + (y & ~1U) + 1U)
+                    : uint8_t(((y & 1U) ? 100 : 20) + y / 2U);
+              }
+              Require(fixture.public_frame->planes[plane][size_t{row} *
+                          fixture.public_frame->pitch[plane] + x] == expected,
+                      "packed pair overwrites every ROI byte and preserves exact complete YUV borders");
+            }
+        }
+      }
+}
+
 static void H264FirstFieldAllocationFailureReleasesOutput() {
   DecodeIoMock io;
   H264FieldFixture fixture;
@@ -12878,6 +12987,7 @@ static void NeutralAuxiliaryContracts() {
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
+      CenteredDirtySmallFieldReceiveOwnership();
       CenteredAdmissionSubmitsBeforeReadyOutput();
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
@@ -12994,6 +13104,7 @@ int main(int argc, char **argv) {
     H264FieldPairRejectsPartialOrMismatchedOutput();
     H264FieldPartialStateClearsAtTeardownAndEos();
     H264FirstFieldAllocationFailureReleasesOutput();
+    CenteredDirtySmallFieldReceiveOwnership();
     OutputAllocationFailuresReleaseHardwareExactlyOnce();
     DeviceCloseRetriesNonConsumingBusy();
     RetainedHandleClosesBeforeDecoderReopen();

@@ -730,7 +730,9 @@ struct Surface {
 
   bool AllocateCpuNv12(unsigned int requested_width,
                         unsigned int requested_height,
-                        const std::shared_ptr<CrystalHDPrivateBackingPool> &pool = {}) {
+                        const std::shared_ptr<CrystalHDPrivateBackingPool> &pool = {},
+                        CrystalHDPrivateBackingPool::ReuseInitialization initialization =
+                            CrystalHDPrivateBackingPool::ReuseInitialization::Clear) {
     if (requested_width > UINT_MAX - 63U)
       return false;
     const size_t stride = Align(requested_width, 64);
@@ -741,7 +743,7 @@ struct Surface {
          stride > SIZE_MAX / (luma_rows + chroma_rows)))
       return false;
     const size_t bytes = stride * (luma_rows + chroma_rows);
-    storage = pool ? pool->Acquire(bytes) : std::vector<uint8_t>(bytes);
+    storage = pool ? pool->Acquire(bytes, initialization) : std::vector<uint8_t>(bytes);
     private_backing_pool = pool;
     width = requested_width;
     height = requested_height;
@@ -7010,8 +7012,20 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       decoded_frame->centered_geometry.canvas_width = target_surface->width;
       decoded_frame->centered_geometry.canvas_height = target_surface->height;
       decoded_frame->centered_pixels = std::make_shared<Surface>();
+      // This internal small allocation is unreadable until actual conversion
+      // completes. Tight Y/UV rows have no padding: the validated full picture
+      // (or both validated field parities) overwrites EVERY byte before READY.
+      // Early Bob owns an independent compact view of the first field.
+      // Fresh allocations and all padded/generic/compact buffers stay zeroed.
+      const bool overwrite_reused_small = IsH264Profile(profile) &&
+          decode->decoder_open && decode->decoder_started && !decode->is_70012 &&
+          (decode->CaptureWidth() & 63U) == 0 && (decode->CaptureHeight() & 3U) == 0;
+      const auto initialization = overwrite_reused_small
+          ? CrystalHDPrivateBackingPool::ReuseInitialization::OverwriteBeforeRead
+          : CrystalHDPrivateBackingPool::ReuseInitialization::Clear;
       if (!decoded_frame->centered_pixels->AllocateCpuNv12(
-              decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool))
+              decode->CaptureWidth(), decode->CaptureHeight(), decode->private_backing_pool,
+              initialization))
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
   } catch (const std::bad_alloc &) {
