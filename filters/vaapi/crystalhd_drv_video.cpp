@@ -7543,7 +7543,12 @@ static VAStatus TryH264Auxiliary(Driver *driver, DecodeContext *decode,
                postprefix_attempted, decode->prefed_timestamp == decode->next_timestamp,
                decode->pending_prefeed_timestamp != 0, postprefix_status);
   if (postprefix_status != VA_STATUS_SUCCESS) return postprefix_status;
-  driver->condition.notify_all();
+  // A worker already polling RX cannot observe a new TX retry through the
+  // condition variable. Latch its control event when the delimiter is pending.
+  if (decode->pending_prefeed_timestamp != 0)
+    driver->NotifyDecodeWorker();
+  else
+    driver->condition.notify_all();
   return VA_STATUS_SUCCESS;
 }
 

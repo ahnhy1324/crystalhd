@@ -122,6 +122,10 @@ struct WorkerPollBarrier {
   std::condition_variable condition;
   int descriptor = -1;
   bool entered = false, release = false, expired = false;
+  unsigned poll_entries = 0;
+  int first_timeout = -2, first_result = -2;
+  short first_control_revents = 0;
+  bool first_returned = false;
   bool destroy_done = false, descriptor_closed = false;
   VAStatus destroy_status = VA_STATUS_ERROR_OPERATION_FAILED;
   void Release() {
@@ -216,15 +220,27 @@ extern "C" int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) {
         return fd.fd == worker_poll_barrier->descriptor && fd.events == POLLIN;
       })) {
     std::unique_lock<std::mutex> lock(worker_poll_barrier->mutex);
-    if (!worker_poll_barrier->entered) {
+    const bool first = !worker_poll_barrier->entered;
+    ++worker_poll_barrier->poll_entries;
+    if (first) {
       worker_poll_barrier->entered = true;
+      worker_poll_barrier->first_timeout = timeout;
       worker_poll_barrier->condition.notify_all();
       worker_poll_barrier->expired = !worker_poll_barrier->condition.wait_for(
           lock, std::chrono::seconds(5),
           [] { return worker_poll_barrier->release; });
     }
+    worker_poll_barrier->condition.notify_all();
     lock.unlock();
-    return __real_poll(fds, count, timeout);
+    const int result = __real_poll(fds, count, timeout);
+    if (first) {
+      std::lock_guard<std::mutex> returned(worker_poll_barrier->mutex);
+      worker_poll_barrier->first_result = result;
+      worker_poll_barrier->first_control_revents = fds[0].revents;
+      worker_poll_barrier->first_returned = true;
+      worker_poll_barrier->condition.notify_all();
+    }
+    return result;
   }
   if (probe_poll_results.empty())
     return __real_poll(fds, count, timeout);
@@ -13356,7 +13372,130 @@ static void CenteredExactSyncRejectsUnqualifiedLookahead() {
   }
 }
 
+static void AuxiliaryPendingPrefixWakesArmedWorker() {
+  // Keep real poll/eventfd behavior inside the existing mocked DIL fixture.
+  // The barrier orders the producer before poll, so a control wake must latch.
+  for (bool bottom_first : {false, true})
+   for (bool prefix_busy : {true, false}) {
+    H264AdmissionFixture f(8, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(f);
+    auto &d = *f.decoder;
+    d.auto_h264_prefeed = true;
+    f.Prepare(1);
+    d.picture = NeutralPicture(256, 64);
+    Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS &&
+                d.prefed_timestamp == 2 * kTimestampStep,
+            "admit a real original and its accepted next-AU prefix before worker polling");
+    f.io.outputs.push_back(kTimestampStep);
+    f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+        (bottom_first ? VDEC_FLAG_BOTTOMFIELD | VDEC_FLAG_BOTTOM_FIRST : VDEC_FLAG_TOPFIELD));
+    Require(ReceiveAvailable(&f.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                d.h264_first_field.valid && f.io.released_outputs == 1 && !f.held[0]->ready,
+            "the auxiliary demand owns a genuinely released original first field");
+    const auto pixels = f.held[0]->storage;
+    const auto held = d.h264_first_field.pixels;
+    const auto ordinal = d.next_submission_ordinal;
+    const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    Require(readiness >= 0, "allocate a quiet real RX readiness descriptor");
+    f.io.readiness_event = readiness;
+    d.output_poll = std::make_shared<OutputPollLease>(readiness);
+    DrainDecodeControlFd(f.driver.decode_control_fd);
+    WorkerPollBarrier barrier;
+    barrier.descriptor = readiness;
+    struct PollCleanup {
+      Driver &driver;
+      WorkerPollBarrier &barrier;
+      ~PollCleanup() {
+        barrier.Release();
+        driver.StopWorkers();
+        worker_poll_barrier = nullptr;
+      }
+    } cleanup{f.driver, barrier};
+    worker_poll_barrier = &barrier;
+    f.driver.StartDecodeWorker();
+    {
+      std::unique_lock<std::mutex> lock(barrier.mutex);
+      Require(barrier.condition.wait_for(lock, std::chrono::seconds(2),
+                                         [&] { return barrier.entered; }) &&
+                  barrier.first_timeout == -1,
+              "the actual worker arms its exact RX lease before an indefinite real poll");
+    }
+    bool control_latched = false;
+    size_t calls_after_auxiliary = 0;
+    {
+      std::lock_guard<std::mutex> lock(f.driver.mutex);
+      pollfd control = {f.driver.decode_control_fd, POLLIN, 0};
+      pollfd output = {readiness, POLLIN, 0};
+      Require(d.output_poll_inflight == 1 && d.armed_output_poll.lock() == d.output_poll &&
+                  poll(&control, 1, 0) == 0 && poll(&output, 1, 0) == 0 &&
+                  f.io.outputs.empty(),
+              "the worker is armed while both real control/RX descriptors are quiet");
+      std::vector<uint8_t> auxiliary;
+      Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &auxiliary),
+              "accepted original syntax supplies the actual auxiliary input bytes");
+      f.io.prefeed_busy_once = prefix_busy;
+      if (!prefix_busy) {
+        const size_t reservation = auxiliary.size() +
+            (auxiliary.size() / 60000U + 1U) * 32U + 1024U;
+        Require(reservation < H264LowLatencyPrefeed().size() + 1024U,
+                "small auxiliary reservation admits the payload before the larger prefix-space guard");
+        f.io.tx_free_size = static_cast<uint32_t>(reservation);
+      }
+      Require(TryH264Auxiliary(&f.driver, &d, f.held[0], nullptr,
+                  kDecodeBatchGraceNs, H264AuxiliaryDemand::CenteredExactSync) == VA_STATUS_SUCCESS &&
+                  d.auxiliary.pending && d.auxiliary.needs_eos &&
+                  d.auxiliary.timestamp == 2 * kTimestampStep &&
+                  d.pending_prefeed_timestamp == 3 * kTimestampStep && !d.prefed_timestamp &&
+                  d.input_backpressured &&
+                  (prefix_busy
+                      ? !f.io.input_calls.back().accepted &&
+                          f.io.input_calls.back().bytes == H264LowLatencyPrefeed()
+                      : f.io.input_calls.back().accepted &&
+                          f.io.input_calls.back().bytes == auxiliary),
+              "actual accepted auxiliary leaves only its BUSY or space-limited delimiter pending for the worker");
+      calls_after_auxiliary = f.io.input_calls.size();
+      f.io.tx_free_size = 1024 * 1024; // The TX consumer can free space without an RX event.
+      control_latched = poll(&control, 1, 0) == 1 && (control.revents & POLLIN) != 0;
+      Require(poll(&output, 1, 0) == 0 && f.io.outputs.empty(),
+              "auxiliary input cannot fabricate an RX readiness signal");
+    }
+    barrier.Release();
+    bool returned_and_rearmed = false;
+    {
+      std::unique_lock<std::mutex> lock(barrier.mutex);
+      returned_and_rearmed = barrier.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+        return barrier.first_returned && barrier.poll_entries >= 2;
+      });
+    }
+    // No rescue wake, frontend pump or RX signal precedes this verdict.
+    Require(control_latched && returned_and_rearmed && barrier.first_result > 0 &&
+                (barrier.first_control_revents & POLLIN) != 0 && !barrier.expired,
+            "pending auxiliary delimiter must latch control readiness and wake the actual worker poll");
+    {
+      std::lock_guard<std::mutex> lock(f.driver.mutex);
+      Require(d.pending_prefeed_timestamp == 0 && d.prefed_timestamp == 3 * kTimestampStep &&
+                  f.io.input_calls.size() == calls_after_auxiliary + 1 &&
+                  f.io.input_calls.back().accepted &&
+                  f.io.input_calls.back().timestamp == 3 * kTimestampStep &&
+                  f.io.input_calls.back().bytes == H264LowLatencyPrefeed() &&
+                  f.io.inputs == std::vector<uint64_t>({kTimestampStep, 2 * kTimestampStep}) &&
+                  d.auxiliary.pending && d.auxiliary.needs_eos && !d.auxiliary.ended &&
+                  d.h264_first_field.valid && d.h264_first_field.pixels == held &&
+                  d.next_submission_ordinal == ordinal && !f.held[0]->ready &&
+                  f.held[0]->storage == pixels && f.io.released_outputs == 1 &&
+                  std::count(f.io.events.begin(), f.io.events.end(), "seal") == 0 && !f.io.invalid,
+              "worker alone retries exactly the delimiter without replaying auxiliary or publishing missing pixels/EOS");
+    }
+    f.driver.StopWorkers();
+    worker_poll_barrier = nullptr;
+    Require(d.Close(0) == BC_STS_SUCCESS && d.device == nullptr &&
+                f.io.device_close_calls == 1 && f.held[0]->storage == pixels,
+            "finite mock probe consumes its unfinished channel without a forged complete picture");
+  }
+}
+
 static void NeutralAuxiliaryContracts() {
+  AuxiliaryPendingPrefixWakesArmedWorker();
   ReceiveAvailableQuietHintPreservesActivity();
   CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
@@ -13390,6 +13529,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--output-worker-handoff") == 0) {
+      AuxiliaryPendingPrefixWakesArmedWorker();
       OutputBacklogWorkerReleasesDriverMutex();
       BudgetedWorkerReleasesDriverMutex();
       puts("VA-API output/input worker handoff PASS");
