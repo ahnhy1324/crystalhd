@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "FULL_CENTERED_CPU_PORT_CHECKS_PASS_SOURCE900_FAIL",
+  "owning_issues": [477, 436],
+  "owner_disposition": "Both umbrella issues remain open for source900 research and their broader acceptance; all thirteen owners retain their genuine remaining scopes.",
+  "actual_source": {
+    "revision": "16bbc04368d65f2e89f2c278910ad30443412d2a",
+    "directory": "/home/mache/.cache/crystalhd-centered-cpu-canvas-current-20261106",
+    "basis": "Latest maintained98ec plus narrow maintained247 auxiliary field/relative-POC/10ms correction; qualified research6a CPU/canvas/storage/conversion/worker port.",
+    "product_code_matches_research": "6a293fff3d49ff5d04e73df24d9b323f54a7227e",
+    "test_retention": "Preserves maintained247 explicit private-field masks and complementary-picture-number mismatch, alongside research stale-epoch and ownership controls.",
+    "later_documentation_only_changes": "Reuse these source16bbc actual results; a later documentation-only head is not described as freshly played or retested.",
+    "integration": "At capture time, PR674 carried the complete port and final combined review/current-base CI integration was pending. Use the linked PR for current integration status; no stable-release qualification is claimed."
+  },
+  "maintained_changes": [
+    "Owned full CPU canvases, private COW derived images and canonical border reuse with existing fallbacks, lifetime and budget limits.",
+    "Field-local fused NV12 conversion, exact public ROI mirroring and deferred independent Small stores with materialization before consumers/writers/exports require them.",
+    "Bounded source prefetch and worker field-pair handoff, retaining private auxiliary release, original ownership and EOS rules.",
+    "Private field-pair auxiliary layout, relative bottom-field POC and 10ms exact-Sync quiet guard from the narrow maintained correction."
+  ],
+  "fresh_CPU_validation": {
+    "strict_O2_ordinary_and_private_builds": "PASS",
+    "full_scaling": {"groups": 52, "checks": 21094879, "failures": 0, "COW_groups_unexercised": 0},
+    "full_replay_VPP_buffer_handles": "PASS",
+    "real_kernel_COW64": {"status": "PASS", "checks": 172102},
+    "native32_COW": "Build/run PASS on the current64-bit host; not unavailable Atom/i386 equipment playback qualification.",
+    "four_observer_contracts": "Payload, centered, maintained-cost and replay-disposition checks PASS, including v1/v2 reader bounds and negative controls.",
+    "independent_source_reviews": "PASS for implementation, retained tests, observer compatibility and runtime configuration.",
+    "DIL_scope": "Source-identical initial shared-library reuse is historical. Private make subsequently rebuilt the DIL dependency, with its log retained; no fresh DIL test suite is claimed.",
+    "limits": "Affected checks only. No fresh whole-project suite, profiler or old microbenchmark result is implied."
+  },
+  "fresh_prefix75": {
+    "case": "main-cpu-canvas-native-owner-candidate-01",
+    "status": "PASS_SCOPED_AUX_FIELD_PAIR_PREFIX75_CONTINUATION",
+    "client": "Unchanged original held-first75 client/default discard; same providers, input and temporary22. No pre-first prototype or modified external product.",
+    "baseline": {"source": "2d761cf099c17b71c9c7614b84921cfc4dbe376d", "case": "aux-field-native-owner-baseline-01", "reused": true},
+    "candidate_fresh": true,
+    "all75_visible_NV12_bytes_equal": true,
+    "all75_raw_frame_metadata_equal": true,
+    "actual_private_acquisitions_and_successful_releases": 2,
+    "private_field_masks_after_release": [1, 3],
+    "private_pending_after_release": [1, 0],
+    "auxiliary_public_owners": 0,
+    "scoped_FMT18_baseline_candidate": [2, 0],
+    "following_original_admissions": 63,
+    "before_next_IDR_picture_classes": ["B", "P"],
+    "next_IDR_packet_ordinals": [26, 51],
+    "actual_EOS_and_owned_retirement": true,
+    "official20_restoration": "PASS",
+    "scope": "Every visible1920x1080 Y/UV byte and raw frame metadata compared against a reused cross-source baseline. Not an independent normative decoder golden, paired timing, coded1088 padding, clock/cadence or GPU-return qualification. FMT18 census has a complete following-original endpoint and retained right-censor rules; zero in this scope is not a global promise."
+  },
+  "fresh_original900": {
+    "case": "main-cpu-canvas22-fixed-private-01",
+    "status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+    "originals": [893, 895],
+    "genuine_original_fields_and_successful_releases": [1786, 1790],
+    "strict_native_ledgers": ["PASS", "PASS"],
+    "completed_replay_inputs": [0, 0],
+    "four_scoped_audits": {
+      "packet_admission": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+      "postfilter": "PASS_SCOPED_POSTFILTER_OBSERVATION",
+      "maintained_cost": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+      "replay_disposition": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION"
+    },
+    "controls": "PASS",
+    "application_exit": 0,
+    "kernel_exit": 0,
+    "errors": [],
+    "max_temperature_mC": 68000,
+    "AC_present_throughout": true,
+    "full_boundary_equal": true,
+    "live_resource_handoff": null,
+    "official20_restoration": "PASS",
+    "scope": "Two unchanged original Kodi/App FFmpeg natural plays,900-picture input, method7/actual BWDIF, unchanged scheduling/discard and own diagnostic observers. Passing scoped audits do not waive the missing originals or qualify stock compatibility/release."
+  },
+  "retained_comparisons": {
+    "narrow_maintained247": {"source": "247bfc8dad81b8da7d5caa3a44273c757288d565", "originals": [832, 834], "source900": "FAIL", "receipt": "tests/fixtures/issue477/auxiliary-field-pacing-20261106.json"},
+    "same_product_research6a": {"source": "6a293fff3d49ff5d04e73df24d9b323f54a7227e", "case": "aux-idle-grace22-fixed-private-01", "originals": [900, 900], "source900": "PASS for that recorded case only"},
+    "interpretation": "The latest same-product893/895 result does not repeat the earlier900/900 case. Preserve both; no repeatable900 qualification, paired speedup, main-before/after timing or causal shortage attribution follows from these serial populations."
+  },
+  "persistent_host": {"release": "1.3.0", "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d", "module": "3.10.20", "temporary_module": "3.10.22; normal complete official20 restoration after owned retirement"},
+  "remaining_limits": [
+    "Full900 observation and lateness/selection attribution remain research work; no confirmed external defect or global impossibility is established.",
+    "Independent full-field/chroma and post-copy/filter pixels, source clocks/cadence, matched CPU/QoS benefit, GPU return/lifetime/endurance, broader inputs and the original filter-EOF tail retain their owning scopes.",
+    "Source-qualified no-drift logs satisfy A/V for the recorded route. Accepted renderer/QoS loss does not create a universal zero-loss release gate.",
+    "Centered remains default-off. No external product patch/default change or replacement of frozen1.3 artifacts; previous receipts and failed runs remain immutable."
+  ],
+  "artifact_root": "/home/mache/.cache/crystalhd-source900-current-20261105",
+  "original_artifacts_relative_to_root": {
+    "CPU_scope_at_completion_before_physical": "main-cpu-canvas-CPU-source-status.json",
+    "affected_CPU_results": "main-cpu-canvas-affected-status.json",
+    "observer_results": "main-cpu-canvas-observer-status.json",
+    "native32_COW": "main-cpu-canvas-cow-native32-status.json",
+    "private_build_including_DIL_dependency": "main-cpu-canvas-private-O2-build-01.log",
+    "prefix75_plan": "main-cpu-canvas-native-owner-runtime-plan.json",
+    "prefix75_executor": "main-cpu-canvas-native-owner-candidate-01/executor.json",
+    "prefix75_raw_report": "main-cpu-canvas-native-owner-candidate-01/payload/prefix75.jsonl",
+    "prefix75_raw_pixels": "main-cpu-canvas-native-owner-candidate-01/payload/prefix75.nv12",
+    "prefix75_raw_native": "main-cpu-canvas-native-owner-candidate-01/native.stderr",
+    "prefix75_comparison": "main-cpu-canvas-native-owner-comparison-01.json",
+    "prefix75_restore": "module22-main-cpu-canvas-component-candidate-transition-restore20.json",
+    "original900_plan": "main-cpu-canvas22-fixed-private-01.plan.json",
+    "original900_result": "main-cpu-canvas22-fixed-private-01/result.json",
+    "original900_summary": "main-cpu-canvas22-case-summary.json",
+    "original900_restore": "module22-main-cpu-canvas-transition-restore20.json",
+    "research6a_summary": "aux-idle-grace22-case-summary.json"
+  }
+}
