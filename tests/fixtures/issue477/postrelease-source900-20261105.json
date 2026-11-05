@@ -515,10 +515,52 @@
         0
       ],
       "scope": "Original supplied Kodi method7, two natural EOFs. All audits/cleanup pass within scope; neither900 originals nor caller filter EOF is repaired."
+    },
+    {
+      "case": "sync-ready21-fixed-private-01",
+      "source": "de3cc070c013eae3d72e1850dba4d4d3e2e5afc4",
+      "kernel_source": "73249577ba870bafd37b9646673bdb308264462f",
+      "loaded_experimental_module": "3.10.21/99C610ED7BFC63B60BE2250",
+      "change": "Full research with early exact-Centered-Sync lookahead after successful empty READY0 sample; default/fixed DIL",
+      "actual_DIL_allocation_mode": "FIXED/default",
+      "originals": [
+        869,
+        888
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "replay_fields": [
+        0,
+        0
+      ],
+      "successful_restarts": [
+        0,
+        0
+      ],
+      "source900": "FAIL",
+      "controls_and_four_private_audits": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_experimental21_boundary_equal": true,
+      "normal_restore_official20_full_guard": "PASS",
+      "handoff": null,
+      "sampled_maximum_temperature_mC": 74000,
+      "post_controller_retirement_temperature_note": {
+        "observed_mC": 75000,
+        "scope": "Separate root observation after controller retirement, outside its recorded sampling window; retain alongside sampled74C, not as an overwritten in-window sample. Normal M.guard subsequently passed before restore20."
+      },
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready21-fixed-private-01/result.json",
+      "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-sync-ready-transition-restore20.json"
     }
   ],
   "current_source_checkpoint": {
-    "latest_private_case": "sync-lookahead21-fixed-private-01",
+    "latest_private_case": "sync-ready21-fixed-private-01",
     "latest_ordinary_case": "main-input-ordinary-01",
     "host": "Official1.3/source24a/module20 remains the permanent matched installation. The actual21 experiment has its own frozen artifact/snapshot; normal restore20 passes the original full baseline guard.",
     "private_audits": "Current private cases retain the four scoped observation audits PASS; these audits do not waive source900. The explicit21 case/restoration has its own receipt.",
@@ -575,7 +617,7 @@
       "limits": "No picture-arrival wait is not a hard semaphore/callback bound. The separate870/875 SIZED and892/860 fixed actual playbacks still FAIL900; timeout repair is not proved the missing-original cause."
     },
     "sync_lookahead_candidate": {
-      "status": "COMPONENT_PREFIX75_DIFFERENTIAL_PASS; STOCK879_861_SOURCE900_FAIL",
+      "status": "MERGED_PR667; COMPONENT_PREFIX75_DIFFERENTIAL_PASS; STOCK879_861_SOURCE900_FAIL",
       "narrow_source": "1ebc59fd3c38b3bd4366d89bcc7752881e0ab272",
       "no_aux_parent_source": "6f813a024a53ada3204a30e035314838e4209d5b",
       "implementation": "Explicit full-Sync demand for an exact live public Centered H264/Flea owner with a genuine released first field. Reuse existing nonreference intra auxiliary, unchanged100ms inactivity/accepted-syntax/private-output/actual-EOS fences; no fabricated Bob demand; auxiliary never acquires original/public picture ownership.",
@@ -682,7 +724,88 @@
         "official20_full_restore": "PASS",
         "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-lookahead21-fixed-private-01/result.json"
       },
-      "remaining": "Substantiate/fix original Kodi900 shortage and decoder skip/latency without external product changes or criterion relaxation; preserve separate caller filter-EOF, pixel/clock, GPU-return and endurance boundaries."
+      "remaining": "Substantiate/fix original Kodi900 shortage and decoder skip/latency without external product changes or criterion relaxation; preserve separate caller filter-EOF, pixel/clock, GPU-return and endurance boundaries.",
+      "integration": {
+        "PR": 667,
+        "merge": "cd5d88ebb9d10bc987d92518b507cd0b204b8fb4",
+        "current_base_CI_run": 41972643790,
+        "success": 15,
+        "intended_skips": 2,
+        "CI_gate": "PASS"
+      }
+    },
+    "sync_ready_lookahead_candidate": {
+      "status": "EARLY_COMPONENT_PREFIX75_DIFFERENTIAL_PASS; STOCK869_888_SOURCE900_FAIL",
+      "narrow_source": "7b5b35a409ebead88d37b6e10f9129bfe0f144e3",
+      "implementation": "Only exact full-Sync may use positive idle after an existing successful GetDriverStatus READY-count0 sample with no acquired activity in that bounded turn. A progress/acquired/FMT/duplicate/error/zero-attempt turn cannot authorize it. Bob/EOS100ms grace, actual output/ownership/absolute deadlines and original source criterion remain unchanged.",
+      "source_review": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready-lookahead-source-review-A.json",
+      "actual_prefix75": {
+        "comparison": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready-native-owner-comparison.json",
+        "independent_review": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready-native-owner-actual-review-A.json",
+        "candidate": "sync-ready-native-owner-candidate-01",
+        "reused_no_aux_baseline": "sync-lookahead-native-owner-baseline-01; source6f813a0, same frozen original providers/DIL/fixture/module21",
+        "private_auxiliary_idle_ns": 10130587,
+        "selected_Sync_gap_wall_ns": 89676022,
+        "early_exercise": "0<idle<100000000; successful empty READY0 sample is source-gated, not a separately observed BC_STS_NO_DATA return.",
+        "originals_each": 75,
+        "all75_full_visible_NV12_bytes_and_public_metadata_equal": true,
+        "visible_NV12": [
+          1920,
+          1080
+        ],
+        "bundle_bytes_each_arm": 233280000,
+        "following_original_admissions": 63,
+        "next_IDR_packet_ordinals": [
+          26,
+          51
+        ],
+        "actual_P_and_B_before_next_IDR": true,
+        "genuine_original_output_fields": 2,
+        "genuine_original_M": 1,
+        "private_auxiliary_public_owners": 0,
+        "actual_auxiliary_release_and_terminal_EOS": true,
+        "no_channel_restart_before_prefix_drain": true,
+        "scope": "Unpaced OWN component continuation safety only. Reused historical baseline is not a fresh paired speed/cadence estimate; no stock/source900/release acceptance or normative decoder golden."
+      },
+      "affected_controls": {
+        "strict_ordinary_and_private_VA": "PASS",
+        "focused_and_full_replay": "PASS",
+        "old100ms_mutation": {
+          "build_exit": 0,
+          "test_exit": 1,
+          "disposition": "Expected semantic assertion failure of the genuine early exact-Sync path; retain distinct from the old geometry-predicate controls.",
+          "evidence_directory": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready-old100ms-control"
+        }
+      },
+      "actual_stock_followup": {
+        "case": "sync-ready21-fixed-private-01",
+        "source": "de3cc070c013eae3d72e1850dba4d4d3e2e5afc4",
+        "originals": [
+          869,
+          888
+        ],
+        "source900": "FAIL",
+        "completed_replay_inputs": [
+          0,
+          0
+        ],
+        "successful_restarts": [
+          0,
+          0
+        ],
+        "strict_ledgers_and_four_audits": "PASS",
+        "controls": "PASS",
+        "application_exit": 0,
+        "kernel_exit": 0,
+        "full_experimental21_boundary_equal": true,
+        "handoff": null,
+        "sampled_maximum_temperature_mC": 74000,
+        "after_controller_observed_temperature_mC": 75000,
+        "temperature_scope": "75C was a separate post-controller observation, outside the sampled74C window; neither value is hidden.",
+        "normal_official20_full_restore": "PASS",
+        "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-sync-ready-transition-restore20.json"
+      },
+      "remaining": "Original Kodi900 shortage remains unresolved. Serial counts/timings do not prove a causal speedup, external defect, impossibility or issue closure; all historical cases and narrower EOF/pixel/clock/GPU/endurance boundaries remain."
     }
   },
   "latest_private_scope": {
