@@ -452,6 +452,7 @@ static int crystalhd_compat_user_data(unsigned long ua, BC_IOCTL_DATA *native,
 			compat.u.rx_bufs.ref_count = native->u.RxBuffs.RefCnt;
 			break;
 		case BCM_IOC_FETCH_RXBUFF:
+		case BCM_IOC_FETCH_RXBUFF_NOWAIT:
 			crystalhd_dec_out_to_compat(&compat.u.dec_out,
 						    &native->u.DecOutData);
 			break;
@@ -509,6 +510,7 @@ static int crystalhd_compat_user_data(unsigned long ua, BC_IOCTL_DATA *native,
 				compat.u.rx_bufs.ref_count;
 			break;
 		case BCM_IOC_FETCH_RXBUFF:
+		case BCM_IOC_FETCH_RXBUFF_NOWAIT:
 			memset(&native->u.DecOutData, 0,
 			       sizeof(native->u.DecOutData));
 			break;

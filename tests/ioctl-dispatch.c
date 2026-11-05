@@ -227,6 +227,23 @@ static bool capable(int cap)
     return privileged;
 }
 static void *compat_ptr(unsigned long address) { return (void *)(uintptr_t)(uint32_t)address; }
+static compat_uptr_t ptr_to_compat(const void *address) { return (compat_uptr_t)(uintptr_t)address; }
+static struct crystalhd_ioctl_data32 translation_wire;
+static int copy_from_user(void *destination, const void *source, size_t size)
+{
+    Check(source == compat_ptr(0x1234) && size == sizeof(translation_wire),
+          "actual compat input translator reads exactly the compat envelope");
+    memcpy(destination, &translation_wire, size);
+    return 0;
+}
+static int copy_to_user(void *destination, const void *source, size_t size)
+{
+    Check(destination == compat_ptr(0x1234) && size == sizeof(translation_wire),
+          "actual compat output translator writes exactly the compat envelope");
+    memcpy(&translation_wire, source, size);
+    return 0;
+}
+#include "ioctl-translation.h"
 static void *kzalloc(size_t bytes, int flags)
 {
     if (bytes == sizeof(struct crystalhd_file)) return calloc(1, bytes);
@@ -328,7 +345,12 @@ HANDLER(bc_cproc_download_fw, BCM_IOC_FW_DOWNLOAD)
 HANDLER(bc_cproc_do_fw_cmd, BCM_IOC_FW_CMD)
 HANDLER(bc_cproc_proc_input, BCM_IOC_PROC_INPUT)
 HANDLER(bc_cproc_add_cap_buff, BCM_IOC_ADD_RXBUFFS)
-HANDLER(bc_cproc_fetch_frame, BCM_IOC_FETCH_RXBUFF)
+static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io)
+{
+    Check(io->cmd == BCM_IOC_FETCH_RXBUFF || io->cmd == BCM_IOC_FETCH_RXBUFF_NOWAIT,
+          "only the two explicit FETCH commands select the shared receipt handler");
+    return Handle(ctx, io, io->cmd);
+}
 HANDLER(bc_cproc_start_capture, BCM_IOC_START_RX_CAP)
 HANDLER(bc_cproc_flush_cap_buffs, BCM_IOC_FLUSH_RX_CAP)
 HANDLER(bc_cproc_get_stats, BCM_IOC_GET_DRV_STAT)
@@ -401,7 +423,43 @@ static bool SessionRequired(unsigned number)
     return number == DRV_CMD_WR_PCI_CFG || number == DRV_CMD_FW_DOWNLOAD ||
         number == DRV_ISSUE_FW_CMD || number == DRV_CMD_PROC_INPUT ||
         number == DRV_CMD_ADD_RXBUFFS || number == DRV_CMD_FETCH_RXBUFF ||
+        number == DRV_CMD_FETCH_RXBUFF_NOWAIT ||
         number == DRV_CMD_START_RX_CAP || number == DRV_CMD_FLUSH_RX_CAP;
+}
+static void CompatFetchTranslation(void)
+{
+    for (unsigned nowait = 0; nowait != 2; ++nowait) {
+        BC_IOCTL_DATA native;
+        unsigned cmd = nowait ? BCM_IOC_FETCH_RXBUFF_NOWAIT : BCM_IOC_FETCH_RXBUFF;
+        memset(&translation_wire, 0xa5, sizeof(translation_wire));
+        translation_wire.ioctl_data_size = sizeof(translation_wire);
+        translation_wire.timeout = 0;
+        memset(&native, 0x5a, sizeof(native));
+        Check(!crystalhd_compat_user_data(0x1234, &native, cmd, false),
+              "both FETCH commands execute actual compat input translation");
+        BC_DEC_OUT_BUFF zero = {0};
+        Check(!memcmp(&native.u.DecOutData, &zero, sizeof(zero)) && native.Timeout == 0,
+              "compat FETCH clears untrusted output fields before actual dispatch");
+        memset(&native, 0, sizeof(native));
+        native.RetSts = BC_STS_SUCCESS;
+        native.IoctlDataSz = sizeof(translation_wire);
+        native.u.DecOutData.OutPutBuffs.YuvBuff = (uint8_t *)(uintptr_t)0xf1234567U;
+        native.u.DecOutData.OutPutBuffs.YuvBuffSz = 4096;
+        native.u.DecOutData.OutPutBuffs.UVbuffOffset = 2048;
+        native.u.DecOutData.OutPutBuffs.YBuffDoneSz = 512;
+        native.u.DecOutData.OutPutBuffs.UVBuffDoneSz = 256;
+        native.u.DecOutData.Flags = 7;
+        native.u.DecOutData.PibInfo.ppb.width = 720;
+        native.u.DecOutData.PibInfo.ppb.height = 480;
+        Check(!crystalhd_compat_user_data(0x1234, &native, cmd, true) &&
+              translation_wire.u.dec_out.output.yuv_buf == 0xf1234567U &&
+              translation_wire.u.dec_out.output.yuv_buf_size == 4096 &&
+              translation_wire.u.dec_out.output.uv_buf_offset == 2048 &&
+              translation_wire.u.dec_out.output.y_done_size == 512 &&
+              translation_wire.u.dec_out.output.uv_done_size == 256 &&
+              translation_wire.u.dec_out.flags == 7,
+              "actual compat output translation retains NOWAIT buffer pointer/layout/receipt fields");
+    }
 }
 static void PollReadiness(void)
 {
@@ -804,6 +862,7 @@ static void NativeHeld(void)
 
 int main(void)
 {
+    CompatFetchTranslation();
     PollReadiness();
     Routing();
     SessionOwnership();

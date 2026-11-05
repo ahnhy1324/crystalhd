@@ -385,6 +385,12 @@ different payload. DKMS compares module versions using its own ordering, so
 do not rely on SemVer prerelease suffix ordering for module upgrades.
 The public ioctl remains `3.10.0` when the package revision changes.
 Record the mapping here before qualification.
+The development RX-NOWAIT candidate uses module package `3.10.21`: a new
+negotiated FETCH command avoids picture-arrival waits for Flea wait0 callers.
+Published1.3/source24a/module20 and its installed baseline remain unchanged;
+candidate21 is not yet qualified or published. Legacy FETCH, LINK output/EOS
+and positive-timeout waits retain their existing semantics. NOWAIT can still
+sleep on normal session/semaphore locks and is not a fix for all timeout values.
 The runtime installation record identifies the last completed runtime install;
 component checks remain separate. Use the loaded and selected module metadata
 reported by `crystalhd-check` to identify the driver.

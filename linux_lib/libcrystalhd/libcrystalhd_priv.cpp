@@ -2467,6 +2467,34 @@ BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
 //              repost retains the pending count for teardown, not for a
 //              rejected caller to release or a new fetch to reuse.
 //------------------------------------------------------------------------
+static BC_STATUS DtsOutputDriverCaps(DTS_LIB_CONTEXT *Ctx)
+{
+	if (Ctx->DevHandle < 0)
+		return BC_STS_INV_ARG;
+	if (!DtsContextIsCurrentProcess(Ctx))
+		return BC_STS_ERROR;
+	if (Ctx->driverCapsQueried)
+		return BC_STS_SUCCESS;
+	/* The caller already owns DtsAcquireOutput/its whole output-call phase.
+	 * Never overwrite the shared pOutData or use its buffer as a cap query. */
+	BC_IOCTL_DATA query = {};
+	query.IoctlDataSz = sizeof(query);
+	if (ioctl(Ctx->DevHandle, BCM_IOC_QUERY_CAPS, &query) < 0) {
+		if (errno != ENOTTY)
+			return BC_STS_IO_ERROR;
+		Ctx->driverCapsFlags = 0;
+	} else if (query.RetSts == BC_STS_NOT_IMPL) {
+		Ctx->driverCapsFlags = 0;
+	} else if (query.RetSts != BC_STS_SUCCESS) {
+		return query.RetSts;
+	} else {
+		Ctx->driverCapsFlags = query.u.DriverCaps.abi_version >= BC_DRIVER_CAPS_ABI_VERSION
+			? query.u.DriverCaps.flags : 0;
+	}
+	Ctx->driverCapsQueried = true;
+	return BC_STS_SUCCESS;
+}
+
 BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_t dwTimeout)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
@@ -2478,9 +2506,24 @@ BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
+	uint32_t fetch_command = BCM_IOC_FETCH_RXBUFF;
+	/* LINK's legacy copy API advances its established EOS fallback on a
+	 * TIMEOUT. Keep that path unchanged; Flea uses actual firmware markers. */
+	if (dwTimeout == 0 && Ctx->DevId == BC_PCI_DEVID_FLEA) {
+		sts = DtsOutputDriverCaps(Ctx);
+		if (sts != BC_STS_SUCCESS) {
+			DtsDecPend(Ctx);
+			pOut->Ybuff = pOut->UVbuff = NULL;
+			return sts;
+		}
+		if (Ctx->driverCapsFlags & BC_DRIVER_CAP_RX_NOWAIT)
+			fetch_command = BCM_IOC_FETCH_RXBUFF_NOWAIT;
+	}
 	memset(Ctx->pOutData,0,sizeof(*Ctx->pOutData));
 
-	sts=DtsDrvCmd(Ctx,BCM_IOC_FETCH_RXBUFF,0,Ctx->pOutData,FALSE);
+	/* Positive waits and unsupported drivers retain the legacy wait. Never
+	 * retry an advertised NOWAIT command as a legacy blocking FETCH. */
+	sts=DtsDrvCmd(Ctx,fetch_command,0,Ctx->pOutData,FALSE);
 
 	if(sts == BC_STS_SUCCESS)
 	{

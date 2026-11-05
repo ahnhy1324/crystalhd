@@ -36,6 +36,10 @@ static bool allow_output_io, admission_probe, resume_at_stop;
 static bool admission_waiting, resume_admission, admission_done;
 static unsigned fetch_calls, add_calls;
 static BC_STATUS mock_fetch_status = BC_STS_NO_DATA;
+static int caps_errno = ENOTTY, fetch_errno;
+static BC_STATUS caps_status = BC_STS_SUCCESS;
+static uint32_t caps_abi, caps_flags;
+static unsigned caps_calls, legacy_fetches, nowait_fetches;
 static BC_STATUS mock_add_status = BC_STS_SUCCESS;
 static bool cancel_after_fetch;
 static bool cancel_after_add;
@@ -221,6 +225,21 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
 
 extern "C" int __wrap_ioctl(int, unsigned long code, ...)
 {
+    if (allow_output_io && code == BCM_IOC_QUERY_CAPS) {
+        va_list args;
+        va_start(args, code);
+        BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
+        va_end(args);
+        ++caps_calls;
+        check(data != observed->pOutData && data->IoctlDataSz == sizeof(*data) &&
+              observed->ProcOutPending == 1 && observed->outputPhase == DTS_OUTPUT_ACTIVE,
+              "caps use a local envelope inside the admitted whole output call");
+        if (caps_errno) { errno = caps_errno; return -1; }
+        data->RetSts = caps_status;
+        data->u.DriverCaps.abi_version = caps_abi;
+        data->u.DriverCaps.flags = caps_flags;
+        return 0;
+    }
     if (held_owner_case && code == BCM_IOC_FLUSH_RX_CAP) {
         va_list args;
         va_start(args, code);
@@ -237,13 +256,17 @@ extern "C" int __wrap_ioctl(int, unsigned long code, ...)
         }
         return 0;
     }
-    if (allow_output_io && (code == BCM_IOC_FETCH_RXBUFF || code == BCM_IOC_ADD_RXBUFFS)) {
+    if (allow_output_io && (code == BCM_IOC_FETCH_RXBUFF ||
+                           code == BCM_IOC_FETCH_RXBUFF_NOWAIT || code == BCM_IOC_ADD_RXBUFFS)) {
         va_list args;
         va_start(args, code);
         BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
         va_end(args);
-        if (code == BCM_IOC_FETCH_RXBUFF) {
+        if (code == BCM_IOC_FETCH_RXBUFF || code == BCM_IOC_FETCH_RXBUFF_NOWAIT) {
             const unsigned call = fetch_calls++;
+            if (code == BCM_IOC_FETCH_RXBUFF_NOWAIT) ++nowait_fetches;
+            else ++legacy_fetches;
+            if (fetch_errno) { errno = fetch_errno; return -1; }
             if (call < fetch_replies.size()) {
                 data->u.DecOutData = fetch_replies[call].output;
                 data->RetSts = fetch_replies[call].status;
@@ -381,6 +404,11 @@ static BC_STATUS output_callback(void *, uint32_t, uint32_t, uint32_t, void *opa
 
 static void reset_output_mocks()
 {
+    caps_errno = ENOTTY; fetch_errno = 0;
+    caps_status = BC_STS_SUCCESS;
+    caps_abi = BC_DRIVER_CAPS_ABI_VERSION;
+    caps_flags = 0;
+    caps_calls = legacy_fetches = nowait_fetches = 0;
     fetch_replies.clear();
     add_replies.clear();
     reposted_buffers.clear();
@@ -692,8 +720,8 @@ static void test_competing_admissions()
     check((first_status == BC_STS_SUCCESS && second_status == BC_STS_BUSY) ||
           (first_status == BC_STS_BUSY && second_status == BC_STS_SUCCESS),
           "only one competing caller acquires the shared output buffer");
-    check(fetch_calls == 1 && fixture.context.ProcOutPending == 1,
-          "atomic admission reserves exactly one fetch and pending reference");
+    check(fetch_calls == 1 && caps_calls == 1 && fixture.context.ProcOutPending == 1,
+          "atomic admission reserves exactly one negotiation, fetch and pending reference");
     check(DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS &&
           fixture.context.ProcOutPending == 0 && add_calls == 1,
           "successful NoCopy output remains releasable exactly once");
@@ -712,6 +740,159 @@ static void test_failed_fetch(bool no_copy, BC_STATUS fetch_status)
     check(fetch_calls == 1 && add_calls == 0 && fixture.context.ProcOutPending == 0,
           "failed fetch retires only its admission without posting a buffer");
     check(out.DropFrames == 1, "failed fetch cannot consume a requested frame drop");
+}
+
+static void test_negotiated_zero_wait()
+{
+    for (bool inherited : {false, true}) {
+        OutputContext fixture;
+        if (inherited) fixture.context.ProcessID = getpid() + 1;
+        else fixture.context.DevHandle = -1;
+        BC_DTS_PROC_OUT output = {};
+        check(DtsFetchOutInterruptible(&fixture.context, &output, 0) ==
+                  (inherited ? BC_STS_ERROR : BC_STS_INV_ARG) &&
+              !caps_calls && !fetch_calls && !add_calls && !fixture.context.ProcOutPending &&
+              fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "closed/inherited contexts never negotiate through an unowned descriptor");
+    }
+    for (uint32_t abi : {BC_DRIVER_CAPS_ABI_VERSION, BC_DRIVER_CAPS_ABI_VERSION + 1U}) {
+        OutputContext fixture;
+        caps_errno = 0; caps_abi = abi;
+        caps_flags = BC_DRIVER_CAP_RX_NOWAIT | (1U << 31);
+        fixture.context.bEOSCheck = true;
+        fixture.context.EOSCnt = 3;
+        BC_DTS_PROC_OUT output = {};
+        output.DropFrames = 1;
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              !output.Ybuff && !output.UVbuff && output.DropFrames == 1 &&
+              !fixture.context.bEOS && fixture.context.EOSCnt == 3 &&
+              !(output.PicInfo.flags & (VDEC_FLAG_EOS | VDEC_FLAG_LAST_PICTURE)) &&
+              caps_calls == 1 && nowait_fetches == 1 && !legacy_fetches && !add_calls &&
+              !fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "wait0 negotiates its independent NOWAIT bit and empty fetch owns no buffer");
+        caps_errno = EIO; // A cached capability must not be re-queried per frame.
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              caps_calls == 1 && nowait_fetches == 2 && !legacy_fetches &&
+              !fixture.context.ProcOutPending,
+              "same context/descriptor retains negotiated flags across output calls");
+        check(DtsProcOutputNoCopy(&fixture.context, 5, &output) == BC_STS_NO_DATA &&
+              caps_calls == 1 && legacy_fetches == 1,
+              "positive wait keeps legacy FETCH even when NOWAIT was negotiated");
+    }
+    for (unsigned unsupported = 0; unsupported != 4; ++unsupported) {
+        OutputContext fixture;
+        if (unsupported != 0) caps_errno = 0;
+        if (unsupported == 1) caps_status = BC_STS_NOT_IMPL;
+        if (unsupported == 2) { caps_abi = 0; caps_flags = BC_DRIVER_CAP_RX_NOWAIT; }
+        if (unsupported == 3) caps_flags = BC_DRIVER_CAP_RX_POLL | (1U << 31);
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              caps_calls == 1 && legacy_fetches == 1 && !nowait_fetches && !add_calls &&
+              !fixture.context.ProcOutPending,
+              "old/unsupported ABI or absent NOWAIT bit retains legacy compatibility");
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              caps_calls == 1 && legacy_fetches == 2,
+              "unsupported driver result is cached only for this context lifetime");
+    }
+    {
+        OutputContext fixture;
+        caps_errno = EIO;
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 1, &output) == BC_STS_NO_DATA &&
+              !caps_calls && legacy_fetches == 1,
+              "positive wait never queries or depends on additive driver capabilities");
+    }
+    for (uint32_t wait : {0U, 5U}) {
+        OutputContext fixture;
+        fixture.context.DevId = BC_PCI_DEVID_LINK;
+        fixture.context.bEOSCheck = true;
+        caps_errno = EIO;
+        mock_fetch_status = BC_STS_TIMEOUT;
+        BC_DTS_PROC_OUT output = {};
+        const unsigned attempts = wait == 0 ? BC_EOS_PIC_COUNT : 1U;
+        for (unsigned index = 0; index != attempts; ++index)
+            check(DtsProcOutput(&fixture.context, wait, &output) == BC_STS_NO_DATA,
+                  "LINK copy preserves its established legacy timeout mapping");
+        check(!caps_calls && !nowait_fetches && legacy_fetches == attempts &&
+              fixture.context.bEOS && fixture.context.EOSCnt >= BC_EOS_PIC_COUNT &&
+              (output.PicInfo.flags & VDEC_FLAG_LAST_PICTURE) && !fixture.context.ProcOutPending,
+              "LINK zero/positive waits keep legacy FETCH and unchanged EOS counter/metadata");
+    }
+    for (unsigned failure = 0; failure != 3; ++failure) {
+        OutputContext fixture;
+        caps_errno = failure == 0 ? EIO : failure == 1 ? ENODEV : 0;
+        caps_status = failure == 2 ? BC_STS_BUSY : BC_STS_SUCCESS;
+        BC_DTS_PROC_OUT output = {};
+        output.Ybuff = frame_storage[0]; output.UVbuff = frame_storage[1];
+        const BC_STATUS wanted = failure == 2 ? BC_STS_BUSY : BC_STS_IO_ERROR;
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == wanted &&
+              caps_calls == 1 && !fetch_calls && !add_calls && !output.Ybuff && !output.UVbuff &&
+              !fixture.context.driverCapsQueried && !fixture.context.ProcOutPending &&
+              fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "hard capability failure neither fetches nor caches false support or leaks admission");
+        caps_errno = 0; caps_status = BC_STS_SUCCESS; caps_flags = BC_DRIVER_CAP_RX_NOWAIT;
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              caps_calls == 2 && nowait_fetches == 1 && !legacy_fetches,
+              "failed capability query can be retried by a later admitted output call");
+    }
+    for (bool syscall_error : {false, true}) {
+        OutputContext fixture;
+        caps_errno = 0; caps_flags = BC_DRIVER_CAP_RX_NOWAIT;
+        fetch_errno = syscall_error ? ENOTTY : 0;
+        mock_fetch_status = BC_STS_NOT_IMPL;
+        BC_DTS_PROC_OUT output = {};
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) ==
+                  (syscall_error ? BC_STS_ERROR : BC_STS_NOT_IMPL) &&
+              nowait_fetches == 1 && !legacy_fetches && !add_calls &&
+              !fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "advertised NOWAIT command failure is never retried as a blocking legacy fetch");
+    }
+    {
+        OutputContext fixture;
+        prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+        fetch_replies.push_back(make_frame(0, 17, 4));
+        BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+        check(DtsProcOutputNoCopy(&fixture.context, 1, &output) == BC_STS_SUCCESS &&
+              DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS &&
+              !caps_calls && legacy_fetches == 1 && add_calls == 1,
+              "a previous legacy borrow is completely released before first NOWAIT negotiation");
+        caps_errno = EIO;
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_IO_ERROR &&
+              caps_calls == 1 && fetch_calls == 1 && add_calls == 1 &&
+              !fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "failed first negotiation cannot repost stale pOutData from an already released borrow");
+    }
+    for (bool cancel : {false, true}) {
+        OutputContext fixture;
+        prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+        caps_errno = 0; caps_flags = BC_DRIVER_CAP_RX_NOWAIT;
+        fetch_replies.push_back(make_frame(0, 17, 4));
+        cancel_after_fetch = cancel;
+        BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) ==
+                  (cancel ? BC_STS_IO_USER_ABORT : BC_STS_SUCCESS) &&
+              nowait_fetches == 1 && !legacy_fetches,
+              "NOWAIT success/cancellation uses the existing fetched-output ownership path");
+        if (!cancel)
+            check(DtsReleaseOutputBuffs(&fixture.context, nullptr, FALSE) == BC_STS_SUCCESS,
+                  "successful NOWAIT borrow retains exactly the ordinary caller release");
+        check(add_calls == 1 && !fixture.context.ProcOutPending &&
+              reposted_buffers == std::vector<uint8_t *>{frame_storage[0]},
+              "successful or canceled NOWAIT data is reposted exactly once with original backing");
+    }
+    {
+        OutputContext fixture;
+        prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+        caps_errno = 0; caps_flags = BC_DRIVER_CAP_RX_NOWAIT;
+        fetch_replies.push_back(make_frame(0, 17, 4));
+        fetch_replies.push_back(make_fetch_error(BC_STS_NO_DATA));
+        BC_DTS_PROC_OUT output = make_public_output(fixture, 1);
+        check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_NO_DATA &&
+              caps_calls == 1 && nowait_fetches == 2 && !legacy_fetches && add_calls == 1 &&
+              output.DropFrames == 0 && !fixture.context.ProcOutPending &&
+              fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+              "drop/refetch keeps NOWAIT for the empty second fetch without another borrow");
+    }
 }
 
 static void test_canceled_fetch(bool no_copy, bool repost_fails)
@@ -2109,6 +2290,7 @@ int main()
     const rlimit no_core = {0, 0};
     if (setrlimit(RLIMIT_CORE, &no_core) != 0)
         return 2;
+    test_negotiated_zero_wait();
     test_flush(2, true);
     test_flush(4, true);
     test_flush(2, false);

@@ -38,6 +38,7 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define EPOLLIN 0x001U
 #define EPOLLRDNORM 0x040U
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#define BUILD_BUG_ON(condition) _Static_assert(!(condition), "BUILD_BUG_ON")
 static void test_rx_lock(int *lock);
 #define spin_lock_irqsave(lock, flags) \
     (test_rx_lock(lock), (flags) = 0)
@@ -3972,10 +3973,66 @@ static void try_dequeue_epoch_wake_cases(uint32_t device)
     }
 }
 
+static void legacy_nowait_command_cases(uint32_t device)
+{
+    crystalhd_ioctl_data data = {0};
+
+    reset(device);
+    memset(&data, 0xa5, sizeof(data));
+    check(bc_cproc_query_caps(&context, &data) == BC_STS_SUCCESS &&
+          data.udata.u.DriverCaps.abi_version == BC_DRIVER_CAPS_ABI_VERSION &&
+          data.udata.u.DriverCaps.flags == (BC_DRIVER_CAP_RX_POLL | BC_DRIVER_CAP_RX_NOWAIT) &&
+          !data.udata.u.DriverCaps.reserved[0] && !data.udata.u.DriverCaps.reserved[1],
+          "actual capability handler publishes additive fixed-width NOWAIT with zero reserved fields");
+    memset(&data, 0, sizeof(data));
+    data.cmd = BCM_IOC_FETCH_RXBUFF_NOWAIT;
+    check(bc_cproc_fetch_frame(&context, &data) == BC_STS_NO_DATA &&
+          fetch_try_calls == 1 && !fetch_wait_calls && hardware.fetch_sem == 1,
+          "new NOWAIT command on empty READY never enters picture-arrival wait");
+    inventory(0, 0, 0);
+    data.cmd = BCM_IOC_FETCH_RXBUFF;
+    check(bc_cproc_fetch_frame(&context, &data) == BC_STS_TIMEOUT &&
+          fetch_wait_calls == 1 && fetch_try_calls == 1 && hardware.fetch_sem == 1,
+          "the same empty hardware retains legacy FETCH timeout semantics");
+
+    for (unsigned nowait = 0; nowait != 2; ++nowait) {
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS, "register a real legacy buffer for command selection");
+        complete(0);
+        ready.packets[0]->flags |= COMP_FLAG_PIB_VALID;
+        fill_ready_pib(ready.packets[0]);
+        memset(&data, 0, sizeof(data));
+        data.cmd = nowait ? BCM_IOC_FETCH_RXBUFF_NOWAIT : BCM_IOC_FETCH_RXBUFF;
+        check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
+              data.udata.u.DecOutData.OutPutBuffs.YuvBuff == (uint8_t *)buffers[0] &&
+              data.udata.u.DecOutData.OutPutBuffs.YuvBuffSz == sizeof(buffers[0]) &&
+              data.udata.u.DecOutData.OutPutBuffs.YBuffDoneSz == 128 &&
+              data.udata.u.DecOutData.OutPutBuffs.UVBuffDoneSz == 64 && unmaps[0] == 1 &&
+              fetch_try_calls == nowait && fetch_wait_calls == !nowait,
+              "both actual FETCH handlers return the same receipt and release registration once");
+        inventory(0, 0, 0);
+    }
+    for (unsigned fault = 0; fault != 3; ++fault) {
+        reset(device);
+        memset(&data, 0, sizeof(data));
+        data.cmd = BCM_IOC_FETCH_RXBUFF_NOWAIT;
+        if (fault == 0) context.state |= BC_LINK_SUSPEND;
+        if (fault == 1) interrupt_lock = true;
+        if (fault == 2) hardware.dma_fault = true;
+        const BC_STATUS wanted = fault == 0 ? BC_STS_PWR_MGMT :
+                                 fault == 1 ? BC_STS_IO_USER_ABORT : BC_STS_IO_ERROR;
+        check(bc_cproc_fetch_frame(&context, &data) == wanted && !fetch_wait_calls &&
+              hardware.fetch_sem == 1 && !unmaps[0],
+              "new command preserves suspend/interruption/fault ownership with no picture wait");
+        inventory(0, 0, 0);
+    }
+}
+
 int main(void)
 {
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
     for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        legacy_nowait_command_cases(devices[i]);
         try_dequeue_gate_cases(devices[i]);
         try_dequeue_completion_cases(devices[i]);
         try_dequeue_cancellation_cases(devices[i]);

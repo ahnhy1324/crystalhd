@@ -553,6 +553,11 @@ static unsigned fetch_original_prefix, fetch_capacity;
 
 extern "C" int ioctl(int fd, unsigned long code, ...) noexcept
 {
+    // These existing packing/lease cases intentionally model a legacy driver.
+    if (fd == 99 && fetch_context && code == BCM_IOC_QUERY_CAPS) {
+        errno = ENOTTY;
+        return -1;
+    }
     if (fd != 99 || !fetch_context ||
         (code != BCM_IOC_FETCH_RXBUFF && code != BCM_IOC_ADD_RXBUFFS &&
          code != BCM_IOC_FLUSH_RX_CAP)) {
