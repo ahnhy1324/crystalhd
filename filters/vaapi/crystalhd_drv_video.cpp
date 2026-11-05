@@ -6090,10 +6090,8 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
     bool activity = false;
     VAStatus va_status = ReceiveOne(driver, decode, 0, &activity);
     had_activity = had_activity || activity;
-    if (va_status != VA_STATUS_SUCCESS || !activity) {
-      if (no_output && va_status == VA_STATUS_SUCCESS) *no_output = !had_activity;
+    if (va_status != VA_STATUS_SUCCESS || !activity)
       return va_status;
-    }
   }
   return VA_STATUS_SUCCESS;
 }
