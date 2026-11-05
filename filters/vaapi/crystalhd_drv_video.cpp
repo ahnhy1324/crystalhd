@@ -4398,6 +4398,27 @@ static bool CopyH264InterlacedToSurface(
 
 #if defined(__SSE2__)
   const __m128i luma_mask = _mm_set1_epi16(0x00ff);
+  // Only this large independent WB vector is a streaming-store destination.
+  // The public mirror keeps its ordinary cached stores. Keep both partial
+  // cacheline edges cached too; never mix NT and cached stores in one line.
+  const bool stream_small = mirror_active && !compact_field && !used_i915_wc &&
+      width == 1280 && height == 720 && source_width == 1280 && source_height == 720 &&
+      surface->width == width && surface->height == height && !surface->ready &&
+      !surface->failed && !surface->destroyed && surface->id == VA_INVALID_SURFACE &&
+      surface->vpp_readers == 0 && surface->vpp_writers == 0 && !surface->image_write_locked &&
+      !surface->centered_allocation_exposed && !surface->cpu_primary &&
+      !surface->cpu_primary_gpu_promoted && surface->cpu_primary_charge.bytes == 0 &&
+      surface->retired_cpu_primary_storage.empty() && !surface->cpu_primary_canvas &&
+      !surface->retired_cpu_primary_canvas && CenteredReadbackCpuPixels(*surface) &&
+      (surface->pitch[0] & 63U) == 0 && (surface->pitch[1] & 63U) == 0 &&
+      (reinterpret_cast<uintptr_t>(surface->planes[0]) & 15U) == 0 &&
+      (reinterpret_cast<uintptr_t>(surface->planes[1]) & 15U) == 0 &&
+      (reinterpret_cast<uintptr_t>(surface->planes[0]) & 63U) ==
+          (reinterpret_cast<uintptr_t>(surface->planes[1]) & 63U);
+  const unsigned stream_head = stream_small
+      ? static_cast<unsigned>((64U - (reinterpret_cast<uintptr_t>(surface->planes[0]) & 63U)) & 63U) : 0;
+  const unsigned stream_end = stream_small ? stream_head + ((width - stream_head) & ~63U) : 0;
+  bool used_small_nt = false;
 #endif
   // Field views can reference two compact buffers or alternating rows of a
   // whole-picture transfer. Downsample chroma within each field in either
@@ -4449,9 +4470,16 @@ static bool CopyH264InterlacedToSurface(
         const __m128i uv = _mm_packus_epi16(
             _mm_srli_epi16(_mm_avg_epu8(first0, second0), 8),
             _mm_srli_epi16(_mm_avg_epu8(first1, second1), 8));
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column), y0);
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
-        _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
+        if (stream_small && column >= stream_head && column < stream_end) {
+          _mm_stream_si128(reinterpret_cast<__m128i *>(first_luma + column), y0);
+          _mm_stream_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
+          _mm_stream_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
+          used_small_nt = true;
+        } else {
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(first_luma + column), y0);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(second_luma + column), y1);
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(chroma + column), uv);
+        }
         if (mirror_active) {
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_first_luma + column), y0);
           _mm_storeu_si128(reinterpret_cast<__m128i *>(mirror_second_luma + column), y1);
@@ -4580,6 +4608,16 @@ static bool CopyH264InterlacedToSurface(
     }
 #endif
   }
+#if defined(__SSE2__)
+  if (used_small_nt) {
+    // Drain actual NT writes before any original END, ready publication or
+    // following Small reader, and include the fence in the pixel timing.
+    _mm_sfence();
+#if defined(CRYSTALHD_VAAPI_TEST_PRIVATE_SMALL_NT)
+    CRYSTALHD_VAAPI_TEST_PRIVATE_SMALL_NT();
+#endif
+  }
+#endif
   if (mirror_active) {
     CH_COST_FLAGS(cost_scope, 4U);
     CH_COST_FLAGS(cost_pixels, 4U);

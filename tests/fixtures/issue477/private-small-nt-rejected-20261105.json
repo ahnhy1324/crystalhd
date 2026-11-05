@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "date": "2026-11-05",
+  "owners": [
+    477,
+    436
+  ],
+  "status": "REJECTED_PRIVATE_SMALL_NT_NO_BENEFIT",
+  "base_source": "381f5777ee65daa2a499be77644d516f7b8b5e16",
+  "scope": "Finite warm CPU actual ProcessDecodedOutput first/complement pair using existing CenteredFixture; independent vector Small1280x720/full memfd public1920x1088, no firmware/device/DIL acquire-release/media/external edits. This branch preserves a rejected own prototype, not a product fix or adoption.",
+  "experiment": "PrivateSmall complete cacheline interiors only NT during actual mirrored fields, cached head/tail/public stores, original END/READY order, SFENCE included before pixel timer finish. No allocator alignment/layout/borrow policy change.",
+  "order": [
+    "baseline1",
+    "variant1",
+    "variant2",
+    "baseline2"
+  ],
+  "measured_pairs_each_arm": 100,
+  "warmup_pairs_each_arm": 8,
+  "untimed_control_pairs_each_arm": 1,
+  "full_bytes_verified_each_pair": {
+    "small_nv12": 1382400,
+    "public_nv12": 3133440
+  },
+  "actual_nt_field_calls_per_variant_arm": [
+    200,
+    200
+  ],
+  "actual_nt_exercise_per_variant_arm": [
+    "ALL_MEASURED_FIELDS",
+    "ALL_MEASURED_FIELDS"
+  ],
+  "address_mod64_all_arms": 0,
+  "thread_cpu_ns": {
+    "baseline": [
+      197770501,
+      198609360
+    ],
+    "variant": [
+      421596940,
+      451408370
+    ],
+    "combined_variant_over_baseline": 2.20244617826333
+  },
+  "wall_ns": {
+    "baseline": [
+      202552179,
+      199848767
+    ],
+    "variant": [
+      422803439,
+      483982360
+    ]
+  },
+  "root_execution": "Both strict -O2/-msse2 builds and four arms exit0. Same176-line benchmark via compile-time scaling.cpp path selector. All original unexpected entry aborts and mocks remain.",
+  "independent_review": "C source/fence/benchmark reviewPASS and direct read of allfour actual outputs agrees DO_NOT_ADOPT; no reviewer execution.",
+  "retained_inputs": {
+    "benchmark": "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-benchmark.cpp",
+    "build_commands": [
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-baseline-build-command.json",
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-variant-build-command.json"
+    ],
+    "output_files": [
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-baseline-1.json",
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-variant-1.json",
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-variant-2.json",
+      "/home/mache/.cache/crystalhd-source900-current-20261105/private-small-nt-baseline-2.json"
+    ]
+  },
+  "limits": [
+    "Warm serial CPU/scaffold result, not DMA cache state, playback speedup or an impossibility proof.",
+    "Source900 previous887/878 remains FAIL, owners remain OPEN.",
+    "Do not apply this rejected prototype to product/master/worker candidate; no new media retry or CI gate is justified for this rejection."
+  ]
+}
