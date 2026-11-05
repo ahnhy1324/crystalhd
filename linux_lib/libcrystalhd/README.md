@@ -96,9 +96,12 @@ backing remains pinned or quarantined until positive owner-wide retirement
 confirms DMA quiescence. Pool free and optional `MADV_DONTNEED` follow that
 acknowledgement. This is host-buffer registration lifetime, separate from
 [#204 firmware picture ownership](https://github.com/ahnhy1324/crystalhd/issues/204)
-and the sized-allocation experiment below. Actual registration reuse and
-unchanged pixels still need the isolated OWN hardware check; this candidate
-does not establish a stock/source900 or release qualification.
+and output-aware sizing. A bounded BCM70015 OWN check observes16 registrations
+with152 total borrow/reposts, positive owner-wide retirement and equal visible
+pixels/raw metadata for75 originals against the retained parent. This is
+component regression evidence; the original Kodi two-play case still fails
+source900 at870/890. Broader format, PM, old-driver fallback and lifetime
+acceptance remain separate; this does not qualify stock/source900 or a release.
 
 ## Direct-library drain validation
 

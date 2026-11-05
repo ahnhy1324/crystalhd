@@ -55,7 +55,7 @@ support scopes are not additional promotion gates. Nonblocking research continue
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [natural FHD50 FIFO/latest pair](tests/fixtures/issue513/natural-fhd-20261104.json) completes the next bounded load point: each decodes 750 originals/renders 1,500 fields with natural EOS and clean resources, but queued/replaced/pending-residence counts remain zero. Representative congestion/latency attribution and broader formats, controls, interruption and endurance stay open; FIFO remains default and no gain is demonstrated. Do not repeat the identical route next; continue the separate #477/#436 decoder skip/latency and EOF attribution below after the completed bounded observations. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current results](tests/fixtures/issue477/postrelease-source900-20261105.json) still fail900: the latest early exact-Sync arm returns869/888 originals, with balanced ledgers/four audits, no replay and normal official20 restoration. Its separate75-picture continuation/pixel differential exercises auxiliary at10.13ms without proving stock900 or a causal speedup. #667/#668 are merged. Next is isolated host-RX registration reuse/module22; actual DMA/pixel proof remains pending. Keep broader prototypes unpromoted, failed ledgers unqualified and the caller filter-EOF limit explicit. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [current results](tests/fixtures/issue477/postrelease-source900-20261105.json) still fail900: the latest retained host-RX/module22 arm returns870/890 originals, with balanced ledgers/four audits, no replay and normal full official20 restoration. Its separate75-picture client observes16 registrations,152 total borrow/reposts and positive retirement of all16, with all visible pixels/metadata equal to the retained parent; this is component safety, not stock900 or a causal speedup. #667/#668 are merged; the retained-registration feature is tracked in #669. Keep broader prototypes unpromoted, failed ledgers unqualified and the caller filter-EOF limit explicit. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538), [#445 colour input](https://github.com/ahnhy1324/crystalhd/issues/445) | Establish a valid independent POC1 multi-slice input before extending association, and an authoritative source-colour contract for direct packed RGB. POC0/2 and selected range transitions are already qualified; crop/chroma, broader syntax, object/GPU-return census and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | Checked output-aware allocation and its compile-time opt-in already exist. The current matched-baseline SIZED16 arm completes864/854 originals and still fails900; sequential counts do not prove a performance gain or justify changing the default. Remaining paced16/8 A/B, native-planar, PM and format-change acceptance keep their original scopes; do not duplicate the allocator. Preserve DMA quarantine and the coupled defer-allocation/DONTNEED scope. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | Actual Orca/accessibility interaction and specifically named frontend adapters on the available desktop. Shared settings, GTK/tray, queried AT-SPI state and reviewed Korean are complete within their recorded scopes. |
@@ -91,6 +91,7 @@ official1.3/source24a/module20; isolated research artifacts do not replace it.
 | Samec6b/module21, separately frozen default/fixed DIL | 892 | 860 | Source900 FAIL; second play has20 completed replay inputs, not extra originals |
 | Full research + narrow full-Sync lookahead, default DIL/module21 | 879 | 861 | Source900 FAIL; strict ledgers/four audits PASS; no replay; maximum73C and normal official20 restoration PASS |
 | Full research + early exact-Sync empty-READY lookahead, default DIL/module21 | 869 | 888 | Source900 FAIL; strict ledgers/four audits PASS; no replay; sampled74C, separate post-retirement75C; official20 restore PASS |
+| Full research + retained host RX registrations, default DIL/module22 | 870 | 890 | Source900 FAIL; strict ledgers/four audits/controls PASS; no replay; maximum71C; normal full official20 restore PASS |
 
 Private cases retain their scoped packet/postfilter/cost/replay audits, controls,
 App0/kernel0 and full official-baseline equality. The retained8fac ordinary arm has no private
@@ -153,15 +154,23 @@ assertion. Continue the shortage/skip investigation; preserve the returned-frame
 NOT_EXERCISED/wrapper failure, all original900 failures and the remaining
 filter-EOF, pixel/clock, GPU-return and endurance boundaries.
 
-The next isolated kernel22/DIL research arm retains host RX registrations
+The isolated kernel22/DIL development feature retains host RX registrations
 across fetch/repost to avoid repeated pinning and DMA mapping. Its
 [development API contract](linux_lib/libcrystalhd/README.md#development-registration-reuse)
 preserves existing copy/NoCopy leases, legacy fallback only when capability is
 absent, exact opaque identities and positive retirement before backing release.
 This is separate from the existing #470 sized allocator and #204 firmware
-picture ownership. Actual registration reuse, continuation pixels and any
-source900 effect remain unqualified; published 1.3/module20 and all earlier
-failures stay unchanged.
+picture ownership. The bounded actual client registers16 buffers, performs152 exact borrow/reposts
+and positively retires all16 owner-wide, with no legacy RX ioctl. Its75 original
+visible NV12 images/raw metadata and subsequent P/B/two-IDR continuation match
+the retained no-aux parent. That parent uses a different source/DIL/module21
+cohort: this is pixel regression safety, never a paired performance estimate.
+The original Kodi50c two-play case still fails870/890, with no replay, all four
+scoped audits/controls, App0/kernel0/full boundary/no-handoff and normal
+official20 restoration passing; maximum71C. Development #669 uses the required independent review and current-base CI
+gate for integration. These results do not establish a900 fix,
+complete #470 acceptance or prove global impossibility. Published1.3/module20
+and all original failures remain unchanged.
 
 <details>
 <summary>Retained pre-current field/COW/mirror checkpoints and historical host comparisons</summary>

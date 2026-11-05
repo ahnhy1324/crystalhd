@@ -615,6 +615,8 @@ struct crystalhd_hw {
 	} tx_pkt_pool[2];
 };
 struct crystalhd_adp;
+/* Legacy PM fixture; rx-ownership exercises the actual retained registry. */
+struct crystalhd_retained_rx_registry { bool stale; };
 struct crystalhd_cmd {
 	int cin_wait_exit;
 	struct crystalhd_adp *adp;
@@ -624,6 +626,7 @@ struct crystalhd_cmd {
 	const void *session_lifetime_owner;
 	const struct crystalhd_session_owner_ops *session_lifetime_ops;
 	void *session_owner, *stream;
+	struct crystalhd_retained_rx_registry *retained_rx;
 };
 struct crystalhd_adp {
 	struct pci_dev *pdev;
@@ -973,6 +976,14 @@ static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
 		pm_rx_releases++;
 	}
 	pm_event('T');
+}
+static bool crystalhd_retained_cleanup(struct crystalhd_cmd *cmd, bool destroy)
+{
+	const bool legacy_only = cmd == &irq_adapter.cmds &&
+		!cmd->retained_rx && !destroy;
+
+	CHECK(legacy_only); /* Never fake successful cleanup of a live registry. */
+	return legacy_only;
 }
 /* Full command deletion is source-extracted in device-lifetime. Here it is a
  * resource boundary: wrappers must establish proof before calling it and

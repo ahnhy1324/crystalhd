@@ -557,13 +557,55 @@
       },
       "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sync-ready21-fixed-private-01/result.json",
       "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-sync-ready-transition-restore20.json"
+    },
+    {
+      "case": "retained-rx22-fixed-private-01",
+      "source": "50c4dce60773d12a7d6fc46217571a625c85805b",
+      "kernel_source": "95f75c86d556f909b5e7daed883cd7a368ce6d21",
+      "loaded_experimental_module": "3.10.22/0BDBF2BC02FC2030EE96D8D",
+      "change": "Full research port plus negotiated host-RX registration reuse; default fixed16 DIL",
+      "actual_DIL_allocation_mode": "FIXED/default",
+      "originals": [
+        870,
+        890
+      ],
+      "ledger_status": [
+        "PASS",
+        "PASS"
+      ],
+      "completed_replay_inputs": [
+        0,
+        0
+      ],
+      "replay_fields": [
+        0,
+        0
+      ],
+      "original_validated_field_pairs": [
+        870,
+        890
+      ],
+      "original_field_records": [
+        1740,
+        1780
+      ],
+      "source900": "FAIL",
+      "controls_and_four_private_audits": "PASS",
+      "application_exit": 0,
+      "kernel_exit": 0,
+      "full_experimental22_boundary_equal": true,
+      "normal_restore_official20_full_guard": "PASS",
+      "handoff": null,
+      "sampled_maximum_temperature_mC": 71000,
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/retained-rx22-fixed-private-01/result.json",
+      "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module22-retained-rx-transition-restore20.json"
     }
   ],
   "current_source_checkpoint": {
-    "latest_private_case": "sync-ready21-fixed-private-01",
+    "latest_private_case": "retained-rx22-fixed-private-01",
     "latest_ordinary_case": "main-input-ordinary-01",
-    "host": "Official1.3/source24a/module20 remains the permanent matched installation. The actual21 experiment has its own frozen artifact/snapshot; normal restore20 passes the original full baseline guard.",
-    "private_audits": "Current private cases retain the four scoped observation audits PASS; these audits do not waive source900. The explicit21 case/restoration has its own receipt.",
+    "host": "Permanent matched official1.3/source24a/module20. Reviewed temporary22 used its own actual frozen artifact/full idle snapshot; normal official20 restoration/full cohort guard passes. Published artifacts are unchanged.",
+    "private_audits": "Current private cases retain the four scoped observation audits PASS; these audits do not waive source900. The explicit21/22 cases/restorations has its own receipt.",
     "ordinary_audits": "NOT_RUN; strict native-only ledger failures remain unqualified.",
     "minimal_maintained_changes": [
       "One bounded H264/Flea/Centered TX pump before unchanged RX64 and post-RX pump.",
@@ -806,6 +848,68 @@
         "restoration": "/home/mache/.cache/crystalhd-source900-current-20261105/module21-sync-ready-transition-restore20.json"
       },
       "remaining": "Original Kodi900 shortage remains unresolved. Serial counts/timings do not prove a causal speedup, external defect, impossibility or issue closure; all historical cases and narrower EOF/pixel/clock/GPU/endurance boundaries remain."
+    },
+    "retained_host_RX": {
+      "PR": 669,
+      "status": "BOUNDED_COMPONENT_PASS_SOURCE900_FAIL",
+      "code_source": "95f75c86d556f909b5e7daed883cd7a368ce6d21",
+      "maintained_source_before_actual": "0e928c866f388aaf9a4711fa72d03c3326de6448",
+      "module_version": "3.10.22",
+      "default_pool_count_unchanged": 16,
+      "sizing_unchanged": true,
+      "separate_from_firmware_picture_ownership": true,
+      "CPU_build_checks": "UAPI32/64,19745 dispatch checks each normal/sanitized32/64,1113 ownership scenarios/330749checks normal/sanitized,final affected DIL/capture/format/flush/PM/lifetime/V4L2parent,default+V4L2 kernel builds,userspace32,ordinary VA and fullresearch replay PASS. Initial harness failures retained. Initial full library check is scoped alongside final affected followups, not retrospectively one frozen final whole-suite run.",
+      "CI_scaffold_repair": {
+        "run": 41985252596,
+        "failure": "Initial CI41985252596 userspace: legacy dma-stop extracted body lacked retained fields/locks/strictNULLcleanup; affected followups also found L0s cleanup, TX full-width owner dispatch, V4L2 pause macros and issue92 patched-lifetime field types.",
+        "repair": "Adapt five existing legacy/native-only fixtures, retaining all old assertions. No live retained registry cleanup is faked; actual registry is covered by separate production RX ownership/PM tests.",
+        "affected_dma_check_normal_and_sanitized": "PASS",
+        "current_base_CI": "Existing gate is required on the final PR head/current base; inspect PR669 live check status. Original failed run is preserved.",
+        "affected_followups": {
+          "dma_normal_sanitized": "PASS",
+          "l0s_legacy_current_absent_normal_sanitized": "PASS",
+          "tx_admission_normal_sanitized": "PASS",
+          "tx_release_normal_sanitized": "PASS",
+          "issue92_patched_lifetime_and_probe": "PASS",
+          "v4l2_node_all_existing_API_variants": "PASS; existing 8 compiled semantic-negative variants all rejected"
+        }
+      },
+      "actual_wire": {
+        "case": "retained-rx-native-owner-candidate-01",
+        "status": "PASS_SCOPED_RETAINED_RX_WIRE_REGISTRATION_REUSE",
+        "events": 324,
+        "registrations": 16,
+        "fetches": 155,
+        "successful_borrows": 152,
+        "format_auto_ack_without_borrow": 3,
+        "reposts": 152,
+        "ownerwide_positive_retire": 1,
+        "all_reused_registrations_retired_ownerwide": 16,
+        "legacy_add_fetch_nowait": 0,
+        "GUP_pin_map_counts": "NOT_MEASURED",
+        "interval": "Owned base_main only; no global-atexit claim"
+      },
+      "actual_prefix75_pixels": {
+        "status": "PASS_SCOPED_READY_NATIVE_OWNER_PREFIX75_POST_AUX_PIXEL_EQUALITY",
+        "all75_visible_NV12_and_raw_metadata_equal": true,
+        "visible_NV12_bytes_each": 3110400,
+        "following_originals": 63,
+        "following_IDR_packet_ordinals": [
+          26,
+          51
+        ],
+        "actual_following_P_and_B": true,
+        "comparator_parent": "Retained no-aux parent on older source/DIL/module21; cross-cohort pixel regression only, no paired latency/throughput estimate or normative decoder golden."
+      },
+      "scope": "Feature-scoped development work only; not900fix, stock/release acceptance, complete #470 matrix or #204 firmware lifetime. FullCPU/COW/field/mirror research remains unpromoted.",
+      "evidence": [
+        "/home/mache/.cache/crystalhd-source900-current-20261105/retained-rx22-actual-and-admission-review-C.json",
+        "/home/mache/.cache/crystalhd-source900-current-20261105/retained-rx-native-owner-candidate-01/executor.json",
+        "/home/mache/.cache/crystalhd-source900-current-20261105/retained-rx-native-owner-candidate-01/retained-rx-wire-review.json",
+        "/home/mache/.cache/crystalhd-source900-current-20261105/retained-rx-native-owner-pixel-comparison-01.json",
+        "/home/mache/.cache/crystalhd-source900-current-20261105/module22-arm-binding.json",
+        "/home/mache/.cache/crystalhd-source900-current-20261105/module22-retained-rx-transition-restore20.json"
+      ]
     }
   },
   "latest_private_scope": {

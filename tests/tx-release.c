@@ -86,8 +86,10 @@ static struct pci_dev pci;
 static struct crystalhd_adp adp;
 static struct crystalhd_hw hw;
 static struct crystalhd_user owner = {.uid = 0, .in_use = 1};
-static struct crystalhd_file binding = {.user = &owner, .generation = 1};
+static struct crystalhd_file binding = {
+    .user = &owner, .generation = 1, .owner_epoch = UINT64_C(0x100000001)};
 static struct file fd = {.private_data = &binding};
+static struct file *release_fd = &fd;
 static uint64_t chd_device_generation = 1;
 static _Thread_local int actor;
 static pthread_mutex_t control = PTHREAD_MUTEX_INITIALIZER;
@@ -267,14 +269,21 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *a, crystalhd_ioctl_data 
     return ua ? 0 : -EFAULT;
 }
 static int chd_dec_api_cmd(struct crystalhd_adp *, unsigned long, unsigned, unsigned,
-                           crystalhd_cmd_proc, bool, crystalhd_ioctl_data *, const uint32_t *);
+                           crystalhd_cmd_proc, bool, crystalhd_ioctl_data *, const uint32_t *,
+                           const void *, u64);
 
 static BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *device, uint32_t bytes)
 { (void)device; (void)bytes; check(false,"legacy cancellation cannot request typed WRAP"); return BC_STS_NO_DATA; }
 #include "tx-release-functions.h"
 static int chd_dec_api_cmd(struct crystalhd_adp *a, unsigned long ua, unsigned uid, unsigned cmd,
                            crystalhd_cmd_proc fn, bool compat, crystalhd_ioctl_data *prepared,
-                           const uint32_t *stop) {
+                           const uint32_t *stop, const void *file_owner, u64 file_epoch) {
+    const struct crystalhd_file *expected =
+        cmd == BCM_IOC_RELEASE ? release_fd->private_data : &binding;
+    check(file_owner == expected && expected->owner_epoch &&
+              file_epoch == expected->owner_epoch && expected->user &&
+              uid == expected->user->uid,
+          "ioctl forwards the exact file binding and full-width owner epoch");
     (void)ua;
     (void)fn;
     (void)compat;
@@ -295,7 +304,6 @@ static int chd_dec_api_cmd(struct crystalhd_adp *a, unsigned long ua, unsigned u
     }
     abort();
 }
-static struct file *release_fd = &fd;
 static void *call(void *arg) {
     actor = (int)(intptr_t)arg;
     result[actor] = chd_dec_ioctl_common(
@@ -373,7 +381,8 @@ int main(void) {
     puts("FIX PASS: BUSY+queued input cancels, RELEASE admitted, references balanced");
     reset();
     struct crystalhd_user monitor = {.uid = 1, .in_use = 1};
-    struct crystalhd_file mb = {.user = &monitor, .generation = 1};
+    struct crystalhd_file mb = {
+        .user = &monitor, .generation = 1, .owner_epoch = UINT64_C(0x200000002)};
     struct file mf = {.private_data = &mb};
     check(!pthread_mutex_init(&mb.release_lock.real, NULL), "monitor release mutex init");
     release_fd = &mf;

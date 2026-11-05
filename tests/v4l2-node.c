@@ -25,6 +25,7 @@ typedef unsigned spinlock_t;
 #define COMP_FLAG_DATA_VALID 4
 #include "node-constants.h"
 #define READ_ONCE(x) (x)
+#define WRITE_ONCE(x, value) ((x) = (value))
 #define BC_LINK_MAX_SGLS 1024U
 #define PAGE_SIZE 4096U
 #define GFP_KERNEL 1
@@ -219,9 +220,12 @@ struct crystalhd_hw {
     struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
     struct crystalhd_rx_dma_pkt *rx_fallback_head, *rx_pkt_pool_head;
 };
+/* Native-only fixture; retained legacy registration transitions stay in RX tests. */
+struct crystalhd_retained_rx_registry { bool stale; };
 struct crystalhd_cmd {
     void *session_owner; unsigned decoder_phase, state;
     struct crystalhd_hw *hw_ctx; struct crystalhd_adp *adp;
+    struct crystalhd_retained_rx_registry *retained_rx;
 };
 struct crystalhd_rx_completion {
     struct crystalhd_rx_buffer *buffer; void *cookie; unsigned flags; u64 capture_epoch;
@@ -894,7 +898,8 @@ static BC_STATUS crystalhd_v4l2_capture_submit(struct crystalhd_cmd *cmd,
 static void *vb2_get_drv_priv(struct vb2_queue *q) { return q->drv_priv; }
 #include "node-production.h"
 
-static void down(struct semaphore *s) { assert(!s->held); s->held = true; }
+static void down(struct semaphore *s)
+{ assert(!adapter.cmds.retained_rx && !s->held); s->held = true; }
 static void up(struct semaphore *s) { assert(s->held); s->held = false; }
 static void disable_irq(unsigned irq)
 {
