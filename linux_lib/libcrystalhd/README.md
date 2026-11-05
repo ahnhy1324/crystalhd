@@ -76,6 +76,30 @@ new playback option or default: BCM70012 hardware, suspend/resume and
 mid-stream resizing are not qualified. Scope and measured results remain in
 [#470](https://github.com/ahnhy1324/crystalhd/issues/470).
 
+### Development registration reuse
+
+**Development branch only:** the kernel22/DIL retained-RX candidate is not
+included in published 1.3.0/module20. A matched experimental BCM70015 pair
+negotiates `BC_DRIVER_CAP_RX_RETAINED` before registering the RX pool; it adds
+no application option or configuration setting. Drivers without that
+capability and BCM70012 keep the legacy ADD/FETCH path. The existing public
+copy and NoCopy rules remain: copy/callback work holds its output lease until
+finished; a successful NoCopy call borrows a pointer and returns that lease
+through `DtsReleaseOutputBuffs()`. An ambiguous return leaves ownership unresolved.
+
+The internal `BCM_IOC_RETAINED_RX` protocol carries a fixed-width registration
+ID, capture generation and borrow sequence, with an immutable address and
+layout. Each return must match that exact lease; a pointer alone is not an
+identity. A failed or ambiguous registration, fetch or repost cannot fall back
+to legacy commands or be blindly retried. It leaves a retirement-only owner;
+backing remains pinned or quarantined until positive owner-wide retirement
+confirms DMA quiescence. Pool free and optional `MADV_DONTNEED` follow that
+acknowledgement. This is host-buffer registration lifetime, separate from
+[#204 firmware picture ownership](https://github.com/ahnhy1324/crystalhd/issues/204)
+and the sized-allocation experiment below. Actual registration reuse and
+unchanged pixels still need the isolated OWN hardware check; this candidate
+does not establish a stock/source900 or release qualification.
+
 ## Direct-library drain validation
 
 This optional probe bypasses GStreamer and VA-API. It checks complete picture
