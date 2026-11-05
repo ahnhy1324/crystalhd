@@ -12796,6 +12796,10 @@ static void NeutralAuxiliaryTriggerOwnsOnlyTransport() {
                 d.next_timestamp == 2 * kTimestampStep,
             "zero-filter demand never injects auxiliary data");
     demand.bob = true;
+    Require(TryH264Auxiliary(&fixture.driver, &d, fixture.public_frame,
+                            &demand, 1) == VA_STATUS_SUCCESS &&
+                io.input_calls.empty() && !d.auxiliary.ever,
+            "complementary Bob retains its unchanged100ms inactivity gate");
     io.prefeed_busy_once = prefix_busy;
     std::vector<uint8_t> expected;
     Require(BuildH264NeutralIntra(d.auxiliary.candidate.picture, &expected),
@@ -13116,12 +13120,142 @@ static void NeutralAuxRestartRejectsUnpaidDebt() {
   }
 }
 
+static void ReceiveAvailableQuietHintPreservesActivity() {
+  {
+    TeardownFixture fixture(0);
+    auto &d = *fixture.decoder;
+    bool quiet = true;
+    const auto polls = fixture.io.output_polls;
+    Require(ReceiveAvailable(&fixture.driver, &d, 0, &quiet) == VA_STATUS_SUCCESS &&
+                !quiet && fixture.io.output_polls == polls,
+            "zero RX attempts cannot claim a successful quiet turn");
+    fixture.io.fail_poll = true;
+    quiet = true;
+    Require(ReceiveAvailable(&fixture.driver, &d, 1, &quiet) != VA_STATUS_SUCCESS && !quiet,
+            "hardware status errors never authorize early exact lookahead");
+    fixture.io.fail_poll = false;
+    Require(ReceiveAvailable(&fixture.driver, &d, 1, &quiet) == VA_STATUS_SUCCESS && quiet,
+            "actual empty READY queue reports a quiet existing turn");
+    fixture.io.outputs.push_back(123);
+    fixture.io.override_output = true;
+    for (BC_STATUS status : {BC_STS_NO_DATA, BC_STS_BUSY, BC_STS_TIMEOUT,
+                             BC_STS_FMT_CHANGE, BC_STS_ERROR}) {
+      fixture.io.overridden_output_status = status;
+      quiet = true;
+      const auto progress = d.transport_progress;
+      const VAStatus result = ReceiveAvailable(&fixture.driver, &d, 1, &quiet);
+      if (status == BC_STS_ERROR) {
+        Require(result != VA_STATUS_SUCCESS && !quiet,
+                "acquire error retains the original failure and a false quiet hint");
+      } else {
+        Require(result == VA_STATUS_SUCCESS && !quiet &&
+                    d.transport_progress == progress,
+                "format and collapsed NO_DATA/BUSY/TIMEOUT acquire returns never claim an empty READY sample");
+        fixture.io.outputs.clear();
+        Require(ReceiveAvailable(&fixture.driver, &d, 1, &quiet) == VA_STATUS_SUCCESS && quiet,
+                "only the next existing successful ReadyList0 sample qualifies early exact lookahead");
+        fixture.io.outputs.push_back(123);
+      }
+    }
+    fixture.io.override_output = false;
+    fixture.io.outputs.clear();
+    Require(fixture.io.input_calls.empty(), "quiet observation performs no compressed input");
+  }
+  {
+    DecodeIoMock io;
+    MockDecodeScope scope(io);
+    H264FieldFixture fixture;
+    auto &d = fixture.decoder;
+    d.device = io.handle();
+    io.outputs.push_back(1); // Only the existing ReadyListCount availability.
+    io.override_output = true;
+    const auto receive = [&](bool bottom) {
+      io.overridden_output = fixture.Output(bottom, false,
+                                           bottom ? &fixture.bottom : &fixture.top);
+      bool quiet = true;
+      Require(ReceiveAvailable(&fixture.driver, &d, 1, &quiet) == VA_STATUS_SUCCESS && !quiet,
+              "a successfully acquired field is activity, including metadata-only replay");
+    };
+    receive(false);
+    receive(true);
+    const auto pixels = fixture.public_frame->storage;
+    receive(false);
+    const auto progress = d.transport_progress;
+    receive(true);
+    Require(d.transport_progress == progress && fixture.public_frame->storage == pixels &&
+                io.released_outputs == 4,
+            "completed duplicate pair can leave progress unchanged without being a quiet turn");
+    io.override_output = false;
+    io.outputs.clear();
+  }
+}
+
+static void CenteredReadyComplementDoesNotInjectLookahead() {
+  for (bool bottom_first : {false, true})
+  for (unsigned mode : {0U, 1U, 2U}) {
+    const bool preheld = mode != 0;
+    const bool format_activity = mode == 2;
+    H264AdmissionFixture fixture(8, 1024 * 1024, 256, 64);
+    ConfigureCenteredAdmission(fixture);
+    auto &d = *fixture.decoder;
+    d.auto_h264_prefeed = true;
+    fixture.Prepare(1);
+    d.picture = NeutralPicture(256, 64);
+    Require(EndPicture(&fixture.context, 1) == VA_STATUS_SUCCESS,
+            "admit an ordinary Centered picture before its ready complement");
+    const uint32_t order = bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0;
+    const uint32_t first = bottom_first ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD;
+    const uint32_t second = bottom_first ? VDEC_FLAG_TOPFIELD : VDEC_FLAG_BOTTOMFIELD;
+    fixture.io.outputs.push_back(kTimestampStep);
+    fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | first);
+    if (preheld) {
+      bool quiet = true;
+      Require(ReceiveAvailable(&fixture.driver, &d, 2, &quiet) == VA_STATUS_SUCCESS &&
+                  !quiet && d.h264_first_field.valid && fixture.io.released_outputs == 1,
+              "a released first field followed by ReadyList0 still reports activity in that bounded turn");
+    }
+    fixture.io.outputs.push_back(kTimestampStep);
+    if (format_activity) {
+      fixture.io.override_output = true;
+      fixture.io.overridden_output_status = BC_STS_FMT_CHANGE;
+    } else {
+      fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | second);
+    }
+    const auto input_calls = fixture.io.input_calls.size();
+    const auto progress = d.transport_progress;
+    fixture.io.on_sleep = [&] {
+      Require((!preheld || format_activity) && d.h264_first_field.valid && !d.auxiliary.ever &&
+                  fixture.io.input_calls.size() == input_calls && fixture.io.released_outputs == 1,
+              "first-field or format activity leaves the next normal RX turn passive");
+      if (format_activity) {
+        Require(d.transport_progress == progress,
+                "format activity is not confused with the independent transport-progress counter");
+        fixture.io.override_output = false;
+        fixture.io.overridden_output_status = BC_STS_SUCCESS;
+        fixture.io.outputs.clear();
+        fixture.io.outputs.push_back(kTimestampStep);
+        fixture.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC | order | second);
+      }
+    };
+    Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS && !d.auxiliary.ever &&
+                fixture.io.input_calls.size() == input_calls && fixture.io.released_outputs == 2 &&
+                d.replay.outstanding() == 0 && !d.replay.sealed(),
+            "actual ready complement completes exact Sync without auxiliary or premature EOS");
+    fixture.io.on_sleep = {};
+    CheckCenteredAdmissionPicture(fixture, 0);
+    fixture.io.early_eos = true;
+    Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS && !d.device && !fixture.io.invalid,
+            "ready-complement case retires through normal consuming close");
+  }
+}
+
 static void CenteredExactSyncUsesPrivateLookahead() {
   // Production API/lease/pixel-forwarding control, not a firmware DPB model.
   // Actual post-aux reference/B-frame decode bytes require the separate
   // unchanged-provider diagnostic; this mock never decodes compressed data.
   for (unsigned public_height : {64U, 1080U, 1088U})
-  for (bool bottom_first : {false, true}) {
+  for (bool bottom_first : {false, true})
+  for (bool preheld : {false, true}) {
     const unsigned coded_width = public_height == 64 ? 256 : 1920;
     const unsigned coded_height = public_height == 64 ? 64 : 1088;
     H264AdmissionFixture fixture(16, 1024 * 1024, coded_width, coded_height);
@@ -13197,11 +13331,12 @@ static void CenteredExactSyncUsesPrivateLookahead() {
             "coded context geometry and accepted visible/coded public extent stay distinct");
     const auto original = fixture.held[0]->storage;
     queue(kTimestampStep, first);
-    Require(ReceiveAvailable(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
-                d.h264_first_field.valid && !source->ready &&
-                fixture.io.released_outputs == 1,
-            "only a successfully released genuine first field qualifies full Sync");
-    const auto held = d.h264_first_field.pixels;
+    if (preheld)
+      Require(ReceiveAvailable(&fixture.driver, &d, 1) == VA_STATUS_SUCCESS &&
+                  d.h264_first_field.valid && !source->ready &&
+                  fixture.io.released_outputs == 1,
+              "an already released genuine first field may enter full Sync");
+    auto held = d.h264_first_field.pixels;
     const size_t input_calls = fixture.io.input_calls.size();
     const auto ordinal = d.next_submission_ordinal;
     std::vector<uint8_t> expected_aux;
@@ -13227,14 +13362,17 @@ static void CenteredExactSyncUsesPrivateLookahead() {
       queue(kTimestampStep, second);
     };
     fixture.io.on_sleep = [&] {
-      if (d.auxiliary.pending) {
+      if (preheld) {
         supply_complement();
         return;
       }
-      Require(fixture.io.input_calls.size() == input_calls && !source->ready,
-              "the unchanged inactivity grace expires before auxiliary input");
-      std::this_thread::sleep_for(std::chrono::nanoseconds(kDecodeBatchGraceNs) +
-                                  std::chrono::milliseconds(1));
+      Require(d.h264_first_field.valid && fixture.io.released_outputs == 1 &&
+                  fixture.io.input_calls.size() == input_calls && !d.auxiliary.ever &&
+                  !source->ready,
+              "new first-field release is a progress turn with idle0 and no auxiliary");
+      held = d.h264_first_field.pixels;
+      // No test clock advance or arbitrary sleep: the next existing RX turn
+      // sees the actual empty mock queue and must use early exact lookahead.
       fixture.io.on_sleep = supply_complement;
     };
     Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS && source->ready &&
@@ -13364,6 +13502,8 @@ static void CenteredExactSyncRejectsUnqualifiedLookahead() {
 }
 
 static void NeutralAuxiliaryContracts() {
+  ReceiveAvailableQuietHintPreservesActivity();
+  CenteredReadyComplementDoesNotInjectLookahead();
   CenteredExactSyncUsesPrivateLookahead();
   CenteredExactSyncRejectsUnqualifiedLookahead();
   NeutralAuxAdmissionSnapshotsPolicyAndSyntax();
