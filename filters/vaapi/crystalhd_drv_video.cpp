@@ -8643,6 +8643,68 @@ static void DrainDecodeControlFd(int fd) {
   } while (result < 0 && errno == EINTR);
 }
 
+// A released original first field may use one more bounded RX opportunity.
+// This is only an ownership check; ReceiveOne keeps every existing validator,
+// pixel/READY decision and DIL release. It works with packed or staged fields.
+static std::shared_ptr<Surface> CenteredWorkerFirstTarget(
+    Driver *driver, const std::shared_ptr<DecodeContext> &decode,
+    const std::shared_ptr<Surface> &picture) {
+  if (driver->stopping || !decode || !picture || decode->video_process ||
+      !IsH264Profile(decode->profile) || decode->is_70012 ||
+      !decode->decoder_open || !decode->decoder_started || !decode->device ||
+      !decode->centered_geometry.enabled || decode->decode_processing ||
+      decode->experimental_ready_remap || decode->closing || decode->retired ||
+      decode->destroy_prepared || decode->destroy_in_progress ||
+      decode->hardware_close_pending || decode->ReplayFailed() ||
+      decode->ReplaySealed() || decode->replay.NeedsRestart() || decode->auxiliary.ever)
+    return {};
+  const auto context = driver->contexts.find(decode->id);
+  const auto &first = decode->h264_first_field;
+  if (context == driver->contexts.end() || context->second != decode ||
+      !first.valid || first.replay_duplicate || first.is_70012 || first.picture != picture ||
+      first.timestamp == 0 || first.decode_identity == 0 || first.generation != decode->generation ||
+      first.width != decode->CaptureWidth() || first.height != decode->CaptureHeight() ||
+      !decode->replay.IsOutstanding(first.timestamp))
+    return {};
+  const auto frame = decode->decoded_frames.find(first.timestamp);
+  const auto pending = decode->pending.find(first.timestamp);
+  if (frame == decode->decoded_frames.end() || frame->second != picture ||
+      pending == decode->pending.end() || !CenteredStorageMatches(*picture) ||
+      picture->ready || picture->failed || picture->destroyed ||
+      picture->vpp_readers || picture->vpp_writers || picture->image_write_locked ||
+      picture->expected_timestamp != first.timestamp || picture->frame_timestamp != 0 ||
+      picture->decode_identity != first.decode_identity ||
+      picture->trace_decode_identity != first.decode_identity ||
+      picture->trace_context != TraceId(decode->id, VA_INVALID_ID) ||
+      picture->trace_generation != decode->generation || picture->trace_submission_ordinal == 0)
+    return {};
+  const auto found = driver->surfaces.find(pending->second);
+  if (found == driver->surfaces.end()) return {};
+  const auto &target = found->second;
+  auto geometry = decode->centered_geometry;
+  geometry.canvas_width = target->width; geometry.canvas_height = target->height;
+  if (!HasLiveBackingOwner(driver, target.get()) || target->backing_owner != VA_INVALID_SURFACE ||
+      target->layout.valid || target->fourcc != VA_FOURCC_NV12 ||
+      target->ready || target->failed || target->opaque_reference ||
+      target->vpp_readers || target->vpp_writers || target->export_waiters || target->image_write_locked ||
+      target->vpp_external_write_exposed || target->centered_allocation_exposed ||
+      (target->picture_transaction != 0 &&
+       target->rejected_picture_transaction == target->picture_transaction) ||
+      target->experimental_write_lease || target->experimental_read_export_armed ||
+      target->experimental_presentation || target->decode_picture.lock() != picture ||
+      (picture->direct_backing && picture->direct_backing != target) ||
+      (picture->direct_picture && picture->decode_target.lock() != target) ||
+      target->width != picture->width || target->height != picture->height ||
+      !SameCenteredGeometry(geometry, picture->centered_geometry) ||
+      target->expected_timestamp != first.timestamp || target->frame_timestamp != 0 ||
+      target->decode_identity != first.decode_identity ||
+      target->trace_decode_identity != picture->trace_decode_identity ||
+      target->trace_context != picture->trace_context || target->trace_generation != picture->trace_generation ||
+      target->trace_submission_ordinal != picture->trace_submission_ordinal)
+    return {};
+  return target;
+}
+
 // Some conforming frontends submit pictures and then wait in their presentation
 // path without making another VA call that can harvest decoder output. Keep
 // QuerySurfaceStatus passive and make that hardware progress independently.
@@ -8675,11 +8737,44 @@ static void RunDecodeWorker(Driver *driver) {
       if (!HasAutonomousDecodeWork(decode))
         continue;
       const uint64_t before_receive = decode->transport_progress;
+      const bool had_first = decode->h264_first_field.valid;
+      const uint64_t turn_generation = decode->generation;
+      const VAContextID turn_context = decode->id;
+      const HANDLE turn_device = decode->device;
       VAStatus status = ReceiveAvailable(driver, decode.get(), 1);
       output_progress = output_progress ||
                         decode->transport_progress != before_receive;
+      // Never copy H264FirstField: its vector can hold a full packed field.
+      const auto first_values = [&] {
+        const auto &f = decode->h264_first_field;
+        return std::array<uint64_t, 13>{{f.timestamp, f.decode_identity, f.generation,
+            f.picture_number, f.sess_num, f.picture_meta_payload, f.width, f.height,
+            f.source_pitch, f.bottom, f.bottom_first, f.is_70012, f.replay_duplicate}};
+      };
+      std::shared_ptr<Surface> first_picture, first_target;
+      std::array<uint64_t, 13> released_first{};
+      if (status == VA_STATUS_SUCCESS && !had_first &&
+          decode->transport_progress > before_receive && decode->generation == turn_generation &&
+          decode->id == turn_context && decode->device == turn_device) {
+        first_picture = decode->h264_first_field.picture;
+        first_target = CenteredWorkerFirstTarget(driver, decode, first_picture);
+        if (first_target) released_first = first_values();
+        else first_picture.reset();
+      }
       if (status == VA_STATUS_SUCCESS)
         status = PumpDecodeInput(driver, decode.get(), 4);
+      const bool receive_complement = status == VA_STATUS_SUCCESS && first_target &&
+          decode->generation == turn_generation && decode->id == turn_context &&
+          decode->device == turn_device && first_values() == released_first &&
+          CenteredWorkerFirstTarget(driver, decode, first_picture) == first_target;
+      // Do not let temporary ownership checks change map-only picture counts
+      // inside the unchanged second ReceiveOne processing/release path.
+      first_target.reset(); first_picture.reset();
+      if (receive_complement) {
+        const uint64_t before_second = decode->transport_progress;
+        status = ReceiveAvailable(driver, decode.get(), 1);
+        output_progress = output_progress || decode->transport_progress != before_second;
+      }
       // A queued MPEG-4 timing discontinuity is an explicit finite epoch,
       // not an idle-gap EOS inference. EndPicture attempts this seal too, but
       // TX backpressure can make it temporarily impossible; retry once the

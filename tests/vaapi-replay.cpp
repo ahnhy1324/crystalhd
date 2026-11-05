@@ -406,6 +406,7 @@ struct DecodeIoMock {
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int output_width = 16;
   unsigned int output_height = 16;
+  unsigned int output_pitch = 0; // Explicit LINK field padding; zero preserves existing mocks.
   unsigned int open_attempts = 0;
   unsigned int decoder_open_calls = 0;
   unsigned int capture_start_calls = 0;
@@ -737,8 +738,10 @@ extern "C" BC_STATUS __wrap_DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
     const unsigned int rows =
         (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0
             ? output->PicInfo.height / 2U : output->PicInfo.height;
-    decode_io_mock->pixels.resize(
-        static_cast<size_t>(output->PicInfo.width) * rows * 2U);
+    const unsigned int pitch = decode_io_mock->output_pitch
+        ? decode_io_mock->output_pitch : output->PicInfo.width;
+    decode_io_mock->invalid |= pitch < output->PicInfo.width;
+    decode_io_mock->pixels.resize(static_cast<size_t>(pitch) * rows * 2U);
     for (size_t offset = 0; offset < decode_io_mock->pixels.size(); offset += 2) {
       decode_io_mock->pixels[offset] = DecodeIoMock::Luma(timestamp);
       decode_io_mock->pixels[offset + 1] = 128;
@@ -6326,7 +6329,8 @@ struct TeardownFixture {
   std::shared_ptr<DecodeContext> decoder = std::make_shared<DecodeContext>();
   std::vector<std::shared_ptr<Surface>> held;
 
-  explicit TeardownFixture(unsigned int pictures = 3) {
+  explicit TeardownFixture(unsigned int pictures = 3,
+                           int trace_fd = STDERR_FILENO) : driver(-1, trace_fd) {
     context.pDriverData = &driver;
     driver.contexts[1] = decoder;
     decoder->width = decoder->height = 16;
@@ -6385,8 +6389,9 @@ struct H264AdmissionFixture : TeardownFixture {
   explicit H264AdmissionFixture(size_t pictures = 2,
                                 size_t bytes = 1024 * 1024,
                                 unsigned int width = 16,
-                                unsigned int height = 32)
-      : TeardownFixture(0) {
+                                unsigned int height = 32,
+                                int trace_fd = STDERR_FILENO)
+      : TeardownFixture(0, trace_fd) {
     driver.StopWorkers();
     driver.stopping = false;
     decoder->id = decoder->config = 1;
@@ -12144,6 +12149,234 @@ static void OutputBacklogWorkerReleasesDriverMutex() {
          outputs_seen, kPictures, handoffs.load());
 }
 
+static void CenteredWorkerPairsOnlyNewlyReleasedFirstField() {
+  enum class Case { Pair, NoComplement, Preheld, NonCentered, Link,
+                    CompletedRepeat, FirstReleaseFailure, SecondReleaseFailure, EmptyReady };
+  TraceEnvironment environment;
+  for (bool bottom_first : {false, true})
+    for (Case test : {Case::Pair, Case::NoComplement, Case::Preheld,
+                      Case::NonCentered, Case::Link, Case::CompletedRepeat,
+                      Case::FirstReleaseFailure, Case::SecondReleaseFailure, Case::EmptyReady}) {
+      struct TraceSink {
+        int fd = memfd_create("centered-worker-pair-trace", MFD_CLOEXEC);
+        TraceSink() { Require(fd >= 0, "create bounded worker-pair native trace sink"); }
+        ~TraceSink() { close(fd); }
+      } trace;
+      H264AdmissionFixture f(8, 1024 * 1024, 256, 64, trace.fd);
+      if (test != Case::NonCentered) ConfigureCenteredAdmission(f);
+      if (test == Case::Link) {
+        f.decoder->is_70012 = true;
+        f.io.report_bcm70012 = true;
+        f.io.output_pitch = 720;
+      }
+      const unsigned originals = test == Case::EmptyReady ? 6U : 2U;
+      f.io.input_busy = test == Case::EmptyReady;
+      for (unsigned target = 1; target <= originals; ++target) {
+        f.Prepare(target);
+        f.decoder->picture.seq_fields.bits.frame_mbs_only_flag = 0;
+        f.decoder->picture.seq_fields.bits.mb_adaptive_frame_field_flag = 1;
+        Require(EndPicture(&f.context, 1) == VA_STATUS_SUCCESS,
+                "actual public submission admits a frame-coded field-capable sequence");
+      }
+      Require(f.io.inputs.size() == (test == Case::EmptyReady ? 0U : originals) &&
+                  f.decoder->replay.outstanding() == f.io.inputs.size(),
+              "worker-pair fixture retains actual input debt without invented output ownership");
+      f.io.input_busy = false;
+      const auto field = [&](uint64_t token, bool bottom) {
+        f.io.outputs.push_back(token);
+        f.io.picture_flags.push_back(VDEC_FLAG_INTERLACED_SRC |
+            (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD) |
+            (bottom_first ? VDEC_FLAG_BOTTOM_FIRST : 0));
+      };
+      if (test == Case::Preheld || test == Case::CompletedRepeat) {
+        field(kTimestampStep, bottom_first);
+        if (test == Case::CompletedRepeat) field(kTimestampStep, !bottom_first);
+        Require(ReceiveAvailable(&f.driver, f.decoder.get(),
+                                  test == Case::CompletedRepeat ? 2U : 1U) == VA_STATUS_SUCCESS &&
+                    f.io.outputs.empty(),
+                "preheld field or completed original comes from actual acquire/release");
+      }
+      if (test == Case::Preheld) {
+        Require(f.decoder->h264_first_field.valid && !f.held[0]->ready,
+                "preheld control begins the worker with an existing uncompleted latch");
+        field(kTimestampStep, !bottom_first);
+        field(2 * kTimestampStep, bottom_first);
+      } else if (test != Case::EmptyReady) {
+        field(kTimestampStep, bottom_first);
+        if (test != Case::NoComplement) {
+          field(kTimestampStep, !bottom_first);
+          field(2 * kTimestampStep, bottom_first);
+        }
+      }
+      if (test == Case::CompletedRepeat)
+        Require(f.held[0]->ready && !f.decoder->replay.IsOutstanding(kTimestampStep),
+                "completed-repeat control has no outstanding replay debt for the repeated token");
+      if (test == Case::FirstReleaseFailure) f.io.output_release_status = BC_STS_ERROR;
+      if (test == Case::SecondReleaseFailure)
+        f.io.on_output_release = [&] {
+          f.io.on_output_release = [&] { f.io.output_release_status = BC_STS_ERROR; };
+        };
+      const unsigned releases_before = f.io.released_outputs.load();
+      const unsigned polls_before = f.io.output_polls;
+      const uint64_t progress_before = f.decoder->transport_progress;
+      const size_t materialized_before = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+      struct Observation {
+        bool seen = false, owns_lock = false, ready = false, first_valid = false, failed = false;
+        bool from_release_callback = false, handoff_seen = false;
+        unsigned releases = 0;
+        size_t queued = 0;
+        uint64_t front = 0;
+      } observed;
+      struct WorkerCleanup {
+        Driver &driver;
+        ~WorkerCleanup() { driver.StopWorkers(); decode_worker_turn = {}; }
+      } cleanup{f.driver};
+      if (test == Case::CompletedRepeat)
+        f.io.on_output_release = [&] {
+          // An ignored completed token makes no progress, so this control
+          // observes its real release instead of inventing a progress handoff.
+          observed.seen = observed.from_release_callback = true;
+          observed.ready = f.held[0]->ready;
+          observed.first_valid = f.decoder->h264_first_field.valid;
+          observed.failed = f.decoder->ReplayFailed();
+          observed.releases = f.io.released_outputs.load() - releases_before;
+          observed.queued = f.io.outputs.size();
+          observed.front = f.io.outputs.empty() ? 0 : f.io.outputs.front();
+          f.driver.stopping = true;
+          f.driver.condition.notify_all();
+        };
+      decode_worker_turn = [&](Driver *driver, std::unique_lock<std::mutex> &lock) {
+        if (driver != &f.driver) return;
+        observed.handoff_seen = true;
+        if (observed.seen || test == Case::CompletedRepeat) return;
+        // This hook holds the real worker lock. No assertion, trace read or
+        // throwing operation runs on the worker: validate only after joining.
+        observed.seen = true; observed.owns_lock = lock.owns_lock();
+        observed.ready = f.held[0]->ready;
+        observed.first_valid = f.decoder->h264_first_field.valid;
+        observed.failed = f.decoder->ReplayFailed();
+        observed.releases = f.io.released_outputs.load() - releases_before;
+        observed.queued = f.io.outputs.size();
+        observed.front = f.io.outputs.empty() ? 0 : f.io.outputs.front();
+        driver->stopping = true;
+        driver->condition.notify_all();
+      };
+      f.driver.StartDecodeWorker();
+      bool finished;
+      {
+        std::unique_lock<std::mutex> lock(f.driver.mutex);
+        finished = f.driver.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+          return observed.seen || f.decoder->ReplayFailed();
+        });
+      }
+      f.driver.StopWorkers();
+      decode_worker_turn = {};
+      const auto RequireControl = [&](bool valid, const char *why) {
+        if (!valid)
+          std::fprintf(stderr,
+              "worker-pair control failed case=%u BFF=%u release=%u ready=%u first=%u M=%zu queue=%zu front=%llu release_observer=%u handoff=%u: %s\n",
+              static_cast<unsigned>(test), unsigned(bottom_first),
+              f.io.released_outputs.load() - releases_before, unsigned(f.held[0]->ready),
+              unsigned(f.decoder->h264_first_field.valid),
+              CountTraceEvent(ReadTraceFd(trace.fd), "materialized"), f.io.outputs.size(),
+              static_cast<unsigned long long>(f.io.outputs.empty() ? 0 : f.io.outputs.front()),
+              unsigned(observed.from_release_callback), unsigned(observed.handoff_seen), why);
+        Require(valid, why);
+      };
+      RequireControl(finished && !f.io.invalid,
+              "one bounded real worker turn or terminal failure completes before coordination watchdog");
+      const size_t materialized = CountTraceEvent(ReadTraceFd(trace.fd), "materialized");
+      if (test == Case::FirstReleaseFailure || test == Case::SecondReleaseFailure) {
+        const bool first_failure = test == Case::FirstReleaseFailure;
+        RequireControl(f.decoder->ReplayFailed() && !f.decoder->h264_first_field.valid &&
+                    f.io.released_outputs.load() - releases_before == (first_failure ? 1U : 2U) &&
+                    materialized == materialized_before + (first_failure ? 0U : 1U) &&
+                    f.decoder->transport_progress == progress_before + (first_failure ? 0U : 1U) &&
+                    f.io.outputs.size() == (first_failure ? 2U : 1U) &&
+                    f.io.outputs.back() == 2 * kTimestampStep &&
+                    !f.held[1]->ready &&
+                    (!first_failure || (!f.held[0]->ready && f.held[0]->failed)),
+                "release errors preserve first-field no-publication and the preexisting M-before-second-release ordering");
+        f.io.on_output_release = {}; f.io.output_release_status = BC_STS_SUCCESS;
+        f.io.outputs.clear(); f.io.picture_flags.clear();
+        f.driver.stopping = false;
+        RequireControl(DestroyContext(&f.context, 1) != VA_STATUS_SUCCESS && f.decoder->device == nullptr,
+                "failed worker context consumes its existing hardware owner without fabricating success");
+        continue;
+      }
+      RequireControl(observed.seen && !observed.failed &&
+                  (test == Case::CompletedRepeat
+                      ? observed.from_release_callback && !observed.handoff_seen
+                      : observed.owns_lock && observed.handoff_seen),
+              "controls observe either the real progress handoff or ignored-repeat release, then join normally");
+      if (test == Case::Pair) {
+        RequireControl(observed.releases == 2 && observed.ready && !observed.first_valid &&
+                    observed.queued == 1 && observed.front == 2 * kTimestampStep &&
+                    materialized == 1 && !f.held[1]->ready,
+                "new released first field receives only its complement before handoff; third output stays queued");
+      } else if (test == Case::EmptyReady) {
+        RequireControl(observed.releases == 0 && !observed.ready && !observed.first_valid &&
+                    f.io.output_polls == polls_before + 1 && f.io.inputs.size() == 4 &&
+                    materialized == 0,
+                "Ready0 keeps the unchanged Pump4/input-budget handoff and adds no receive turn");
+      } else if (test == Case::CompletedRepeat) {
+        RequireControl(observed.releases == 1 && observed.ready && !observed.first_valid &&
+                    observed.queued == 2 && materialized == 1 &&
+                    f.decoder->transport_progress == progress_before,
+                "ignored completed repeat releases once without a latch, progress or another harvest");
+      } else {
+        const bool completed = test == Case::Preheld;
+        RequireControl(observed.releases == 1 && observed.ready == completed &&
+                    observed.first_valid == !completed &&
+                    materialized == (completed ? 1U : 0U) &&
+                    observed.queued == (test == Case::NoComplement ? 0U :
+                                        test == Case::Preheld ? 1U : 2U),
+                "preheld, nonCentered, LINK and empty-complement controls preserve one output per turn");
+      }
+      f.io.on_output_release = {};
+      f.driver.stopping = false;
+      if (test == Case::EmptyReady) {
+        RequireControl(PumpDecodeInput(&f.driver, f.decoder.get(), 32) == VA_STATUS_SUCCESS,
+                "remaining accepted originals keep their existing transport budget");
+        for (unsigned picture = 1; picture <= originals; ++picture) {
+          field(picture * kTimestampStep, bottom_first);
+          field(picture * kTimestampStep, !bottom_first);
+        }
+      } else {
+        if (test == Case::NoComplement) {
+          field(kTimestampStep, !bottom_first);
+          field(2 * kTimestampStep, bottom_first);
+        }
+        field(2 * kTimestampStep, !bottom_first);
+      }
+      if (test != Case::Link) {
+        RequireControl(f.decoder->replay.outstanding() > 0 && !f.io.outputs.empty(),
+                "seal while genuine remaining originals still own their queued fields");
+        f.io.early_eos = true; // Existing mock queues the originals above only once.
+        RequireControl(SealDecodeBatch(&f.driver, f.decoder.get()) == VA_STATUS_SUCCESS &&
+                    f.decoder->ReplaySealed() && !f.io.outputs.empty() && f.io.outputs.back() == 0,
+                "explicit seal follows real remaining fields with the actual EOS marker");
+      }
+      RequireControl(ReceiveAvailable(&f.driver, f.decoder.get()) == VA_STATUS_SUCCESS &&
+                  f.io.outputs.empty() && f.io.picture_flags.empty() &&
+                  f.decoder->pending.empty() && f.decoder->replay.outstanding() == 0 &&
+                  CountTraceEvent(ReadTraceFd(trace.fd), "materialized") == originals,
+              "later unchanged harvest completes every original exactly once without losing the queued third field");
+      for (unsigned index = 0; index < originals; ++index) {
+        if (test == Case::NonCentered) f.CheckPicture(index);
+        else CheckCenteredAdmissionPicture(f, index);
+      }
+      if (test != Case::Link) {
+        RequireControl(f.io.outputs.empty() && !f.decoder->ReplaySealed() &&
+                    std::count(f.io.events.begin(), f.io.events.end(), "eos") == 1,
+                "unchanged harvest consumes every remaining original and exactly one explicit EOS");
+      }
+      RequireControl(DestroyContext(&f.context, 1) == VA_STATUS_SUCCESS && f.decoder->device == nullptr &&
+                  f.io.device_close_calls == 1 && !f.io.invalid,
+              "worker-pair and legacy controls retire the existing decoder owner normally");
+    }
+}
+
 static void WorkerPollAllocationFailure(unsigned allocation) {
   TeardownFixture f(8);
   const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -13540,6 +13773,11 @@ int main(int argc, char **argv) {
       WorkerPollAllocationFailuresAreContained();
       return 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--centered-worker-pair") == 0) {
+      CenteredWorkerPairsOnlyNewlyReleasedFirstField();
+      puts("VA-API Centered worker field pair: bounded complement, exact release/pixel/M and legacy exclusions PASS");
+      return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--output-worker-handoff") == 0) {
       OutputBacklogWorkerReleasesDriverMutex();
       BudgetedWorkerReleasesDriverMutex();
@@ -13612,7 +13850,7 @@ int main(int argc, char **argv) {
       std::puts("VA-API private first-field Bob, progress/grace and LIVE tail: TFF/BFF pixels, ownership, cancellation and explicit drain PASS");
       return 0;
     }
-    Require(argc == 1, "usage: vaapi-replay-test [--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
+    Require(argc == 1, "usage: vaapi-replay-test [--centered-worker-pair|--centered-firstfield|--h264-admission|--exact-sync-ready|--terminal-close-ready|--card-scaling-live|--card-scaling|--mpeg2-fields|--h264-replay-metadata|--live-bob-tail|--h264-replay-reopen]");
     NeutralAuxiliaryContracts();
     DeferredH264PrefeedRetriesWithoutNewInput();
     FirstTemporalBobUsesCompactStorage();
@@ -13734,6 +13972,7 @@ int main(int argc, char **argv) {
     TerminalPromotionFailureGrantsNoLeases();
     TerminalCloseDoesNotBlockReadySync();
     TerminateJoinsAnUnlockedTerminalDestroy();
+    CenteredWorkerPairsOnlyNewlyReleasedFirstField();
     OutputBacklogWorkerReleasesDriverMutex();
     BudgetedWorkerReleasesDriverMutex();
     WorkerPollAllocationFailuresAreContained();
