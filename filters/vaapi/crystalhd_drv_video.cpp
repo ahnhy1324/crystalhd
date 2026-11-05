@@ -4628,6 +4628,13 @@ static bool CopyH264InterlacedToSurface(
           ? mirror_uv + size_t{uv_row} * mirror_uv_pitch : nullptr;
       unsigned int column = 0;
       for (; width - column >= 16; column += 16) {
+        // Test a bounded source-latency hypothesis only on the deferred ROI.
+        // Both future 64-byte spans stay inside these same owned field rows.
+        if (deferred_small && (column & 31U) == 0 && width - column >= 160U) {
+          const size_t ahead = size_t{column} * 2U + 256U;
+          _mm_prefetch(reinterpret_cast<const char *>(first + ahead), _MM_HINT_T0);
+          _mm_prefetch(reinterpret_cast<const char *>(second + ahead), _MM_HINT_T0);
+        }
         const __m128i first0 = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(first + column * 2));
         const __m128i first1 = _mm_loadu_si128(
