@@ -211,9 +211,115 @@
         "4": 8
       },
       "evidence": "mirror-module20-fixed-01/result.json"
+    },
+    {
+      "case": "current-mirror-01",
+      "source": "e4d84809413334f1f6553842a197d5b2df29644c",
+      "change": "Current full unpromoted research candidate on permanent official20 baseline",
+      "originals": [837, 830],
+      "ledger_status": ["PASS", "PASS"],
+      "completed_replay_inputs": [0, 0],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/current-mirror-01/result.json"
+    },
+    {
+      "case": "sized-current-01",
+      "source": "e4d84809413334f1f6553842a197d5b2df29644c",
+      "change": "Same research candidate with existing compile-time SIZED16 DIL option",
+      "originals": [864, 854],
+      "ledger_status": ["PASS", "PASS"],
+      "completed_replay_inputs": [0, 10],
+      "replay_fields": [0, 20],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "scope": "Existing coupled output-sized/deferred-allocation/DONTNEED implementation, not a new allocator, changed default or causal performance comparison.",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/sized-current-01/result.json"
+    },
+    {
+      "case": "profile-stock-01",
+      "source": "e4d84809413334f1f6553842a197d5b2df29644c",
+      "change": "Original supplied App/current SIZED16 research process under49Hz all-thread CPU sampling",
+      "originals": [876, 878],
+      "ledger_status": ["PASS", "PASS"],
+      "completed_replay_inputs": [0, 0],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH_DIAGNOSTIC_PROFILE_ONLY",
+      "scope": "Sampling changes execution overhead; not a speedup or ordinary-backend performance comparison.",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/profile-stock-01/result.json"
+    },
+    {
+      "case": "tx-preflight-01",
+      "source": "9d9a6272e3a4b50d457d8a886b7772e5d7d26db7",
+      "change": "Bounded TX-before-RX on the full research candidate",
+      "originals": [881, 877],
+      "ledger_status": ["PASS", "PASS"],
+      "completed_replay_inputs": [0, 0],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/tx-preflight-01/result.json"
+    },
+    {
+      "case": "input-small-01",
+      "source": "8fac62153c8417cefa53b75989c33ac71a7a1618",
+      "change": "TX ordering and tight retired private-small clear-elision with the full research stack",
+      "originals": [897, 894],
+      "ledger_status": ["PASS", "PASS"],
+      "completed_replay_inputs": [0, 0],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/input-small-01/result.json"
+    },
+    {
+      "case": "ordinary-input-small-01",
+      "source": "8fac62153c8417cefa53b75989c33ac71a7a1618",
+      "change": "Same full8fac source, ordinary backend/native trace only",
+      "originals": [null, null],
+      "qualified_originals": [null, null],
+      "raw_distinct_full_submit_bindings": [876, 886],
+      "raw_input_sent_records": [880, 896],
+      "raw_output_dequeued_records": [1760, 1792],
+      "ledger_status": ["FAIL_MULTIPLICITY", "FAIL_INCOMPLETE_IDENTITY"],
+      "source900": "FAIL",
+      "integration": "UNPROMOTED_RESEARCH",
+      "scope": "No private observers, replay classification or pixels. Raw submits are not qualified source counts; unknown/multiple rows remain strict failures.",
+      "evidence": "/home/mache/.cache/crystalhd-source900-current-20261105/ordinary-input-small-01/result.json"
     }
   ],
+  "current_source_checkpoint": {
+    "latest_private_case": "input-small-01",
+    "latest_ordinary_case": "ordinary-input-small-01",
+    "host": "Permanent matched official1.3/source24a/module20 baseline retained; every new case has controls PASS, App0, kernel0, full boundary equality and no handoff.",
+    "private_audits": "All five new private cases have the four scoped observation audits PASS; these audits do not waive source900.",
+    "ordinary_audits": "NOT_RUN; strict native-only ledger failures remain unqualified.",
+    "minimal_maintained_changes": [
+      "One bounded H264/Flea/Centered TX pump before unchanged RX64 and post-RX pump.",
+      "Equivalent bounded memchr NEXT-prefix search; framing, bytes and legacy MPEG4 remain unchanged.",
+      "Explicit default-clear opt-in only for exact-size retired tight privateSmall after confirmed open/started Flea; fresh/padded/generic/public/image/compact initialization stays zero."
+    ],
+    "main_port": "Only those three maintained changes, with packed-first-field regression controls; no COW, NV12 first-field staging, border reuse, mirror stores or full research merge.",
+    "main_port_check_status": "PASS_AFFECTED_CPU_CHECKS_CURRENT_BASE_CI_PENDING",
+    "main_port_checks": {
+      "pool_port_commit": "4dcbc71",
+      "default_dil_and_ordinary_va_strict_build": "PASS",
+      "packed_path_scaling": {"groups": 39, "checks": 190061, "failures": 0},
+      "full_replay": "PASS",
+      "private_backing": "PASS",
+      "unchanged_parser_reuse": {
+        "source": "6a1135e",
+        "scope": "Identical parser implementation explicitly reused, not a new unchanged-library execution.",
+        "complete_library_check": "PASS",
+        "parser_cases_each": 26003,
+        "native": "PASS",
+        "scalar32_native": "PASS",
+        "pentium2_emulation": "PASS"
+      },
+      "integration": "Independent source review complete; task PR/current-base CI remain pending. CPU-only checks do not establish current stock source900 or promote the full research stack."
+    },
+    "outcome": "Source900 remains unresolved. Sequential counts are not a causal speedup, external defect, global impossibility or issue closure."
+  },
   "latest_private_scope": {
+    "scope_label": "Retained3fd historical checkpoint; current_source_checkpoint identifies the newer cases without rewriting these original measurements.",
     "case": "mirror-stock-01",
     "source": "3fd175236531597ceced2e89875fb7b8bcd9c8c0",
     "all_native_M": [
@@ -323,10 +429,10 @@
     "firstfield": "Exact native-M per-picture disjoint first-stage plus complementary-converter CPU comparison is retained; lower maintained-work CPU is not current end-to-end/source900 proof.",
     "cow": "Real native64/native32 kernel controls distinguish MAP_PRIVATE alone from prepared COW, preserve edited/mapped images and last-owner64MiB primary charge; unsupported semantic capability conservatively falls back. No physical Atom claim.",
     "read_prefault": "No useful gain in the600-iterationABBA ordinary-copy batch; not adopted. Original wrong-include-path buildFAIL is preserved.",
-    "rx_sizing": "Existing compile-time output-aware DIL option is already implemented; new SIZED setup remains held/unexecuted after official baseline completion, with fixed/default16 unchanged."
+    "rx_sizing": "The earlier setup was held/unexecuted at its checkpoint. Current matched-baseline SIZED16 is now executed as sized-current-01 and remains source900 FAIL; the existing coupled allocator/retirement scope and fixed/default16 are unchanged."
   },
   "postrelease_audit": {
-    "status": "PASS_SOURCE_AUDIT_AND_TARGETED_CHECKS_INTEGRATION_PENDING",
+    "status": "PASS_SOURCE_AUDIT_AND_TARGETED_CHECKS_MERGED_PR664",
     "latest_maintained_base": "77ce8491ffa0bb539a412458e643669cdcdbbfed",
     "completed": [
       "Latest maintained-source and separate unpromoted-prototype audits with independent source review.",
@@ -362,15 +468,15 @@
       "qemu_log": "/home/mache/.cache/crystalhd-postrelease-audit-run-20261105/candidate-scalar32-pentium2.log",
       "scope": "Source/CPU regression coverage of the separate unpromoted candidate; explicit COW-unavailable emulation still exercises DUMB fallback. No new physical900, Atom acceptance, performance benefit or promotion."
     },
-    "integration": "Task PR and current-base CI gate remain pending."
+    "integration": "Audit fixes merged through PR664 at maintained master46e5dd8. The current minimal three-change port is a separate task branch with its own affected checks/current-base CI; no unpromoted full research stack is implied."
   },
   "remaining": [
-    "Integrate the completed reviewed audit fixes through the task PR and current-base CI gate; the audit itself and its targeted checks are complete.",
-    "Retain the verified matched official stable baseline; keep SIZED held and select no further900 experiment in this audit batch.",
+    "Complete task-PR/current-base CI for the reviewed minimal three-change port; affected CPU checks are complete, but no source900 repair is established by them or its research counts.",
+    "Retain the verified matched official stable baseline and all actual fixed/SIZED/profile/private/ordinary failures; preserve the existing RX option/default and provenance.",
     "Underlying900 shortage and exact NONREF/latency cause; whole-output/post-copy pixels, clocks/cadence, GPU return and broader lifetime/endurance remain separately scoped."
   ],
   "limits": [
-    "No external product/dependency patches, default discard or pool change, research promotion or new release artifacts.",
+    "No external product/dependency patches, default discard or pool-count/default change, full research promotion or new release artifacts.",
     "The fixed original caller lacks postfilter EOF; its narrow tail boundary does not prove source900 globally impossible.",
     "Ordinary real-time counts and no-clock900/API/reference-only1800 outputs are separate contracts; prior original failures retain their identities.",
     "All17 released feature groups/defaults and published/registered source identities remain intact."
