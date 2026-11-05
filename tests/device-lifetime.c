@@ -80,6 +80,8 @@ enum crystalhd_decoder_codec {
 	CRYSTALHD_DECODER_CODEC_INVALID = -1,
 	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
+/* Typed for the temporary issue92 actual-suspend excerpt; never populated. */
+struct crystalhd_retained_rx_registry { bool stale; };
 struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
@@ -94,7 +96,7 @@ struct crystalhd_cmd {
 	uint32_t cin_wait_exit, pwr_state_change, state;
 	bool retain_rx_on_suspend;
 	bool session_module_pinned;
-	void *retained_rx; /* This fixture has no negotiated retained registrations. */
+	struct crystalhd_retained_rx_registry *retained_rx;
 };
 typedef struct crystalhd_ioctl_data {
 	struct crystalhd_ioctl_data *next;

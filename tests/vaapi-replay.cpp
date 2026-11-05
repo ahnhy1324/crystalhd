@@ -13527,6 +13527,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--h264-admission") == 0) {
+      CenteredNv12FirstFieldReceiveOwnership();
       CenteredAdmissionSubmitsBeforeReadyOutput();
       H264AdmissionHarvestsBeforeRejecting();
       H264AdmissionCancellationPreservesOtherOwners();
