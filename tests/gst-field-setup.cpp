@@ -210,8 +210,12 @@ static gpointer keyboard_peer(gpointer user) {
     if(!plain_peer_setup(fd,end,p->caller))return finish();
     auto request=[&](uint8_t code) {
         xcb_get_keyboard_mapping_request_t value{};
-        if(!setup_read(fd,&value,sizeof(value),end)||value.major_opcode!=XCB_GET_KEYBOARD_MAPPING||
-           value.length!=sizeof(value)/4||value.first_keycode!=code||value.count!=1)return false;
+        // The generated request struct omits the two trailing wire-pad bytes.
+        std::array<unsigned char,(sizeof(value)+3)&~size_t(3)> wire{};
+        if(!setup_read(fd,wire.data(),wire.size(),end))return false;
+        memcpy(&value,wire.data(),sizeof(value));
+        if(value.major_opcode!=XCB_GET_KEYBOARD_MAPPING||value.length!=wire.size()/4||
+           value.first_keycode!=code||value.count!=1)return false;
         ++p->requests;return true;
     };
     if(!request(42))return finish();
