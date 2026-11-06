@@ -122,6 +122,16 @@ static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *n
     if(shared_end&&!*shared_end)*shared_end=end;
     return request.wait<xcb_intern_atom_reply_t>(shared_end?*shared_end:end,"XCB atom")->atom;
 }
+static uint32_t keyboard_mapping_bounded(xcb_connection_t *connection,uint8_t code) {
+    ReplyRequest request(connection,xcb_get_keyboard_mapping(connection,code,1).sequence);
+    need(xcb_flush(connection)>0,"XCB keyboard mapping request flush failed");
+    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
+    auto reply=request.wait<xcb_get_keyboard_mapping_reply_t>(end,"XCB keyboard mapping");
+    // One requested keycode has keysyms_per_keycode trailing CARD32 values.
+    // An empty mapping is valid; a nonempty count cannot exceed its payload.
+    need(reply->length>=reply->keysyms_per_keycode,"XCB keyboard mapping reply extent");
+    return reply->keysyms_per_keycode?xcb_get_keyboard_mapping_keysyms(reply.get())[0]:0;
+}
 struct WindowGeometry {unsigned width,height,child_width,child_height;gint64 deadline;};
 static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child) {
     ReplyRequest parent_request(connection,xcb_get_geometry(connection,parent).sequence);
@@ -423,10 +433,7 @@ struct Window {
             reinterpret_cast<const char *>(&event));xcb_flush(connection);
     }
     uint32_t keysym(uint8_t code) {
-        auto *reply=xcb_get_keyboard_mapping_reply(connection,xcb_get_keyboard_mapping(connection,code,1),nullptr);
-        if(!reply)return 0;
-        uint32_t value=reply->keysyms_per_keycode?xcb_get_keyboard_mapping_keysyms(reply)[0]:0;
-        free(reply);return value;
+        return keyboard_mapping_bounded(connection,code);
     }
 };
 
@@ -609,23 +616,24 @@ struct Worker {
         auto swap=[&] {need(eglSwapBuffers(window.display,window.surface),"window swap");++stats.swaps;};
         for(;;) {
             bool redraw=replace_windows(window)|expose.exchange(false),resized=false;
-            while(auto *event=xcb_poll_for_event(window.connection)) {
+            while(auto *raw_event=xcb_poll_for_event(window.connection)) {
+                XcbReply<xcb_generic_event_t> event(raw_event,&free);
                 const uint8_t type=event->response_type&0x7f;
                 if(type==XCB_EXPOSE)redraw=true;
                 else if(type==XCB_CONFIGURE_NOTIFY) {
-                    auto *configure=reinterpret_cast<xcb_configure_notify_event_t *>(event);
+                    auto *configure=reinterpret_cast<xcb_configure_notify_event_t *>(event.get());
                     // An old child ConfigureNotify may predate reparenting.
                     // Embedded size follows only the current parent.
                     if(configure->window==window.window||configure->window==window.parent) {
                         resized=true;
                     }
                 } else if(type==XCB_CLIENT_MESSAGE) {
-                    auto *client=reinterpret_cast<xcb_client_message_event_t *>(event);
+                    auto *client=reinterpret_cast<xcb_client_message_event_t *>(event.get());
                     if((client->window==window.window||client->window==window.parent)&&
                        client->type==window.protocols&&client->data.data32[0]==window.delete_window)post("crystalhd-field-close");
                 } else if(type==XCB_KEY_PRESS) {
-                    auto *key=reinterpret_cast<xcb_key_press_event_t *>(event);
-                    if(key->event!=window.window&&key->event!=window.parent){free(event);continue;}
+                    auto *key=reinterpret_cast<xcb_key_press_event_t *>(event.get());
+                    if(key->event!=window.window&&key->event!=window.parent)continue;
                     auto symbol=window.keysym(key->detail);
                     if(symbol==0xffc8)window.toggle_fullscreen(); // F11
                     else if(symbol==0x20)post("crystalhd-field-key","pause");
@@ -633,11 +641,10 @@ struct Worker {
                     else if(symbol==0xff53)post("crystalhd-field-key","forward");
                     else if(symbol==0x71||symbol==0xff1b)post("crystalhd-field-close");
                 } else if(type==XCB_DESTROY_NOTIFY) {
-                    auto *destroy=reinterpret_cast<xcb_destroy_notify_event_t *>(event);
+                    auto *destroy=reinterpret_cast<xcb_destroy_notify_event_t *>(event.get());
                     if(destroy->window==window.window||destroy->window==window.parent)
                         throw std::runtime_error("output window was destroyed");
                 }
-                free(event);
             }
             need(!xcb_connection_has_error(window.connection),"live XCB connection");
             // Coalesce notifications and read current geometry. A queued

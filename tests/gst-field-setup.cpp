@@ -179,6 +179,113 @@ static bool plain_peer_setup(int fd,gint64 end,pid_t &caller) {
     setup.resource_id_mask=0x1fffff;setup.maximum_request_length=65535;
     return send(fd,&setup,sizeof(setup),MSG_NOSIGNAL)==sizeof(setup);
 }
+enum KeyboardMode {
+    keyboard_success,keyboard_empty,keyboard_missing,keyboard_partial,
+    keyboard_error,keyboard_disconnect,keyboard_late,keyboard_short,
+    keyboard_events
+};
+struct KeyboardPeer {
+    int fd=-1;unsigned mode=0,requests=0;
+    bool valid=false,eof=false,expired=false;pid_t caller=0;
+};
+static gpointer keyboard_peer(gpointer user) {
+    auto *p=static_cast<KeyboardPeer *>(user);const int fd=p->fd;
+    const auto end=g_get_monotonic_time()+3500*1000;
+    auto finish=[&]()->gpointer {
+        if(p->mode!=keyboard_disconnect) {
+            while(g_get_monotonic_time()<end) {
+                pollfd event{fd,POLLIN,0};const auto ready=poll(&event,1,20);
+                if(ready<0&&errno==EINTR)continue;
+                if(ready>0){unsigned char byte;const auto count=recv(fd,&byte,1,0);
+                    if(count==0){p->eof=true;break;}if(count<0)break;}
+                if(p->mode==keyboard_events) {
+                    xcb_generic_event_t value{};value.response_type=XCB_EXPOSE;
+                    if(send(fd,&value,32,MSG_NOSIGNAL)!=32)break;
+                }
+            }
+            p->expired=!p->eof;
+        }
+        close(fd);return nullptr;
+    };
+    if(!plain_peer_setup(fd,end,p->caller))return finish();
+    auto request=[&](uint8_t code) {
+        xcb_get_keyboard_mapping_request_t value{};
+        // The generated request struct omits the two trailing wire-pad bytes.
+        std::array<unsigned char,(sizeof(value)+3)&~size_t(3)> wire{};
+        if(!setup_read(fd,wire.data(),wire.size(),end))return false;
+        memcpy(&value,wire.data(),sizeof(value));
+        if(value.major_opcode!=XCB_GET_KEYBOARD_MAPPING||value.length!=wire.size()/4||
+           value.first_keycode!=code||value.count!=1)return false;
+        ++p->requests;return true;
+    };
+    if(!request(42))return finish();
+    p->valid=true;
+    auto reply=[&](uint16_t sequence,uint32_t first,bool empty=false,bool short_payload=false) {
+        xcb_get_keyboard_mapping_reply_t value{};value.response_type=1;value.sequence=sequence;
+        value.keysyms_per_keycode=empty?0:2;value.length=empty||short_payload?0:2;
+        std::array<unsigned char,40> wire{};memcpy(wire.data(),&value,sizeof(value));
+        const uint32_t symbols[]={first,0xffc9};memcpy(wire.data()+32,symbols,sizeof(symbols));
+        const size_t bytes=32+size_t(value.length)*4;
+        return send(fd,wire.data(),bytes,MSG_NOSIGNAL)==ssize_t(bytes);
+    };
+    if(p->mode==keyboard_success||p->mode==keyboard_empty||p->mode==keyboard_short) {
+        if(!reply(1,0xffc8,p->mode==keyboard_empty,p->mode==keyboard_short))return finish();
+    }else if(p->mode==keyboard_partial) {
+        xcb_get_keyboard_mapping_reply_t value{};value.response_type=1;value.sequence=1;
+        value.keysyms_per_keycode=2;value.length=2;
+        if(send(fd,&value,8,MSG_NOSIGNAL)!=8)return finish();
+    }else if(p->mode==keyboard_error) {
+        xcb_generic_error_t error{};error.error_code=XCB_VALUE;error.sequence=1;
+        error.major_code=XCB_GET_KEYBOARD_MAPPING;
+        if(send(fd,&error,32,MSG_NOSIGNAL)!=32)return finish();
+    }else if(p->mode==keyboard_disconnect)return finish();
+    else if(p->mode==keyboard_late) {
+        g_usleep(1100*1000);
+        if(!request(43)||!reply(1,0xffc8)||!reply(2,0xffca))return finish();
+    }
+    return finish();
+}
+static void keyboard_exchanges() {
+    for(unsigned mode=keyboard_success;mode<=keyboard_events;++mode) {
+        const auto before=setup_fd_count();int sockets[2]{};
+        need(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets),"owned keyboard socket pair");
+        KeyboardPeer peer{};peer.fd=sockets[1];peer.mode=mode;
+        auto *server=g_thread_new("owned-field-keyboard",keyboard_peer,&peer);
+        auto *connection=xcb_connect_to_fd(sockets[0],nullptr);
+        const bool connected=!xcb_connection_has_error(connection);
+        uint32_t value=0,recovered=0;std::string failure;discarded_sequences=0;
+        const auto start=g_get_monotonic_time();
+        try{if(connected)value=crystalhd_field::keyboard_mapping_bounded(connection,42);}
+        catch(const std::exception &e){failure=e.what();}
+        const auto elapsed=g_get_monotonic_time()-start;
+        auto failed_with=[&](const char *message){return failure.rfind(message,0)==0;};
+        if(mode==keyboard_late&&failed_with("XCB keyboard mapping reply timed out")) {
+            try{recovered=crystalhd_field::keyboard_mapping_bounded(connection,43);}
+            catch(const std::exception &e){failure=e.what();}
+        }
+        const auto discarded=discarded_sequences.load();
+        xcb_disconnect(connection);g_thread_join(server);
+        printf("field keyboard mode=%u elapsed_us=%lld value=%u recovered=%u requests=%u discarded=%llu failure=%s\n",
+            mode,static_cast<long long>(elapsed),value,recovered,peer.requests,
+            static_cast<unsigned long long>(discarded),failure.c_str());
+        need(connected&&peer.valid&&peer.caller==getpid()&&!peer.expired,"keyboard peer/request/PID retirement");
+        need((mode==keyboard_disconnect||peer.eof)&&setup_fd_count()==before,"keyboard connection/thread/FD retirement");
+        need(peer.requests==(mode==keyboard_late?2U:1U),"exact keyboard requests");
+        if(mode==keyboard_success)need(value==0xffc8&&failure.empty()&&!discarded,"first keyboard symbol value");
+        else if(mode==keyboard_empty)need(!value&&failure.empty()&&!discarded,"valid empty keyboard mapping");
+        else if(mode==keyboard_error)need(failed_with("XCB keyboard mapping reply failed")&&!discarded,"keyboard protocol error");
+        else if(mode==keyboard_disconnect)need(failed_with("XCB keyboard mapping connection failed")||
+            failed_with("XCB keyboard mapping reply failed"),"keyboard disconnect error");
+        else if(mode==keyboard_short)need(failed_with("XCB keyboard mapping reply extent")&&!discarded,"short keyboard payload rejected");
+        else {
+            need(failed_with("XCB keyboard mapping reply timed out")&&elapsed>=800000,"specific keyboard deadline");
+            need(discarded==2,"retire exact missing keyboard response");
+        }
+        need(elapsed<2*G_USEC_PER_SEC,"one keyboard response deadline");
+        if(mode==keyboard_late)need(recovered==0xffca,"late keyboard reply cannot satisfy next key request");
+    }
+    puts("PASS9 owned keyboard response controls; actual worker helper, no EGL/device access");
+}
 struct GeometryPeer {
     int fd=-1;unsigned mode=0,requests=0;
     bool valid=false,eof=false,expired=false;pid_t caller=0;
@@ -751,15 +858,17 @@ static void construction_exchanges() {
 int main(int argc,char **argv) {
  try {
     setvbuf(stdout,nullptr,_IOLBF,0);const bool construction_only=argc==2&&!strcmp(argv[1],"--construction");
-    need(argc==1||construction_only||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11|--construction]");
+    const bool keyboard_only=argc==2&&!strcmp(argv[1],"--keyboard");
+    need(argc==1||construction_only||keyboard_only||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11|--construction|--keyboard]");
+    if(keyboard_only){keyboard_exchanges();return 0;}
     if(!construction_only) {
-        exchanges();atom_exchanges();geometry_exchanges();resize_exchanges();handoff_exchanges();
+        exchanges();atom_exchanges();keyboard_exchanges();geometry_exchanges();resize_exchanges();handoff_exchanges();
     }
     construction_exchanges();
     if(argc==2&&!construction_only) {
         need(temperature()<75000,"thermal admission");
         {crystalhd_field::Window window(0);need(window.context!=EGL_NO_CONTEXT,"valid display after setup timeouts");}
-        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry,6 resize,15 handoff and11 constructor controls in same process");
+        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 keyboard,9 geometry,6 resize,15 handoff and11 constructor controls in same process");
     }
  }catch(const std::exception &e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
 }

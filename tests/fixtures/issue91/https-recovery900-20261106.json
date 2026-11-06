@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "SCOPED_STRICT_CA_HTTPS_RANGE_RECOVERY_PASS_ORIGINAL_STRICT_PRESENTATION_FAIL",
+  "owning_issues": [91, 510],
+  "actual_source_revision": "8e3862ede3b30a6601dec6eca2a7cc85e02bc3c9",
+  "source_directory": "/home/mache/.cache/crystalhd-network-tls-recovery-20261106",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+  "source_scope": "Fresh actual current8e private fixed DIL, maintained decoder/Xv plugins and unchanged own Player, with stock external souphttpsrc/deinterlace/Pulse runtimes. This is not a later-head or release qualification.",
+  "external_product_edits": false,
+  "release_claim": false,
+  "installed_baseline": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "selected_and_loaded_module": "3.10.20",
+    "full_cohort_and_boundary_preserved": true,
+    "module_references_after": 0,
+    "pin_net_after": 0,
+    "kernel_check_exit": 0
+  },
+  "runtime": {
+    "private_fixed_DIL_build": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/current-network-build.json",
+    "actual_DIL": "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+    "actual_decoder_plugin": "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+    "actual_Xv_plugin": "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/xv-output/libgstcrystalhdxv.so",
+    "all_selected_private_mappings_observed": true,
+    "profile": "native720, Xv FIFO, progressive UYVY1280x720/50, real muted PulseSink"
+  },
+  "fixture": {
+    "media": "dialogue-900-36s.mkv",
+    "bytes": 74498252,
+    "source_originals": 900,
+    "independent_source_PTS_manifest": "network900-source-pts.json",
+    "frame_duration_ns": 40000000,
+    "controller": "run-network-tls-recovery900-current.py",
+    "observational_benchmark": "network-tls-recovery900-bench.py"
+  },
+  "actual_result": "network-https-recovery900-current-01/result.json",
+  "actual_benchmark": "network-https-recovery900-current-01/benchmark.json",
+  "original_controller_status": "FAIL",
+  "original_strict_media_report": {
+    "status": "FAIL",
+    "passed": false,
+    "preserved": true,
+    "public_decoder_epoch": {
+      "expected": 900,
+      "observed": 900,
+      "complete_independent_source_PTS_match": true,
+      "first_PTS_ns": 0,
+      "last_PTS_ns": 35960000000
+    },
+    "sink_epoch": {
+      "expected_buffers": 1800,
+      "observed_buffers": 1796,
+      "complete_field_PTS_match": false,
+      "attribution": "Four expected incoming sink field PTS are absent. This record does not establish their exact omission stage or waive the strict presentation result."
+    }
+  },
+  "functional_recovery": {
+    "status": "PASS_SCOPED_ACTUAL_STOCK_HTTPS_RANGE_RECOVERY",
+    "passed": true,
+    "criteria": {
+      "fault_once_after_32MiB": true,
+      "actual_owned_decoder_before_fault": true,
+      "subsequent_positive_Range_on_new_connection": true,
+      "contiguous_server_write_coverage_to_EOF": true,
+      "actual_decoder_progress_after_fault": true,
+      "actual_original_tail_after_fault": true,
+      "ordered_public_source_PTS_subset": true,
+      "no_manual_seek": true,
+      "natural_EOS": true,
+      "real_audio_clock": true,
+      "profile_and_runtime": true,
+      "retired_cleanly": true,
+      "full_official20_boundary_and_kernel": true,
+      "strict_private_TLS": true
+    },
+    "criteria_passed": 14,
+    "strict_media_report_pass": false,
+    "fault": {
+      "kind": "ONE_EARLY_HTTPS_BODY_DISCONNECT",
+      "initial_request_id": 1,
+      "initial_connection_id": 1,
+      "declared_content_length": 74498252,
+      "successful_body_bytes_before_close": 33554432,
+      "actual_decoder_output_before_close": true,
+      "owned_socket_shutdown_returned": true,
+      "owned_socket_close_applied": true
+    },
+    "resumed_request": {
+      "request_id": 2,
+      "connection_id": 2,
+      "method": "GET",
+      "Range": "bytes=33554432-",
+      "response_status": 206,
+      "successful_body_bytes": 40943820,
+      "complete": true
+    },
+    "successful_server_write_intervals": [[0, 33554432], [33554432, 74498252]],
+    "covered_prefix_bytes": 74498252,
+    "TLS": {
+      "both_connections": "TLSv1.3",
+      "ssl_strict": true,
+      "private_CA_property": "tls-database",
+      "private_trust_applied": true,
+      "certificate_error_callbacks": 0,
+      "global_trust_changes": false
+    },
+    "stock_source_retry_policy_unchanged": true,
+    "manual_seek_or_application_reopen": false
+  },
+  "terminal_observations": {
+    "natural_EOS": true,
+    "player_exit_code": 0,
+    "audio_buffers": 423,
+    "matching_Pulse_clock_samples": 718,
+    "audio_clock_mismatches": 0,
+    "Xv_submissions_and_ACKs": 1796,
+    "maximum_temperature_mC": 58000,
+    "pipeline_NULL": true,
+    "benchmark_retired": true,
+    "owned_server_threads_and_sockets_retired": true,
+    "server_errors": [],
+    "live_resource_handoff": null
+  },
+  "limits": [
+    "Functional resumed-Range recovery passes its named transport criteria; the original overall and strict900/1800 presentation reports remain FAIL.",
+    "Successful server writes prove contiguous application-side body coverage, not packet capture or receiver byte-by-byte delivery.",
+    "Exact public decoder PTS do not establish a raw native completion ledger, independent pixel identity, unique physical display, calibrated A/V offset or general Internet resilience.",
+    "Four missing sink field PTS are retained without assigning an unobserved stage or claiming a playback-loss repair.",
+    "No retry, QoS or timeout policy override, external product patch, persistent installation change or default promotion is included.",
+    "Earlier HTTP delivery/recovery and strict-CA HTTPS seek observations retain their original source, failures and bounded scopes."
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "status": "PASS_SCOPED_KEYBOARD_RESPONSE_AND_EVENT_OWNERSHIP",
+  "owning_issues": [
+    530,
+    510
+  ],
+  "actual_component_source": "1c20844",
+  "integration_code_source": "1dc7671",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106",
+  "problem": "Window::keysym used blocking xcb_get_keyboard_mapping_reply on the GL worker; a missing reply could stall event dispatch and stop/join.",
+  "fix": "Existing ReplyRequest enforces one absolute1s post-flush response deadline, retires pending replies and validates trailing keysym extent before access. Actual event-loop RAII frees normal/stale/throwing events.",
+  "controls": {
+    "keyboard-final.log": [
+      {
+        "mode": 0,
+        "elapsed_us": 89,
+        "requests": 1,
+        "discarded": 0,
+        "failure": ""
+      },
+      {
+        "mode": 1,
+        "elapsed_us": 92,
+        "requests": 1,
+        "discarded": 0,
+        "failure": ""
+      },
+      {
+        "mode": 2,
+        "elapsed_us": 1001441,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 3,
+        "elapsed_us": 1001331,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 4,
+        "elapsed_us": 195,
+        "requests": 1,
+        "discarded": 0,
+        "failure": "XCB keyboard mapping reply failed errno=11"
+      },
+      {
+        "mode": 5,
+        "elapsed_us": 172,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping connection failed errno=11"
+      },
+      {
+        "mode": 6,
+        "elapsed_us": 1001240,
+        "requests": 2,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 7,
+        "elapsed_us": 191,
+        "requests": 1,
+        "discarded": 0,
+        "failure": "XCB keyboard mapping reply extent errno=11"
+      },
+      {
+        "mode": 8,
+        "elapsed_us": 1000471,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      }
+    ],
+    "keyboard-final-asan.log": [
+      {
+        "mode": 0,
+        "elapsed_us": 180,
+        "requests": 1,
+        "discarded": 0,
+        "failure": ""
+      },
+      {
+        "mode": 1,
+        "elapsed_us": 74,
+        "requests": 1,
+        "discarded": 0,
+        "failure": ""
+      },
+      {
+        "mode": 2,
+        "elapsed_us": 1001790,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 3,
+        "elapsed_us": 1001420,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 4,
+        "elapsed_us": 584,
+        "requests": 1,
+        "discarded": 0,
+        "failure": "XCB keyboard mapping reply failed errno=11"
+      },
+      {
+        "mode": 5,
+        "elapsed_us": 565,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping connection failed errno=11"
+      },
+      {
+        "mode": 6,
+        "elapsed_us": 1001461,
+        "requests": 2,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      },
+      {
+        "mode": 7,
+        "elapsed_us": 390,
+        "requests": 1,
+        "discarded": 0,
+        "failure": "XCB keyboard mapping reply extent errno=11"
+      },
+      {
+        "mode": 8,
+        "elapsed_us": 1000689,
+        "requests": 1,
+        "discarded": 2,
+        "failure": "XCB keyboard mapping reply timed out errno=11"
+      }
+    ]
+  },
+  "old_control": {
+    "source": "literal8e Window::keysym body in isolated helper; same current9 owned-peer assertions; no installed or external product edits",
+    "expected": "FAIL in missing-reply mode2",
+    "actual_exit": 1,
+    "elapsed_us": 3510700,
+    "scope": "Peer3.5s lifetime bounds the old blocking control; remaining malformed cases intentionally not reached",
+    "log": "keyboard-literal-old.log"
+  },
+  "full_affected_check": {
+    "command": "make -C filters/gst/field-output check -j2",
+    "exit": 0,
+    "log": "keyboard-full-check.log",
+    "scope": "Existing CPU ownership plus setup/atom/keyboard/geometry/resize/handoff/constructor, ordinary and ASan/UBSan/LSan, plugin discovery; no actual GL draw"
+  },
+  "initial_harness_failure": {
+    "log": "keyboard-fixed.log",
+    "product_failure": false,
+    "cause": "Generated XCB mapping request struct is6bytes, wire frame padded8. Peer rejected correctlength2. Correctedpeer usesfull8bytewire; originalfailure retained."
+  },
+  "independent_source_review": "PASS; review caught and corrected event leak on new/existing exception paths",
+  "limits": [
+    "No bound for congested XCB writes, XID refill, EGL/glFinish, entire window/system-server restart or arbitrary event flood.",
+    "CPU owned-peer controls call actual keyboard helper; no new physical keyboard/GL900/endurance qualification. Existing constructor900 and hardwareGL LSan failure retain original scopes.",
+    "NV12 absolute chroma reconstruction remains separate; EGL hints/filter conversion ordering do not justify an invented universal bilinear oracle.",
+    "Published1.3 payloads and persistent matching official20 install unchanged."
+  ],
+  "event_ownership_evidence": "SOURCE_REVIEW_ONLY_actual_loop_RAII; owned-keyboard peers execute the actual helper, not Worker event dispatch or GL teardown"
+}

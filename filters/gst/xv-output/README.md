@@ -10,9 +10,11 @@ Use this page to evaluate the optional output in a matching source build.
 For first playback with the normal installed output, use the
 [Player guide](../../../USAGE.md#play-a-local-file).
 
-The optional FIFO output is included in the 1.3.0-rc.2 source; current master
-adds the later latest-frame and timing experiments described below. Frozen RC2
-assets are not updated by those later results. Read [build/use](#build-and-input-contract),
+Stable 1.3 includes the optional FIFO output and the explicitly selected
+latest-frame and timing experiments described below. Current master adds the
+stopped-statistics correction documented under [ownership and statistics](#ownership-and-statistics).
+Published stable and RC assets retain their original contents and qualification.
+Read [build/use](#build-and-input-contract),
 [latest-frame policy](#latest-frame-policy), [timing diagnostics](#timing-diagnostics)
 and [validation](#validation-and-retained-qualification) separately. Dated
 qualification and test counts retain the source scope of each receipt.
@@ -134,8 +136,14 @@ retirement, copied bytes and image ownership. `video-submitted` and
 `retained-picture` reports whether the last source is held. Video calls include preroll when
 the inherited `show-preroll-frame` property is enabled: twelve video frames
 can generate thirteen requests. ACKs measure X-server SHM retirement, **not
-unique video frames or physical scanout**. After stop the property retains a
-stop-time snapshot; later quarantine cleanup is not a live snapshot.
+unique video frames or physical scanout**. After stop, current master retains
+an independent receipt for that stopped generation. Real late memory retirement
+updates its image/byte/free counts, including when application-held pool
+buffers return after stop. The receipt owns neither the element nor its context;
+an older generation's callbacks cannot overwrite a newer generation's report.
+The correction and fresh 900-picture FIFO result are recorded in the
+[stopped-retirement receipt](../../../tests/fixtures/issue513/stopped-retirement-20261106.json).
+Published 1.3 retains the earlier stop-time snapshot behavior.
 `active-port` reports the acquired port ID; `port-switches` counts committed
 live handoffs and `port-rejections` counts rejected live nonzero requests.
 The readable `port` property reports the preferred selection rather than an

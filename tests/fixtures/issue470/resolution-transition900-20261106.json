@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "status": "PASS_SCOPED_FIXED_SIZED_900_RESOLUTION_FALLBACK",
+  "owning_issues": [
+    470,
+    510
+  ],
+  "actual_source_revision": "8e3862ede3b30a6601dec6eca2a7cc85e02bc3c9",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106",
+  "reference_case": "resolution-transition900-02/result.json#arms[0]",
+  "sized_case": "resolution-transition900-sized-03/result.json",
+  "existing_runner": "tests/gstreamer-playback.c",
+  "input": {
+    "parts": [
+      "retained barcode-720p-video-12s.mp4 first300",
+      "retained barcode-1080p-video-12s.mp4 first300",
+      "same720pfirst300"
+    ],
+    "transform": "unmodified FFmpeg stream-copy to AnnexB, then concatenate; no recoding",
+    "software_count900": "transition900-software-census.json",
+    "original_censuses": [
+      "input720-census.json",
+      "input1080-census.json"
+    ],
+    "epochs": [
+      "1280x720:300:p",
+      "1920x1080:300:p",
+      "1280x720:300:p"
+    ]
+  },
+  "arms": [
+    {
+      "arm": "FIXED",
+      "exit": 0,
+      "status": "PASS_SCOPED_900_EPOCHS",
+      "retired": true,
+      "loaded": [
+        "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+        "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+      ],
+      "library": "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+      "command": [
+        "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/gst-plugin-1.0/gstreamer-playback-test",
+        "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/transition900.h264",
+        "900",
+        "h264",
+        "60",
+        "--epochs",
+        "1280x720:300:p,1920x1080:300:p,1280x720:300:p"
+      ],
+      "pixel_hash": "4599d83b5296589e2fd584c9c121ead070bb89d8258ffb71c7ae89e4e963f116",
+      "metadata_hash": "b0c8a482fb113ef0a5f6ec90e29068b33a7e842fadf8f7254783e8a5100db64b"
+    },
+    {
+      "arm": "SIZED",
+      "exit": 0,
+      "status": "PASS_SCOPED_900_EPOCHS",
+      "retired": true,
+      "loaded": [
+        "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+        "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/sized-source8e/linux_lib/libcrystalhd/libcrystalhd.so.3.6"
+      ],
+      "library": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/sized-source8e/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+      "command": [
+        "/home/mache/.cache/crystalhd-network-tls-recovery-20261106/filters/gst/gst-plugin-1.0/gstreamer-playback-test",
+        "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/transition900.h264",
+        "900",
+        "h264",
+        "60",
+        "--epochs",
+        "1280x720:300:p,1920x1080:300:p,1280x720:300:p"
+      ],
+      "pixel_hash": "4599d83b5296589e2fd584c9c121ead070bb89d8258ffb71c7ae89e4e963f116",
+      "metadata_hash": "b0c8a482fb113ef0a5f6ec90e29068b33a7e842fadf8f7254783e8a5100db64b"
+    }
+  ],
+  "whole_ordered_YUY2_and_metadata_equal": true,
+  "baseline": "matching official1.3/source24a/module20",
+  "boundary_equal": true,
+  "kernel_check_exit": 0,
+  "live_resource_handoff": null,
+  "sized_build": {
+    "status": "PASS",
+    "exit": 0,
+    "source_revision": "8e3862ede3b30a6601dec6eca2a7cc85e02bc3c9",
+    "source_directory": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/sized-source8e",
+    "library_path": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/sized-source8e/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+    "compile_scaled_rx": true,
+    "command": [
+      "git archive HEAD",
+      "make -C sized-source8e/linux_lib/libcrystalhd -j2 CXXFLAGS=-O2 -DCRYSTALHD_EXPERIMENTAL_SCALED_RX"
+    ],
+    "log": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106/sized-dil-build.log"
+  },
+  "original_monitor_failures": {
+    "case01": "900/EOS rawFIXED, controllerStopIteration at normal exit; originalFAIL/HANDOFF receipt preserved, childretired andkernel0/fullbaselineequal",
+    "case02": "QualifiedFIXED900 retained; rawSIZED900/EOS but monitor observed disappearing mm fields before waitpid; originalwholecaseFAIL/HANDOFF retained, recordedlaternaturalexit0, no livechild",
+    "correction": "v3 reruns SIZEDonly, retains actuallyqualifiedFIXED, allows bounded1s naturalexit wait for disappearingprocfields; no media/count/resourcecondition weakened"
+  },
+  "scope": "Actual current SIZED conservative fallback and stream format-drain/reopen across two resolution changes; fixed-vs-SIZED whole visible YUY2/metadata regression.",
+  "limits": [
+    "scale-width0 chooses fixed1920 fallback: no in-place reduced-buffer resize or sizing-only benefit is established.",
+    "RawH264 runner validates geometry/count/EOS/buffer layout and monotonic PTS when present; it does not require alltimestamps or establish sourcePTS, audio/clocks, physical presentation or normative software pixels.",
+    "No timing/CPU/RSS gain, PM, native-planar, BCM70012, broadercodec or defaultpromotion claim. Fixeddefaults/fallback/DMAquarantine retained.",
+    "Publishedstablepayloads and installedofficial20cohort unchanged."
+  ]
+}

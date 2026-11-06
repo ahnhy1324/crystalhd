@@ -34,6 +34,9 @@ enum class Stage {
   CanvasPixels, CpuAccessBegin, CpuAccessEnd, DecodedCpuBegin, DecodedCpuEnd,
   I915Domain, PublicCopy, PublicCopyPixels, PublicPromote, DirectPublic,
   SyncAdmission, SyncBody, DiagnosticCapture
+#if defined(CRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST)
+  , EndPictureBody
+#endif
 };
 inline constexpr const char *kStages[] = {
   "receive_one", "dil_acquire", "dil_release", "process_output", "first_field_stage",
@@ -41,7 +44,15 @@ inline constexpr const char *kStages[] = {
   "canvas_pixels", "cpu_access_begin", "cpu_access_end", "decoded_cpu_begin",
   "decoded_cpu_end", "i915_domain", "public_copy", "public_copy_pixels",
   "public_promote", "direct_public", "sync_admission", "sync_body", "diagnostic_capture"
+#if defined(CRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST)
+  , "end_picture_body"
+#endif
 };
+#if defined(CRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST)
+inline constexpr const char *kSchema = "crystalhd-maintained-cost-endpicture-v1";
+#else
+inline constexpr const char *kSchema = "crystalhd-maintained-cost-v2";
+#endif
 enum Flag : uint64_t { Compact=1, DecodedPublic=2, DirectPublic=4,
   SelectedCapture=8, I915Wc=16, Read=32, Write=64 };
 enum class Kind { None, Decode, Surface, Full };
@@ -159,7 +170,7 @@ class State {
     if (length<=0 || static_cast<size_t>(length)>=sizeof(path)) {errno=saved;return;}
     const int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
     if (fd<0) {errno=saved;return;}
-    bool ok=dprintf(fd,"{\"type\":\"header\",\"schema\":\"crystalhd-maintained-cost-v2\",\"pid\":%ld,\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"scope\":\"OWN_MAINTAINED_BACKEND_ONLY\",\"capacity\":%zu,\"clock_names\":{\"wall\":\"CLOCK_MONOTONIC\",\"cpu\":\"CLOCK_THREAD_CPUTIME_ID\"},\"stages\":[",static_cast<long>(pid),events.size())>=0;
+    bool ok=dprintf(fd,"{\"type\":\"header\",\"schema\":\"%s\",\"pid\":%ld,\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\",\"scope\":\"OWN_MAINTAINED_BACKEND_ONLY\",\"capacity\":%zu,\"clock_names\":{\"wall\":\"CLOCK_MONOTONIC\",\"cpu\":\"CLOCK_THREAD_CPUTIME_ID\"},\"stages\":[",kSchema,static_cast<long>(pid),events.size())>=0;
     for (unsigned i=0;ok && i<sizeof(kStages)/sizeof(kStages[0]);++i)
       ok=dprintf(fd,"%s\"%s\"",i?",":"",kStages[i])>=0;
     if (ok) ok=dprintf(fd,"],\"flags\":{\"compact\":1,\"decoded_public\":2,\"direct_public\":4,\"selected_capture\":8,\"i915_wc\":16,\"read\":32,\"write\":64}}\n")>=0;
