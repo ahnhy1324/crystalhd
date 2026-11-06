@@ -9,7 +9,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='crystalhd-range-binding-') as scratch:
     target = Path(scratch) / 'check'
-    for test in ('h264-range-binding.c', 'h264-multislice.c'):
+    for test in ('h264-range-binding.c', 'h264-multislice.c', 'h264-poc1-multislice.c'):
         base = (shlex.split(os.environ.get('CC', 'cc')) + shlex.split(os.environ.get('CFLAGS', ''))
                 + ['-std=c11', '-Wall', '-Wextra', '-Werror', '-I' + str(root / 'include'),
                    str(root / 'tests' / test)])
