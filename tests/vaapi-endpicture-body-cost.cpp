@@ -17,7 +17,7 @@ int main() {
   namespace cost = crystalhd_test_maintained_cost;
   Require(cost::state.enabled, "explicit cost environment before process startup");
   Require(cost::state.attempted == 0, "fresh collector has no earlier operations");
-  Driver driver;
+  Driver driver(-1);
   VADriverContext context{};
   context.pDriverData = &driver;
   Require(EndPicture(&context, 99) == VA_STATUS_ERROR_INVALID_CONTEXT,
