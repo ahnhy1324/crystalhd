@@ -94,7 +94,13 @@ are unchanged; finite playback does not advance #533's nonempty-drain gate.
 
 Local connection/protocol setup has the bounded watchdog described below.
 Each own InternAtom response wait has a fixed one-second limit after its
-request flush, including partial replies and unrelated events. In `resize()`,
+request flush, including partial replies and unrelated events. Keyboard mapping
+uses the same response-wait machinery on the GPU worker, so a missing key reply
+can no longer hold that worker's join indefinitely. A valid empty mapping returns
+no symbol; protocol, connection, timeout and truncated-payload failures retire
+the worker through its existing error path. The explicit device-free subset is
+`filters/gst/field-output/field-setup-test --keyboard`.
+In `resize()`,
 parent and child geometry responses share one one-second deadline after the
 initial flush. A later reply barrier confirms a checked configure within that
 same budget; error retrieval adds no network sync. Received replies are freed,
@@ -175,6 +181,12 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
 This is research integration, not stable-release qualification or promotion.
 Live sources, nonflat chroma phase, field-clock/A/V qualification for NV12 and
 field-GPU endurance remain active work. Frozen RC2 assets are unchanged.
+The [EGL import hints](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)
+permit the closest supported interpretation, and
+[external-texture sampling](https://registry.khronos.org/OpenGL/extensions/OES/OES_EGL_image_external.txt)
+does not fix whether filtering precedes RGB conversion. An absolute chroma test
+therefore needs a stated reconstruction contract; a chosen bilinear model alone
+does not establish standards conformance or an external graphics defect.
 
 The separate [materialized-field comparison](nv12-field-equivalence-20261103.json)
 now covers dense nonflat UV values without pixel exclusions. It independently

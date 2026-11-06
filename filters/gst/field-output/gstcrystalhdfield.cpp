@@ -122,6 +122,16 @@ static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *n
     if(shared_end&&!*shared_end)*shared_end=end;
     return request.wait<xcb_intern_atom_reply_t>(shared_end?*shared_end:end,"XCB atom")->atom;
 }
+static uint32_t keyboard_mapping_bounded(xcb_connection_t *connection,uint8_t code) {
+    ReplyRequest request(connection,xcb_get_keyboard_mapping(connection,code,1).sequence);
+    need(xcb_flush(connection)>0,"XCB keyboard mapping request flush failed");
+    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
+    auto reply=request.wait<xcb_get_keyboard_mapping_reply_t>(end,"XCB keyboard mapping");
+    // One requested keycode has keysyms_per_keycode trailing CARD32 values.
+    // An empty mapping is valid; a nonempty count cannot exceed its payload.
+    need(reply->length>=reply->keysyms_per_keycode,"XCB keyboard mapping reply extent");
+    return reply->keysyms_per_keycode?xcb_get_keyboard_mapping_keysyms(reply.get())[0]:0;
+}
 struct WindowGeometry {unsigned width,height,child_width,child_height;gint64 deadline;};
 static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child) {
     ReplyRequest parent_request(connection,xcb_get_geometry(connection,parent).sequence);
@@ -423,10 +433,7 @@ struct Window {
             reinterpret_cast<const char *>(&event));xcb_flush(connection);
     }
     uint32_t keysym(uint8_t code) {
-        auto *reply=xcb_get_keyboard_mapping_reply(connection,xcb_get_keyboard_mapping(connection,code,1),nullptr);
-        if(!reply)return 0;
-        uint32_t value=reply->keysyms_per_keycode?xcb_get_keyboard_mapping_keysyms(reply)[0]:0;
-        free(reply);return value;
+        return keyboard_mapping_bounded(connection,code);
     }
 };
 
