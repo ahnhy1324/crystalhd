@@ -70,6 +70,40 @@ class SourceControls(unittest.TestCase):
                     if mode == 'both':
                         self.assertEqual(rows[0]['delta1'], plan['delta1'])
 
+    def test_equal_field_poc_retains_signed_delta0_and_present_zero_delta1(self):
+        # Read the emitted signed syntax against fixed values, not the plan
+        # used by the producer. The default keeps the original unequal POCs.
+        cases = ((1, 1, -1), (2, -1, 1), (3, 2, 0), (4, -2, -1),
+                 (16, 1, -1), (47, -1, 1), (48, 0, 0))
+        for slices in (2, 4):
+            for ordinal, delta0, original_delta1 in cases:
+                original, vcl, _ = F.access_unit(ordinal, 'both', slices, True)
+                explicit_original, _, _ = F.access_unit(ordinal, 'both', slices, True,
+                                                       equal_field_poc=False)
+                self.assertEqual(original, explicit_original)
+                self.assertTrue(all(header(n[4:], 'both')['delta1'] == original_delta1
+                                    for n in vcl))
+                _, equal_vcl, plan = F.access_unit(ordinal, 'both', slices, True,
+                                                  equal_field_poc=True)
+                for nal in equal_vcl:
+                    row = header(nal[4:], 'both')
+                    self.assertEqual((row['delta0'], row['delta1']), (delta0, 0))
+                self.assertEqual(plan['expected_top_poc'], plan['expected_bottom_poc'])
+
+    def test_equal_field_poc_delta1_mismatch_remains_prefix_only(self):
+        controls = F.prefix_controls('both', 4, False, equal_field_poc=True)
+        self.assertEqual(controls['scope'],
+                         'PREFIX_ONLY_INVALID_AU_CONTROLS_NEVER_SENT_TO_HARDWARE')
+        positive = [header(bytes.fromhex(n), 'both') for n in controls['positive']['vcl']]
+        self.assertTrue(all(row['delta1'] == 0 for row in positive))
+        negative = next(n for n in controls['negatives'] if n['name'] == 'delta1-only-mismatch')
+        self.assertFalse(negative['expected_associated'])
+        rows = [header(bytes.fromhex(n), 'both') for n in negative['vcl']]
+        self.assertEqual([row['delta1'] for row in rows], [0, 1, 0, 0])
+        for index, (before, after) in enumerate(zip(positive, rows)):
+            self.assertEqual({key for key in before if before[key] != after[key]},
+                             {'delta1'} if index == 1 else set())
+
     def test_delta_only_negative_controls_are_not_media(self):
         for mode in F.MODES:
             for slices in (2, 4):

@@ -84,11 +84,11 @@ def packed_frame(planar):
     return bytes(packed)
 
 
-def picture_plan(ordinal, mode):
+def picture_plan(ordinal, mode, *, equal_field_poc=False):
     always_zero, bottom_present = mode_flags(mode)
     local = ordinal % IDR_INTERVAL
     delta0 = 0 if always_zero or local == 0 else (0, 1, -1, 2, -2)[local % 5]
-    delta1 = 0 if not bottom_present or always_zero or local == 0 else (0, -1, 1)[local % 3]
+    delta1 = 0 if equal_field_poc or not bottom_present or always_zero or local == 0 else (0, -1, 1)[local % 3]
     return dict(ordinal=ordinal, idr=local == 0, idr_pic_id=ordinal // IDR_INTERVAL,
                 frame_num=local % (1 << FRAME_BITS), frame_num_offset=local // (1 << FRAME_BITS) * (1 << FRAME_BITS),
                 delta0=delta0, delta1=delta1,
@@ -153,8 +153,8 @@ def build_slice(plan, mode, slices, index, *, delta0=None, delta1=None):
     return annexb(0x65 if plan['idr'] else 0x21, b.finish())
 
 
-def access_unit(ordinal, mode, slices, full):
-    plan = picture_plan(ordinal, mode)
+def access_unit(ordinal, mode, slices, full, *, equal_field_poc=False):
+    plan = picture_plan(ordinal, mode, equal_field_poc=equal_field_poc)
     nals = [annexb(9, b'\x10')]
     if plan['idr']:
         nals.extend((build_sps(mode, full), build_pps(mode)))
@@ -162,8 +162,8 @@ def access_unit(ordinal, mode, slices, full):
     return b''.join(nals + vcl), vcl, plan
 
 
-def prefix_controls(mode, slices, full):
-    plan = picture_plan(2, mode)
+def prefix_controls(mode, slices, full, *, equal_field_poc=False):
+    plan = picture_plan(2, mode, equal_field_poc=equal_field_poc)
     vcl = [build_slice(plan, mode, slices, index) for index in range(slices)]
     prefix = lambda nal: nal[4:132].hex()  # NAL header + bounded EBSP prefix.
     controls = []
@@ -210,7 +210,7 @@ def read_trace(text):
     return values, rows
 
 
-def validate_trace(text, mode, slices, full, frames):
+def validate_trace(text, mode, slices, full, frames, *, equal_field_poc=False):
     values, rows = read_trace(text)
     always_zero, bottom_present = mode_flags(mode)
     expected_fields = dict(profile_idc=77, pic_order_cnt_type=1,
@@ -224,7 +224,7 @@ def validate_trace(text, mode, slices, full, frames):
         require(values.get(key) and set(values[key]) == {expected}, 'independent SPS/PPS trace: ' + key)
     require(len(rows) == frames * slices, 'independent complete VCL census')
     for n, row in enumerate(rows):
-        plan = picture_plan(n // slices, mode)
+        plan = picture_plan(n // slices, mode, equal_field_poc=equal_field_poc)
         expected = dict(nal_unit_type=5 if plan['idr'] else 1,
                         first_mb_in_slice=n % slices * (MACROBLOCKS // slices),
                         slice_type=2, pic_parameter_set_id=0, frame_num=plan['frame_num'])
@@ -268,6 +268,8 @@ def main():
     parser.add_argument('--frames', type=int, default=96, help='1..3600; 900+ is supported')
     parser.add_argument('--slices', type=int, nargs='+', choices=(2, 4), default=[2, 4])
     parser.add_argument('--delta-mode', nargs='+', choices=MODES, default=list(MODES))
+    parser.add_argument('--equal-field-poc', action='store_true',
+                        help='keep delta1 syntax in both mode but emit zero; original variant is unchanged by default')
     parser.add_argument('--range', choices=('full', 'limited', 'both'), default='both')
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
@@ -288,6 +290,7 @@ def main():
                                  planar_sha256=hashlib.sha256(frame).hexdigest()))
     manifest = dict(kind='native-poc1-multislice-source', width=WIDTH, height=HEIGHT,
         frames=args.frames, source_order='ordinal; no reordered pictures',
+        equal_field_poc=args.equal_field_poc,
         frame_num_bits=FRAME_BITS, idr_interval=IDR_INTERVAL, pictures=pictures, cases=[],
         expected_planar_sha256=file_digest(expected), expected_yuyv_sha256=file_digest(packed),
         producer_sha256=file_digest(Path(__file__)), bit_helper_sha256=file_digest(HELPER),
@@ -297,12 +300,14 @@ def main():
     for mode in args.delta_mode:
         for slices in args.slices:
             for full in ranges:
-                stem = f'poc1-{mode}-slices{slices}-' + ('full' if full else 'limited')
+                variant = '-equal-field-poc' if args.equal_field_poc else ''
+                stem = f'poc1-{mode}{variant}-slices{slices}-' + ('full' if full else 'limited')
                 raw, media = root / (stem + '.h264'), root / (stem + '.mp4')
                 plans = []
                 with raw.open('xb') as stream:
                     for ordinal in range(args.frames):
-                        au, _, plan = access_unit(ordinal, mode, slices, full)
+                        au, _, plan = access_unit(ordinal, mode, slices, full,
+                                                 equal_field_poc=args.equal_field_poc)
                         plan.update(offset=stream.tell(), bytes=len(au),
                                     first_mb=[i * (MACROBLOCKS // slices) for i in range(slices)])
                         stream.write(au); plans.append(plan)
@@ -314,7 +319,8 @@ def main():
                     '-c:v', 'copy', '-bsf:v', 'trace_headers', '-f', 'null', '-']
                 trace_log = root / (stem + '.trace.log')
                 run_logged(trace, trace_log, args.timeout)
-                validate_trace(trace_log.read_text(), mode, slices, full, args.frames)
+                validate_trace(trace_log.read_text(), mode, slices, full, args.frames,
+                               equal_field_poc=args.equal_field_poc)
                 decoded = root / (stem + '.decoded.yuv')
                 decode = [args.ffmpeg, '-nostdin', '-hide_banner', '-v', 'error', '-threads', '1',
                     '-hwaccel', 'none', '-err_detect', 'explode', '-xerror', '-i', str(media),
@@ -341,9 +347,11 @@ def main():
                 require(all((f['width'], f['height'], f['pict_type']) == (WIDTH, HEIGHT, 'I') and
                             f['key_frame'] == int(i % IDR_INTERVAL == 0) for i, f in enumerate(shown)),
                         'independent geometry/I-picture/IDR census')
-                controls[stem] = prefix_controls(mode, slices, full)
+                controls[stem] = prefix_controls(mode, slices, full,
+                                                equal_field_poc=args.equal_field_poc)
                 manifest['cases'].append(dict(stem=stem, slices=slices, delta_mode=mode,
-                    full_range=full, access_units=plans, frame_pts=[f['pts'] for f in shown],
+                    full_range=full, equal_field_poc=args.equal_field_poc,
+                    access_units=plans, frame_pts=[f['pts'] for f in shown],
                     time_base=streams[0]['time_base'], annexb_sha256=file_digest(raw),
                     media_sha256=file_digest(media), decoded_sha256=file_digest(decoded),
                     trace_sha256=file_digest(trace_log), commands=[mux, trace, decode, probe]))
