@@ -779,6 +779,79 @@ static void test_held_pool_and_caps(void)
   g_assert_true(gst_buffer_pool_set_active(new_pool, FALSE)); gst_object_unref(new_pool);
   context_unref(c); gst_object_unref(sink); clean_contexts();
 }
+static void test_stopped_pool_public_stats(gconstpointer data)
+{
+  if (!x11_enabled()) return;
+  const gboolean latest = GPOINTER_TO_UINT(data) != 0;
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", latest, NULL);
+  g_assert_true(sink_start(GST_BASE_SINK(sink)));
+  XvContext *c = sink_context(XV_SINK(sink));
+  GstVideoInfo info = info_for(320, 240);
+  GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info);
+  GstBuffer *buffers[6] = {0};
+  for (guint i = 0; i < G_N_ELEMENTS(buffers); i++) {
+    g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &buffers[i], NULL), ==, GST_FLOW_OK);
+    XvMemory *memory = buffer_memory(buffers[i]); g_assert_nonnull(memory);
+    memset(memory->data, 49 + i, memory->size);
+  }
+  /* Submit the real pool buffer and retire its actual server lease before
+   * stopping. The application's own reference must remain valid afterward. */
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffers[0]), ==, GST_FLOW_OK);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE)); g_mutex_unlock(&c->lock);
+  for (guint i = 1; i < G_N_ELEMENTS(buffers); i++) gst_buffer_unref(buffers[i]);
+  g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+  /* Upstream may deactivate its allocation pool after the downstream sink
+   * stops. No sleep, forced free or counter relaxation substitutes for that. */
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  g_mutex_lock(&c->lock);
+  const guint held_images = c->image_count, held_bytes = c->image_bytes;
+  const guint64 held_allocated = c->allocated, held_freed = c->freed;
+  /* GstBufferPool may retain returned buffers until the last outstanding
+   * buffer returns. Observe its actual policy; never force early freeing. */
+  const gboolean live_held = c->closed && c->detached && !c->failed && !c->quarantined &&
+      !c->pending && held_images >= 1 && held_bytes > 0 && held_allocated == 6 &&
+      held_images + held_freed == held_allocated;
+  g_mutex_unlock(&c->lock);
+  GstMapInfo mapped = GST_MAP_INFO_INIT;
+  gboolean readable = gst_buffer_map(buffers[0], &mapped, GST_MAP_READ);
+  if (readable) {
+    readable = mapped.size > 0;
+    for (gsize i = 0; i < mapped.size; i++) if (mapped.data[i] != 49) readable = FALSE;
+    gst_buffer_unmap(buffers[0], &mapped);
+  }
+  GstStructure *held_stats = sink_stats(sink);
+  const gboolean public_held_tracks_live = stat32(held_stats, "images") == held_images &&
+      stat32(held_stats, "bytes") == held_bytes && stat64(held_stats, "allocated") == held_allocated &&
+      stat64(held_stats, "freed") == held_freed;
+  gst_buffer_unref(buffers[0]);
+  const gint64 end = g_get_monotonic_time() + G_USEC_PER_SEC;
+  g_mutex_lock(&c->lock);
+  while (c->image_count && g_get_monotonic_time() < end)
+    g_cond_wait_until(&c->changed, &c->lock, end);
+  const gboolean live_retired = c->closed && c->detached && !c->failed && !c->quarantined &&
+      !c->pending && !c->image_count && !c->image_bytes && c->allocated == 6 && c->freed == 6;
+  g_mutex_unlock(&c->lock);
+  GstStructure *retired_stats = sink_stats(sink);
+  const gboolean public_retired_tracks_live = stat32(retired_stats, "images") == 0 &&
+      stat32(retired_stats, "bytes") == 0 && stat64(retired_stats, "allocated") == 6 &&
+      stat64(retired_stats, "freed") == 6;
+  g_test_message("stopped pool latest=%d live-held=%d held-readable=%d live-retired=%d "
+      "actual-held images/freed=%u/%" G_GUINT64_FORMAT " "
+      "public-held images/freed=%u/%" G_GUINT64_FORMAT
+      " public-retired images/freed=%u/%" G_GUINT64_FORMAT,
+      latest, live_held, readable, live_retired,
+      held_images, held_freed,
+      stat32(held_stats, "images"), stat64(held_stats, "freed"),
+      stat32(retired_stats, "images"), stat64(retired_stats, "freed"));
+  gst_structure_free(held_stats); gst_structure_free(retired_stats);
+  context_unref(c); gst_object_unref(sink); clean_contexts();
+  /* Literal-old failure occurs only after the real pool/context/SHM owners
+   * retire. It proves stale public telemetry, not this media run's lifetime. */
+  g_assert_true(live_held); g_assert_true(readable); g_assert_true(live_retired);
+  g_assert_true(public_held_tracks_live && public_retired_tracks_live);
+}
 typedef struct { GstElement *sink; xcb_window_t window; gint finished; } WindowJob;
 static gpointer change_window(gpointer data)
 {
@@ -1854,6 +1927,113 @@ static void test_setup_reopen(void)
   test_reopen();
 }
 #include "xv-latest-fixture.h"
+/* Reuse the real pool's stop-before-upstream-retirement ordering while keeping
+ * one application owner. These controls do not manufacture an XvContext. */
+static GstBuffer *stopped_pool_held_buffer(GstElement *sink, XvContext *c)
+{
+  GstVideoInfo info = info_for(320, 240);
+  GstCaps *caps = gst_video_info_to_caps(&info);
+  g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+  GstBufferPool *pool = make_pool(sink, &info); GstBuffer *buffers[6] = {0};
+  for (guint i = 0; i < G_N_ELEMENTS(buffers); i++) {
+    g_assert_cmpint(gst_buffer_pool_acquire_buffer(pool, &buffers[i], NULL), ==, GST_FLOW_OK);
+    XvMemory *memory = buffer_memory(buffers[i]); g_assert_nonnull(memory);
+    memset(memory->data, 61 + i, memory->size);
+  }
+  g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffers[0]), ==, GST_FLOW_OK);
+  g_mutex_lock(&c->lock); g_assert_true(drain_locked(c, TRUE)); g_mutex_unlock(&c->lock);
+  for (guint i = 1; i < G_N_ELEMENTS(buffers); i++) gst_buffer_unref(buffers[i]);
+  g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+  g_assert_true(gst_buffer_pool_set_active(pool, FALSE)); gst_object_unref(pool);
+  return buffers[0];
+}
+static gboolean stopped_pool_buffer_readable(GstBuffer *buffer)
+{
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) return FALSE;
+  gboolean valid = map.size > 0;
+  for (gsize i = 0; i < map.size; i++) if (map.data[i] != 61) valid = FALSE;
+  gst_buffer_unmap(buffer, &map); return valid;
+}
+static gboolean stopped_pool_fully_retired(XvContext *c)
+{
+  const gint64 end = g_get_monotonic_time() + G_USEC_PER_SEC;
+  g_mutex_lock(&c->lock);
+  while (c->image_count && g_get_monotonic_time() < end)
+    g_cond_wait_until(&c->changed, &c->lock, end);
+  gboolean retired = c->closed && c->detached && !c->failed && !c->quarantined &&
+      !c->pending && !c->image_count && !c->image_bytes && c->allocated == 6 && c->freed == 6;
+  g_mutex_unlock(&c->lock); return retired;
+}
+static void retirement_sink_finalized(gpointer data, GObject *object)
+{
+  (void)object; *(gboolean *)data = TRUE;
+}
+static void test_stopped_pool_receipt_lifecycle(gconstpointer data)
+{
+  if (!x11_enabled()) return;
+  const guint mode = GPOINTER_TO_UINT(data), before_fds = setup_fd_count();
+  const gboolean latest = (mode & 1) != 0, finalize_first = (mode & 2) != 0;
+  GstElement *sink = g_object_new(gst_crystalhd_xv_get_type(), "latest-frame", latest, NULL);
+  g_assert_true(sink_start(GST_BASE_SINK(sink)));
+  XvContext *old = sink_context(XV_SINK(sink));
+  GstBuffer *held = stopped_pool_held_buffer(sink, old);
+  gboolean readable = stopped_pool_buffer_readable(held), isolated = TRUE, finalized = FALSE;
+  gboolean finalized_before_return = FALSE;
+  g_mutex_lock(&old->lock);
+  const gboolean genuinely_held = old->closed && old->detached && !old->failed &&
+      old->image_count >= 1 && old->allocated == 6 && old->image_count + old->freed == 6;
+  g_mutex_unlock(&old->lock);
+  XvContext *next = NULL; GstStructure *selected = NULL;
+  if (finalize_first) {
+    g_object_weak_ref(G_OBJECT(sink), retirement_sink_finalized, &finalized);
+    gst_object_unref(sink); sink = NULL;
+    finalized_before_return = finalized;
+    readable = readable && stopped_pool_buffer_readable(held);
+  } else {
+    g_assert_true(sink_start(GST_BASE_SINK(sink)));
+    next = sink_context(XV_SINK(sink)); g_assert_true(next != old);
+    GstVideoInfo info = info_for(640, 360); GstCaps *caps = gst_video_info_to_caps(&info);
+    g_assert_true(sink_set_caps(GST_BASE_SINK(sink), caps)); gst_caps_unref(caps);
+    for (guint i = 0; i < 2; i++) {
+      GstBuffer *buffer = pattern_buffer(&info, i);
+      g_assert_cmpint(sink_show_frame(GST_VIDEO_SINK(sink), buffer), ==, GST_FLOW_OK);
+      g_mutex_lock(&next->lock); g_assert_true(drain_locked(next, TRUE)); g_mutex_unlock(&next->lock);
+      gst_buffer_unref(buffer);
+    }
+    g_assert_true(sink_stop(GST_BASE_SINK(sink)));
+    selected = sink_stats(sink);
+    /* Different allocation/submission totals expose an old-generation write
+     * even when both generations have no mappings left afterward. */
+    isolated = stat64(selected, "video-submitted") == 2 &&
+        stat64(selected, "allocated") == 1 && stat64(selected, "freed") == 1 &&
+        stat32(selected, "images") == 0 && stat32(selected, "bytes") == 0;
+    readable = readable && stopped_pool_buffer_readable(held);
+  }
+  gst_buffer_unref(held);
+  const gboolean retired = stopped_pool_fully_retired(old);
+  if (sink) {
+    GstStructure *after = sink_stats(sink);
+    isolated = isolated && gst_structure_is_equal(selected, after); gst_structure_free(after);
+  }
+  context_unref(old); if (next) context_unref(next);
+  /* A statistics receipt must not retain contexts/eventfds while the stopped
+   * element remains alive, nor depend on one after that element is gone. */
+  clean_contexts();
+  if (sink) {
+    GstStructure *after = sink_stats(sink);
+    isolated = isolated && gst_structure_is_equal(selected, after);
+    gst_structure_free(after); gst_structure_free(selected); gst_object_unref(sink);
+  }
+  clean_contexts();
+  g_test_message("stopped receipt latest=%d finalize-first=%d held=%d readable=%d retired=%d "
+      "new-generation-isolated=%d finalized-before-return=%d fds=%u/%u",
+      latest, finalize_first, genuinely_held, readable, retired, isolated, finalized_before_return,
+      setup_fd_count(), before_fds);
+  g_assert_true(genuinely_held); g_assert_true(readable); g_assert_true(retired);
+  g_assert_true(isolated); if (finalize_first) g_assert_true(finalized_before_return);
+  g_assert_cmpuint(setup_fd_count(), ==, before_fds);
+}
 int main(int argc, char **argv)
 {
   if (argc == 2 && !strcmp(argv[1], "--hold-segment")) return hold_segment();
@@ -1887,6 +2067,12 @@ int main(int argc, char **argv)
   g_test_add_func("/xv/x11/caps-flush", test_caps_and_flush);
   g_test_add_func("/xv/x11/caps-aspect-borders", test_caps_aspect_borders);
   g_test_add_func("/xv/x11/held-pool-caps", test_held_pool_and_caps);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/fifo", GUINT_TO_POINTER(0), test_stopped_pool_public_stats);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/latest", GUINT_TO_POINTER(1), test_stopped_pool_public_stats);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/fifo-generation", GUINT_TO_POINTER(0), test_stopped_pool_receipt_lifecycle);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/latest-generation", GUINT_TO_POINTER(1), test_stopped_pool_receipt_lifecycle);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/fifo-finalized", GUINT_TO_POINTER(2), test_stopped_pool_receipt_lifecycle);
+  g_test_add_data_func("/xv/x11/stopped-pool-stats/latest-finalized", GUINT_TO_POINTER(3), test_stopped_pool_receipt_lifecycle);
   g_test_add_func("/xv/x11/live-window-replacement", test_live_window_replacement);
   g_test_add_func("/xv/x11/live-port-handoff", test_live_port_handoff);
   g_test_add_func("/xv/x11/submit-flush-failure", test_submit_flush_failure);

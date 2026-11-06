@@ -32,6 +32,11 @@
 typedef struct XvContext XvContext;
 typedef struct XvMemory XvMemory;
 typedef struct XvPoolLayout XvPoolLayout;
+typedef struct {
+  gint references;
+  GMutex lock;
+  GstStructure *snapshot;
+} XvRetirement;
 struct XvPoolLayout {
   XvPoolLayout *next;
   guint width, height, pitch, offset, size;
@@ -72,6 +77,7 @@ struct XvContext {
   int wake_fd;
   GThread *thread;
   GstBus *bus;
+  XvRetirement *retirement;
   XvMemory *images, *copies[XV_DEPTH];
   XvPoolLayout *pool_layouts;
   XvFlight flights[XV_DEPTH];
@@ -97,6 +103,45 @@ static XvMemory *buffer_memory(GstBuffer *buffer);
 typedef enum { XV_VIDEO, XV_REDRAW, XV_LATEST } XvSubmitKind;
 static GstFlowReturn submit_picture(XvContext *c, const GstVideoInfo *info,
     GstBuffer *buffer, XvMemory *direct, XvSubmitKind kind, guint64 epoch, guint64 serial);
+static GstStructure *stats_locked(XvContext *c);
+
+/* A stopped generation's receipt can outlive the element or its context.
+ * It owns neither, so late GstMemory retirement cannot retain a live-context
+ * slot or dereference an element that has already been finalized. */
+static XvRetirement *retirement_new(void)
+{
+  XvRetirement *r = g_new0(XvRetirement, 1);
+  r->references = 1; g_mutex_init(&r->lock); return r;
+}
+static XvRetirement *retirement_ref(XvRetirement *r)
+{
+  if (r) g_atomic_int_inc(&r->references);
+  return r;
+}
+static void retirement_unref(XvRetirement *r)
+{
+  if (!r || !g_atomic_int_dec_and_test(&r->references)) return;
+  if (r->snapshot) gst_structure_free(r->snapshot);
+  g_mutex_clear(&r->lock); g_free(r);
+}
+/* Caller holds c->lock; getters take only the independent receipt lock. */
+static void retirement_publish_locked(XvContext *c)
+{
+  XvRetirement *r = c->retirement;
+  if (!r || !c->closed) return;
+  GstStructure *snapshot = stats_locked(c);
+  g_mutex_lock(&r->lock);
+  if (r->snapshot) gst_structure_free(r->snapshot);
+  r->snapshot = snapshot;
+  g_mutex_unlock(&r->lock);
+}
+static GstStructure *retirement_snapshot(XvRetirement *r)
+{
+  if (!r) return NULL;
+  g_mutex_lock(&r->lock);
+  GstStructure *snapshot = r->snapshot ? gst_structure_copy(r->snapshot) : NULL;
+  g_mutex_unlock(&r->lock); return snapshot;
+}
 
 /* Diagnostic aggregates never wrap or change playback/error policy. */
 static guint64 timing_add(guint64 value, guint64 delta, gboolean *overflow)
@@ -139,6 +184,7 @@ static void context_unref(XvContext *c)
   if (!g_atomic_int_dec_and_test(&c->references)) return;
   if (c->bus) gst_object_unref(c->bus);
   if (c->wake_fd >= 0) close(c->wake_fd);
+  retirement_unref(c->retirement);
   g_cond_clear(&c->changed);
   g_mutex_clear(&c->lock);
   g_atomic_int_add(&live_contexts, -1);
@@ -352,6 +398,7 @@ static void unlink_memory_locked(XvContext *c, XvMemory *m)
   while (*link && *link != m) link = &(*link)->next;
   if (!*link) { context_error(c, "Unknown shared image retirement"); return; }
   *link = m->next; c->image_count--; c->image_bytes -= m->size; c->freed++;
+  retirement_publish_locked(c);
   g_cond_broadcast(&c->changed);
 }
 /* The registry no longer references m. Caller releases context refs unlocked. */
@@ -514,7 +561,7 @@ static gpointer event_reader(gpointer user)
     GstBuffer *redraw = NULL, *latest = NULL; GstVideoInfo redraw_info, latest_info;
     guint64 redraw_epoch = 0, latest_epoch = 0, latest_serial = 0;
     XvMemory *garbage[XV_MAX_IMAGES]; guint ng = 0;
-    gboolean done = FALSE, post = FALSE;
+    gboolean done = FALSE, post = FALSE, retirement_changed = FALSE;
     g_mutex_lock(&c->lock);
     if (c->connection && !c->failed) receive_locked(c, release, &n);
     if ((c->failed || g_atomic_int_get(&c->stopping)) && c->last_buffer)
@@ -533,6 +580,7 @@ static gpointer event_reader(gpointer user)
       for (XvMemory *m = c->images; m; m = m->next)
         if (!detached_memory(m)) detached = FALSE;
       if (detached) {
+        retirement_changed = !c->detached || c->quarantined;
         c->detached = TRUE; c->quarantined = FALSE;
         for (guint i = 0; i < XV_DEPTH; i++) {
           if (c->flights[i].memory) retire_locked(c, &c->flights[i], FALSE, release, &n);
@@ -543,6 +591,7 @@ static gpointer event_reader(gpointer user)
         done = TRUE;
       }
       if (detached || g_get_monotonic_time() - disconnect_time >= XV_TIMEOUT_US) {
+        retirement_changed |= !c->closed || c->quarantined != !detached;
         c->closed = TRUE; c->quarantined = !detached;
         g_cond_broadcast(&c->changed);
       }
@@ -556,6 +605,7 @@ static gpointer event_reader(gpointer user)
       }
       m = next;
     }
+    if (retirement_changed) retirement_publish_locked(c);
     int fd = c->connection ? xcb_get_file_descriptor(c->connection) : -1;
     gint timeout = c->connection ? ((c->pending || c->latest_buffer) ? 50 : -1) : 100;
     for (m = c->images; m; m = m->next)
@@ -631,6 +681,7 @@ static XvContext *context_new(const char *name, xcb_window_t window, GstBus *bus
   } while (!g_atomic_int_compare_and_exchange(&live_contexts, old, old + 1));
   XvContext *c = g_new0(XvContext, 1);
   c->references = 1; c->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  c->retirement = retirement_new();
   g_mutex_init(&c->lock); g_cond_init(&c->changed);
   c->bus = bus ? gst_object_ref(bus) : NULL;
   g_mutex_lock(&c->lock);
@@ -920,7 +971,7 @@ static void crystal_xv_pool_init(CrystalXvPool *pool) { (void)pool; }
 
 typedef struct { GstVideoSink parent; GMutex lock, control; XvContext *context;
   GstVideoInfo info; gchar *display; guintptr window; guint requested_port;
-  gboolean latest_frame, observe_timing; GstStructure *last_stats; } GstCrystalHdXv;
+  gboolean latest_frame, observe_timing; XvRetirement *last_retirement; } GstCrystalHdXv;
 typedef struct { GstVideoSinkClass parent; } GstCrystalHdXvClass;
 static void overlay_init(GstVideoOverlayInterface *interface);
 G_DEFINE_TYPE_WITH_CODE(GstCrystalHdXv, gst_crystalhd_xv, GST_TYPE_VIDEO_SINK,
@@ -996,14 +1047,16 @@ static gboolean sink_stop(GstBaseSink *base)
   g_atomic_int_set(&c->stopping, TRUE); wake_context(c);
   g_mutex_lock(&c->lock);
   while (!c->closed) g_cond_wait(&c->changed, &c->lock);
-  GstStructure *snapshot = stats_locked(c);
+  retirement_publish_locked(c);
+  XvRetirement *retirement = retirement_ref(c->retirement);
   g_mutex_unlock(&c->lock);
   /* The reader owns its own context reference; quarantine cannot retain the
    * element or abort the application. A later positive detach reaps mappings. */
   g_thread_unref(c->thread); c->thread = NULL;
   g_mutex_lock(&s->lock);
-  if (s->last_stats) gst_structure_free(s->last_stats);
-  s->last_stats = snapshot; g_mutex_unlock(&s->lock);
+  XvRetirement *old = s->last_retirement;
+  s->last_retirement = retirement; g_mutex_unlock(&s->lock);
+  retirement_unref(old);
   context_unref(c); return TRUE;
 }
 static gboolean sink_unlock(GstBaseSink *base)
@@ -1404,7 +1457,11 @@ static void sink_get_property(GObject *object, guint id, GValue *value, GParamSp
       g_mutex_lock(&c->lock); g_value_take_boxed(value, stats_locked(c)); g_mutex_unlock(&c->lock);
       context_unref(c);
     } else {
-      g_mutex_lock(&s->lock); g_value_set_boxed(value, s->last_stats); g_mutex_unlock(&s->lock);
+      g_mutex_lock(&s->lock);
+      XvRetirement *retirement = retirement_ref(s->last_retirement);
+      g_mutex_unlock(&s->lock);
+      g_value_take_boxed(value, retirement_snapshot(retirement));
+      retirement_unref(retirement);
     }
   } else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -1413,7 +1470,7 @@ static void sink_finalize(GObject *object)
   GstCrystalHdXv *s = XV_SINK(object);
   sink_stop(GST_BASE_SINK(s));
   g_free(s->display);
-  if (s->last_stats) gst_structure_free(s->last_stats);
+  retirement_unref(s->last_retirement);
   g_mutex_clear(&s->lock);
   g_mutex_clear(&s->control);
   G_OBJECT_CLASS(gst_crystalhd_xv_parent_class)->finalize(object);

@@ -156,6 +156,29 @@ implementation scope. Published final20 and RC4/RC3 assets and results stay
 unchanged. Record each failure and any bounded continuation separately; later
 publication never repairs or relabels an earlier failure.
 
+<a id="experimental-playback-acceptance"></a>
+
+### Experimental playback acceptance
+
+The maintainer's current instruction is to test at least **900 source originals**
+per relevant experimental playback path and integrate at or below the previously
+accepted target. Preserve source-picture, pixel/PTS, ownership, ABI and retirement
+requirements; report fields, renderer selections and QoS drops separately.
+
+The recovered Centered/VA-Bob reference is the five-minute unmodified Kodi21.3
+case at source `2fb823b88eaf`: **9,000 complete source originals / 18,000 Bob
+outputs**, **18,000 accepted renderer slot epochs / 17,998 unique TRUE-Render
+selections**. The maintainer accepted the two missing selections (**0.0111%**)
+as a known issue and directed the remaining work to continue. See the
+[contemporaneous decision and scope](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6361152819).
+
+Use that reference within its renderer-stage/cadence scope. It is not permission
+to lose decoder originals or join source tokens to renderer epochs without
+evidence. A shorter >=900-original check remains a bounded observation, not a
+repeat of that five-minute case or proof of a stable loss rate. Other accepted
+route-specific QoS observations retain their own scope; do not manufacture a
+universal zero-loss gate or a new percentage ceiling for every output.
+
 <a id="private-v13-candidate-preparation"></a>
 <a id="complete-rc2-and-future-candidate-preparation"></a>
 

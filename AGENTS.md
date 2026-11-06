@@ -77,3 +77,8 @@ Use current equipment only. Source-qualified no-drift logs satisfy A/V for the
 exact route; accepted renderer/QoS losses do not create a universal zero-loss
 gate. Keep source-picture/ownership/ABI requirements. The original #538 heap
 subtask stays excluded; #538 remains open for its other work.
+
+Before choosing an experimental playback gate, read the accepted-loss reference
+and counter boundaries in [RELEASING.md](RELEASING.md#experimental-playback-acceptance).
+Consult the original owning decisions before claiming a prior criterion is
+absent or asking the maintainer to repeat it.
