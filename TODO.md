@@ -64,7 +64,7 @@ Keep the existing defensive conversion and VPP regression coverage.
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [stopped-retirement fix and fresh FIFO900](tests/fixtures/issue513/stopped-retirement-20261106.json) complete 900 original decodes/1,800 rendered buffers with no observed QoS loss, natural EOS, real Pulse clock and zero final resources. The original FIFO900 stale public6/0 failure is preserved; actual pool/callback controls distinguish and fix the telemetry lifetime error. A separate latest900 run also has no drops/replacements, so no congestion benefit is demonstrated. FIFO remains default; broader formats, controls, interruption and endurance stay open. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [startup and admission-boundary observation](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6683949532) joins eight current-source FW commands to 40 owned raw kernel spans. Public OPEN/START totals 149.742/149.725ms contain 148.243/148.296ms in acknowledgement waits; this includes scheduling/IRQ/firmware latency, not isolated firmware CPU. The two900 case remains 865/897 strict Source900 FAIL; all four scoped audits, trace cleanup and full official20/inventory restoration pass. Offline review places all 59 absent labels in the earlier ABBA cohort in closed sampled policy8/8/8 windows without selected-context Begin/Render/End entries or native submissions after first-body completion; NAL class, private branch and causal startup debt remain unobserved. The preparation candidate stays unpromoted. Source loss, opaque firmware internals, broader pixels/cadence, GPU return and lifetime/endurance remain open. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [actual discard-decision and producer-service investigation](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6685232470) completes all 1,800 sampled policy decisions, all 16 before-VA omission windows and their complete renderer-debt chains. All 51 positive contributors join exact original postfilter/video PTS dataflow; 25 of 48 selected field pairs exceed nominal source cadence, an inclusive diagnostic wall observation rather than pure filter CPU or full-play throughput. Originals 896/888 remain strict Source900 FAIL; four scoped audits, safe retirement and full official20/inventory restoration pass. No own product fault or universal impossibility is established; output-only processing cannot recover absent inputs in this recorded execution. Keep preparation unpromoted. Broader real-time service, pixels/cadence, GPU return and lifetime/endurance remain open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538) | [Bounded POC1 association](tests/fixtures/issue538/native-poc1-equal900-20261106.json) is integrated experimentally through [#677](https://github.com/ahnhy1324/crystalhd/pull/677): equal-field-POC full/limited cases each return 900 originals with exact pixels, source PTS, range and EOS. Original unequal-field-POC native failures remain a documented UNKNOWN_SRC/BOTTOM_FIRST limit. Broader syntax, DPB/B/fields, crop/chroma, GPU return and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | The [paced fixed16/sized16/sized8 matrix](tests/fixtures/issue470/paced900-20261106.json) is complete. The new [fixed/SIZED resolution-transition comparison](tests/fixtures/issue470/resolution-transition900-20261106.json) completes 900 originals across three geometry epochs per arm, with matching whole ordered pixel/metadata hashes and EOS. This exercises conservative fallback across stream changes, not reduced-buffer in-place resizing or a performance gain. Earlier natural Source900 failures remain. Native-planar scheduling is complete for current equipment: BCM70015 capture routes expose packed output, VA/DIL planar images are host conversions, and BCM70012 planar hardware is unavailable/NOT_RUN. The [output-mode contract](linux_lib/libcrystalhd/libcrystalhd_int_if.cpp) and existing rejection/fallback coverage remain; no planar hardware pass is claimed. Broader codec/other format changes and PM stay open. Keep fixed defaults, fallback and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | [Actual English Orca interaction](tests/fixtures/issue400/orca-spoken-20261106.json) qualifies valid → invalid → corrected keyboard edits, completed field/value/error speech, fresh synthesized PCM and clean retirement. This does not qualify physical listening or Korean speech. Named frontend adapters and broader desktop/accessibility scopes remain open; existing catalog/UI/AT-SPI and original harness failures retain their scopes. |
@@ -80,51 +80,50 @@ Keep the existing defensive conversion and VPP regression coverage.
 
 ### Source 900 investigation and remaining real-time boundary
 
-The [current-source startup observation](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6683949532)
-uses maintained source `253af51`, the original reviewed temporary module25,
-unchanged complete private allocation source and unmodified external runtime.
-The raw case03 two900 workload returns **865/897 originals: both strict
-Source900 results remain FAIL**. All four existing scoped audits, private trace
-cleanup, unchanged global tracing state, kernel checks and normal complete
-official1.3/source24a/module20 plus original module-inventory restoration pass.
+The [actual drop-decision and producer-service investigation](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6685232470)
+uses latest maintained source `413ee34`, the original reviewed native25 artifact
+with identical driver/include contents, and unchanged original Kodi/FFmpeg
+images with isolated read-only diagnostic observation. **Originals 896/888 remain
+strict Source900 FAIL.** These diagnostic passes do not qualify uninstrumented
+throughput, stock support, candidate promotion or a new release.
 
-| Public decoder call, ms | First play: wall / FW ioctls / acknowledgement waits | Reopen: wall / FW ioctls / acknowledgement waits |
-| --- | ---: | ---: |
-| OPEN | 95.347 / 95.212 / 94.612 | 95.437 / 95.299 / 94.692 |
-| START | 54.395 / 54.342 / 53.631 | 54.288 / 54.232 / 53.603 |
+| Completed current-case boundary | Result |
+| --- | --- |
+| Actual caller inputs and decision | All 1,800 calls reconcile late/gain, conditional speed/allow-drop, packet-drop, queue and actual control/send state. All 16 absent same-epoch labels have NONREF8/8/8 requests and closed windows without selected VA Begin/Render/End entry or native submission. |
+| Direct renderer counter and full debt | Locked GetStats raw/10 agrees with the same Calc input. All 16 chains close at observed nonpositive baselines and account for 51 distinct positive contributors with exact renderer/slot/PTS insertion joins. Persistent inherited positive startup debt is excluded for these chains; indirect timing effects remain possible. |
+| Producer timing and original PTS handoff | All 51 contributors join the actual asynchronous postfilter/video route using the original multiply/divide, divide/multiply/truncation and repeated-best-effort half-frame rule. All 25 already-late producers are late before buffer waits of only 10.825–21.232us. |
+| Selected field-pair service | Of 48 distinct contributing pairs, 25 have inclusive sink-call wall above the nominal 33.366667ms source interval; 13 of 25 already-late pairs do. Median 34.123249ms/max 57.900938ms. This selected debt cohort is not full-play throughput. Library, scheduling and observer work are included; filter CPU remains unmeasured. |
+| Maintained ownership and retirement | Every admitted original is publicly materialized exactly once; four scoped audits pass, App/kernel exit0, no handoff, probe retirement and complete official1.3/source24a/module20 plus original inventory restoration pass. The separate two held postfilter-EOF fields per play remain unchanged. |
 
-All eight commands join their actual same-thread first body and successful
-public calls to **40 complete owned raw kernel spans**. The host boundary is
-now separated: the dominant OPEN and START_VIDEO transactions spend most of
-their elapsed interval in the mailbox acknowledgement wait. The wait includes
-firmware, IRQ and host scheduling latency; it is not firmware CPU or isolated
-device-execution time. Inclusive parents are not added to their children.
-Case02's separately qualified 884/888 ioctl observation and failed formatted
-graph remain preserved; its unmatched rows do not supply wait measurements.
+The source of the sampled NONREF requests is now observed; do not keep calling
+those inputs unknown or repeat count-only900 runs to rediscover them. Output-only
+processing cannot reconstruct these 16 absent inputs in the recorded execution.
+This is a bounded interface result: a future maintained load/timing improvement
+might prevent requests, so it is not proof that all improvements are impossible.
+No own production fault or external defect is demonstrated by this observation.
 
-A separate offline review reuses the prior ABBA cohort without another media
-run. All **59 absent raw packet/frame labels** occur in closed sampled
-policy8/8/8 windows without selected-context BeginPicture/RenderPicture/EndPicture
-entries or native submissions, after first-body completion.
-The raw labels are compared only within the same public codec epoch; they are
-not source-clock, payload or native-picture identities. These records contain
-no NAL classification or private skip-branch observation, and execution-time
-ordering does not establish or exclude indirect startup clock debt. Why the
-caller selected policy8 remains unobserved.
-All original strict failures remain unchanged.
+The remaining real-time research is the original postfilter/delivery branch:
+separate filter computation, scheduler/blocking and observer overhead before
+choosing an own-component change. Do not infer pure BWDIF CPU from call wall or
+assign every late output to its current pair; some inherit earlier debt even
+when their current pair is below nominal. Source clocks, broader pixels/chroma/
+cadence, GPU return and lifetime/endurance stay open under existing criteria.
+No external product patch, manufactured output or weaker acceptance is proposed.
 
-The completed [allocation-preparation ABBA study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6683292955)
-retains its bounded startup-wall benefit and all eight Source900 failures;
-the preparation candidate remains **unpromoted research**. Its warm V1
-confound and earlier [pin-phase](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6681410812),
+The earlier [FW startup/admission observation](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6683949532)
+retains its 865/897 failures and bounded 149.742/149.725ms OPEN+START totals, including
+148.243/148.296ms acknowledgement waits rather than isolated firmware CPU. The
+prior ABBA 59 absent-label cohort lacks actual caller inputs; the new 16 cannot
+retroactively fill its unknowns or prove its private skip branch/NAL class.
+The [allocation-preparation ABBA study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6683292955)
+retains its bounded startup-wall benefit, V1 confound and all eight Source900
+failures; its preparation candidate stays **unpromoted research**. Early lease
+`9daded6`, retained mapping reuse #669 and finite wait0 repair #666 are already
+implemented and must not be recreated. Earlier [pin-phase](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6681410812),
 [bootstrap](tests/fixtures/issue477/bootstrap-setup900-20261106.json),
 [first-body](tests/fixtures/issue477/endpicture-body900-20261106.json) and `5bc`
-observations retain their own populations and limits. Early device lease
-`9daded6`, retained mapping reuse #669 and finite wait0 repair #666 are already
-implemented. Source loss, opaque firmware internals, broader source clocks/
-cadence, pixels/chroma, GPU-return/lifetime/endurance, original filter-EOF and
-matched benefit remain open under the existing accepted-loss policy. No new
-release gate, product default or external application change is introduced.
+records retain their original populations and limits. Accepted renderer/QoS
+loss does not authorize decoder-original loss; existing release criteria remain.
 
 <details>
 <summary>Prior source 5bc5d7b NAL attribution and separate natural-play failures</summary>
