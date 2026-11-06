@@ -100,6 +100,10 @@ can no longer hold that worker's join indefinitely. A valid empty mapping return
 no symbol; protocol, connection, timeout and truncated-payload failures retire
 the worker through its existing error path. The explicit device-free subset is
 `filters/gst/field-output/field-setup-test --keyboard`.
+The [keyboard response receipt](keyboard-response-20261106.json) retains the
+literal old blocking control, nine ordinary/sanitized peer controls and the
+initial peer-padding failure. Event-loop RAII retirement is independently
+source-reviewed; these helper controls do not execute the GL event loop.
 In `resize()`,
 parent and child geometry responses share one one-second deadline after the
 initial flush. A later reply barrier confirms a checked configure within that

@@ -1,0 +1,298 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "SCOPED_ENDPICTURE_BODY_OBSERVATION_PASS_STRICT_SOURCE900_FAIL_RETAINED",
+  "owning_issues": [
+    477,
+    436
+  ],
+  "actual_source": {
+    "revision": "1dc7671cdc9b822cfc9985b919d1cba0737a1fe1",
+    "directory": "/home/mache/.cache/crystalhd-current-playback-stability-20261106",
+    "scope": "Current maintained VA/DIL plus explicit isolated EndPicture-body diagnostic. Original external Kodi22RC1/App FFmpeg, scheduling, discard policy and input are unchanged. No external product patch or performance fix.",
+    "runtime_identity_authority": "The fresh frozen stock plan binds source HEAD, source files, actual private VA/DIL binaries and unchanged external providers; held client mappings qualify those exact pinned artifacts. A legacy constant in the API-admission header is not the running source identity."
+  },
+  "module_artifact_reuse": {
+    "version": "3.10.25",
+    "actual_build_source": "0e85243c370f4b9b84878a2669aaff409b0b034d",
+    "srcversion": "5B4F249028037282258C8EF",
+    "build_id": "6d53a63071aa876724f8a9f7548b0abbfc6b81e1",
+    "build_manifest": "native25-reviewed-build.json",
+    "source_comparison": "git diff --exit-code 0e85243c370f4b9b84878a2669aaff409b0b034d 1dc7671cdc9b822cfc9985b919d1cba0737a1fe1 -- driver include",
+    "comparison_exit": 0,
+    "comparison_diff_empty": true,
+    "V4L2": true,
+    "FW_RESEARCH": false,
+    "scope": "Reuse the original reviewed native25 artifact because maintained driver/include contents are identical. It is not rebuilt or relabelled as a1dc kernel build. This application observation does not qualify the native900 POC1 pixel/PTS contract."
+  },
+  "input": {
+    "fixture": "/home/mache/.cache/crystalhd-va-centered-20261023.D8g26l/fixtures/2997-uniform/uniform-18.ts",
+    "independent_probe": "/home/mache/.cache/crystalhd-bwdif-short-preparation-20261104/raw-packets-frames.json",
+    "source_originals_per_play": 900,
+    "source_nominal_rate": "30000/1001",
+    "visible_size": [
+      1920,
+      1080
+    ],
+    "coded_size": [
+      1920,
+      1088
+    ],
+    "declared_TFF": true,
+    "uniform_physical_parity_claimed": false,
+    "actual_route": "Explicit limited-range Centered1280x720 in FHD NV12; original Kodi method7 / actual software BWDIF; same-PID two natural EOFs with reopen."
+  },
+  "actual_original_result": {
+    "case": "endpicture-body-900-25-01-stock",
+    "owned_pid": 2571370,
+    "stock_status": "OBSERVED_SOURCE_QUALIFICATION_FAIL",
+    "original_stock_exit": 1,
+    "source900": [
+      "FAIL",
+      "FAIL"
+    ],
+    "native_originals": [
+      886,
+      899
+    ],
+    "validated_original_fields": [
+      1772,
+      1798
+    ],
+    "public_materializations": [
+      886,
+      899
+    ],
+    "admitted_originals_without_public_materialization": [
+      0,
+      0
+    ],
+    "video_demux_packets": [
+      900,
+      900
+    ],
+    "accepted_nonempty_codec_payloads": [
+      900,
+      900
+    ],
+    "source_population_qualification": "FAIL",
+    "original_report_preserved": true,
+    "scope": "The strict900-original research criterion is unchanged. Existing scoped renderer/QoS permissions do not turn886/899 into a Source900 pass or introduce a new release blocker. Prior5bc NAL classifications do not transfer to this population."
+  },
+  "body_observation": {
+    "schema": "crystalhd-maintained-cost-endpicture-v1",
+    "stage": "end_picture_body",
+    "plays": [
+      {
+        "play": 1,
+        "body_events": 886,
+        "context_kind": "DECODE",
+        "binding_phase": "resolved_after_admission",
+        "wall_ns": {
+          "p50": 491347,
+          "p95": 3178634,
+          "max": 233850299,
+          "sum": 1082162158
+        },
+        "thread_cpu_ns": {
+          "p50": 428714,
+          "p95": 845356,
+          "max": 78855139,
+          "sum": 525869906
+        },
+        "first_and_longest_body": {
+          "event_id": 83,
+          "chronological_body_index": 0,
+          "context": 2,
+          "generation": 1,
+          "begin_ns": 926409665141081,
+          "end_ns": 926409898991380,
+          "wall_ns": 233850299,
+          "thread_cpu_ns": 78855139,
+          "direct_children": [],
+          "first_submit_bind": {
+            "native_trace_seq": 23,
+            "ts_monotonic_ns": 926409898181129
+          },
+          "first_input_sent": {
+            "native_trace_seq": 24,
+            "ts_monotonic_ns": 926409898862729
+          },
+          "body_begin_to_first_submit_bind_ns": 233040048,
+          "first_submit_bind_to_body_end_ns": 810251
+        },
+        "maximum_nonfirst_body_wall_ns": 9642762,
+        "negative_exclusive_offcpu_samples": 21,
+        "exclusive_offcpu_aggregate": "UNAVAILABLE_ENDPOINT_SUBTRACTION"
+      },
+      {
+        "play": 2,
+        "body_events": 899,
+        "context_kind": "DECODE",
+        "binding_phase": "resolved_after_admission",
+        "wall_ns": {
+          "p50": 488134,
+          "p95": 3331451,
+          "max": 222737785,
+          "sum": 1112260234
+        },
+        "thread_cpu_ns": {
+          "p50": 435848,
+          "p95": 878753,
+          "max": 74443463,
+          "sum": 532821997
+        },
+        "first_and_longest_body": {
+          "event_id": 29422,
+          "chronological_body_index": 0,
+          "context": 4,
+          "generation": 1,
+          "begin_ns": 926444316999743,
+          "end_ns": 926444539737528,
+          "wall_ns": 222737785,
+          "thread_cpu_ns": 74443463,
+          "direct_children": [],
+          "first_submit_bind": {
+            "native_trace_seq": 8159,
+            "ts_monotonic_ns": 926444539228511
+          },
+          "first_input_sent": {
+            "native_trace_seq": 8160,
+            "ts_monotonic_ns": 926444539531700
+          },
+          "body_begin_to_first_submit_bind_ns": 222228768,
+          "first_submit_bind_to_body_end_ns": 509017
+        },
+        "maximum_nonfirst_body_wall_ns": 10451057,
+        "negative_inclusive_offcpu_samples": 1,
+        "inclusive_offcpu_aggregate": "UNAVAILABLE_ENDPOINT_SUBTRACTION",
+        "negative_exclusive_offcpu_samples": 31,
+        "exclusive_offcpu_aggregate": "UNAVAILABLE_ENDPOINT_SUBTRACTION"
+      }
+    ],
+    "complete_publication": {
+      "events": 59064,
+      "attempted_events": 59064,
+      "dropped": 0,
+      "inflight": 0,
+      "unpublished": 0,
+      "clock_failures": 0,
+      "lifecycle_failures": 0,
+      "fork_seen": false,
+      "complete": true
+    },
+    "interpretation": "Both longest spans are the first EndPicture body, overwhelmingly before first SubmitBind. They have no recorded ReceiveOne children, so their long spans are not evidence for the proposed RX64 conversion-backlog mechanism. Later body maxima remain separately recorded; no global latency bound follows.",
+    "remaining_unknown": "Existing native Trace has no OpenDecoder/setup/start/capture event. Untimestamped DIL open/scaling lines do not identify an individual operation. The pre-SubmitBind interval includes validation, first-picture preparation and decoder/capture setup; this observation does not assign time among them or prove a NONREF/lateness cause."
+  },
+  "four_scoped_audits": {
+    "packet": "PASS_SCOPED_PACKET_ADMISSION_OBSERVATION",
+    "replay": "PASS_SCOPED_REPLAY_DISPOSITION_OBSERVATION",
+    "maintained_cost": "PASS_SCOPED_MAINTAINED_COST_OBSERVATION",
+    "postfilter": "PASS_SCOPED_POSTFILTER_OBSERVATION"
+  },
+  "CPU_validation": {
+    "maintained_cost_reader_controls": {
+      "count": 46,
+      "status": "PASS"
+    },
+    "legacy_cost_collector_controls": {
+      "count": 21,
+      "status": "PASS"
+    },
+    "endpicture_variant_collector_controls": {
+      "count": 21,
+      "status": "PASS"
+    },
+    "replay_disposition_reader_controls": {
+      "count": 40,
+      "status": "PASS"
+    },
+    "replay_disposition_collector_controls": {
+      "count": 17,
+      "status": "PASS"
+    },
+    "existing_actual_mock_paths": {
+      "positive_ledgers": 2,
+      "expected_rejection_ledgers": 2,
+      "status": "PASS"
+    },
+    "actual_EndPicture_rejection_paths": {
+      "count": 4,
+      "complete_four_event_publication": true,
+      "status": "PASS"
+    },
+    "literal_old_backend_control": {
+      "input": "Literal8e3862e backend plus current diagnostic header/harness",
+      "expected_rejection": "each actual EndPicture early return closes one body scope",
+      "original_exit": -6,
+      "status": "PASS_EXPECTED_OLD_NO_HOOK_REJECTION",
+      "fixed_binary_restored": true,
+      "scope": "CPU mock assertion abort, unrelated to the excluded original538 heap subtask; no hardware/media executes."
+    },
+    "retained_initial_harness_failure": "The initial four-path harness did not compile because Driver has no default constructor. Current1dc passes descriptor-1, matching existing CPU mocks and avoiding any GBM/device construction. The original compile failure remains in endbody-path-check.log; no initial four-path runtime or product fault is claimed."
+  },
+  "API_admission_header_note": {
+    "raw_schema": "crystalhd-api-admission-v2",
+    "raw_product_base_revision": "50c4dce60773d12a7d6fc46217571a625c85805b",
+    "actual_runtime_source_revision": "1dc7671cdc9b822cfc9985b919d1cba0737a1fe1",
+    "explanation": "The misleadingly named product_base_revision is an unchanged literal in the original probe header; its source comment identifies the construction product base. Existing documentation does not make it a dynamic runtime identity. Preserve the raw header unchanged and use the current frozen plan and observed artifact mappings for actual runtime provenance. No old50c runtime execution is inferred."
+  },
+  "terminal_observations": {
+    "application_exit": 0,
+    "controls": "PASS",
+    "stock_kernel_check_exit": 0,
+    "wrapper_kernel_before_restore_exit": 0,
+    "wrapper_kernel_after_restore_exit": 0,
+    "full_native25_boundary_equal": true,
+    "full_official20_cohort_restored": true,
+    "original_module_inventory_restored": true,
+    "live_resource_handoff": null,
+    "wrapper_errors": [],
+    "maximum_recorded_temperature_mC": 71000,
+    "AC_present_at_all_recorded_health_samples": true,
+    "persistent_baseline": "Official1.3.0/source24a5182b988bb0fead4440d57ed0f72e4f70b68d/module3.10.20"
+  },
+  "prior_work_and_next_scope": {
+    "do_not_repeat": [
+      "The module20 wait0 legacy FETCH delay was already identified and fixed through666; this experiment used exact maintained native25 instead.",
+      "CreateContext already opens and retains the device admission lease, introduced in9daded6 and retained since1.2RC1; OpenDecoder consumes that lease.",
+      "Fixed DIL pool allocation/initialization occurs inside DtsInitInterface during device admission, before first EndPicture. Do not attribute the measured body CPU to that earlier allocation without evidence.",
+      "Completed CPU/COW/worker/finite-Sync and BT.601/range fixes stay integrated; this diagnostic is not a replacement performance fix."
+    ],
+    "current_source_paths": [
+      "filters/vaapi/crystalhd_drv_video.cpp: EndPicture11646 -> SubmitPicture7366; first setup at7885 calls OpenDecoderForSubmit4286 -> OpenDecoder4176 before SubmitBind8094.",
+      "linux_lib/libcrystalhd/libcrystalhd_if.cpp: DtsOpenDecoder1283 invokes DtsRecoverableDecOpen596; BCM70015 takes one firmware OPEN, not the LINK repair loop, then DtsFWSetVideoInput.",
+      "DtsStartCapture2099 -> libcrystalhd_priv.cpp:DtsMapYUVBuffs2929 -> negotiated retained registration on native25; firmware lifecycle/setup and registration remain unseparated candidates within the pre-bind span."
+    ],
+    "next_action": "Use these retained first-body/native timestamps and current-source setup boundaries to constrain the pre-SubmitBind bootstrap path. Existing Trace lacks individual setup-call timing, so record that exact remaining gap. Do not add another900 run or a generic per-phase framework without a concrete discriminating hypothesis and first checking reusable earlier evidence. No speculative product change is justified by this result."
+  },
+  "limits": [
+    "Both strict Source900 results remain FAIL; diagnostic subset PASS does not repair or waive missing originals.",
+    "All admitted originals have complete original-field/public-materialization coverage, but this is not independent full-pixel, source-clock, GPU-return, physical-presentation, A/V or general compatibility qualification.",
+    "No source/native-picture clock join or private renderer branch is observed; do not classify this case's missing originals using the separate prior5bc NAL experiment.",
+    "Body spans start after mutex admission and can include subsequent unlocked waits. Wall-minus-threadCPU mixes blocking/preemption/overhead; unavailable subtraction is retained without clamping.",
+    "One diagnostic case supplies no paired baseline, causal speedup, endurance or repeatability claim. Original application code, packet skip policy and published1.3/RC payloads remain unchanged."
+  ],
+  "artifact_roots": {
+    "runtime": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+    "CPU_and_derivation": "/home/mache/.cache/crystalhd-remaining-followup-run-20261106"
+  },
+  "retained_artifacts": {
+    "owner": "run-endpicture-body-900-25.py",
+    "root_transition_and_restore": "endpicture-body-900-25-01/result.json",
+    "stock_plan": "endpicture-body-900-25-01-stock.plan.json",
+    "stock_original_result": "endpicture-body-900-25-01-stock/result.json",
+    "cost_raw": "endpicture-body-900-25-01-stock/payload/maintained-cost-2571370.jsonl",
+    "native_raw": "endpicture-body-900-25-01-stock/kodi.stdout",
+    "API_admission_raw": [
+      "endpicture-body-900-25-01-stock/payload/api-admission-2571370-retirement-1.jsonl",
+      "endpicture-body-900-25-01-stock/payload/api-admission-2571370-retirement-2.jsonl"
+    ],
+    "compact_actual_derivation": "endbody-actual-derivation.json",
+    "reader_controls": "endbody-reader.log",
+    "legacy_collector_controls": "cost-legacy.log",
+    "variant_collector_controls": "cost-endbody.log",
+    "wired_mock_controls": "endbody-path-check-fixed.log",
+    "old_control_result": "endbody-literal-old-control/result.json"
+  }
+}
