@@ -1,0 +1,214 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "SCOPED_FUNCTIONAL_HTTP_AND_STRICT_CA_HTTPS_SEEK_PASS_ORIGINAL_STRICT_PRESENTATION_REPORTS_FAIL",
+  "owning_issues": [
+    91,
+    510
+  ],
+  "actual_source_revision": "a9c4019c572dadca48f7fb50aeb34006df8fd97e",
+  "source_directory": "/home/mache/.cache/crystalhd-remaining-qualification-20261106",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+  "source_scope": "Actual unchanged own Player/decoder/Xv plugin sourcea9 with its fixed private DIL build. Later integration may reuse these identical components explicitly; no later-head hardware rerun is claimed.",
+  "installed_baseline": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "selected_and_loaded_module": "3.10.20",
+    "full_cohort_and_boundary_preserved": true
+  },
+  "runtime": {
+    "private_fixed_DIL_build": "allocator-fixed-reviewed-build.json",
+    "private_DIL": "allocator-arm-source-fixed/linux_lib/libcrystalhd/libcrystalhd.so.3.6",
+    "decoder_plugin": "/home/mache/.cache/crystalhd-remaining-qualification-20261106/filters/gst/gst-plugin-1.0/libgstcrystalhd.so",
+    "Xv_plugin": "/home/mache/.cache/crystalhd-remaining-qualification-20261106/filters/gst/xv-output/libgstcrystalhdxv.so",
+    "actual_private_mappings": "Required and retained by each owning controller; unmodified system souphttpsrc/deinterlace/Pulse components.",
+    "profile": "native720, Xv FIFO, 1280x720 UYVY progressive50/1, real muted PulseSink"
+  },
+  "fixture": {
+    "media": "dialogue-900-36s.mkv",
+    "bytes": 74498252,
+    "source_originals": 900,
+    "independent_software_PTS": "network900-source-pts.json",
+    "controller": "run-network900.py",
+    "observational_benchmark": "network900-bench.py"
+  },
+  "http": {
+    "result": "network-http900-02/result.json",
+    "original_strict_report": "FAIL",
+    "original_strict_report_preserved": true,
+    "functional_transport_scope": "PASS_COMPLETE_HTTP_BODY_NATURAL_EOS_AUDIO_CLOCK_AND_RETIREMENT",
+    "actual_source": "souphttpsrc",
+    "requests": [
+      {
+        "method": "GET",
+        "status": 200,
+        "range": null,
+        "bytes_sent": 74498252,
+        "complete": true
+      }
+    ],
+    "public_decoder_epoch": {
+      "expected": 900,
+      "observed": 898,
+      "complete_source_PTS_match": false,
+      "missing_PTS_ns": [
+        7120000000,
+        7160000000
+      ],
+      "attribution": "The retained stock GstVideoDecoder log explicitly drops these two public output timestamps due to QoS. This is not a native completion-ledger observation."
+    },
+    "sink_epoch": {
+      "expected_buffers": 1800,
+      "observed_buffers": 1788,
+      "complete_field_PTS_match": false,
+      "attribution": "Twelve expected field PTS are absent. The two public decoder omissions explain their corresponding fields; remaining downstream field gaps are not fully stage-attributed."
+    },
+    "natural_EOS": true,
+    "player_code": 0,
+    "audio_buffers": 423,
+    "matching_Pulse_clock_samples": 718,
+    "audio_clock_mismatches": 0,
+    "Xv_submissions_and_ACKs": 1788,
+    "base_sink_last_reset_snapshot": {
+      "rendered": 403,
+      "dropped": 1
+    },
+    "maximum_temperature_mC": 51000,
+    "stderr": "network-http900-02/stderr.log"
+  },
+  "https_seek": {
+    "result": "network-https-seek900-01/result.json",
+    "original_strict_report": "FAIL",
+    "original_strict_report_preserved": true,
+    "functional_scope": "PASS_STRICT_PRIVATE_CA_THREE_TIME_SEEKS_AND_FINAL_900_PUBLIC_SOURCE_PTS",
+    "actual_source": "souphttpsrc",
+    "TLS": {
+      "ssl_strict": true,
+      "private_CA_property": "tls-database",
+      "private_trust_applied": true,
+      "certificate_error_callbacks": 0,
+      "global_trust_changes": false
+    },
+    "controls": [
+      {
+        "target_ns": 10000000000,
+        "rate": 1.0,
+        "accepted": true,
+        "decoder_and_sink_segment_seqnum": 822
+      },
+      {
+        "target_ns": 5000000000,
+        "rate": 1.0,
+        "accepted": true,
+        "decoder_and_sink_segment_seqnum": 1245
+      },
+      {
+        "target_ns": 0,
+        "rate": 1.0,
+        "accepted": true,
+        "decoder_and_sink_segment_seqnum": 1493
+      }
+    ],
+    "cumulative_public_decoder_outputs": 936,
+    "final_public_decoder_epoch": {
+      "expected": 900,
+      "observed": 900,
+      "complete_independent_source_PTS_match": true,
+      "scope": "Final new start0/rate1 epoch only; initial/forward/backward populations are separate and are not counted as additional final originals."
+    },
+    "final_sink_epoch": {
+      "expected_buffers": 1800,
+      "observed_buffers": 1797,
+      "complete_field_PTS_match": false,
+      "attribution": "Three expected incoming sink field PTS are absent; the exact upstream stage is not established by this record."
+    },
+    "requests": [
+      {
+        "status": 200,
+        "range": null,
+        "bytes_sent": 17563648,
+        "complete": false,
+        "body_aborted": "ConnectionResetError"
+      },
+      {
+        "status": 206,
+        "range": "bytes=74497516-",
+        "bytes_sent": 736,
+        "complete": true
+      },
+      {
+        "status": 206,
+        "range": "bytes=18317431-",
+        "bytes_sent": 11075584,
+        "complete": false,
+        "body_aborted": "ConnectionResetError"
+      },
+      {
+        "status": 206,
+        "range": "bytes=9201135-",
+        "bytes_sent": 10682368,
+        "complete": false,
+        "body_aborted": "ConnectionResetError"
+      },
+      {
+        "status": 206,
+        "range": "bytes=688-",
+        "bytes_sent": 74497564,
+        "complete": true
+      }
+    ],
+    "request_scope": "Actual byte ranges are observed. Flushing client seeks abort prior bodies; no server-side failure was injected, and these aborts are not a reconnect/recovery test.",
+    "natural_EOS": true,
+    "player_code": 0,
+    "audio_buffers_cumulative": 442,
+    "matching_Pulse_clock_samples": 741,
+    "audio_clock_mismatches": 0,
+    "Xv_submissions_and_ACKs_cumulative": 1853,
+    "base_sink_last_reset_snapshot": {
+      "rendered": 1796,
+      "dropped": 1
+    },
+    "maximum_temperature_mC": 51000,
+    "stderr": "network-https-seek900-01/stderr.log"
+  },
+  "observed_in_both_cases": {
+    "closed": true,
+    "pipeline_NULL": true,
+    "health_error": null,
+    "probe_errors": 0,
+    "bus_errors": 0,
+    "final_Xv": {
+      "pending": 0,
+      "images": 0,
+      "bytes": 0,
+      "allocated": 6,
+      "freed": 6,
+      "copied_bytes": 0,
+      "retained_picture": false,
+      "closed": true,
+      "failed": false,
+      "quarantined": false
+    },
+    "owned_server_threads_and_sockets_retired": true,
+    "server_survivors": [],
+    "server_errors": [],
+    "benchmark_retired": true,
+    "received_signals": [],
+    "kernel_check_exit": 0,
+    "full_boundary_equal": true,
+    "live_resource_handoff": null
+  },
+  "source_review": "No omitted Player DI-QoS policy was found. The inherited native/Python compatibility helper intentionally preserves genuine upstream QoS. These results justify no product QoS suppression, foreign patch, new deadline or identical zero-loss retry.",
+  "limits": [
+    "Original strict HTTP and HTTPS reports remain FAIL. Narrow functional transport/TLS/seek milestones do not relabel complete-field/public-output census failures or establish new release qualification.",
+    "Accepted scoped renderer/QoS losses do not create a universal zero-loss release gate. The earlier centered-renderer selection reference is not transferred into a decoder-input, native-ledger or all-route numerical allowance.",
+    "HTTP898 public outputs do not prove900 native completions. HTTPS900 exact public source PTS does not independently establish full pixels, firmware ownership or unique physical presentation.",
+    "BaseSink counters are snapshots since their latest reset, not cumulative session or source-picture counts. Source, sink-input and rendered populations remain distinct.",
+    "Matching Pulse clocks do not establish physical lip-sync, zero offset or absence of every warning; complete original stderr, including logged QoS and EOF audio diagnostics, is retained.",
+    "No remote Internet/origin, performance gain, forced write gap, TCP disconnect/reconnect, retry endurance, new pixel golden, external product edit or replacement stable-release artifact is claimed.",
+    "The selected HTTP whole-body and strict-CA HTTPS seek/source-PTS tasks are complete in their stated scopes. Broader #91 acceptance remains open."
+  ],
+  "external_product_edits": false,
+  "release_claim": false,
+  "integration_scope": "Actual named source/component evidence is reused unchanged at the later integration port; no new physical run or stable-release qualification is claimed."
+}

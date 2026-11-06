@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "PASS_SCOPED_THREE_PACED_900_ORIGINAL_ALLOCATION_ARMS",
+  "owning_issues": [
+    470,
+    362
+  ],
+  "source_revision": "a9c4019c572dadca48f7fb50aeb34006df8fd97e",
+  "source_directory": "/home/mache/.cache/crystalhd-remaining-qualification-20261106",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+  "controller": "run-paced-allocation-900.py",
+  "installed_baseline": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "selected_and_loaded_module": "3.10.20",
+    "full_cohort_and_module_boundary_preserved": true
+  },
+  "workload": {
+    "fixture": "dialogue-900-36s.mkv",
+    "software_census": "dialogue-900-software-census.json",
+    "source_originals": 900,
+    "profile": "native720",
+    "sink_caps": "1280x720 UYVY progressive 50/1",
+    "delivery": "Xv FIFO, existing real muted PulseSink and GstPulseSinkClock",
+    "order": [
+      "FIXED16",
+      "SIZED16",
+      "SIZED8"
+    ]
+  },
+  "builds": {
+    "fixed": "allocator-fixed-reviewed-build.json",
+    "sized": "allocator-sized-reviewed-build.json",
+    "scope": "Exact private DIL maps bind the recorded builds; current own decoder/Xv plugins and unmodified system runtime. No permanent installation or module transition."
+  },
+  "arms": [
+    {
+      "name": "FIXED16",
+      "compile_scaled_rx": false,
+      "pool_count_requested": 16,
+      "result": "allocation-FIXED16-900-01/result.json",
+      "benchmark_wall_s": 37.64138641592581,
+      "benchmark_process_cpu_s": 14.9137,
+      "benchmark_process_max_rss_kib": 189444,
+      "benchmark_peak_mC": 52000,
+      "audio_clock_samples": 145
+    },
+    {
+      "name": "SIZED16",
+      "compile_scaled_rx": true,
+      "pool_count_requested": 16,
+      "result": "allocation-SIZED16-900-01/result.json",
+      "benchmark_wall_s": 37.65207695204299,
+      "benchmark_process_cpu_s": 14.776698000000001,
+      "benchmark_process_max_rss_kib": 168544,
+      "benchmark_peak_mC": 53000,
+      "audio_clock_samples": 145
+    },
+    {
+      "name": "SIZED8",
+      "compile_scaled_rx": true,
+      "pool_count_requested": 8,
+      "result": "allocation-SIZED8-900-01/result.json",
+      "benchmark_wall_s": 37.68471907800995,
+      "benchmark_process_cpu_s": 14.971559,
+      "benchmark_process_max_rss_kib": 145368,
+      "benchmark_peak_mC": 55000,
+      "audio_clock_samples": 144
+    }
+  ],
+  "observed_in_each_arm": {
+    "decoded_originals": 900,
+    "sink_buffers": 1800,
+    "rendered_buffers": 1800,
+    "base_sink_drops": 0,
+    "audio_buffers": 423,
+    "audio_clock_mismatches": 0,
+    "natural_EOS": true,
+    "warning_and_error_counts": 0,
+    "Xv_submissions_and_ACKs": 1801,
+    "Xv_copied_bytes": 0,
+    "final_Xv": {
+      "pending": 0,
+      "images": 0,
+      "bytes": 0,
+      "allocated": 6,
+      "freed": 6,
+      "closed": true,
+      "failed": false,
+      "quarantined": false
+    },
+    "kernel_check_exit": 0,
+    "full_boundary_equal": true,
+    "controller_retired_benchmark": true,
+    "live_resource_handoff": null
+  },
+  "interpretation": "This completes one selected paced fixed16/sized16/sized8 acceptance matrix on current equipment. The reported process maxima and CPU/wall times are descriptive measurements of these serial sessions.",
+  "limits": [
+    "SIZED combines output-aware sizing, deferred allocation and retired-only DONTNEED; this is not a sizing-only effect or a causal speedup/repeatability estimate.",
+    "Pool count is explicitly configured and source-qualified, not an actual kernel ioctl-registration count. No registration-byte or incremental pinned-memory observation is added.",
+    "1801 Xv requests/ACKs include the existing preroll and are not a unique source-picture or physical-scanout census. No new independent source-pixel or broad endurance claim.",
+    "Original natural Source900 failures remain unchanged; this paced own-Player route does not repair or replace them.",
+    "Native-planar, broader codec/output/format-change and PM acceptance remain open. BCM70012 remains unavailable/NOT_RUN in the current-equipment scope.",
+    "No new allocator, pool-count setting, default promotion, public ABI change, external product change or replacement stable-release artifact."
+  ],
+  "source_scope": "Actual source revisions are named in this record. Later evidence/docs and integration commits explicitly reuse unchanged tested component contents; no fresh physical run is attributed to a port."
+}

@@ -95,15 +95,16 @@ struct chd_h264_range_picture {
 	unsigned int first_mb, pps_id, frame_num, idr_pic_id;
 	unsigned int pic_order_cnt_lsb;
 	int delta_pic_order_cnt_bottom;
+	int delta_pic_order_cnt[2];
 	bool idr, reference;
 };
 
-/* Bounded multi-slice scope: progressive 8-bit420, POC0/2, ordinary
+/* Bounded multi-slice scope: progressive 8-bit420, POC0/1/2, ordinary
  * ordered I/P/B slices, one group and no redundant picture. ITU-T H.264
  * 7.4.1.2.4 picture-boundary fields reduce here to PPS, frame_num, IDR/id and
- * reference zero/nonzero, plus POC0 LSB and conditional signed bottom delta.
+ * reference zero/nonzero, plus POC0 LSB/bottom delta or conditional POC1 deltas.
  * These are equality keys within one AU, not an absolute POC/DPB calculation.
- * POC1 and fields remain UNKNOWN for multi-slice.
+ * Fields remain UNKNOWN for multi-slice.
  */
 static inline bool chd_h264_range_picture_prefix(const struct chd_h264_range_state *s,
 	const unsigned char *nal, unsigned int bytes, struct chd_h264_range_picture *out)
@@ -121,7 +122,7 @@ static inline bool chd_h264_range_picture_prefix(const struct chd_h264_range_sta
 	    !s->pps[p.pps_id].valid || !s->pps[p.pps_id].picture_qualified ||
 	    !s->sps[s->pps[p.pps_id].sps_id].valid) return false;
 	sps = &s->sps[s->pps[p.pps_id].sps_id].value;
-	if (!sps->frame_mbs_only || (sps->poc_type != 0 && sps->poc_type != 2) ||
+	if (!sps->frame_mbs_only || sps->poc_type > 2 ||
 	    sps->frame_num_bits < 4 || sps->frame_num_bits > 16 ||
 	    !sps->pic_size_in_map_units || p.first_mb >= sps->pic_size_in_map_units)
 		return false;
@@ -136,6 +137,10 @@ static inline bool chd_h264_range_picture_prefix(const struct chd_h264_range_sta
 		p.pic_order_cnt_lsb = chd_h264_range_get(&b, sps->poc_lsb_bits);
 		if (s->pps[p.pps_id].bottom_field_poc_present)
 			p.delta_pic_order_cnt_bottom = chd_h264_range_se(&b);
+	} else if (sps->poc_type == 1 && !sps->delta_pic_order_always_zero) {
+		p.delta_pic_order_cnt[0] = chd_h264_range_se(&b);
+		if (s->pps[p.pps_id].bottom_field_poc_present)
+			p.delta_pic_order_cnt[1] = chd_h264_range_se(&b);
 	}
 	if (b.failed) return false;
 	*out = p; return true;
@@ -148,7 +153,9 @@ static inline bool chd_h264_range_same_picture(const struct chd_h264_range_pictu
 	       a->idr == b->idr && a->idr_pic_id == b->idr_pic_id &&
 	       a->reference == b->reference &&
 	       a->pic_order_cnt_lsb == b->pic_order_cnt_lsb &&
-	       a->delta_pic_order_cnt_bottom == b->delta_pic_order_cnt_bottom;
+	       a->delta_pic_order_cnt_bottom == b->delta_pic_order_cnt_bottom &&
+	       a->delta_pic_order_cnt[0] == b->delta_pic_order_cnt[0] &&
+	       a->delta_pic_order_cnt[1] == b->delta_pic_order_cnt[1];
 }
 /* Sequential Annex-B scan; zero padding is framing, not SPS/PPS EBSP. */
 static inline unsigned int chd_h264_range_start(const unsigned char *data,
@@ -242,7 +249,7 @@ static inline void chd_h264_observe_range(struct chd_h264_range_state *s,
 		pos = next;
 	}
 	/* Preserve the existing single-first-slice observation. Additional slices
-	 * require independently qualified, matching progressive POC2 identities.
+	 * require qualified, matching progressive picture-header identities.
 	 */
 	if (!ambiguous && slices) *out = observed;
 }
