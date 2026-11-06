@@ -11,7 +11,7 @@ work stays open. Start with the dated sections for [fresh colour captures](#fres
 [full-range/transition checks](#full-range-and-same-size-transitions--2026-11-02)
 and [multi-slice/actual-B checks](#progressive-multi-slice-and-actual-b-checks--2026-11-02).
 The [current POC1 scope](#poc1-source-variants-and-native-output-limit--2026-11-06)
-distinguishes the retained native failure from the next bounded input.
+distinguishes the retained native failure from the newly qualified bounded input.
 Old module identities and promotion/NOT RUN statements below describe those
 revisions; current companion scope belongs to
 [native runtime acceptance](../../../NATIVE-RUNTIME-ACCEPTANCE.md).
@@ -47,8 +47,18 @@ python3 -B tests/native-poc1-multislice-fixture.py --frames 900 --slices 2 \
 ```
 
 Its distinct `poc1-both-equal-field-poc-slices2-*` filenames and manifest
-`equal_field_poc` flags prevent replacing the original inputs. Fresh software
-and strict full/limited native900 qualification of this variant are pending.
+`equal_field_poc` flags prevent replacing the original inputs. The
+[native25 receipt](native-poc1-equal900-20261106.json) records fresh software and
+strict native full/limited900 qualification at source `0e85243c370f`: both cases
+return all900 originals with exact independent YUYV bytes and sourcePTS, one
+real LAST followed by EPIPE, and correct CAPTURE range despite contradictory
+OUTPUT hints. The retained b94/native23 probe is explicitly reused after
+unchanged source/UAPI checks; no native25 probe rebuild is claimed. Existing
+literal-old-header POC1 association FAIL and fixed O0/O2/affected checks retain
+their original source scope. Kernel checks pass, max50C, and normal restoration
+returns the full matched official1.3/source24a/module20 cohort and original
+module inventory. These unpaced video-only cases qualify bounded experimental
+picture association; they do not establish application performance or A/V.
 Frame-only coding is not temporal-progressive proof, so this work does not
 relax UNKNOWN, field, interlaced, encrypted or ownership guards. Broader POC1
 output semantics, B/DPB variants and endurance remain open; the original #538

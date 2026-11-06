@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "status": "PASS_SCOPED_ACTUAL_ENGLISH_ORCA_SETTINGS_SYNTHESIS",
+  "owning_issues": [
+    400
+  ],
+  "source_revision": "a9c4019c572dadca48f7fb50aeb34006df8fd97e",
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+  "result": "orca-en-09/result.json",
+  "raw_evidence": [
+    "orca-en-09/orca-ssip-0-sent.bin",
+    "orca-en-09/orca-ssip-0-received.bin",
+    "orca-en-09/orca-ssip-0-timing.json",
+    "orca-en-09/speech.s16le",
+    "orca-en-09/orca-debug.log"
+  ],
+  "product_providers": [
+    {
+      "path": "/home/mache/.cache/crystalhd-remaining-qualification-20261106/scripts/crystalhd-settings.py",
+      "sha256": "50dea02b2b406d73828f9e6841604465d2c9b0170267086ed0a8f30c62543851"
+    },
+    {
+      "path": "/home/mache/.cache/crystalhd-remaining-qualification-20261106/scripts/crystalhd-config.py",
+      "sha256": "cf9167a071d6ce33849143bb3cf800ce4114ba55a99339fae4203b987b176e5c"
+    }
+  ],
+  "runtime_scope": "Unmodified current own settings/configuration code with system Orca, Speech Dispatcher and espeak-ng; owned Xvfb, bus and Pulse null sink. PulseAudio/tools are unmodified distribution packages1:17.0+dfsg1-2ubuntu4 extracted privately, not installed as a replacement service.",
+  "private_pulse_provenance": "pulse-tools-provenance.json",
+  "test_helper": {
+    "original": "/home/mache/crystalhd/tests/crystalhd-settings-atspi.test.py",
+    "actual_copy": "crystalhd-settings-atspi-spoken-child.py",
+    "only_change": "GUI test-child watchdog45s ->240s",
+    "provenance": "orca-spoken-child-variant.json",
+    "scope": "Explicit project-owned test instrumentation. The original helper, IPC and UI/configuration product providers are unchanged. Speech-completion waits do not waive product deadlines or modify external applications."
+  },
+  "method": "Real XTEST keyboard edits and owned-GUI AT-SPI focus-away/return events; actual Orca SSIP SPEAK bodies and BEGIN/END notifications, plus independently recorded nonzero synthesized PCM. Key echoes and canceled speech do not qualify a field presentation. Each return starts after the prior speech queue finishes and22050Hz monoS16LE recording advances through11024 silent bytes (approximately250ms).",
+  "field": "Card width value",
+  "language": {
+    "requested": "en",
+    "actual_SSIP_language": "en-None",
+    "qualified_scope": "English speech synthesis, without physical listening or intelligibility assessment"
+  },
+  "phases": [
+    {
+      "name": "valid",
+      "typed_value": "128",
+      "GUI_error": "",
+      "completed_field_SPEAK_ids": [
+        15,
+        16
+      ],
+      "own_PCM_byte_range": [
+        1510826,
+        1707744
+      ],
+      "nonzero_samples": 67099
+    },
+    {
+      "name": "invalid",
+      "typed_value": "127",
+      "GUI_error_and_spoken_error": "Enter 0 for native width, or an even number from 128 to 1918.",
+      "completed_field_SPEAK_ids": [
+        26,
+        27,
+        28
+      ],
+      "own_PCM_byte_range": [
+        2722746,
+        3211784
+      ],
+      "nonzero_samples": 186422
+    },
+    {
+      "name": "corrected",
+      "typed_value": "128",
+      "GUI_error": "",
+      "prior_error_absent_from_corrected_presentation": true,
+      "completed_field_SPEAK_ids": [
+        37,
+        38
+      ],
+      "own_PCM_byte_range": [
+        4199890,
+        4398698
+      ],
+      "nonzero_samples": 66861
+    }
+  ],
+  "observed_in_each_phase": {
+    "field_label_and_value_completed": true,
+    "accepted_field_utterances_HAVE_BEGIN_and_END_without_CANCEL": true,
+    "real_owned_focus_away_and_return": true,
+    "fresh_nonzero_own_PCM_after_silent_boundary": true
+  },
+  "retirement": {
+    "GUI_closed_and_workers_retired": true,
+    "private_configuration_created": false,
+    "owned_services_and_descendants_retired": true,
+    "relay_retired": true,
+    "errors": [],
+    "survivors": [],
+    "handoff_required": false
+  },
+  "retained_history": "Original setup/harness attempts01..08 and their failures remain unchanged. Case09 qualifies the named current UI interaction; it does not prove a product bug was fixed by harness repairs.",
+  "limits": [
+    "Synthesized PCM and completed SSIP utterances do not establish physical audibility or intelligibility.",
+    "Korean catalog/UI/AT-SPI checks retain their separate scope; no Korean spoken-synthesis result is supplied here.",
+    "Other specifically named frontend adapters and broader desktop/accessibility acceptance remain with #400. This bounded result does not close the umbrella issue or create a new release gate.",
+    "No external product edit, UI product fix, default promotion or stable-release qualification."
+  ],
+  "source_scope": "Later documentation/integration commits reuse the unchanged named product providers. No fresh execution is attributed to a later port.",
+  "external_product_edits": false,
+  "product_bugfix_claim": false,
+  "release_claim": false,
+  "integration_scope": "Actual named source/component evidence is reused unchanged at the later integration port; no new physical run or stable-release qualification is claimed."
+}
