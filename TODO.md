@@ -64,7 +64,7 @@ Keep the existing defensive conversion and VPP regression coverage.
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [stopped-retirement fix and fresh FIFO900](tests/fixtures/issue513/stopped-retirement-20261106.json) complete 900 original decodes/1,800 rendered buffers with no observed QoS loss, natural EOS, real Pulse clock and zero final resources. The original FIFO900 stale public6/0 failure is preserved; actual pool/callback controls distinguish and fix the telemetry lifetime error. A separate latest900 run also has no drops/replacements, so no congestion benefit is demonstrated. FIFO remains default; broader formats, controls, interruption and endurance stay open. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [EndPicture-body diagnostic](tests/fixtures/issue477/endpicture-body900-20261106.json), source `1dc7671` / temporary module25, returns 886/899 originals from two 900-packet plays: strict Source900 remains FAIL, while every admitted original completes its fields/releases/public materialization. Body p95 is about 3.18/3.33ms; the first bodies take 233.85/222.74ms without ReceiveOne children. Existing traces bound 233.040/222.229ms before first SubmitBind; individual firmware setup/start and capture registration remain untimed. The early device lease is already implemented. This is diagnostic attribution, not causal performance evidence. The earlier `5bc5d7b` two-NONREF case and original failures remain separate below. Broader pixels, cadence, GPU return, lifetime/endurance and matched benefit stay open. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [bootstrap setup observation](tests/fixtures/issue477/bootstrap-setup900-20261106.json), latest source `567158a` / temporary module25, separates first-body OPEN/START/CAPTURE costs. Capture cost is concentrated in 16 retained RX registrations (80.72/70.49ms); final START_RX_CAP takes 0.085/0.079ms. Many buffer ranges become resident during registration, but pin/SG/DMA costs remain unseparated and no causal fix is demonstrated. Separate two900 cases return 897/898 and 898/898 originals: all strict Source900 failures remain, with all four audits and full official20 restoration passing. The early device lease and finite wait0 repairs are already implemented. Broader pixels, cadence, GPU return, lifetime/endurance and matched benefit stay open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538) | [Bounded POC1 association](tests/fixtures/issue538/native-poc1-equal900-20261106.json) is integrated experimentally through [#677](https://github.com/ahnhy1324/crystalhd/pull/677): equal-field-POC full/limited cases each return 900 originals with exact pixels, source PTS, range and EOS. Original unequal-field-POC native failures remain a documented UNKNOWN_SRC/BOTTOM_FIRST limit. Broader syntax, DPB/B/fields, crop/chroma, GPU return and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | The [paced fixed16/sized16/sized8 matrix](tests/fixtures/issue470/paced900-20261106.json) is complete. The new [fixed/SIZED resolution-transition comparison](tests/fixtures/issue470/resolution-transition900-20261106.json) completes 900 originals across three geometry epochs per arm, with matching whole ordered pixel/metadata hashes and EOS. This exercises conservative fallback across stream changes, not reduced-buffer in-place resizing or a performance gain. Earlier natural Source900 failures remain. Native-planar scheduling is complete for current equipment: BCM70015 capture routes expose packed output, VA/DIL planar images are host conversions, and BCM70012 planar hardware is unavailable/NOT_RUN. The [output-mode contract](linux_lib/libcrystalhd/libcrystalhd_int_if.cpp) and existing rejection/fallback coverage remain; no planar hardware pass is claimed. Broader codec/other format changes and PM stay open. Keep fixed defaults, fallback and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | [Actual English Orca interaction](tests/fixtures/issue400/orca-spoken-20261106.json) qualifies valid → invalid → corrected keyboard edits, completed field/value/error speech, fresh synthesized PCM and clean retirement. This does not qualify physical listening or Korean speech. Named frontend adapters and broader desktop/accessibility scopes remain open; existing catalog/UI/AT-SPI and original harness failures retain their scopes. |
@@ -80,23 +80,44 @@ Keep the existing defensive conversion and VPP regression coverage.
 
 ### Source 900 investigation and remaining real-time boundary
 
-The latest [source `1dc7671` EndPicture-body diagnostic](tests/fixtures/issue477/endpicture-body900-20261106.json)
-uses temporary module25 and records **886/899 originals from two 900-packet
-plays**. Both strict Source900 metrics remain FAIL. Every admitted original
-completes its genuine fields, releases and public materialization; this does
-not account for every earlier omitted picture or establish a performance gain.
+The latest [bootstrap setup observation](tests/fixtures/issue477/bootstrap-setup900-20261106.json)
+uses maintained source `567158a` and the reviewed temporary module25. Two
+separate diagnostic cases return **897/898** and **898/898** originals from
+900-packet plays. Every strict Source900 failure is retained. All admitted
+originals complete their genuine fields, releases and public materialization;
+the four scoped audits pass. Each case normally restores the complete matched
+official1.3/source24a/module20 installation and original module inventory.
 
-EndPicture body wall-time p95 is about **3.18/3.33ms**. Its first bodies take
-**233.85/222.74ms**, and neither contains a ReceiveOne child. These observations
-separate the body from mutex admission, but do not identify a causal delay fix.
-Existing trace timestamps place **233.040/222.229ms before first SubmitBind**,
-leaving only 0.810/0.509ms afterward. Individual firmware OPEN/START and capture
-registration calls are not separately timed; that is the remaining bootstrap
-boundary. The early device-lease work is already implemented (`9daded6`);
-do not recreate it as a new warmup fix. The full matching official1.3/module20 baseline is restored.
+In the first case, all seven public setup calls lie uniquely inside the first
+EndPicture body on the same PID/TID:
+
+| Public call | First play wall time | Reopen wall time | Observed scope |
+| --- | ---: | ---: | --- |
+| DtsOpenDecoder | 96.27ms | 95.35ms | Thread CPU below 0.8ms; internal firmware calls remain unseparated. |
+| DtsStartDecoder | 53.95ms | 53.95ms | Thread CPU below 0.6ms; no fixed polling delay is inferred. |
+| DtsStartCapture | 77.14ms | 83.17ms | Thread CPU 74.98/82.13ms; examined separately below. |
+
+The second case localizes capture cost to **16 retained RX registrations**:
+their summed ioctl times are **80.72/70.49ms**, while the final START_RX_CAP
+ioctl takes only **0.085/0.079ms**. Many per-buffer page ranges are nonresident
+before registration and all are resident afterward. These are residency
+observations, not proof of private writable backing or separate GUP, SG and
+DMA timings. The source path performs one writable long-term pin and DMA map
+per buffer; no repeated full RX payload clear/copy was found. Default O2
+allocation compiles to legal `calloc`, which does not guarantee resident pages.
+
+This identifies the expensive phase, not a demonstrated own-code fault,
+source-loss correction or matched speedup. Do not ship speculative prefaulting
+or merely move identical work earlier and call it a fix. A further startup
+experiment must distinguish page pin from SG/DMA/descriptor work before
+choosing a correction. The early device lease (`9daded6`), retained mapping
+reuse (#669) and finite wait0 repair (#666) are already implemented.
+
+The earlier [EndPicture-body 886/899 failures](tests/fixtures/issue477/endpicture-body900-20261106.json)
+and the separate `5bc5d7b` NONREF attribution retain their original scopes.
 Broader source clocks/cadence, pixels/chroma, GPU-return/lifetime/endurance,
-original filter-EOF and matched-benefit work remain open under the existing
-accepted-loss policy.
+original filter-EOF and matched benefit remain open under the existing
+accepted-loss policy. These strict research failures add no new release gate.
 
 <details>
 <summary>Prior source 5bc5d7b NAL attribution and separate natural-play failures</summary>
