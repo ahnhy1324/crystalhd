@@ -159,7 +159,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential autoconf gettext gcc-multilib g++-multilib qemu-user \
-            linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libxcb-shm0-dev libxcb-xv0-dev libxcb1-dev libegl-dev libgles-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
@@ -169,6 +168,25 @@ jobs:
             libva-dev libdrm-dev libgbm-dev \
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             nodejs node-ws
+
+      - name: Install available packaged kernel headers
+        shell: bash
+        run: |
+          # Ubuntu24 twice hit linux-headers-generic's unavailable
+          # linux-headers-6.8.0-149-generic dependency. Keep the meta's GA
+          # series, selecting a concrete ABI from the current apt indexes.
+          header_series=$(apt-cache depends linux-headers-generic | \
+            sed -nE 's/^[[:space:]]*Depends: <?linux-headers-([0-9]+[.][0-9]+[.][0-9]+)-[0-9]+-generic>?$/\1/p' | \
+            sort -u)
+          test -n "$header_series"
+          [[ "$header_series" != *$'\n'* ]]
+          packaged_headers=$(apt-cache search --names-only \
+            '^linux-headers-[0-9][0-9.]*-[0-9][0-9]*-generic$' | \
+            awk -v prefix="linux-headers-${header_series}-" \
+              'index($1,prefix)==1 && substr($1,length(prefix)+1) ~ /^[0-9]+-generic$/ {print $1}' | \
+            sort -V | tail -n 1)
+          test -n "$packaged_headers"
+          sudo apt-get install -y "$packaged_headers"
 
       - name: Install native GTK crash capture for Ubuntu24
         if: matrix.os == 'ubuntu-24.04'
