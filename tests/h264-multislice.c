@@ -249,7 +249,7 @@ int main(void)
 	config(); add(idr0, sizeof(idr0)); add(idr1, sizeof(idr1));
 	chd_h264_observe_range(&state, au, bytes, &b); CHECK(b.associated);
 	for (n = 0; n < 2; n++) {
-		if (n == 0) state.sps[0].value.poc_type = 1;
+		if (n == 0) state.sps[0].value.poc_type = 3;
 		else { state.sps[0].value.poc_type = 2; state.sps[0].value.frame_mbs_only = false; }
 		pair(); chd_h264_observe_range(&state, au, bytes, &b); CHECK(!b.associated);
 		bytes = 0; add(idr0, sizeof(idr0));
