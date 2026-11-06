@@ -25,7 +25,7 @@ struct chd_h264_sps_range {
 	 * Geometry is never used for allocation by this reader.
 	 */
 	unsigned int frame_num_bits, poc_type, poc_lsb_bits, pic_size_in_map_units;
-	bool frame_mbs_only;
+	bool frame_mbs_only, delta_pic_order_always_zero;
 };
 struct chd_h264_range_bits {
 	const unsigned char *nal;
@@ -138,7 +138,7 @@ static inline enum chd_h264_range_status chd_h264_read_sps_range(
 		if (value > 12) return CHD_H264_RANGE_INVALID;
 		out.poc_lsb_bits = value + 4;
 	} else if (value == 1) {
-		chd_h264_range_get(&b, 1);
+		out.delta_pic_order_always_zero = chd_h264_range_get(&b, 1) != 0;
 		chd_h264_range_se(&b); chd_h264_range_se(&b);
 		value = chd_h264_range_ue(&b);
 		if (value > 255) return CHD_H264_RANGE_INVALID;
