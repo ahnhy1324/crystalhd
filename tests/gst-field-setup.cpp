@@ -580,18 +580,186 @@ static void handoff_exchanges() {
     }
     puts("PASS15 owned handoff controls; shared response budget, safe preflight rejection and fatal uncertain mutation");
 }
+enum ConstructionMode : unsigned {
+    construction_success,construction_geometry_late,construction_geometry_missing,
+    construction_create_late,construction_create_missing,construction_create_error,
+    construction_atom_late,construction_standalone_success,construction_reparent_late,
+    construction_reparent_missing,construction_reparent_error,construction_modes
+};
+struct ConstructionPeer : GeometryPeer {unsigned extra_bytes=0;};
+static gpointer construction_peer(gpointer user) {
+    auto *p=static_cast<ConstructionPeer *>(user);const int fd=p->fd;
+    const auto end=g_get_monotonic_time()+3500*1000;
+    auto finish=[&]()->gpointer {
+        while(g_get_monotonic_time()<end) {
+            pollfd event{fd,POLLIN,0};const auto ready=poll(&event,1,20);
+            if(ready<0&&errno==EINTR)continue;
+            if(ready>0) {
+                unsigned char bytes[64];const auto count=recv(fd,bytes,sizeof(bytes),0);
+                if(count==0){p->eof=true;break;}
+                if(count<0)break;
+                p->extra_bytes+=unsigned(count);
+            }
+        }
+        p->expired=!p->eof;close(fd);return nullptr;
+    };
+    if(!plain_peer_setup(fd,end,p->caller))return finish();
+    auto request=[&](auto &value,uint8_t opcode,unsigned payload=0) {
+        if(!setup_read(fd,&value,sizeof(value),end)||value.major_opcode!=opcode||
+           value.length!=(sizeof(value)+payload)/4)return false;
+        ++p->requests;return true;
+    };
+    auto wire_reply=[&](const auto &value) {
+        std::array<unsigned char,32> wire{};memcpy(wire.data(),&value,sizeof(value));
+        return send(fd,wire.data(),wire.size(),MSG_NOSIGNAL)==ssize_t(wire.size());
+    };
+    auto checked_create=[&](xcb_window_t window,xcb_window_t parent,unsigned delay,bool missing,bool error) {
+        xcb_create_window_request_t create{};
+        if(!request(create,XCB_CREATE_WINDOW)||create.wid!=window||create.parent!=parent||
+           create.value_mask||create.width!=400||create.height!=240)return false;
+        const auto checked_sequence=uint16_t(p->requests);
+        xcb_get_input_focus_request_t focus{};
+        if(!request(focus,XCB_GET_INPUT_FOCUS))return false;
+        p->valid=true;
+        if(missing)return false;
+        if(delay)g_usleep(delay);
+        if(error) {
+            xcb_generic_error_t failure{};failure.error_code=XCB_WINDOW;
+            failure.sequence=checked_sequence;failure.major_code=XCB_CREATE_WINDOW;failure.resource_id=parent;
+            if(send(fd,&failure,32,MSG_NOSIGNAL)!=32)return false;
+        }
+        xcb_get_input_focus_reply_t reply{};reply.response_type=1;
+        reply.sequence=uint16_t(p->requests);reply.focus=parent;
+        return wire_reply(reply);
+    };
+    const bool standalone=p->mode>=construction_standalone_success;
+    if(!standalone) {
+        xcb_get_geometry_request_t geometry{};
+        if(!request(geometry,XCB_GET_GEOMETRY)||geometry.drawable!=geometry_parent)return finish();
+        p->valid=true;
+        if(p->mode==construction_geometry_missing)return finish();
+        if(p->mode==construction_geometry_late)g_usleep(1200000);
+        if(p->mode==construction_create_late)g_usleep(600000);
+        if(p->mode==construction_success||p->mode==construction_atom_late)g_usleep(200000);
+        xcb_get_geometry_reply_t reply{};reply.response_type=1;reply.sequence=1;
+        reply.depth=24;reply.root=handoff_root;reply.width=400;reply.height=240;
+        if(!wire_reply(reply))return finish();
+    }
+    if(!checked_create(geometry_child,geometry_parent,
+            p->mode==construction_create_late?600000:
+            p->mode==construction_success||p->mode==construction_atom_late||standalone?200000:0,
+            p->mode==construction_create_missing,p->mode==construction_create_error))return finish();
+    if(p->mode==construction_create_error)return finish();
+    xcb_intern_atom_request_t atom{};unsigned char name[16]{};
+    if(!request(atom,XCB_INTERN_ATOM,12)||atom.only_if_exists||atom.name_len!=12||
+       !setup_read(fd,name,12,end)||memcmp(name,"WM_PROTOCOLS",12))return finish();
+    if(p->mode==construction_atom_late)g_usleep(800000);
+    else if(p->mode==construction_success)g_usleep(200000);
+    xcb_intern_atom_reply_t atom_reply{};atom_reply.response_type=1;
+    atom_reply.sequence=uint16_t(p->requests);atom_reply.atom=0x70ef;
+    if(!wire_reply(atom_reply))return finish();
+    if(standalone) {
+        if(!checked_create(handoff_target,handoff_root,
+                p->mode==construction_reparent_late?400000:200000,false,false))return finish();
+        xcb_reparent_window_request_t reparent{};
+        if(!request(reparent,XCB_REPARENT_WINDOW)||reparent.window!=geometry_child||
+           reparent.parent!=handoff_target||reparent.x||reparent.y)return finish();
+        const auto sequence=uint16_t(p->requests);
+        xcb_get_input_focus_request_t focus{};
+        if(!request(focus,XCB_GET_INPUT_FOCUS))return finish();
+        if(p->mode==construction_reparent_missing)return finish();
+        if(p->mode==construction_reparent_late)g_usleep(600000);
+        else g_usleep(200000);
+        if(p->mode==construction_reparent_error) {
+            xcb_generic_error_t error{};error.error_code=XCB_WINDOW;error.sequence=sequence;
+            error.major_code=XCB_REPARENT_WINDOW;error.resource_id=handoff_target;
+            if(send(fd,&error,32,MSG_NOSIGNAL)!=32)return finish();
+        }
+        xcb_get_input_focus_reply_t reply{};reply.response_type=1;
+        reply.sequence=uint16_t(p->requests);reply.focus=handoff_target;
+        if(!wire_reply(reply))return finish();
+    }
+    return finish();
+}
+static void construction_exchanges() {
+    for(unsigned mode=0;mode<construction_modes;++mode) {
+        const auto before=setup_fd_count();int sockets[2]{};
+        need(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets),"owned constructor socket pair");
+        ConstructionPeer peer{};peer.fd=sockets[1];peer.mode=mode;
+        auto *server=g_thread_new("owned-field-construction",construction_peer,&peer);
+        auto *connection=xcb_connect_to_fd(sockets[0],nullptr);
+        const bool connected=!xcb_connection_has_error(connection);bool accepted=false;
+        const bool standalone=mode>=construction_standalone_success;
+        std::string failure;discarded_sequences=0;const auto start=g_get_monotonic_time();
+        try {
+            need(connected,"constructor peer connection");
+            crystalhd_field::ConstructionReplies replies{connection};
+            if(!standalone) {
+                auto geometry=replies.geometry(geometry_parent);
+                need(bool(geometry)&&geometry->width==400&&geometry->height==240,"constructor geometry values");
+            }
+            auto create=[&](xcb_window_t window,xcb_window_t parent) {
+                auto error=replies.check(xcb_create_window_checked(connection,XCB_COPY_FROM_PARENT,
+                    window,parent,0,0,400,240,0,XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                    XCB_COPY_FROM_PARENT,0,nullptr),"XCB construction create");
+                need(!error,"constructor checked create error");
+            };
+            create(geometry_child,geometry_parent);
+            need(replies.atom("WM_PROTOCOLS")==0x70ef,"constructor atom value");
+            if(standalone) {
+                create(handoff_target,handoff_root);
+                auto error=replies.check(xcb_reparent_window_checked(connection,
+                    geometry_child,handoff_target,0,0),"XCB construction reparent");
+                need(!error,"constructor checked reparent error");
+            }
+            accepted=true;
+        }catch(const std::exception &e){failure=e.what();}
+        const auto elapsed=g_get_monotonic_time()-start;const auto discarded=discarded_sequences.load();
+        xcb_disconnect(connection);g_thread_join(server);
+        printf("field construction mode=%u accepted=%u elapsed_us=%lld requests=%u extra=%u discarded=%llu failure=%s\n",
+            mode,accepted,static_cast<long long>(elapsed),peer.requests,peer.extra_bytes,
+            static_cast<unsigned long long>(discarded),failure.c_str());
+        need(connected&&peer.valid&&peer.caller==getpid()&&peer.eof&&!peer.expired&&
+            setup_fd_count()==before,"constructor peer/PID/thread/FD retirement");
+        const bool success=mode==construction_success||mode==construction_standalone_success;
+        auto exact_error=[&](const char *label) {
+            const auto prefix=std::string(label)+" errno=";
+            return failure.rfind(prefix,0)==0&&failure.size()>prefix.size()&&
+                std::all_of(failure.begin()+prefix.size(),failure.end(),[](char c){return c>='0'&&c<='9';});
+        };
+        if(success)need(accepted&&failure.empty()&&!discarded,"constructor replies before shared deadline succeed");
+        else {
+            need(!accepted,"constructor must reject late or missing replies within its shared response deadline");
+            if(mode==construction_create_error)need(exact_error("constructor checked create error"),"constructor create error preserved");
+            else if(mode==construction_reparent_error)need(exact_error("constructor checked reparent error"),"constructor reparent error preserved");
+            else need(failure.find("timed out")!=std::string::npos&&elapsed>=800000,"constructor response deadline exercised");
+        }
+        need(elapsed<2*G_USEC_PER_SEC,"constructor shared reply wait budget");
+        const unsigned requests=standalone?7:
+            mode==construction_geometry_late||mode==construction_geometry_missing?1:
+            mode==construction_create_late||mode==construction_create_missing||mode==construction_create_error?3:4;
+        need(peer.requests==requests,"exact constructor requests and completion barriers");
+        const uint64_t expected_discard=mode==construction_geometry_late||mode==construction_geometry_missing?2:
+            mode==construction_create_late||mode==construction_create_missing?12:
+            mode==construction_atom_late?16:
+            mode==construction_reparent_late||mode==construction_reparent_missing?192:0;
+        need(discarded==expected_discard,"constructor retires only its uncompleted response sequences");
+        need(peer.extra_bytes==0,"constructor has no unaccounted reply synchronization");
+    }
+    puts("PASS11 owned constructor response controls; shared geometry/create/atom/reparent budget, no EGL/device access");
+}
 int main(int argc,char **argv) {
  try {
-    setvbuf(stdout,nullptr,_IOLBF,0);need(argc==1||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11]");
-    exchanges();
-    atom_exchanges();
-    geometry_exchanges();
-    resize_exchanges();
-    handoff_exchanges();
-    if(argc==2) {
+    setvbuf(stdout,nullptr,_IOLBF,0);const bool construction_only=argc==2&&!strcmp(argv[1],"--construction");
+    need(argc==1||construction_only||(argc==2&&!strcmp(argv[1],"--x11")),"usage: field-setup-test [--x11|--construction]");
+    if(!construction_only) {
+        exchanges();atom_exchanges();geometry_exchanges();resize_exchanges();handoff_exchanges();
+    }
+    construction_exchanges();
+    if(argc==2&&!construction_only) {
         need(temperature()<75000,"thermal admission");
         {crystalhd_field::Window window(0);need(window.context!=EGL_NO_CONTEXT,"valid display after setup timeouts");}
-        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry,6 resize and15 handoff controls in same process");
+        puts("PASS valid actual X11/EGL Window after6 setup,7 atom,9 geometry,6 resize,15 handoff and11 constructor controls in same process");
     }
  }catch(const std::exception &e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
 }
