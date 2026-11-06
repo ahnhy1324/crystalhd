@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "date": "2026-11-06",
+  "installed_baseline": {
+    "release": "1.3.0",
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "module": "3.10.20",
+    "scope": "Full installed cohort and selected/loaded module preserved; normal current own plugins are isolated private builds."
+  },
+  "source_scope": "Ready integration ports the exact reviewed field/Xv product+test contents from the named actual task commits onto maintained8de. Evidence is explicitly reused for unchanged contents; no new physical run is attributed to a later port/docs commit.",
+  "external_product_edits": false,
+  "release_claim": false,
+  "artifact_root": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106",
+  "status": "PASS_STOPPED_XV_RETIREMENT_TELEMETRY_FIX_AND_FRESH_FIFO900",
+  "owning_issues": [
+    513,
+    510
+  ],
+  "actual_product_source": "a9c4019c572dadca48f7fb50aeb34006df8fd97e",
+  "problem": "sink_stop froze last_stats before later genuine pool memory callbacks. Public stopped statistics could retain6images/freed0 after live counters reached0/freed6.",
+  "change": "A small thread-safe refcounted statistics receipt retains no element/context, publishes real post-close updates and isolates stopped generations. No pool wait, forced free, counter suppression, active getter or scheduling change.",
+  "old_controls": {
+    "status": "EXPECTED_FAIL_BOTH_MODES_AFTER_REAL_RETIREMENT",
+    "status_receipt": "xv-stopped-stats-old-qualified-status.json",
+    "scope": "Real6-image pools, application-held buffer readability, true final zero resources and six frees; only public stale statistics fail. Original initial test assumed immediate five-free intermediate deactivation; correction preserves actual held accounting and exact final zero.",
+    "original_FIFO900_failure": "xv-fifo900-01/result.json",
+    "original_failure_preserved": true
+  },
+  "fixed_controls": {
+    "device_free_affected_checks": "PASS",
+    "real_X11_six_controls": "PASS",
+    "ASan_UBSan_LSan_six_real_controls": "PASS",
+    "independent_source_review": "PASS",
+    "status_receipts": [
+      "xv-stopped-stats-fixed-status.json",
+      "xv-stopped-stats-sanitized-status.json"
+    ],
+    "scope": "FIFO/latest real pool retirement plus older-generation late callbacks and element-finalization-before-held-buffer-return; exact context/SHM/FD cleanup."
+  },
+  "fresh_FIFO900": {
+    "source_originals": 900,
+    "sink_buffers": 1800,
+    "rendered_buffers": 1800,
+    "whole_buffer_QoS_drops": 0,
+    "natural_EOS": true,
+    "same_Pulse_audio_clock": true,
+    "xv_resources": {
+      "pending": 0,
+      "images": 0,
+      "bytes": 0,
+      "allocated": 6,
+      "freed": 6,
+      "closed": true,
+      "failed": false,
+      "quarantined": false
+    },
+    "kernel_exit": 0,
+    "full_boundary_equal": true,
+    "live_resource_handoff": null,
+    "maximum_temperature_mC": 53000,
+    "result": "xv-fifo900-fixed-01/result.json"
+  },
+  "separate_unchanged_latest": {
+    "actual_source": "bab87924c0cb17363615a25a2d3748d8682b7763",
+    "source_originals": 900,
+    "rendered_buffers": 1800,
+    "whole_buffer_QoS_drops": 0,
+    "latest_replacements": 0,
+    "result": "xv-latest900-01/result.json",
+    "scope": "Earlier same-input original-mode comparison: no replacement mechanism exercised and no benefit demonstrated; not a fresh post-telemetry-fix900 run."
+  },
+  "limits": [
+    "Zero observed route-specific QoS loss is a bounded900-original result, not a stable loss rate, unique physical display census or matched performance gain.",
+    "Native720/packed-FHD supported paths and lifetime/source/pixel criteria retain their existing scopes; FIFO remains default and latest remains invocation-only.",
+    "Unqualified nativePOC1/module23/RX investigation remains on separate preserved research/task branches and is not included as a ready feature in this change."
+  ]
+}
