@@ -54,6 +54,19 @@ The output is a private diagnostic backend, never an installed replacement.
 `vaapi-endpicture-body-cost.cpp` exercises four actual EndPicture rejection
 paths with existing CPU DIL mocks; the literal no-hook source must fail its
 four-body-scope assertion. Hardware and original900 results remain separate.
+The existing `check-replay-disposition-observer` runs that binary using a
+fresh temporary prefix and validates its complete four-event publication;
+failed controls retain their files with the existing path-runner policy.
+
+For the negative, retain `git show 8e3862e:filters/vaapi/crystalhd_drv_video.cpp`
+as an explicitly named file outside the worktree. Build the same isolated
+`replay-disposition-observer/endpicture-body-test` target with
+`ENDPICTURE_TEST_BACKEND=/absolute/path/to/that/file.cpp` and preserve its build
+command. The test-only backend include selects those literal old contents;
+the current observer and harness stay unchanged. Keep the fixed executable
+separately, and rebuild the current default target after the negative rather
+than reusing its binary for a later check. No original source or receipt is
+rewritten.
 
 Exact stage strings: `receive_one`, `dil_acquire`, `dil_release`, `process_output`,
 `first_field_stage`, `second_field_process`, `field_convert`,

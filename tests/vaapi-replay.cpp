@@ -11,7 +11,12 @@ static void TestTerminalPromotionTurn(std::unique_lock<std::mutex> &lock);
 #define CRYSTALHD_VAAPI_TEST_TERMINAL_PROMOTION_TURN(driver, lock) \
   TestTerminalPromotionTurn(lock)
 #define CRYSTALHD_VAAPI_TEST_LIBRARY_CAPABILITIES 1
-#include "../filters/vaapi/crystalhd_drv_video.cpp"
+// A source-qualified CPU negative may select a retained literal backend.
+// Production and every ordinary test use the maintained source by default.
+#ifndef CRYSTALHD_VAAPI_TEST_REPLAY_BACKEND_SOURCE
+#define CRYSTALHD_VAAPI_TEST_REPLAY_BACKEND_SOURCE "../filters/vaapi/crystalhd_drv_video.cpp"
+#endif
+#include CRYSTALHD_VAAPI_TEST_REPLAY_BACKEND_SOURCE
 #include <cstdlib>
 #include <exception>
 #include <new>

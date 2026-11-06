@@ -202,13 +202,7 @@ replay-disposition-observer/collector-test: $(ROOTDIR)/tests/vaapi-replay-dispos
 	mkdir -p replay-disposition-observer
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o replay-disposition-observer/collector-test -pthread $(CRYSTALHD_CPU_FLAGS)
 
-replay-disposition-observer/path-test: $(ROOTDIR)/tests/vaapi-replay-disposition-path.cpp \
-		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
-		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
-		$(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
-	mkdir -p replay-disposition-observer
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(ROOTDIR)/tests/vaapi-replay-disposition-path.cpp \
-		-o replay-disposition-observer/path-test \
+REPLAY_DISPOSITION_PATH_LIBS = \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
 		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read,--wrap=__read_chk \
 		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
@@ -223,16 +217,36 @@ replay-disposition-observer/path-test: $(ROOTDIR)/tests/vaapi-replay-disposition
 		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \
 		-Wl,--wrap=DtsReleaseOutputBuffs $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
+replay-disposition-observer/path-test: $(ROOTDIR)/tests/vaapi-replay-disposition-path.cpp \
+		$(ROOTDIR)/tests/vaapi-replay-disposition-observer.h \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS) | payload-observer-library
+	mkdir -p replay-disposition-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(REPLAY_DISPOSITION_PATH_LIBS)
+
+# Optional literal source override is for the isolated old-no-hook CPU control.
+# Its retained input and command must be recorded; it cannot qualify playback.
+ENDPICTURE_TEST_BACKEND ?= $(abspath crystalhd_drv_video.cpp)
+replay-disposition-observer/endpicture-body-test: $(ROOTDIR)/tests/vaapi-endpicture-body-cost.cpp \
+		$(ROOTDIR)/tests/vaapi-maintained-cost-observer.h \
+		$(ROOTDIR)/tests/vaapi-replay.cpp $(ENDPICTURE_TEST_BACKEND) $(BACKEND_HEADERS) | payload-observer-library
+	mkdir -p replay-disposition-observer
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I$(CURDIR) \
+		-DCRYSTALHD_VAAPI_TEST_REPLAY_BACKEND_SOURCE='"$(ENDPICTURE_TEST_BACKEND)"' \
+		$< -o $@ $(REPLAY_DISPOSITION_PATH_LIBS)
+
 check-replay-disposition-observer: replay-disposition-observer/collector-test replay-disposition-observer/path-test \
+		replay-disposition-observer/endpicture-body-test \
 		$(ROOTDIR)/tests/vaapi-replay-disposition-paths.py \
 		$(ROOTDIR)/tests/vaapi-replay-disposition-reader.test.py
 	replay-disposition-observer/collector-test
 	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-replay-disposition-reader.test.py
 	$(PYTHON3) -B $(ROOTDIR)/tests/vaapi-replay-disposition-paths.py replay-disposition-observer/path-test \
+		--endpicture-body-binary replay-disposition-observer/endpicture-body-test \
 		--library-directory $(abspath $(ROOTDIR)/linux_lib/libcrystalhd)
 
 replay-disposition-observer-clean:
-	rm -f replay-disposition-observer/crystalhd_drv_video.so replay-disposition-observer/collector-test replay-disposition-observer/path-test
+	rm -f replay-disposition-observer/crystalhd_drv_video.so replay-disposition-observer/collector-test replay-disposition-observer/path-test replay-disposition-observer/endpicture-body-test
 	@rmdir replay-disposition-observer 2>/dev/null || true
 clean: replay-disposition-observer-clean
 

@@ -32,6 +32,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=Path)
     parser.add_argument('--library-directory', type=Path, required=True)
+    parser.add_argument('--endpicture-body-binary', type=Path)
     parser.add_argument('--output-root', type=Path)
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
@@ -123,8 +124,38 @@ def main():
             (output / 'analysis.json').write_text(json.dumps(result, indent=2)+'\n')
             results[case] = dict(owner_pid=child.pid, expected_negative=not positive,
                                  ledger_status=census['plays']['1']['ledger_status'])
+        if args.endpicture_body_binary:
+            output = root / 'endpicture-body'
+            output.mkdir()
+            env = dict(os.environ, CRYSTALHD_CONFIG_DISABLE='1', CRYSTALHD_VAAPI_TRACE='1',
+                CRYSTALHD_TEST_MAINTAINED_COST='v2',
+                CRYSTALHD_TEST_MAINTAINED_COST_PREFIX=str(output / 'maintained-cost'),
+                CRYSTALHD_TEST_REPLAY_DISPOSITION='', LD_LIBRARY_PATH=str(library))
+            with (output / 'stdout.log').open('xb') as stdout, (output / 'native.log').open('xb') as stderr:
+                child = subprocess.Popen([str(args.endpicture_body_binary.resolve(strict=True))],
+                                         env=env, stdout=stdout, stderr=stderr)
+                try:
+                    code = child.wait(timeout=45)
+                except subprocess.TimeoutExpired:
+                    # This binary includes the same CPU-only DIL/device mocks.
+                    child.kill()
+                    child.wait()
+                    raise
+            require(code == 0, 'EndPicture body assertions failed; see ' + str(output))
+            cost = load('endpicture_cost_reader', directory / 'vaapi-maintained-cost-reader.py')
+            path = output / ('maintained-cost-' + str(child.pid) + '.jsonl')
+            validated = cost.read_report(path, expected_pid=child.pid)
+            require(validated['header']['schema'] == cost.ENDPICTURE_SCHEMA and
+                    len(validated['events']) == 4 and
+                    all(e['stage'] == 'end_picture_body' for e in validated['events']) and
+                    [e['detail'] for e in validated['events']] == [0, 1, 0, 2],
+                    'EndPicture body publication lost actual four-path coverage')
+            results['endpicture-body'] = dict(owner_pid=child.pid, cpu_scaffold_status='PASS',
+                                             actual_body_scopes=4)
         (root / 'summary.json').write_text(json.dumps(results, indent=2)+'\n')
         print('OWN replay production-path controls: 2 positive / 2 expected rejection ledgers PASS')
+        if args.endpicture_body_binary:
+            print('EndPicture body: four actual early-return scopes and complete publication PASS')
     except BaseException:
         print('Replay path failure artifacts retained at ' + str(root), flush=True)
         raise
