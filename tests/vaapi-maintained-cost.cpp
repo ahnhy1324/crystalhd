@@ -72,7 +72,7 @@ static uint64_t Number(const std::string &text,const char *name) {
 static void VerifyPublished(const std::string &prefix,pid_t pid,bool complete,unsigned expected) {
   const std::string path=prefix+"-"+std::to_string(pid)+".jsonl";
   const std::string report=Read(path);
-  Require(report.find("\"schema\":\"crystalhd-maintained-cost-v2\"")!=std::string::npos,"versioned report");
+  Require(report.find(std::string("\"schema\":\"")+cost::kSchema+"\"")!=std::string::npos,"versioned report");
   Require(Number(report,"capacity")==64,"reduced CPU-control capacity is explicit");
   Require(report.find("\"fork_policy\":\"PARENT_PID_ONLY_CHILD_FORWARD_ONLY\"")!=std::string::npos,"explicit process scope");
   Require(report.find(complete?"\"complete\":true":"\"complete\":false")!=std::string::npos,"honest completion gate");

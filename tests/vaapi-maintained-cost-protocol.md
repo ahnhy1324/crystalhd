@@ -27,6 +27,34 @@ other incomplete gate still rejects either version. Historical v1 captures and
 their original PASS/FAIL dispositions are unchanged; extra diagnostic capacity
 does not qualify source900, product performance or release acceptance.
 
+## Optional EndPicture body diagnostic
+
+An explicitly private build with
+`-DCRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST=1` and the existing maintained-cost
+observer publishes `crystalhd-maintained-cost-endpicture-v1`. It keeps the same
+v2 activation marker, 131072-event bound and all existing parent/clock/identity
+and completeness rules, adding exactly one stage: `end_picture_body`.
+Normal builds and ordinary v1/v2 reports keep their original contracts.
+
+The body starts after the existing EndPicture API-admission hook records mutex
+acquisition and ends when that call returns, before its lock is destroyed.
+Its wall interval can include subsequently unlocked VPP waits; it is not a
+claim of continuous lock ownership. Its thread CPU remains independent.
+Existing nested receive/conversion spans stay actual same-thread children.
+`detail` is 0 before context classification, 1 for a decode context and 2 for VPP.
+The context binding is resolved after admission, not a source-picture binding.
+API return status stays null; early returns are timed without inventing results.
+Wall-minus-CPU remains mixed off-CPU/measurement time and negative subtraction
+remains unavailable; it does not isolate contention or a lateness cause.
+
+This variant reuses the unchanged stock controller, packet/replay observers and
+API-admission records. Build its existing separate `replay-disposition-observer`
+target with the explicit macro; preserve the command/build log as provenance.
+The output is a private diagnostic backend, never an installed replacement.
+`vaapi-endpicture-body-cost.cpp` exercises four actual EndPicture rejection
+paths with existing CPU DIL mocks; the literal no-hook source must fail its
+four-body-scope assertion. Hardware and original900 results remain separate.
+
 Exact stage strings: `receive_one`, `dil_acquire`, `dil_release`, `process_output`,
 `first_field_stage`, `second_field_process`, `field_convert`,
 `field_convert_pixels`, `canvas_compose`, `canvas_pixels`, `cpu_access_begin`,

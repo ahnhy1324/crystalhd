@@ -20,7 +20,9 @@ P = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(P)
 require, integer = P.require, P.integer
 SCHEMA = "crystalhd-maintained-cost-v2"
-SCHEMA_CAPACITIES = {"crystalhd-maintained-cost-v1": 65536, SCHEMA: 131072}
+ENDPICTURE_SCHEMA = "crystalhd-maintained-cost-endpicture-v1"
+SCHEMA_CAPACITIES = {"crystalhd-maintained-cost-v1": 65536, SCHEMA: 131072,
+                     ENDPICTURE_SCHEMA: 131072}
 FORK_POLICY = "PARENT_PID_ONLY_CHILD_FORWARD_ONLY"
 SCOPE = "OWN_MAINTAINED_BACKEND_ONLY"
 CLOCKS = dict(wall="CLOCK_MONOTONIC", cpu="CLOCK_THREAD_CPUTIME_ID")
@@ -29,6 +31,8 @@ STAGES = ("receive_one", "dil_acquire", "dil_release", "process_output", "first_
           "canvas_pixels", "cpu_access_begin", "cpu_access_end", "decoded_cpu_begin", "decoded_cpu_end",
           "i915_domain", "public_copy", "public_copy_pixels", "public_promote", "direct_public",
           "sync_admission", "sync_body", "diagnostic_capture")
+SCHEMA_STAGES = {schema: STAGES + (("end_picture_body",) if schema == ENDPICTURE_SCHEMA else ())
+                 for schema in SCHEMA_CAPACITIES}
 FLAGS = dict(compact=1, decoded_public=2, direct_public=4, selected_capture=8,
              i915_wc=16, read=32, write=64)
 BINDING = ("driver_instance", "context", "generation", "token", "decode_identity",
@@ -89,6 +93,7 @@ def check_document(rows, expected_pid, report_path=None):
             all(type(r) is dict for r in rows), "invalid report document")
     header, footer = rows[0], rows[-1]
     maximum_capacity = schema_capacity(header)
+    stages = SCHEMA_STAGES[header["schema"]]
     require(len(rows) <= maximum_capacity + 2, "schema record capacity exceeded")
     require(header.get("type") == "header" and
             footer.get("type") == "footer", "unsupported schema or missing header/footer")
@@ -97,9 +102,9 @@ def check_document(rows, expected_pid, report_path=None):
     require(header.get("fork_policy") == FORK_POLICY and header.get("scope") == SCOPE,
             "foreign process/backend observation scope")
     require(header.get("clock_names") == CLOCKS, "unqualified paired clock identities")
-    require(type(header.get("stages")) is list and len(header["stages"]) == len(STAGES) and
+    require(type(header.get("stages")) is list and len(header["stages"]) == len(stages) and
             all(type(stage) is str for stage in header["stages"]) and
-            set(header["stages"]) == set(STAGES), "stage contract is missing, duplicated or foreign")
+            set(header["stages"]) == set(stages), "stage contract is missing, duplicated or foreign")
     require(type(header.get("flags")) is dict and set(header["flags"]) == set(FLAGS) and
             all(type(header["flags"][k]) is int and header["flags"][k] == v for k,v in FLAGS.items()),
             "flag contract differs")
@@ -119,7 +124,7 @@ def check_document(rows, expected_pid, report_path=None):
         require(type(e.get("pid")) is int and e["pid"] == expected_pid, "foreign event PID")
         tid = integer(e.get("tid"), "entry TID", 1, (1 << 31)-1)
         require(type(e.get("end_tid")) is int and e["end_tid"] == tid, "scope ended on another thread")
-        require(e.get("stage") in STAGES, "foreign timing stage")
+        require(e.get("stage") in stages, "foreign timing stage")
         parent = integer(e.get("parent_id"), "parent ID", 0, seq)
         if parent:
             require(parent in by_id, "parent scope is absent or later than child")
@@ -147,6 +152,8 @@ def check_document(rows, expected_pid, report_path=None):
                     "invalid field mask requires an actually recorded false conversion result")
         elif e["stage"] in ("field_convert_pixels", "diagnostic_capture"):
             require(1 <= detail <= 3, "invalid field/capture detail")
+        elif e["stage"] == "end_picture_body":
+            require(detail <= 2, "invalid EndPicture context-kind detail")
         else:
             require(detail == 0, "undocumented nonzero stage detail")
         require("result" in e and (e["result"] is None or type(e["result"]) is int),
@@ -218,9 +225,9 @@ def distribution(values):
                 p95_ns=values[math.ceil(count*.95)-1],max_ns=values[-1],sum_ns=sum(values))
 
 
-def stage_summary(events, durations):
+def stage_summary(events, durations, stages=STAGES):
     result = {}
-    for stage in STAGES:
+    for stage in stages:
         selected = [e for e in events if e["stage"] == stage]
         metrics = {metric:distribution([durations[e["id"]][metric] for e in selected]) for metric in
                    ("inclusive_wall_ns","inclusive_cpu_ns","exclusive_wall_ns","exclusive_cpu_ns")}
@@ -271,7 +278,8 @@ def census_case(validated, intervals):
             begin_ns=begin,end_ns=end,events=len(selected),
             stage_population_scope="All contained observed contexts/TIDs in this window; not a unique primary-decoder selection",
             source_contexts=[dict(zip(BINDING[:3],identity)) for identity in context_ids],
-            stages=stage_summary(selected,validated["durations"]),
+            stages=stage_summary(selected,validated["durations"],
+                                 SCHEMA_STAGES[validated["header"]["schema"]]),
             binding_kind_event_counts=dict(collections.Counter(e["binding_kind"] for e in selected)),
             full_binding_candidates=[dict(binding=dict(zip(BINDING,identity)),
                 stage_event_counts=dict(collections.Counter(e["stage"] for e in records)),
@@ -291,7 +299,8 @@ def audit_report(path, expected_pid):
         valid=read_report(path,expected_pid)
         return dict(status="PASS_SCOPED_MAINTAINED_COST_OBSERVATION",header=valid["header"],footer=valid["footer"],
                     process_scope=valid["process_scope"],events=len(valid["events"]),
-                    stages=stage_summary(valid["events"],valid["durations"]),limits=LIMITS,
+                    stages=stage_summary(valid["events"],valid["durations"],
+                                         SCHEMA_STAGES[valid["header"]["schema"]]),limits=LIMITS,
                     source_clock_comparison=False,native_completion_claim=False)
     except (ValueError,OSError,KeyError,TypeError,OverflowError,UnicodeError) as exc:
         return dict(status="FAIL",reason=str(exc),limits=LIMITS)

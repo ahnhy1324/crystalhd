@@ -11648,12 +11648,25 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   CH_API_ADMISSION_SCOPE(api_admission, EndPicture, context_id);
   std::unique_lock<std::mutex> lock(driver->mutex);
   CH_API_ADMISSION_ACQUIRED(api_admission, driver->trace.session());
+  // Explicit private diagnostic: admission ends at lock acquisition. Record
+  // the remaining call separately, including early returns and unlocked waits.
+#if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST) && \
+    defined(CRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST)
+  CH_COST_SCOPE(cost_end_body, EndPictureBody, CostDriver(driver));
+#endif
   auto decode = driver->contexts.find(context_id);
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->second->admission_in_progress)
     return VA_STATUS_ERROR_HW_BUSY;
   const std::shared_ptr<DecodeContext> decode_context = decode->second;
+#if defined(CRYSTALHD_VAAPI_TEST_MAINTAINED_COST) && \
+    defined(CRYSTALHD_VAAPI_TEST_ENDPICTURE_BODY_COST)
+  CH_COST_BIND(cost_end_body, CostDecode(driver, decode_context.get()), Admission);
+  // 0 = context not classified, 1 = decode, 2 = VPP. Context identity describes
+  // this API target; it is not a source-picture or decoder admission claim.
+  cost_end_body.Detail(decode_context->video_process ? 2 : 1);
+#endif
   if (decode_context->video_process) {
     const VASurfaceID request_target = decode_context->target;
     const auto request_owner = decode_context->transaction_target.lock();

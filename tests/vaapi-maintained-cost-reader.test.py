@@ -30,7 +30,7 @@ def event(number,parent,stage,wall,cpu,kind="full",phase="inherited",detail=0,fl
 
 def document(events, schema=R.SCHEMA):
     return [dict(type="header",schema=schema,pid=PID,fork_policy=R.FORK_POLICY,scope=R.SCOPE,
-        capacity=R.SCHEMA_CAPACITIES[schema],clock_names=dict(R.CLOCKS),stages=list(R.STAGES),flags=dict(R.FLAGS)),
+        capacity=R.SCHEMA_CAPACITIES[schema],clock_names=dict(R.CLOCKS),stages=list(R.SCHEMA_STAGES[schema]),flags=dict(R.FLAGS)),
         *events,dict(type="footer",events=len(events),attempted_events=len(events),dropped=0,inflight=0,
                     unpublished=0,clock_failures=0,lifecycle_failures=0,fork_seen=False,complete=True)]
 
@@ -61,6 +61,38 @@ class MaintainedCostReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,pattern):self.valid()
 
     def census(self):return R.census_case(self.valid(),{"1":dict(begin_ns=1,end_ns=1100)})["plays"]["1"]
+
+    def test_endpicture_body_variant_keeps_real_children_and_context_kind(self):
+        self.rows=document([
+            event(1,0,"end_picture_body",(100,1000),(10,610),"decode","resolved_after_admission",detail=1),
+            event(2,1,"receive_one",(300,800),(120,500),"decode","entry")],R.ENDPICTURE_SCHEMA)
+        valid=self.valid()
+        self.assertEqual(valid["durations"][1]["direct_child_ids"],[2])
+        self.assertEqual(valid["durations"][1]["exclusive_wall_ns"],400)
+        census=self.census()["stages"]["end_picture_body"]
+        self.assertEqual(census["detail_event_counts"],{"1":1})
+        self.assertEqual(census["raw_result_event_counts"],{"null":1})
+
+    def test_endpicture_body_variant_rejects_cross_schema_or_invalid_detail(self):
+        self.rows=document([event(1,0,"end_picture_body",(100,200),(10,50),"decode","entry",detail=1)])
+        self.invalid("foreign timing stage")
+        self.rows=document(self.rows[1:-1],R.ENDPICTURE_SCHEMA)
+        self.rows[1]["detail"]=3
+        self.invalid("context-kind detail")
+        self.rows[1]["detail"]=2
+        self.valid()
+        self.rows[0]["schema"]=R.SCHEMA
+        self.invalid("stage contract")
+
+    def test_endpicture_early_rejection_retains_unknown_binding_and_wall_cpu(self):
+        row=event(1,0,"end_picture_body",(100,120),(10,50),"decode","entry",detail=0)
+        row.update(binding_kind="none",**{key:0 for key in R.BINDING})
+        self.rows=document([row],R.ENDPICTURE_SCHEMA)
+        duration=self.valid()["durations"][1]
+        self.assertEqual(duration["inclusive_wall_ns"],20)
+        self.assertEqual(duration["inclusive_cpu_ns"],40)
+        self.assertIsNone(duration["inclusive_offcpu_ns"])
+        self.assertFalse(self.valid()["native_completion_claim"])
 
     def test_actual_parent_tree_subtracts_only_direct_children(self):
         valid=self.valid();d=valid["durations"]
