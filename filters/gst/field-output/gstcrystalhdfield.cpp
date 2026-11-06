@@ -115,10 +115,12 @@ struct ReplyRequest {
         }
     }
 };
-static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *name) {
+static xcb_atom_t intern_atom_bounded(xcb_connection_t *connection,const char *name,gint64 *shared_end=nullptr) {
     ReplyRequest request(connection,xcb_intern_atom(connection,0,strlen(name),name).sequence);
     need(xcb_flush(connection)>0,"XCB atom request flush failed");
-    return request.wait<xcb_intern_atom_reply_t>(g_get_monotonic_time()+G_USEC_PER_SEC,"XCB atom")->atom;
+    const auto end=g_get_monotonic_time()+G_USEC_PER_SEC;
+    if(shared_end&&!*shared_end)*shared_end=end;
+    return request.wait<xcb_intern_atom_reply_t>(shared_end?*shared_end:end,"XCB atom")->atom;
 }
 struct WindowGeometry {unsigned width,height,child_width,child_height;gint64 deadline;};
 static WindowGeometry current_geometry_bounded(xcb_connection_t *connection,xcb_window_t parent,xcb_window_t child) {
@@ -158,10 +160,14 @@ static void resize_current_bounded(xcb_connection_t *connection,xcb_window_t par
 // A later reply proves that a checked request was processed. Error retrieval
 // then consumes an already queued result without an implicit network sync.
 static XcbReply<xcb_generic_error_t> checked_request_bounded(xcb_connection_t *connection,
-        xcb_void_cookie_t cookie,gint64 end,const char *operation) {
+        xcb_void_cookie_t cookie,gint64 end,const char *operation,gint64 *shared_end=nullptr) {
     ReplyRequest checked(connection,cookie.sequence);
     ReplyRequest barrier(connection,xcb_get_input_focus(connection).sequence);
     need(xcb_flush(connection)>0,"XCB checked completion flush failed");
+    if(shared_end) {
+        if(!*shared_end)*shared_end=g_get_monotonic_time()+G_USEC_PER_SEC;
+        end=*shared_end;
+    }
     auto completed=barrier.wait<xcb_get_input_focus_reply_t>(end,operation);
     need(!xcb_connection_has_error(connection),"XCB checked completion connection failed");
     XcbReply<xcb_generic_error_t> error(xcb_request_check(connection,cookie),&free);
@@ -170,6 +176,28 @@ static XcbReply<xcb_generic_error_t> checked_request_bounded(xcb_connection_t *c
     need(g_get_monotonic_time()<end,(std::string(operation)+" reply timed out").c_str());
     return error;
 }
+// All constructor response waits share one deadline after the first request
+// flush. XID refill, congested writes and EGL execution remain outside this
+// response-wait bound. Existing handoff deadlines are passed independently.
+struct ConstructionReplies {
+    xcb_connection_t *connection;
+    gint64 deadline=0;
+    void flush() {
+        need(xcb_flush(connection)>0,"XCB construction request flush failed");
+        if(!deadline)deadline=g_get_monotonic_time()+G_USEC_PER_SEC;
+    }
+    XcbReply<xcb_get_geometry_reply_t> geometry(xcb_window_t parent) {
+        ReplyRequest request(connection,xcb_get_geometry(connection,parent).sequence);
+        flush();
+        return request.wait<xcb_get_geometry_reply_t>(deadline,"XCB construction geometry");
+    }
+    XcbReply<xcb_generic_error_t> check(xcb_void_cookie_t cookie,const char *operation) {
+        return checked_request_bounded(connection,cookie,deadline,operation,&deadline);
+    }
+    xcb_atom_t atom(const char *name) {
+        return intern_atom_bounded(connection,name,&deadline);
+    }
+};
 static bool inside_bounded(xcb_connection_t *connection,xcb_window_t target,
         xcb_window_t ancestor,xcb_window_t root,gint64 end) {
     // Reject a descendant before destroying its old owned wrapper. All hops
@@ -274,9 +302,6 @@ struct Window {
     unsigned width=640,height=360;
     bool embedded=false;
 
-    xcb_atom_t atom(const char *name) {
-        return intern_atom_bounded(connection,name);
-    }
     Window(guintptr handle) {
       try {
         int screen_index=0;
@@ -308,9 +333,10 @@ struct Window {
             for(auto visuals=xcb_depth_visuals_iterator(depths.data);visuals.rem;xcb_visualtype_next(&visuals))
                 if(visuals.data->visual_id==xcb_visualid_t(visual))depth=depths.data->depth;
         need(depth,"XCB EGL visual depth");
+        ConstructionReplies replies{connection};
         if(embedded) {
-            auto *geometry=xcb_get_geometry_reply(connection,xcb_get_geometry(connection,parent),nullptr);
-            need(geometry,"embedding window geometry");width=geometry->width;height=geometry->height;free(geometry);
+            auto geometry=replies.geometry(parent);
+            need(bool(geometry),"embedding window geometry");width=geometry->width;height=geometry->height;
             uint32_t mask=XCB_EVENT_MASK_STRUCTURE_NOTIFY;
             xcb_change_window_attributes(connection,parent,XCB_CW_EVENT_MASK,&mask);
         }
@@ -320,21 +346,21 @@ struct Window {
         uint32_t values[]={0,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_STRUCTURE_NOTIFY|XCB_EVENT_MASK_KEY_PRESS,colormap};
         auto made=xcb_create_window_checked(connection,depth,window,parent,0,0,width,height,0,
             XCB_WINDOW_CLASS_INPUT_OUTPUT,visual,XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK|XCB_CW_COLORMAP,values);
-        auto *error=xcb_request_check(connection,made);
-        if(error){free(error);need(false,"create EGL window");}
+        auto error=replies.check(made,"XCB construction create");
+        need(!error,"create EGL window");
         const char title[]="CrystalHD GPU field output (experimental)";
         const char klass[]="crystalhd-field\0CrystalHD\0";
         xcb_change_property(connection,XCB_PROP_MODE_REPLACE,window,XCB_ATOM_WM_NAME,XCB_ATOM_STRING,8,sizeof(title)-1,title);
         xcb_change_property(connection,XCB_PROP_MODE_REPLACE,window,XCB_ATOM_WM_CLASS,XCB_ATOM_STRING,8,sizeof(klass)-1,klass);
-        protocols=atom("WM_PROTOCOLS");delete_window=atom("WM_DELETE_WINDOW");
-        state=atom("_NET_WM_STATE");fullscreen=atom("_NET_WM_STATE_FULLSCREEN");
+        protocols=replies.atom("WM_PROTOCOLS");delete_window=replies.atom("WM_DELETE_WINDOW");
+        state=replies.atom("_NET_WM_STATE");fullscreen=replies.atom("_NET_WM_STATE_FULLSCREEN");
         xcb_change_property(connection,XCB_PROP_MODE_REPLACE,window,protocols,XCB_ATOM_ATOM,32,1,&delete_window);
         if(!embedded) {
             // Keep the EGL child out of the WM's client set. Otherwise a late
             // WM configure/unmanage can resize it after a live reparent.
-            standalone=make_standalone(screen->root);parent=standalone;
-            error=xcb_request_check(connection,xcb_reparent_window_checked(connection,window,parent,0,0));
-            if(error){free(error);need(false,"standalone video parent");}
+            standalone=make_standalone(screen->root,0,&replies);parent=standalone;
+            error=replies.check(xcb_reparent_window_checked(connection,window,parent,0,0),"XCB construction reparent");
+            need(!error,"standalone video parent");
         }
         xcb_map_window(connection,window);xcb_flush(connection);
         if(standalone){xcb_map_window(connection,standalone);xcb_flush(connection);}
@@ -362,14 +388,15 @@ struct Window {
         }
     }
     ~Window(){cleanup();}
-    xcb_window_t make_standalone(xcb_window_t root,gint64 end=0) {
+    xcb_window_t make_standalone(xcb_window_t root,gint64 end=0,ConstructionReplies *construction=nullptr) {
         auto id=xcb_generate_id(connection);
         uint32_t values[]={0,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_STRUCTURE_NOTIFY|XCB_EVENT_MASK_KEY_PRESS};
         const auto made=xcb_create_window_checked(connection,XCB_COPY_FROM_PARENT,
             id,root,0,0,width,height,0,XCB_WINDOW_CLASS_INPUT_OUTPUT,XCB_COPY_FROM_PARENT,
             XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK,values);
         auto error=end?checked_request_bounded(connection,made,end,"XCB handoff standalone"):
-            XcbReply<xcb_generic_error_t>(xcb_request_check(connection,made),&free);
+            construction?construction->check(made,"XCB construction standalone"):
+                XcbReply<xcb_generic_error_t>(xcb_request_check(connection,made),&free);
         need(!error,"standalone output window");
         const char title[]="CrystalHD GPU field output (experimental)";
         const char klass[]="crystalhd-field\0CrystalHD\0";
