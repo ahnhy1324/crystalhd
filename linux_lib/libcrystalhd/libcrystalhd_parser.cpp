@@ -722,6 +722,48 @@ BOOL DtsChkAVCSps(HANDLE /*hDevice*/, uint8_t *pBuffer, uint32_t ulSize)
 	return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_SPS);
 }
 
+/* With a four-byte length field, these legal header-only end NALs are
+ * indistinguishable from an Annex-B prefix followed by that byte.
+ * Keep converting them; the byte pattern alone does not establish Annex B.
+ * Preserve the legacy fallback for other headers, including existing clients
+ * that label a complete Annex-B SPS/IDR stream as AVC1.
+ */
+static bool DtsAVC1OneByteEndMarker(const DTS_LIB_CONTEXT *Ctx,
+	const uint8_t *data, uint32_t size)
+{
+	const uint32_t width = Ctx->VidParams.StartCodeSz;
+	return Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1 && data &&
+		width && width <= 4 && width < size &&
+		(data[width] == 0x0a || data[width] == 0x0b);
+}
+
+static bool DtsAVC1SelectsAnnexB(const DTS_LIB_CONTEXT *Ctx,
+	const uint8_t *data, uint32_t size)
+{
+	if (!Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn)
+		return true;
+	const uint32_t width = Ctx->VidParams.StartCodeSz;
+	if (!width || width > 4)
+		return false;
+	// A later fallback returns the whole original buffer, including preceding
+	// units. Determine that choice before the SPS detector returns early.
+	uint32_t position = 0;
+	while (width < size - position) {
+		uint32_t length = 0;
+		for (uint32_t i = 0; i < width; ++i)
+			length = (length << 8) | data[position + i];
+		if (length == 1 &&
+			!DtsAVC1OneByteEndMarker(Ctx, data + position, size - position))
+			return true;
+		// The converter consumes a partial payload in this call. Its body
+		// bytes are not more length fields and cannot select a later fallback.
+		if (length >= size || length > size - position - width)
+			break;
+		position += width + length;
+	}
+	return false;
+}
+
 
 /* DtsProcInput asks this before DtsAddStartCode converts AVC1 length-prefixed
  * NALs to Annex B. Checking those bytes with the Annex-B-only parser misses
@@ -737,16 +779,9 @@ static BOOL DtsAVC1HasNal(const DTS_LIB_CONTEXT *Ctx,
 		Ctx->PESConvParams.m_lStartCodeDataSize != 0)
 		return FALSE;
 
-	/* Match DtsAddH264SCode's format decision: conversion is disabled once
-	 * its configured length field reads 1 (the existing Annex-B marker).
-	 * Do not mistake a length such as 0x00000107 for a three-byte start code.
-	 */
-	uint32_t initialSize = 0;
-	if (lengthSize <= ulSize)
-		for (uint32_t i = 0; i < lengthSize; ++i)
-			initialSize = (initialSize << 8) | pBuffer[i];
-	const bool annexB = !Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn || initialSize == 1;
-	if (annexB)
+	/* Match the converter's fallback without interpreting an ordinary length
+	 * such as 0x00000107, or bytes inside its payload, as an Annex-B SPS. */
+	if (DtsAVC1SelectsAnnexB(Ctx, pBuffer, ulSize))
 		return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, wantedType);
 	uint32_t pos = 0;
 	while (pos < ulSize)
@@ -811,12 +846,24 @@ BC_STATUS DtsAddH264SCode(HANDLE hDevice, uint8_t **ppBuffer, uint32_t *pUlDataS
 
 	int sts;
 
-	if(Ctx->PESConvParams.lPendBufferSize < (*pUlDataSize*2))
+	uint64_t required = (uint64_t)*pUlDataSize * 2;
+	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1 &&
+		Ctx->VidParams.StartCodeSz == 1) {
+		// Each one-byte length + end-NAL header can expand from two bytes
+		// to five. The old 2*size bound is insufficient for marker batches.
+		const uint64_t expanded = (uint64_t)*pUlDataSize +
+			(uint64_t)(*pUlDataSize / 2) * 3;
+		if (expanded > required)
+			required = expanded;
+	}
+	if (required > UINT32_MAX)
+		return BC_STS_INSUFF_RES;
+	if(Ctx->PESConvParams.lPendBufferSize < required)
 	{
 		if (Ctx->PESConvParams.pStartcodePendBuff)
 			free(Ctx->PESConvParams.pStartcodePendBuff);
 
-		Ctx->PESConvParams.lPendBufferSize = *pUlDataSize * 2;
+		Ctx->PESConvParams.lPendBufferSize = (uint32_t)required;
 		if (Ctx->PESConvParams.lPendBufferSize < 1024)
 			Ctx->PESConvParams.lPendBufferSize = 1024;
 		// minimum 8 byte aligned since posix_memalign needs to have min of size of (void *) and on 64-bit this is 8 bytes
@@ -908,7 +955,8 @@ BC_STATUS DtsAddH264SCode(HANDLE hDevice, uint8_t **ppBuffer, uint32_t *pUlDataS
 				Ctx->PESConvParams.m_lStartCodeDataSize = 0;
 				return BC_STS_ERROR;
 			}
-			else if(Ctx->PESConvParams.m_lStartCodeDataSize == 1)
+			else if(Ctx->PESConvParams.m_lStartCodeDataSize == 1 &&
+				!DtsAVC1OneByteEndMarker(Ctx, pStart, lDataRemained))
 			{
 				//Could be Alreay a Start Code
 				Ctx->PESConvParams.m_lStartCodeDataSize = 0;
