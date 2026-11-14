@@ -1,0 +1,573 @@
+{
+  "schema": "crystalhd-centered-filter-coupling-v1",
+  "status": "BOUNDED_CPU_COUPLING_COMPLETED_NO_PROMOTION",
+  "date": "2026-11-15",
+  "owning_issues": [
+    477,
+    436
+  ],
+  "maintained_source": "1427d2de0825706e20137f16e17dcb42366bac97",
+  "published_stable_unchanged": "1.3.0/source24a5182b988b/module3.10.20",
+  "artifact_root": "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114",
+  "tool": "tools/research/centered-filter-coupling/README.md",
+  "full_byte_correctness900": {
+    "status": "PASS_SCOPED_COMBINED_CURRENT_OWN_AND_ORIGINAL_FILTER",
+    "actual_inputs": 900,
+    "actual_outputs": 1798,
+    "actual_same_canvas_overlap_writes": 0,
+    "forced_image_hold_control": false,
+    "cycle_wall": {
+      "count": 900,
+      "mean_ns": 30196829.26,
+      "p50_ns": 29773296,
+      "p95_ns": 32851942,
+      "max_ns": 50849292
+    },
+    "steady_cycle_wall": {
+      "count": 899,
+      "mean_ns": 30214217.879866518,
+      "p50_ns": 29776082,
+      "p95_ns": 32872686,
+      "max_ns": 50849292
+    },
+    "cycles_exceeding_nominal": 41,
+    "actual_input_release_lateness": {
+      "count": 900,
+      "mean_ns": 1529535.2255555557,
+      "p50_ns": 121118,
+      "p95_ns": 10500324,
+      "max_ns": 43546412
+    },
+    "actual_get_readiness_required_lead_ns_at_zero_advance": 96371399,
+    "conditional_required_total_lead_ns_at40ms_advance": 136371399,
+    "conditional_misses_at100_1ms_lead40ms_advance": 100,
+    "conditional_margin_ns": -36271399,
+    "selected_disjoint_stage_wall": {
+      "count": 900,
+      "mean_ns": 23311523.764444444,
+      "p50_ns": 22974485,
+      "p95_ns": 25343103,
+      "max_ns": 39763194
+    },
+    "uninstrumented_cycle_gap_wall": {
+      "count": 900,
+      "mean_ns": 6885305.495555555,
+      "p50_ns": 6777572,
+      "p95_ns": 7507232,
+      "max_ns": 11251629
+    },
+    "stage_metrics": {
+      "owned_stages/next_admission_with_fixture_overhead": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 87815.16555555556,
+          "p50_ns": 88701,
+          "p95_ns": 114335,
+          "max_ns": 446232
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 81309.95333333334,
+          "p50_ns": 82092,
+          "p95_ns": 108035,
+          "max_ns": 441168
+        }
+      },
+      "owned_stages/next_first_field": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 487319.1533333333,
+          "p50_ns": 482062,
+          "p95_ns": 526133,
+          "max_ns": 2970387
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 473970.3644444444,
+          "p50_ns": 474941,
+          "p95_ns": 517359,
+          "max_ns": 841312
+        }
+      },
+      "owned_stages/next_complement_field": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 539492.8633333333,
+          "p50_ns": 542756,
+          "p95_ns": 578656,
+          "max_ns": 2098457
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 525343.5511111111,
+          "p50_ns": 534769,
+          "p95_ns": 567914,
+          "max_ns": 1102765
+        }
+      },
+      "stages/derive_map": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 68982.67444444445,
+          "p50_ns": 63837,
+          "p95_ns": 109095,
+          "max_ns": 882407
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 59031.31888888889,
+          "p50_ns": 55315,
+          "p95_ns": 99076,
+          "max_ns": 125824
+        }
+      },
+      "stages/client_allocate": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 803800.2344444444,
+          "p50_ns": 788117,
+          "p95_ns": 884292,
+          "max_ns": 3786442
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 793628.4355555555,
+          "p50_ns": 783367,
+          "p95_ns": 857227,
+          "max_ns": 3780753
+        }
+      },
+      "stages/client_visible_copy": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 2132085.507777778,
+          "p50_ns": 2081415,
+          "p95_ns": 2420786,
+          "max_ns": 3975020
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 2115519.361111111,
+          "p50_ns": 2072533,
+          "p95_ns": 2369245,
+          "max_ns": 3970770
+        }
+      },
+      "stages/image_retire": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 271597.21444444446,
+          "p50_ns": 261285,
+          "p95_ns": 307103,
+          "max_ns": 671618
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 264187.1588888889,
+          "p50_ns": 255210,
+          "p95_ns": 300480,
+          "max_ns": 665980
+        }
+      },
+      "stages/filter_add_wrapper": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 16639.10777777778,
+          "p50_ns": 15575,
+          "p95_ns": 17600,
+          "max_ns": 111751
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 11646.996666666666,
+          "p50_ns": 10907,
+          "p95_ns": 12471,
+          "max_ns": 78243
+        }
+      },
+      "stages/filter_get0_wrapper": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 9608378.461111112,
+          "p50_ns": 9487581,
+          "p95_ns": 10607523,
+          "max_ns": 18006291
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 5124154.946666666,
+          "p50_ns": 5114339,
+          "p95_ns": 5576773,
+          "max_ns": 7771935
+        }
+      },
+      "stages/pixel_oracles": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 1778163.4822222223,
+          "p50_ns": 1748469,
+          "p95_ns": 1955556,
+          "max_ns": 5109983
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 1761857.61,
+          "p50_ns": 1740349,
+          "p95_ns": 1912996,
+          "max_ns": 2758852
+        }
+      },
+      "stages/filter_get1_wrapper": {
+        "wall": {
+          "count": 899,
+          "mean_ns": 7497214.304783092,
+          "p50_ns": 7373900,
+          "p95_ns": 8165437,
+          "max_ns": 12244177
+        },
+        "thread_cpu": {
+          "count": 899,
+          "mean_ns": 3916776.7842046716,
+          "p50_ns": 3924752,
+          "p95_ns": 4245714,
+          "max_ns": 4880423
+        }
+      },
+      "stages/filter_get2_wrapper": {
+        "wall": {
+          "count": 899,
+          "mean_ns": 28397.385984427143,
+          "p50_ns": 16902,
+          "p95_ns": 44980,
+          "max_ns": 2247155
+        },
+        "thread_cpu": {
+          "count": 899,
+          "mean_ns": 11979.439377085651,
+          "p50_ns": 10211,
+          "p95_ns": 19329,
+          "max_ns": 69790
+        }
+      }
+    },
+    "measured_process_cpu_ns": 35372490379,
+    "measured_trial_wall_ns": 30076096059,
+    "source_revision": "1427d2de0825706e20137f16e17dcb42366bac97",
+    "final_cow_live_bytes": 0,
+    "source_eof_injected": false,
+    "stock_or_release_qualification": false,
+    "limits": [
+      "Three synthetic packed-source patterns, repeated over unique900 timestamps; not900 distinct decoded originals.",
+      "Real current callbacks and original BWDIF execute together. No sum of separate historical timings.",
+      "OWN ordinary memcpy of visible1080 rows from coded1088 canvas; not original Kodi SSE-copy or its actual runtime schedule.",
+      "No DIL receive/release, decoder, DMA, GPU, natural field gap, renderer/media clock or other application workload.",
+      "Admission includes fixture validation. Producer full-byte checks and output-oracle comparisons lie in cycle gaps; input-oracle comparison has its own span. They change cache state and GET1 timing.",
+      "GET-wrapper intervals include bridge metadata validation. Readiness is actual wrapper return for this instrumented workload, not raw unwrapped API exit.",
+      "Process CPU includes actual filter helper threads and all within-trial checks; thread-CPU stage sums are not whole-process CPU.",
+      "Graph reference derives full outputs from independent scalar input bytes with same unchanged provider; not an independent deinterlacing implementation or normative decoder golden.",
+      "Positive held8 control forces actual overlap; ordinary900 result qualifies only OWN copy-and-release path, not original Kodi same-backing lifetime.",
+      "Virtual100.1ms lead/40ms advance is an inherited explicit comparison assumption, not measured Kodi buffer, scheduling guarantee or A/V proof.",
+      "No performance improvement or candidate promotion follows from this one trial. Original Source900 failures unchanged."
+    ]
+  },
+  "timing_observer_condition900": {
+    "status": "PASS_SCOPED_COMBINED_CURRENT_OWN_AND_ORIGINAL_FILTER",
+    "validation_mode": "TIMING_AFTER_SEPARATE_FULL_QUALIFICATION",
+    "measured_outputs_individually_full_pixel_checked": 0,
+    "actual_inputs": 900,
+    "actual_outputs": 1798,
+    "actual_same_canvas_overlap_writes": 0,
+    "forced_image_hold_control": false,
+    "cycle_wall": {
+      "count": 900,
+      "mean_ns": 24290484.93,
+      "p50_ns": 23921461,
+      "p95_ns": 26558893,
+      "max_ns": 48475430
+    },
+    "steady_cycle_wall": {
+      "count": 899,
+      "mean_ns": 24304129.46718576,
+      "p50_ns": 23921462,
+      "p95_ns": 26786234,
+      "max_ns": 48475430
+    },
+    "cycles_exceeding_nominal": 9,
+    "actual_input_release_lateness": {
+      "count": 900,
+      "mean_ns": 339544.1,
+      "p50_ns": 107226,
+      "p95_ns": 138399,
+      "max_ns": 38340108
+    },
+    "actual_get_readiness_required_lead_ns_at_zero_advance": 96711360,
+    "conditional_required_total_lead_ns_at40ms_advance": 136711360,
+    "conditional_misses_at100_1ms_lead40ms_advance": 19,
+    "conditional_margin_ns": -36611360,
+    "selected_disjoint_stage_wall": {
+      "count": 900,
+      "mean_ns": 22034632.36222222,
+      "p50_ns": 21699532,
+      "p95_ns": 24080290,
+      "max_ns": 43646172
+    },
+    "uninstrumented_cycle_gap_wall": {
+      "count": 900,
+      "mean_ns": 2255852.5677777776,
+      "p50_ns": 2223115,
+      "p95_ns": 2435300,
+      "max_ns": 4829258
+    },
+    "stage_metrics": {
+      "owned_stages/next_admission_with_fixture_overhead": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 87457.07666666666,
+          "p50_ns": 81857,
+          "p95_ns": 110842,
+          "max_ns": 452796
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 81357.66555555556,
+          "p50_ns": 75571,
+          "p95_ns": 104969,
+          "max_ns": 435598
+        }
+      },
+      "owned_stages/next_first_field": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 553120.8922222222,
+          "p50_ns": 544640,
+          "p95_ns": 581167,
+          "max_ns": 2873571
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 536903.5255555556,
+          "p50_ns": 537000,
+          "p95_ns": 572312,
+          "max_ns": 1044657
+        }
+      },
+      "owned_stages/next_complement_field": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 543273.7866666666,
+          "p50_ns": 546107,
+          "p95_ns": 591086,
+          "max_ns": 2228216
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 530708.5644444445,
+          "p50_ns": 537636,
+          "p95_ns": 579005,
+          "max_ns": 1096860
+        }
+      },
+      "stages/derive_map": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 68381.71333333333,
+          "p50_ns": 65094,
+          "p95_ns": 106092,
+          "max_ns": 135845
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 60601.04888888889,
+          "p50_ns": 57645,
+          "p95_ns": 96639,
+          "max_ns": 128470
+        }
+      },
+      "stages/client_allocate": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 808310.8655555556,
+          "p50_ns": 789162,
+          "p95_ns": 885336,
+          "max_ns": 3843976
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 797348.0377777778,
+          "p50_ns": 784152,
+          "p95_ns": 872939,
+          "max_ns": 3837611
+        }
+      },
+      "stages/client_visible_copy": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 2198588.9555555554,
+          "p50_ns": 2140283,
+          "p95_ns": 2408343,
+          "max_ns": 8017962
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 2172825.0855555558,
+          "p50_ns": 2130682,
+          "p95_ns": 2339985,
+          "max_ns": 3904820
+        }
+      },
+      "stages/image_retire": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 243270.80555555556,
+          "p50_ns": 234744,
+          "p95_ns": 277628,
+          "max_ns": 393498
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 237390.83111111113,
+          "p50_ns": 229334,
+          "p95_ns": 272159,
+          "max_ns": 361062
+        }
+      },
+      "stages/filter_add_wrapper": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 17953.484444444446,
+          "p50_ns": 16902,
+          "p95_ns": 20045,
+          "max_ns": 79831
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 13160.49,
+          "p50_ns": 12271,
+          "p95_ns": 15078,
+          "max_ns": 62971
+        }
+      },
+      "stages/filter_get0_wrapper": {
+        "wall": {
+          "count": 900,
+          "mean_ns": 9966816.477777777,
+          "p50_ns": 9824462,
+          "p95_ns": 10937909,
+          "max_ns": 20308111
+        },
+        "thread_cpu": {
+          "count": 900,
+          "mean_ns": 5404921.781111111,
+          "p50_ns": 5374519,
+          "p95_ns": 5919974,
+          "max_ns": 8489629
+        }
+      },
+      "stages/filter_get1_wrapper": {
+        "wall": {
+          "count": 899,
+          "mean_ns": 7544330.233592881,
+          "p50_ns": 7473462,
+          "p95_ns": 8094789,
+          "max_ns": 14159090
+        },
+        "thread_cpu": {
+          "count": 899,
+          "mean_ns": 4044352.5394883202,
+          "p50_ns": 4147054,
+          "p95_ns": 4314956,
+          "max_ns": 4880329
+        }
+      },
+      "stages/filter_get2_wrapper": {
+        "wall": {
+          "count": 899,
+          "mean_ns": 11523.463848720801,
+          "p50_ns": 11245,
+          "p95_ns": 12642,
+          "max_ns": 68586
+        },
+        "thread_cpu": {
+          "count": 899,
+          "mean_ns": 6920.4082313681865,
+          "p50_ns": 6662,
+          "p95_ns": 7619,
+          "max_ns": 52953
+        }
+      }
+    },
+    "measured_process_cpu_ns": 30416349547,
+    "measured_trial_wall_ns": 30071206638,
+    "source_revision": "1427d2de0825706e20137f16e17dcb42366bac97",
+    "final_cow_live_bytes": 0,
+    "source_eof_injected": false,
+    "stock_or_release_qualification": false,
+    "limits": [
+      "Three synthetic packed-source patterns, repeated over unique900 timestamps; not900 distinct decoded originals.",
+      "Real current callbacks and original BWDIF execute together. No sum of separate historical timings.",
+      "OWN ordinary memcpy of visible1080 rows from coded1088 canvas; not original Kodi SSE-copy or its actual runtime schedule.",
+      "No DIL receive/release, decoder, DMA, GPU, natural field gap, renderer/media clock or other application workload.",
+      "Timing mode excludes explicit full-canvas/client-input/filter-output byte oracles inside pacing. It retains fixture validation and deferred-Small untouched-storage copy/equality guards, so it is not pure product cost. Its900 measured inputs/1798outputs are NOT individually full-byte qualified; separate retained full900 correctness and mandatory pre-pacing qualification retain that scope.",
+      "GET-wrapper intervals include bridge metadata validation. Readiness is actual wrapper return for this instrumented workload, not raw unwrapped API exit.",
+      "Process CPU includes actual filter helper threads and all within-trial checks; thread-CPU stage sums are not whole-process CPU.",
+      "Graph reference derives full outputs from independent scalar input bytes with same unchanged provider; not an independent deinterlacing implementation or normative decoder golden.",
+      "Positive held8 control forces actual overlap; ordinary900 result qualifies only OWN copy-and-release path, not original Kodi same-backing lifetime.",
+      "Virtual100.1ms lead/40ms advance is an inherited explicit comparison assumption, not measured Kodi buffer, scheduling guarantee or A/V proof.",
+      "No performance improvement or candidate promotion follows from this one trial. Original Source900 failures unchanged."
+    ]
+  },
+  "held8_actual_ownership_control": {
+    "inputs": 8,
+    "outputs": 14,
+    "same_canvas_overlap_writes": 7,
+    "all_output_pixels_checked": true,
+    "final_cow_live_bytes": 0,
+    "source_archive": "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/ordinary900-01-sources"
+  },
+  "scaffold_admission_cause_control": {
+    "status": "PASS_SCAFFOLD_IDR_HISTORY_CAUSE_CONTROL",
+    "single_idr_rejected_ordinal": 512,
+    "single_idr_admitted": 512,
+    "periodic_idr_interval": 30,
+    "periodic_admitted": 540,
+    "maximum_cached_pictures": 30,
+    "observed_history_prunes": 17,
+    "final_cow_live_bytes": 0
+  },
+  "original_failed_execution": {
+    "status": "FAIL",
+    "source_revision": "1427d2de0825706e20137f16e17dcb42366bac97",
+    "decoder": false,
+    "physical_devices_exposed": false,
+    "case": "ordinary900-01",
+    "expected_inputs": 900,
+    "forced_image_overlap_control": false,
+    "exit": 1,
+    "elapsed_s": 17.623107155086473,
+    "owned_process": {
+      "pid": 2912553,
+      "parent_pid": 2912496,
+      "start_ticks": 165525932
+    },
+    "reason": "ValueError('preserve failed combined study')"
+  },
+  "failure_preserved_at": "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/ordinary900-01",
+  "exact_full900_source_archive": "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/ordinary900-02-sources",
+  "timing_mode_source_archive": "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/timing900-01-sources",
+  "measured_window": "Other project CPU/native/GPU/application experiments paused for each900 trial; ordinary system scheduling uncontrolled.",
+  "independent_review": "Root source/ownership/timing gate review GO; separate ARC agent recomputed actual raw timing/count/epoch/pixel-scope results exactly.",
+  "remaining": [
+    "Original client asynchronous VA image/same-backing reuse overlap remains unmeasured.",
+    "No owned product optimization is selected by these scaffold timings.",
+    "Original native896/888 strict Source900 failures remain unchanged.",
+    "Current source/pixels/chroma/cadence/GPU/lifetime/endurance and original filter EOF acceptance remain in open umbrella issues."
+  ],
+  "not_claimed": [
+    "900 distinct decoded originals",
+    "stock Kodi or release qualification",
+    "product timing failure",
+    "safe buffer/CPU threshold",
+    "causal performance gain from observer contrast",
+    "timing-mode1798 individually pixel-verified outputs"
+  ]
+}

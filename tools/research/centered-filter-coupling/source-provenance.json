@@ -1,0 +1,30 @@
+{
+  "maintained_source": "1427d2de0825706e20137f16e17dcb42366bac97",
+  "original_short_helper": "/home/mache/.cache/crystalhd-bwdif-paced-run-20261107/centered-complete-lifetime-bench.cpp",
+  "helper_changes": [
+    "Rename original diagnostic main so combined main can reuse every existing helper.",
+    "Submit actual fixture IDRs every30 using unchanged f.Submit/Parameters/EndPicture; preserve512 replay limit.",
+    "Default-on full-canvas oracle has isolated timing-mode gate; separate original correctness coverage preserved."
+  ],
+  "unchanged_current_owned_units": [
+    "tests/vaapi-scaling.cpp",
+    "tests/vaapi-postfilter-reference.c",
+    "filters/vaapi/crystalhd_drv_video.cpp",
+    "filters/vaapi/crystalhd-cow-snapshot.h"
+  ],
+  "captured_input_manifest": "/home/mache/.cache/crystalhd-remaining-qualification-run-20261106/drop-origin-900-25-01-stock/payload/reference-input-graph-1.json",
+  "namespace_command_source": "/home/mache/.cache/crystalhd-bwdif-paced-run-20261107/paced-0-01/command.json",
+  "sdk_header_provenance": "/home/mache/.cache/crystalhd-original-app-ffmpeg-abi-20261105/public-header-abi-review.json",
+  "build_receipts": [
+    "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/build-01-commands.json",
+    "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/build-02-command.json",
+    "/home/mache/.cache/crystalhd-centered-filter-coupling-run-20261114/build-03-command.json"
+  ],
+  "external_filter_provider": "/app/lib/libavfilter.so.12.1.102",
+  "external_util_provider": "/app/lib/libavutil.so.61.1.102",
+  "provider_qualification": "Existing unchanged path/version/versioned-symbol guards +captured3->4 full-byte/metadata oracle before each study. No replacement provider is built.",
+  "product_changes": false,
+  "external_product_changes": false,
+  "hardware_access": false,
+  "install_changes": false
+}
