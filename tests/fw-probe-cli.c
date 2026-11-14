@@ -18,7 +18,7 @@ struct _BC_DTS_PROC_OUT;
 
 int crystalhd_probe_main(int argc, char **argv);
 static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs,
-    image_runs, packet_runs, heap_runs, command_observation_runs, clock_runs,
+    image_runs, packet_runs, heap_runs, command_observation_runs, bridge_run_runs, clock_runs,
     uart_runs, crypto_runs, heartbeat_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
@@ -42,6 +42,8 @@ static uint32_t heap_roots[2], heap_bases[2], heap_extent, heap_owned, heap_head
 static uint32_t heap_bad_root, heap_bad_value;
 static unsigned command_observation_mutation;
 static bool legacy_command_observation_reserved_zero;
+static unsigned bridge_run_case, bridge_run_mutation;
+static uint32_t bridge_run_raw_control;
 static unsigned clock_fault_at, clock_fault_kind, clock_mutation, clock_stage, clock_word;
 static uint32_t clock_values[2][3];
 static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_word;
@@ -745,6 +747,75 @@ static void make_command_observation_result(
     }
 }
 
+static void make_bridge_run_result(struct crystalhd_fw_research_bridge_run_result *result)
+{
+    struct crystalhd_fw_research_bridge_run_sample *bridge = &result->bridge;
+
+    make_command_observation_result(&result->command);
+    memset(bridge, 0, sizeof(*bridge));
+    bridge->generation = metadata.generation;
+    if (bridge_run_case == 1) {
+        /* Refusal before session acquisition provides no native capture. */
+        CHECK(command_observation_mutation == 9);
+        bridge->status = result->command.control.status;
+    } else if (bridge_run_case == 2) {
+        struct crystalhd_fw_research_command_observation *observation =
+            &result->command.in_flight;
+        struct crystalhd_fw_research_heap_packet_sample *boundary =
+            &result->command.boundary_after_init;
+
+        /* A real capture cannot survive failed normal cleanup as a receipt. */
+        result->command.control.status = -EIO;
+        result->command.control.cleanup_status = BC_STS_IO_ERROR;
+        result->command.control.retained = 1;
+        memset(observation, 0, sizeof(*observation));
+        observation->attempted = 1;
+        observation->status = -EIO;
+        observation->generation = metadata.generation;
+        observation->request_words[0] = eCMD_C011_INIT;
+        observation->request_words[1] = 1;
+        observation->request_words[2] = 64;
+        memset(boundary, 0, sizeof(*boundary));
+        boundary->attempted = 1;
+        boundary->status = -EIO;
+        bridge->attempted = 1;
+        bridge->status = -EIO;
+        bridge->generation = metadata.generation;
+    } else {
+        CHECK(bridge_run_case == 0);
+        bridge->attempted = bridge->read_complete = 1;
+        bridge->generation = metadata.generation;
+        bridge->raw_control_before = bridge_run_raw_control;
+        bridge->issued_control = bridge_run_raw_control | 2U;
+    }
+
+    switch (bridge_run_mutation) {
+    case 0: break;
+    case 1: bridge->reserved = 1; break;
+    case 2: bridge->attempted = 2; break;
+    case 3: bridge->read_complete = 2; break;
+    case 4: bridge->status = 1; break;
+    case 5: bridge->status = -4096; break;
+    case 6: bridge->generation++; break;
+    case 7: bridge->issued_control ^= 4U; break;
+    case 8: bridge->issued_control = bridge->raw_control_before; break;
+    case 9: bridge->read_complete = 0; break;
+    case 10: bridge->attempted = 0; break;
+    case 11: bridge->status = -EIO; break;
+    case 12: bridge->generation = 0; break;
+    case 13: bridge->raw_control_before ^= 4U; break;
+    case 14: result->command.request.size = sizeof(result->command); break;
+    case 15: memset(bridge, 0, sizeof(*bridge)); break;
+    case 16: bridge->raw_control_before = 1; break;
+    case 17: bridge->issued_control = 2; break;
+    case 18: bridge->status = 0; break;
+    case 19: bridge->generation++; break;
+    case 20: bridge->generation = 0; break;
+    case 21: bridge->read_complete = 1; break;
+    default: CHECK(false);
+    }
+}
+
 static bool legacy_command_observation_reserved_is_zero(
     const struct crystalhd_fw_research_command_observation_result *result)
 {
@@ -1285,6 +1356,27 @@ int probe_ioctl(int fd, unsigned long command, ...)
             legacy_command_observation_reserved_is_zero(result);
         return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_BRIDGE_RUN_OBSERVATION) {
+        struct crystalhd_fw_research_bridge_run_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(command == 0xccd052a0UL && sizeof(*result) == 3280 &&
+              sizeof(result->command) == 3248);
+        CHECK(infos == 1 && !runs++ && !bridge_run_runs++ &&
+              !command_observation_runs && !state_runs && !controller_runs &&
+              !image_runs && !packet_runs && !heap_runs && !clock_runs &&
+              !uart_runs && !crypto_runs && !heartbeat_runs);
+        state_submitted = result->command.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->command.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->command.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_bridge_run_result(result);
+        return 0;
+    }
     if (command == CRYSTALHD_FW_RESEARCH_RUN_CLOCK) {
         struct crystalhd_fw_research_clock_result *result = argument;
         const unsigned char *bytes = argument;
@@ -1396,7 +1488,7 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 static void reset(void)
 {
     opens = stats = infos = runs = state_runs = controller_runs = image_runs =
-        packet_runs = heap_runs = command_observation_runs = clock_runs =
+        packet_runs = heap_runs = command_observation_runs = bridge_run_runs = clock_runs =
         uart_runs = crypto_runs = heartbeat_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
@@ -1418,6 +1510,8 @@ static void reset(void)
     memset(heap_header, 0, sizeof(heap_header)); memset(heap_slots, 0, sizeof(heap_slots));
     command_observation_mutation = 0;
     legacy_command_observation_reserved_zero = false;
+    bridge_run_case = bridge_run_mutation = 0;
+    bridge_run_raw_control = 0x170U;
     clock_fault_at = clock_fault_kind = clock_mutation = clock_stage = clock_word = 0;
     memset(clock_values, 0, sizeof(clock_values));
     uart_fault_at = uart_fault_kind = uart_mutation = uart_stage = uart_word = 0;
@@ -1456,6 +1550,7 @@ static char *image_args[] = {"probe", "--controller-image", "--acknowledge-card-
 static char *packet_args[] = {"probe", "--controller-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *heap_args[] = {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *command_observation_args[] = {"probe", "--command-observation", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *bridge_run_args[] = {"probe", "--bridge-run-observation", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *crypto_args[] = {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -1582,6 +1677,112 @@ static void test_command_observation(void)
           command_observation_runs == 1 && !output[0] &&
           strstr(errors, "no retry"));
 }
+
+static void test_bridge_run_observation(void)
+{
+    static const uint32_t raw_values[] = {
+        0, UINT32_MAX, 2U, 0x40U, 0x20U, 0x10U, 0x100U, 0x170U,
+    };
+    static const unsigned legacy_mutations[] = {1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12};
+    char *invalid[][10] = {
+        {"probe", "--bridge-run-observation", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--acknowledge-card-reset", NULL},
+        {"probe", "--bridge-run-observation", "--bridge-run-observation",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--command-observation",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--command-observation", "--bridge-run-observation",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--fixed-state",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--csc-command",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--info",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--bridge-run-observation", "--address", "0xf0000",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    };
+    char expected[160];
+    unsigned i;
+
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset();
+        CHECK(invoke(invalid[i]) == 1 && !opens && !output[0] &&
+              strstr(errors, "Usage:"));
+    }
+    for (i = 0; i < sizeof(raw_values) / sizeof(raw_values[0]); i++) {
+        reset(); bridge_run_raw_control = raw_values[i];
+        CHECK(!invoke(bridge_run_args) && bridge_run_runs == 1 && runs == 1 &&
+              !command_observation_runs && closes == 1);
+        CHECK(output_count("\n") == 1 && output[strlen(output) - 1] == '\n');
+        CHECK(strstr(output,
+              "{\"version\":1,\"bridge_run_observation\":true,\"command\":{") == output);
+        CHECK(strstr(output, "\"command_observation\":true") &&
+              strstr(output, "\"sample_flags\":1") &&
+              strstr(output, "\"bridge_run\":{\"attempted\":true,\"status\":0,"
+                             "\"read_complete\":true,\"generation\":\"42\""));
+        CHECK(snprintf(expected, sizeof(expected),
+              "\"raw_control_before\":%u,\"issued_control\":%u",
+              raw_values[i], raw_values[i] | 2U) > 0);
+        CHECK(strstr(output, expected));
+        CHECK(snprintf(expected, sizeof(expected),
+              "\"io_sync_en\":%s,\"prefetch_en\":%s,\"gather_en\":%s,"
+              "\"ccb_space_alias_en\":%s",
+              raw_values[i] & 0x40U ? "true" : "false",
+              raw_values[i] & 0x20U ? "true" : "false",
+              raw_values[i] & 0x10U ? "true" : "false",
+              raw_values[i] & 0x100U ? "true" : "false") > 0);
+        CHECK(strstr(output, expected));
+        CHECK(strstr(output, "\"additional_mmio_reads\":0") &&
+              strstr(output, "\"additional_mmio_writes\":0") &&
+              strstr(output, "\"write_readback\":false") &&
+              strstr(output, "\"boot_run_bridge_flags_only\":true"));
+    }
+    for (i = 1; i <= 15; i++) {
+        reset(); bridge_run_mutation = i;
+        CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 &&
+              !command_observation_runs && !output[0] &&
+              strstr(errors, "Invalid bridge-run result"));
+    }
+    for (i = 0; i < sizeof(legacy_mutations) / sizeof(legacy_mutations[0]); i++) {
+        reset(); command_observation_mutation = legacy_mutations[i];
+        CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 &&
+              !output[0] && strstr(errors, "Invalid bridge-run result"));
+    }
+    for (i = 1; i <= 2; i++) {
+        reset(); bridge_run_case = i;
+        if (i == 1) command_observation_mutation = 9;
+        CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 && output[0] &&
+              !strstr(errors, "Invalid bridge-run result"));
+        CHECK(output_count("\n") == 1 &&
+              strstr(output, "\"read_complete\":false,\"generation\":\"42\""));
+        CHECK(strstr(output, "\"raw_control_before\":null,\"issued_control\":null") &&
+              strstr(output, "\"io_sync_en\":null,\"prefetch_en\":null,"
+                             "\"gather_en\":null,\"ccb_space_alias_en\":null"));
+        if (i == 2) CHECK(strstr(errors, "remain retained"));
+    }
+    for (i = 16; i <= 21; i++) {
+        reset(); bridge_run_case = 2; bridge_run_mutation = i;
+        CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 &&
+              !output[0] && strstr(errors, "Invalid bridge-run result"));
+    }
+    reset(); metadata.generation++;
+    CHECK(invoke(bridge_run_args) == 1 && infos == 1 && !runs && !output[0] &&
+          strstr(errors, "generation changed"));
+    reset(); metadata.selector_mask = 1;
+    CHECK(invoke(bridge_run_args) == 1 && infos == 1 && !runs && !output[0] &&
+          strstr(errors, "unavailable"));
+    reset(); run_error = EINTR;
+    CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 && runs == 1 &&
+          !command_observation_runs && !output[0] && strstr(errors, "no retry"));
+    reset(); run_error = ENOTTY;
+    CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 && runs == 1 &&
+          !command_observation_runs && !output[0]);
+    reset(); close_error = EINTR;
+    CHECK(invoke(bridge_run_args) == 1 && bridge_run_runs == 1 && output[0] &&
+          strstr(errors, "close research device"));
+}
+
 static void test_metadata(void)
 {
     unsigned i;
@@ -3381,6 +3582,18 @@ static void heap_packet_json_examples(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--bridge-run-json-examples")) {
+        static const uint32_t raw_values[] = {0, UINT32_MAX, 2U, 0x170U};
+        for (unsigned i = 0; i < sizeof(raw_values) / sizeof(raw_values[0]); i++) {
+            reset(); bridge_run_raw_control = raw_values[i];
+            CHECK(!invoke(bridge_run_args)); fputs(output, stdout);
+        }
+        reset(); bridge_run_case = 1; command_observation_mutation = 9;
+        CHECK(invoke(bridge_run_args) == 1 && output[0]); fputs(output, stdout);
+        reset(); bridge_run_case = 2;
+        CHECK(invoke(bridge_run_args) == 1 && output[0]); fputs(output, stdout);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--command-observation-json-example")) {
         reset(); CHECK(!invoke(command_observation_args)); fputs(output, stdout); return 0;
     }
@@ -3477,6 +3690,7 @@ int main(int argc, char **argv)
     test_named_controls(); test_decoding(); test_raw_commands();
     test_fixed_state(); test_controller_root(); test_controller_image();
     test_controller_packet(); test_heap_packet(); test_command_observation();
+    test_bridge_run_observation();
     test_clock_state(); test_uart_state(); test_crypto_state();
     test_crypto_inventory();
     test_heartbeat_state();

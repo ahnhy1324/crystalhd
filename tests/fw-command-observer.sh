@@ -46,13 +46,16 @@ int main(void)
 		(BC_FW_CMD *)2);
 	crystalhd_fw_research_command_posted((struct crystalhd_hw *)1,
 		(BC_FW_CMD *)2);
+	crystalhd_fw_research_bridge_run_written((struct crystalhd_hw *)1,
+		0xa5a55a5aU, 0xffffffffU);
 	return 0;
 }
 EOF
 "${CC:-cc}" ${CFLAGS:-} -std=c11 -O2 -Wall -Wextra -Werror \
 	-I"$repo_dir/driver/linux" "$test_dir/default-off.c" \
 	-o "$test_dir/default-off"
-if nm "$test_dir/default-off" | grep -q 'crystalhd_fw_research_command_posted'; then
+if nm "$test_dir/default-off" | \
+	grep -Eq 'crystalhd_fw_research_(command_posted|bridge_run_written)'; then
 	echo 'default-off observer hooks emitted code symbols' >&2
 	exit 1
 fi

@@ -259,6 +259,32 @@ struct crystalhd_fw_research_command_observation_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION \
 	_IOWR('R', 0x9e, struct crystalhd_fw_research_command_observation_result)
 
+/* Values from the normal downloader's existing bridge-control read and write.
+ * No additional MMIO is performed. issued_control is the host's write argument,
+ * not a device readback, an ordering guarantee or an ARM execution receipt.
+ */
+struct crystalhd_fw_research_bridge_run_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Published only after download, INIT, boundary and normal cleanup succeed. */
+	__u32 read_complete;
+	__u32 reserved;
+	__aligned_u64 generation;
+	__u32 raw_control_before;
+	__u32 issued_control;
+};
+
+struct crystalhd_fw_research_bridge_run_result {
+	/* request.size describes this wrapper for this new ioctl only. The old
+	 * command-observation ioctl, layout and reserved words are unchanged.
+	 */
+	struct crystalhd_fw_research_command_observation_result command;
+	struct crystalhd_fw_research_bridge_run_sample bridge;
+};
+
+#define CRYSTALHD_FW_RESEARCH_RUN_BRIDGE_RUN_OBSERVATION \
+	_IOWR('R', 0xa0, struct crystalhd_fw_research_bridge_run_result)
+
 struct crystalhd_fw_research_clock_sample {
 	__u32 attempted;
 	__s32 status;

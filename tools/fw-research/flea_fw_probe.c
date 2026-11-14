@@ -71,6 +71,7 @@ enum action {
 	ACTION_CONTROLLER_PACKET,
 	ACTION_HEAP_PACKET,
 	ACTION_COMMAND_OBSERVATION,
+	ACTION_BRIDGE_RUN_OBSERVATION,
 	ACTION_CLOCK_STATE,
 	ACTION_UART_STATE,
 	ACTION_CRYPTO_STATE,
@@ -115,6 +116,8 @@ static void usage(FILE *stream)
 	      "       flea-fw-probe --heap-packet\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --command-observation\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --bridge-run-observation\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --clock-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
@@ -247,6 +250,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_HEAP_PACKET;
 		else if (!strcmp(argv[i], "--command-observation"))
 			action = ACTION_COMMAND_OBSERVATION;
+		else if (!strcmp(argv[i], "--bridge-run-observation"))
+			action = ACTION_BRIDGE_RUN_OBSERVATION;
 		else if (!strcmp(argv[i], "--clock-state"))
 			action = ACTION_CLOCK_STATE;
 		else if (!strcmp(argv[i], "--uart-state"))
@@ -1337,6 +1342,26 @@ static bool command_observation_result_valid(
 	return true;
 }
 
+static bool bridge_run_result_valid(
+	const struct crystalhd_fw_research_bridge_run_result *result,
+	const struct crystalhd_fw_research_state_request *request,
+	uint64_t generation)
+{
+	const struct crystalhd_fw_research_bridge_run_sample *bridge = &result->bridge;
+	bool success = !result->command.control.status;
+
+	if (!command_observation_result_valid(&result->command, request, generation) ||
+	    bridge->attempted > 1 || bridge->read_complete > 1 || bridge->reserved ||
+	    bridge->generation != generation || bridge->status > 0 ||
+	    bridge->status < -4095 || bridge->read_complete != success)
+		return false;
+	if (!success)
+		return bridge->status && !bridge->raw_control_before &&
+			!bridge->issued_control;
+	return bridge->attempted && !bridge->status &&
+		bridge->issued_control == (bridge->raw_control_before | 2U);
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -1940,7 +1965,7 @@ static void print_heap_packet_result(const struct crystalhd_fw_research_heap_pac
 	       HEAP_PACKET_OFFSET, HEAP_PACKET_SECTION_BYTES);
 }
 
-static void print_command_observation_result(
+static void print_command_observation_object(
 	const struct crystalhd_fw_research_command_observation_result *result)
 {
 	const struct crystalhd_fw_research_command_observation *observation =
@@ -1999,13 +2024,54 @@ static void print_command_observation_result(
 	      "\"caller_selected_address\":false,\"queue_mutation\":false,"
 	      "\"ppb_retention\":false,\"ordinary_irq_authoritative\":true,"
 	      "\"runtime_transfer_established\":false,\"cross_cpu_visibility_established\":false,"
-	      "\"physical_generation_established\":false,\"source_lease_established\":false}}\n",
+	      "\"physical_generation_established\":false,\"source_lease_established\":false}}",
 	      observation->sample_flags ==
 		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK ?
 	      "true" : "false",
 	      observation->sample_flags ==
 		CRYSTALHD_FW_RESEARCH_COMMAND_SAMPLE_FLAG_FIRST_PAIR_POST_MAILBOX_SAME_LOCK ?
 	      "true" : "false");
+}
+
+static void print_command_observation_result(
+	const struct crystalhd_fw_research_command_observation_result *result)
+{
+	print_command_observation_object(result);
+	putchar('\n');
+}
+
+static void print_bridge_run_result(
+	const struct crystalhd_fw_research_bridge_run_result *result)
+{
+	const struct crystalhd_fw_research_bridge_run_sample *bridge = &result->bridge;
+
+	printf("{\"version\":%" PRIu32
+	       ",\"bridge_run_observation\":true,\"command\":",
+	       (uint32_t)result->command.request.version);
+	print_command_observation_object(&result->command);
+	printf(",\"bridge_run\":{\"attempted\":%s,\"status\":%" PRId32
+	       ",\"read_complete\":%s,\"generation\":\"%" PRIu64 "\"",
+	       bridge->attempted ? "true" : "false", (int32_t)bridge->status,
+	       bridge->read_complete ? "true" : "false", (uint64_t)bridge->generation);
+	if (bridge->read_complete) {
+		printf(",\"raw_control_before\":%" PRIu32 ",\"issued_control\":%" PRIu32
+		       ",\"io_sync_en\":%s,\"prefetch_en\":%s,\"gather_en\":%s"
+		       ",\"ccb_space_alias_en\":%s",
+		       (uint32_t)bridge->raw_control_before, (uint32_t)bridge->issued_control,
+		       bridge->raw_control_before & 0x40U ? "true" : "false",
+		       bridge->raw_control_before & 0x20U ? "true" : "false",
+		       bridge->raw_control_before & 0x10U ? "true" : "false",
+		       bridge->raw_control_before & 0x100U ? "true" : "false");
+	} else {
+		fputs(",\"raw_control_before\":null,\"issued_control\":null,"
+		      "\"io_sync_en\":null,\"prefetch_en\":null,\"gather_en\":null,"
+		      "\"ccb_space_alias_en\":null", stdout);
+	}
+	fputs("},\"scope\":{\"additional_mmio_reads\":0,\"additional_mmio_writes\":0,"
+	      "\"write_readback\":false,\"boot_run_bridge_flags_only\":true,"
+	      "\"cross_cpu_visibility_established\":false,"
+	      "\"physical_generation_established\":false,\"source_lease_established\":false}}\n",
+	      stdout);
 }
 
 int main(int argc, char **argv)
@@ -2021,6 +2087,7 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
 	struct crystalhd_fw_research_command_observation_result
 		command_observation_result = { 0 };
+	struct crystalhd_fw_research_bridge_run_result bridge_run_result = { 0 };
 	struct crystalhd_fw_research_clock_result clock_result = { 0 };
 	struct crystalhd_fw_research_uart_result uart_result = { 0 };
 	struct crystalhd_fw_research_crypto_result crypto_result = { 0 };
@@ -2031,6 +2098,7 @@ int main(int argc, char **argv)
 	bool have_image = false, have_packet = false;
 	bool have_heap_packet = false;
 	bool have_command_observation = false;
+	bool have_bridge_run = false;
 	bool have_clock = false;
 	bool have_uart = false;
 	bool have_crypto = false;
@@ -2088,6 +2156,7 @@ int main(int argc, char **argv)
 	case ACTION_CONTROLLER_PACKET:
 	case ACTION_HEAP_PACKET:
 	case ACTION_COMMAND_OBSERVATION:
+	case ACTION_BRIDGE_RUN_OBSERVATION:
 	case ACTION_CLOCK_STATE:
 	case ACTION_UART_STATE:
 	case ACTION_CRYPTO_STATE:
@@ -2128,6 +2197,33 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_BRIDGE_RUN_OBSERVATION) {
+		const struct crystalhd_fw_research_result *control =
+			&bridge_run_result.command.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(bridge_run_result);
+		bridge_run_result.command.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_BRIDGE_RUN_OBSERVATION,
+			  &bridge_run_result) < 0) {
+			perror("run bridge observation");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n",
+			      stderr);
+		if (!bridge_run_result_valid(&bridge_run_result, &state_request,
+			info.generation)) {
+			fputs("Invalid bridge-run result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_bridge_run = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted &&
+			 control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_COMMAND_OBSERVATION) {
@@ -2408,6 +2504,8 @@ out:
 		print_heap_packet_result(&heap_packet_result);
 	if (have_command_observation)
 		print_command_observation_result(&command_observation_result);
+	if (have_bridge_run)
+		print_bridge_run_result(&bridge_run_result);
 	if (have_clock)
 		print_clock_result(&clock_result);
 	if (have_uart)

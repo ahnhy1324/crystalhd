@@ -17,7 +17,19 @@ void crystalhd_fw_research_command_posted_locked(struct crystalhd_hw *hw,
 						 const BC_FW_CMD *fw_cmd);
 void crystalhd_fw_research_command_posted(struct crystalhd_hw *hw,
 					  const BC_FW_CMD *fw_cmd);
+/* Receives values from an existing downloader operation; performs no MMIO. */
+void crystalhd_fw_research_bridge_run_written(struct crystalhd_hw *hw,
+	unsigned int raw_control_before, unsigned int issued_control);
 #else
+static inline void crystalhd_fw_research_bridge_run_written(
+	struct crystalhd_hw *hw, unsigned int raw_control_before,
+	unsigned int issued_control)
+{
+	(void)hw;
+	(void)raw_control_before;
+	(void)issued_control;
+}
+
 static inline void crystalhd_fw_research_command_posted_locked(
 	struct crystalhd_hw *hw, const BC_FW_CMD *fw_cmd)
 {

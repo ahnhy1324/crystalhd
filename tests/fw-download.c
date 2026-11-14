@@ -71,6 +71,10 @@ static unsigned checks, groups, failures;
 static unsigned dev_reads, dev_writes, fpga_reads, fpga_writes;
 static unsigned dram_writes, sleeps, heartbeats, cmac_writes;
 static unsigned arm_run_writes, flea_status_reads, link_status_reads;
+static unsigned bridge_control_reads, bridge_control_writes, bridge_run_captures;
+static unsigned native_effects, bridge_write_effect;
+static uint32_t bridge_control_read_value, bridge_control_issued_write;
+static uint32_t bridge_run_raw_read, bridge_run_issued_write;
 static unsigned link_payload_writes;
 static unsigned link_signature_writes, link_processor_starts;
 static uint32_t dram_words, dram_first, dram_last;
@@ -79,7 +83,7 @@ static uint32_t link_signature_offsets[8], link_signature_values[8];
 static uint32_t link_payload_first, link_payload_last;
 static const uint32_t *expected_image;
 static BC_STATUS dram_status;
-static bool heartbeat_ok;
+static bool heartbeat_ok, boot_verification_ok;
 static enum link_result link_result;
 static struct pci_dev pci;
 static struct crystalhd_adp adapter;
@@ -100,6 +104,7 @@ static int test_sleep(unsigned int milliseconds)
 	check(milliseconds == 1 || milliseconds == 5 || milliseconds == 10,
 	      "production waits use the expected bounded intervals");
 	sleeps++;
+	native_effects++;
 	return 0;
 }
 
@@ -107,9 +112,15 @@ static uint32_t read_device(struct crystalhd_adp *adp, uint32_t offset)
 {
 	check(adp == &adapter, "Flea read uses the admitted adapter");
 	dev_reads++;
+	native_effects++;
 	if (offset == BCHP_WRAP_MISC_INTR2_PCI_STATUS)
-		return flea_status_reads++ ? BOOT_VER_DONE_BIT :
+		return flea_status_reads++ ?
+			(boot_verification_ok ? BOOT_VER_DONE_BIT : BOOT_VER_FAIL_BIT) :
 			SCRAM_KEY_DONE_INT_BIT;
+	if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL) {
+		bridge_control_reads++;
+		return bridge_control_read_value;
+	}
 	return 0;
 }
 
@@ -118,6 +129,7 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
 {
 	check(adp == &adapter, "Flea write uses the admitted adapter");
 	dev_writes++;
+	native_effects++;
 	if (offset <= BCHP_SCRUB_CTRL_BI_CMAC_127_96 &&
 	    offset >= BCHP_SCRUB_CTRL_BI_CMAC_31_0) {
 		if (cmac_writes < 4) {
@@ -126,9 +138,33 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
 		}
 		cmac_writes++;
 	}
-	if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL &&
-	    (value & ARM_RUN_REQ_BIT))
-		arm_run_writes++;
+	if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL) {
+		bridge_control_writes++;
+		bridge_control_issued_write = value;
+		bridge_write_effect = native_effects;
+		if (value & ARM_RUN_REQ_BIT)
+			arm_run_writes++;
+	}
+}
+
+/* This callback observes the exact production downloader's supplied values;
+ * the research driver's admission/publication rules have separate coverage.
+ */
+static void crystalhd_fw_research_bridge_run_written(struct crystalhd_hw *hw,
+	unsigned int raw_read, unsigned int issued_write)
+{
+	check(hw == &hardware, "bridge hook uses the admitted hardware");
+	check(!bridge_run_captures && bridge_control_reads == 1 &&
+	      bridge_control_writes == 1 &&
+	      native_effects == bridge_write_effect,
+	      "bridge hook runs once immediately after the native bridge write");
+	check(raw_read == bridge_control_read_value &&
+	      issued_write == bridge_control_issued_write &&
+	      issued_write == (raw_read | ARM_RUN_REQ_BIT),
+	      "bridge hook receives the unmasked native read and actual write argument");
+	bridge_run_captures++;
+	bridge_run_raw_read = raw_read;
+	bridge_run_issued_write = issued_write;
 }
 
 static BC_STATUS write_dram(struct crystalhd_hw *hw, uint32_t offset,
@@ -138,6 +174,7 @@ static BC_STATUS write_dram(struct crystalhd_hw *hw, uint32_t offset,
 	      buffer == expected_image && words,
 	      "Flea DRAM write receives the exact image and start address");
 	dram_writes++;
+	native_effects++;
 	dram_words = words;
 	dram_first = buffer[0];
 	dram_last = buffer[words - 1];
@@ -192,6 +229,7 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 {
 	check(hw == &hardware, "heartbeat probe uses the admitted hardware");
 	heartbeats++;
+	native_effects++;
 	return heartbeat_ok;
 }
 
@@ -229,6 +267,10 @@ static void reset(void)
 	dev_reads = dev_writes = fpga_reads = fpga_writes = 0;
 	dram_writes = sleeps = heartbeats = cmac_writes = 0;
 	arm_run_writes = flea_status_reads = link_status_reads = 0;
+	bridge_control_reads = bridge_control_writes = bridge_run_captures = 0;
+	native_effects = bridge_write_effect = 0;
+	bridge_control_read_value = bridge_control_issued_write = 0;
+	bridge_run_raw_read = bridge_run_issued_write = 0;
 	link_payload_writes = 0;
 	link_signature_writes = link_processor_starts = 0;
 	dram_words = dram_first = dram_last = 0;
@@ -239,6 +281,7 @@ static void reset(void)
 	link_payload_first = link_payload_last = 0;
 	dram_status = BC_STS_SUCCESS;
 	heartbeat_ok = true;
+	boot_verification_ok = true;
 	link_result = LINK_SUCCESS;
 }
 
@@ -247,7 +290,9 @@ static bool no_effects(void)
 	return !dev_reads && !dev_writes && !fpga_reads && !fpga_writes &&
 	       !dram_writes && !sleeps && !heartbeats && !cmac_writes &&
 	       !arm_run_writes && !link_status_reads && !link_payload_writes &&
-	       !link_signature_writes && !link_processor_starts;
+	       !link_signature_writes && !link_processor_starts &&
+	       !bridge_control_reads && !bridge_control_writes &&
+	       !bridge_run_captures;
 }
 
 static bool state_unchanged(void)
@@ -473,8 +518,64 @@ static void flea_results(void)
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_IO_ERROR,
 	      "Flea propagates the exact DRAM write error");
 	check(dram_writes == 1 && !cmac_writes && !arm_run_writes && !heartbeats &&
+	      !bridge_control_reads && !bridge_control_writes &&
+	      !bridge_run_captures && dev_reads == 2 && dev_writes == 5 &&
 	      !memcmp(&firmware, &firmware_before, sizeof(firmware)),
 	      "Flea stops before signature, processor start and heartbeat after DRAM failure");
+}
+
+static void bridge_run_results(void)
+{
+	static const uint32_t raw_values[] = {
+		0, UINT32_MAX, ARM_RUN_REQ_BIT,
+		0xa5a55a5aU & ~ARM_RUN_REQ_BIT,
+		0x01234567U | ARM_RUN_REQ_BIT,
+	};
+
+	groups++;
+	for (unsigned n = 0; n < sizeof(raw_values) / sizeof(raw_values[0]); n++) {
+		reset();
+		bridge_control_read_value = raw_values[n];
+		check(crystalhd_flea_download_fw(&hardware,
+		      (const uint8_t *)firmware.words,
+		      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_SUCCESS,
+		      "Flea bridge observation preserves successful firmware download");
+		check(bridge_run_captures == 1 &&
+		      bridge_run_raw_read == raw_values[n] &&
+		      bridge_run_issued_write == (raw_values[n] | ARM_RUN_REQ_BIT),
+		      "zero, all-ones and already-running reads retain every native bit");
+		check(bridge_control_reads == 1 && bridge_control_writes == 1 &&
+		      dev_reads == 4 && dev_writes == 11 &&
+		      !fpga_reads && !fpga_writes && dram_writes == 1 &&
+		      cmac_writes == 4 && arm_run_writes == 1 &&
+		      heartbeats == 1 && sleeps == 1,
+		      "bridge hook adds no MMIO, firmware writes, polls or waits");
+	}
+
+	reset();
+	bridge_control_read_value = UINT32_MAX;
+	boot_verification_ok = false;
+	check(crystalhd_flea_download_fw(&hardware,
+	      (const uint8_t *)firmware.words,
+	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_ERROR &&
+	      bridge_run_captures == 1 && bridge_control_reads == 1 &&
+	      bridge_control_writes == 1 && bridge_run_raw_read == UINT32_MAX &&
+	      bridge_run_issued_write == UINT32_MAX &&
+	      dev_reads == 4 && dev_writes == 10 && !heartbeats && !sleeps,
+	      "boot verification failure keeps only the actual earlier bridge capture");
+
+	reset();
+	bridge_control_read_value = ARM_RUN_REQ_BIT;
+	heartbeat_ok = false;
+	check(crystalhd_flea_download_fw(&hardware,
+	      (const uint8_t *)firmware.words,
+	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_ERROR &&
+	      bridge_run_captures == 1 && bridge_control_reads == 1 &&
+	      bridge_control_writes == 1 &&
+	      bridge_run_raw_read == ARM_RUN_REQ_BIT &&
+	      bridge_run_issued_write == ARM_RUN_REQ_BIT &&
+	      dev_reads == 4 && dev_writes == 11 && heartbeats == 1 && sleeps == 1,
+	      "heartbeat failure fabricates no second bridge capture or access");
 }
 
 static void link_results(void)
@@ -605,6 +706,7 @@ int main(void)
 	invalid_flea();
 	invalid_link();
 	flea_results();
+	bridge_run_results();
 	link_results();
 	sized_images();
 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",

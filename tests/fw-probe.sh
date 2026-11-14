@@ -373,6 +373,19 @@ _Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result,
 _Static_assert(offsetof(struct crystalhd_fw_research_command_observation_result, boundary_after_init) == 3128, "command boundary");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION) == 3248, "command encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_COMMAND_OBSERVATION == 0xccb0529eU, "command ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_bridge_run_sample) == 32, "bridge run sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, attempted) == 0, "bridge run attempt");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, status) == 4, "bridge run status");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, read_complete) == 8, "bridge run completion");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, reserved) == 12, "bridge run reserved");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, generation) == 16, "bridge run generation");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, raw_control_before) == 24, "bridge run native read");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_sample, issued_control) == 28, "bridge run issued write");
+_Static_assert(sizeof(struct crystalhd_fw_research_bridge_run_result) == 3280, "bridge run result");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_result, command) == 0, "bridge run legacy command");
+_Static_assert(offsetof(struct crystalhd_fw_research_bridge_run_result, bridge) == 3248, "bridge run sample tail");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_BRIDGE_RUN_OBSERVATION) == 3280, "bridge run encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_BRIDGE_RUN_OBSERVATION == 0xccd052a0U, "bridge run ioctl");
 _Static_assert(sizeof(struct crystalhd_fw_research_heartbeat_sample) == 72, "heartbeat sample");
 _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, scratch_reads_complete) == 12, "heartbeat target count");
 _Static_assert(offsetof(struct crystalhd_fw_research_heartbeat_sample, guard_reads_complete) == 16, "heartbeat guard count");
@@ -484,6 +497,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --crypto-json-examples
         "$probe_test_dir/cli-check" --command-observation-json-example
         "$probe_test_dir/cli-check" --heartbeat-json-examples
+        "$probe_test_dir/cli-check" --bridge-run-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -496,7 +510,7 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-commands, heartbeats = examples[747:748], examples[748:]
+commands, heartbeats, bridges = examples[747:748], examples[748:752], examples[752:]
 cryptos, uarts = examples[664:747], examples[633:664]
 clocks, heaps, examples = examples[602:633], examples[542:602], examples[:542]
 assert len(examples) == 542
@@ -506,6 +520,7 @@ assert len(uarts) == 31
 assert len(cryptos) == 83
 assert len(commands) == 1
 assert len(heartbeats) == 4
+assert len(bridges) == 6
 command = commands[0]
 assert set(command) == {"version", "command_observation", "control", "in_flight",
                        "boundary_after_init", "scope"}
@@ -1368,5 +1383,49 @@ for result, attempted, guards, before, last in ((pre_guard, False, 1, 1, 1),
     assert sample["values"] is None
     assert sample["gisb_before"] == before and sample["gisb_last"] == last
 print("Firmware probe CLI: 4 bounded heartbeat strict JSON examples verified")
+bridge_scope = {
+    "additional_mmio_reads": 0,
+    "additional_mmio_writes": 0,
+    "write_readback": False,
+    "boot_run_bridge_flags_only": True,
+    "cross_cpu_visibility_established": False,
+    "physical_generation_established": False,
+    "source_lease_established": False,
+}
+bridge_raw_names = ("raw_control_before", "issued_control")
+bridge_flags = {"io_sync_en": 0x40, "prefetch_en": 0x20,
+                "gather_en": 0x10, "ccb_space_alias_en": 0x100}
+for index, result in enumerate(bridges):
+    assert set(result) == {"version", "bridge_run_observation", "command", "bridge_run", "scope"}
+    assert type(result["version"]) is int and result["version"] == 1
+    assert result["bridge_run_observation"] is True
+    assert result["scope"] == bridge_scope
+    nested, sample = result["command"], result["bridge_run"]
+    assert set(nested) == set(commands[0]) and nested["command_observation"] is True
+    check_result(nested["control"])
+    assert set(sample) == {"attempted", "status", "read_complete", "generation",
+                           *bridge_raw_names, *bridge_flags}
+    assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+    assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+    assert sample["generation"] == "42"
+    if index < 4:
+        raw = (0, 4294967295, 2, 0x170)[index]
+        assert nested == commands[0]
+        assert sample["attempted"] and sample["read_complete"] and sample["status"] == 0
+        for name in bridge_raw_names:
+            u32(sample[name])
+        assert sample["raw_control_before"] == raw and sample["issued_control"] == raw | 2
+        for name, mask in bridge_flags.items():
+            assert sample[name] is bool(raw & mask)
+    else:
+        assert sample["attempted"] is (index == 5) and not sample["read_complete"]
+        assert sample["status"] == nested["control"]["status"] < 0
+        assert all(sample[name] is None for name in (*bridge_raw_names, *bridge_flags))
+        observation = nested["in_flight"]
+        assert not observation["read_complete"] and not observation["header_matches"]
+        assert observation["sample_flags"] == 0 and observation["sample_count"] == 0
+        assert observation["samples"] == [] and observation["response_words"] == [0, 0, 0]
+        assert not nested["boundary_after_init"]["read_complete"]
+print("Firmware probe CLI: 6 additive bridge-run strict JSON examples verified")
 '
 done

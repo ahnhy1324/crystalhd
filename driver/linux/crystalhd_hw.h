@@ -453,6 +453,8 @@ struct crystalhd_hw {
 	 * synchronous low-level command returns.
 	 */
 	struct crystalhd_fw_command_observer *fwcmd_observer;
+	/* Stack-owned by the exclusive research download; detach before cleanup. */
+	struct crystalhd_fw_bridge_run_observer *fw_bridge_run_observer;
 #endif
 
 	uint32_t		pib_del_Q_addr;

@@ -1413,6 +1413,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
 	uint32_t borchStachAddr=0;
 	const uint32_t *pCmacSig=NULL;
 	uint32_t cmacOffset=0,i=0;
+	uint32_t bridgeControlBefore;
 	BC_STATUS sts;
 	/*uint32_t BuffSz = (BuffSzInDWords * 4); */
 	/*uint32_t HBCnt=0; */
@@ -1568,8 +1569,10 @@ BCHP_SCRUB_CTRL_BI_CMAC_127_96		0x000f6018			CMAC Bits[127:96]
 	dev_dbg(&hw->adp->pdev->dev,"[crystalhd_flea_download_fw]: step 6. Write the ARM run bit to 1.\n");
 
 	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
+	bridgeControlBefore = regVal;
 	regVal |= ARM_RUN_REQ_BIT;
 	hw->pfnWriteDevRegister(hw->adp, BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL, regVal);
+	crystalhd_fw_research_bridge_run_written(hw, bridgeControlBefore, regVal);
 
 	if(bSecure)
 	{
