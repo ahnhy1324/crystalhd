@@ -78,8 +78,9 @@ The C++ study reuses the Nov7 OWN lifetime scaffold and current unchanged
 tests/vaapi-scaling.cpp, including actual ProcessDecodedOutput,
 DeriveImage/MapBuffer and Unmap/Destroy. Its existing Dts/graphics traps and
 file-backed CPU/COW scaffolds remain. No real decoder/DMA/graphics is exercised.
-The retained helper copy is preserved; only the long-run fixture's actual IDR
-submission policy changes as described below.
+The original short helper is preserved. The isolated study changes actual
+fixture IDR submission every30 and adds the three explicit timing observer
+gates described above; its default full-byte correctness coverage remains.
 
 The C bridge includes our current unchanged
 tests/vaapi-postfilter-reference.c. Its original path/version/versioned-symbol

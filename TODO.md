@@ -118,7 +118,7 @@ rejects ordinal512; real periodic fixture IDRs every30 admit540 with maximum
 history30 and17 prunes. Only probe traffic was corrected; no limit bypass,
 replay reset or product fix. All final image/graph/COW resources return to0.
 
-The earlier [paced arithmetic conditions](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698703989)
+The earlier [paced original-filter conditions](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698703989)
 and [separate consumer costs](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698983291)
 retain their original four-arm results and scopes. Prior READ-prefault remains
 **do not adopt**; already-integrated prefetch, COW, border and worker fixes
