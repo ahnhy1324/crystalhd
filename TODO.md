@@ -2,7 +2,7 @@
 
 # Current work
 
-Updated **2026-11-07**, after stable 1.3 publication. This is the current work queue.
+Updated **2026-11-15**, after stable 1.3 publication. This is the current work queue.
 A packaged copy is a snapshot; subsequent completion belongs in the current
 repository queue and candidate qualification receipts.
 Detailed dated investigations, original failures and superseded branch states
@@ -64,7 +64,7 @@ Keep the existing defensive conversion and VPP regression coverage.
 | --- | --- | --- |
 | 1, retained risk | [#623 GTK crash](https://github.com/ahnhy1324/crystalhd/issues/623) | The [bounded review](tests/fixtures/issue400/gtk-bounded-review-20261104.json) is complete: retained incident evidence and maintained callback/worker/lifetime boundaries establish no demonstrated own fault or causal repair. Keep #623 open and the original CSS assertion/SIGSEGV unreproduced/unfixed. Existing native/Python capture can supply decisive recurrence evidence; continue the remaining research with the optional GTK risk explicit and no new recurrence gate. |
 | 2 | [#513 Xv delivery](https://github.com/ahnhy1324/crystalhd/issues/513) | The [stopped-retirement fix and fresh FIFO900](tests/fixtures/issue513/stopped-retirement-20261106.json) complete 900 original decodes/1,800 rendered buffers with no observed QoS loss, natural EOS, real Pulse clock and zero final resources. The original FIFO900 stale public6/0 failure is preserved; actual pool/callback controls distinguish and fix the telemetry lifetime error. A separate latest900 run also has no drops/replacements, so no congestion benefit is demonstrated. FIFO remains default; broader formats, controls, interruption and endurance stay open. |
-| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [paced decoder-free condition study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698703989) completes four original-filter trials with requested 0/6/12/24ms CPU competition, each processing 900 synthetic timestamps over three captured images and returning 1,798 unflushed fields. Actual per-field readiness fits the explicit 100.1ms lead / 40ms advance assumption, with only 0.569ms margin in the 24ms arm; some requested load periods are partial. This is component evidence, not a Kodi buffer prescription or Source900 pass. The [current consumer-cost probe](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698983291) also measures 100 transitions per arm, including optional Small demand and retained COW writes. Next combine those actual callbacks with the filter and qualify same-backing image overlap; most earlier optimizations are already integrated. Original 896/888 failures and broader acceptance remain open. |
+| 3 | [#477 centered output](https://github.com/ahnhy1324/crystalhd/issues/477), [#436 BWDIF](https://github.com/ahnhy1324/crystalhd/issues/436) | The [combined current-callback/original-filter study](tests/fixtures/issue477/centered-filter-coupled-20261115.json) completes900 synthetic timestamps/1,798 exact full-byte outputs, plus a separately labelled900 timing observer condition. Ordinary sequential OWN copy/release has0 live-image/same-canvas overlap writes; the held8 control proves7 real preserved overlaps. The timing condition averages24.304ms but still has19 conditional deadline misses at assumed100.1ms lead/40ms advance, with residual scaffold work explicit. Next establish original-client asynchronous image/backing overlap or a relevant owned cost change; no product failure/promotion follows. Original896/888 and broader acceptance remain open. |
 | 4 | [#538 native picture association](https://github.com/ahnhy1324/crystalhd/issues/538) | [Bounded POC1 association](tests/fixtures/issue538/native-poc1-equal900-20261106.json) is integrated experimentally through [#677](https://github.com/ahnhy1324/crystalhd/pull/677): equal-field-POC full/limited cases each return 900 originals with exact pixels, source PTS, range and EOS. Original unequal-field-POC native failures remain a documented UNKNOWN_SRC/BOTTOM_FIRST limit. Broader syntax, DPB/B/fields, crop/chroma, GPU return and endurance remain open. |
 | 5 | [#470 RX allocation](https://github.com/ahnhy1324/crystalhd/issues/470) | The [paced fixed16/sized16/sized8 matrix](tests/fixtures/issue470/paced900-20261106.json) is complete. The new [fixed/SIZED resolution-transition comparison](tests/fixtures/issue470/resolution-transition900-20261106.json) completes 900 originals across three geometry epochs per arm, with matching whole ordered pixel/metadata hashes and EOS. This exercises conservative fallback across stream changes, not reduced-buffer in-place resizing or a performance gain. Earlier natural Source900 failures remain. Native-planar scheduling is complete for current equipment: BCM70015 capture routes expose packed output, VA/DIL planar images are host conversions, and BCM70012 planar hardware is unavailable/NOT_RUN. The [output-mode contract](linux_lib/libcrystalhd/libcrystalhd_int_if.cpp) and existing rejection/fallback coverage remain; no planar hardware pass is claimed. Broader codec/other format changes and PM stay open. Keep fixed defaults, fallback and DMA quarantine. |
 | 6 | [#400 desktop integration](https://github.com/ahnhy1324/crystalhd/issues/400) | [Actual English Orca interaction](tests/fixtures/issue400/orca-spoken-20261106.json) qualifies valid → invalid → corrected keyboard edits, completed field/value/error speech, fresh synthesized PCM and clean retirement. This does not qualify physical listening or Korean speech. Named frontend adapters and broader desktop/accessibility scopes remain open; existing catalog/UI/AT-SPI and original harness failures retain their scopes. |
@@ -80,66 +80,56 @@ Keep the existing defensive conversion and VPP regression coverage.
 
 ### Source 900 investigation and remaining real-time boundary
 
-The [paced decoder-free condition study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698703989) uses latest
-maintained source `63ae64f` and the unchanged original App BWDIF providers.
-Each actual paced trial processes **900 synthetic timestamps over three
-captured NV12 images**, producing 1,798 unflushed fields; the original
-three-input/four-output pixel and metadata oracle passes first.
-This is a component condition study, **not 900 distinct original pictures,
-stock Kodi qualification or candidate promotion**. Original full-player
-896/888 strict Source900 failures remain unchanged.
+The [combined current-callback/original-filter study](tests/fixtures/issue477/centered-filter-coupled-20261115.json)
+now executes the maintained Centered producer, derive/map, visible client copy,
+allocation/retirement and unchanged original App BWDIF in one CPU workload.
+The [research recipe and actual limits](tools/research/centered-filter-coupling/README.md)
+retain the original failures, captured3→4 oracle, independent scalar-input
+filter reference and full byte/ownership checks. No product/default or installed
+component changes.
 
-| Requested CPU competitor per 33.366667ms period | Mean / maximum output-pair wall | Pairs over nominal | Fulfilled / partial load periods | Conditional total lead at 40ms advance |
-| --- | ---: | ---: | ---: | ---: |
-| 0ms | 18.627 / 37.458ms | 2 /899 | no worker | 97.686ms |
-| 6ms | 18.971 / 35.633ms | 3 /899 | 900 /0 | 98.358ms |
-| 12ms | 20.036 / 40.699ms | 2 /899 | 896 /4 | 98.806ms |
-| 24ms | 21.351 / 40.039ms | 5 /899 | 875 /25 | 99.531ms |
+| Actual bounded condition | Inputs /unflushed outputs | Mean /p95 /maximum steady cycle | Conditional misses at100.1ms lead /40ms advance |
+| --- | ---: | ---: | ---: |
+| Full-byte correctness workload | 900 /1,798, every output checked | 30.214 /32.873 /50.849ms | 100/1,798; includes repeated pixel-oracle traffic |
+| Separate timing observer condition | 900 /1,798, measured output pixel checks explicitly null | 24.304 /26.786 /48.475ms | 19/1,798; residual Small copy/equality and fixture work remain |
 
-Actual GET return times fit 100.1ms total initial lead with an assumed 40ms
-renderer advance in each recorded trace; the last arm has only 0.569ms margin.
-The assumptions do not reproduce the actual variable renderer clock or prove
-physical queue capacity/A/V feasibility. Load jobs can be partial; aggregate
-CPU overshoots elsewhere do not prove every requested period was fulfilled.
-The 2/3/2/5 tail counts do not establish a maximum safe CPU threshold. Process
-CPU includes the competitor and filter helpers; it is not pure BWDIF CPU.
-All four actual trials exit normally with empty stderr and zero final frame,
-graph and load-thread resources; no installed runtime or module changes.
+These are three repeated packed-source patterns with900 distinct synthetic
+timestamps, **not900 distinct decoded originals or stock Kodi acceptance**.
+Every normal cycle writes the same canonical backing after retiring its VA
+image: actual live-image overlap0. A separate held8 control deliberately keeps
+old images mapped across7 same-backing writes and preserves every old byte.
+This qualifies the OWN sequential lifetime, not Kodi's asynchronous producer.
+No optional Small demand is charged to ordinary BWDIF.
 
-The [earlier unpaced pattern study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6685791635)
-retains its 17.425ms mean / 29.219ms maximum and zero over-budget cycles. Its
-model conservatively makes both fields ready at cycle end; the new analysis
-uses individual GET returns. Different readiness boundaries and pacing
-conditions cannot be presented as a measured latency improvement.
+The timing condition retains captured3→4 and scalar-reference full-byte
+qualification before pacing, all real callbacks, PTS/parity/metadata, output
+counts and lifetimes. It explicitly omits repeated canvas/client/output byte
+oracles inside pacing; its1,798 measured outputs are not individually pixel
+qualified. Deferred-Small untouched-storage guards and fixture invariants
+still contribute, so neither condition is pure product cost. Actual GET-return
+readiness is used directly; older separate timings are not added or replayed.
+Both observed virtual-tail results exceed the inherited lead assumption.
+They establish neither product failure nor a safe client buffer/CPU threshold.
 
-The [current OWN consumer-cost study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698983291)
-reuses the existing source-prefetch/scaling scaffolds against the latest code.
-All four arms pass full public pixel/ownership checks and 100 measured cyclic
-transitions; explicit Small-demand arms also validate all Small pixels. Mean selected wall costs, including the separate client copy and
-fixture-inclusive admission, are:
+The first long probe exhausted the intentional512-picture replay-history
+bound because the reused short scaffold submitted only one initial IDR. Its
+failure/source/ELF are preserved. A distinguishing control admits512 then
+rejects ordinal512; real periodic fixture IDRs every30 admit540 with maximum
+history30 and17 prunes. Only probe traffic was corrected; no limit bypass,
+replay reset or product fix. All final image/graph/COW resources return to0.
 
-| Explicit consumer condition | Mean selected wall |
-| --- | ---: |
-| Public-only, image released before next write | 4.086ms |
-| Additional Small demand, image released | 4.910ms |
-| Public-only, image held across next write | 7.675ms |
-| Additional Small demand, image held | 8.547ms |
+The earlier [paced original-filter conditions](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698703989)
+and [separate consumer costs](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6698983291)
+retain their original four-arm results and scopes. Prior READ-prefault remains
+**do not adopt**; already-integrated prefetch, COW, border and worker fixes
+must not be recreated or summed as historical speedups.
 
-The retained-view condition pays necessary COW preservation in the next first
-field (about 0.51 to 3.97ms for public-only). This is not evidence that original
-Kodi overlaps the same backing or that preservation is faulty. Ordinary BWDIF
-need not demand Small; its optional 0.79ms cost must not be charged universally.
-The callback sums exclude preparation/oracle gaps, use coded1088 copy geometry
-and are not measured whole-pipeline throughput or values to add to the separate
-BWDIF trial. Prior READ-prefault negative evidence remains **do not adopt**.
-
-**Next code experiment:** couple the existing current callbacks and original
-filter in one decoder-free workload and qualify actual derived-image/same-
-backing overlap before selecting a production change. Keep later Small demand,
-retained-image writes, client-copy and admission costs explicit; do not call
-postponed work a saving. Only promising owned cost/ordering changes return to
-original-client >=900-original qualification. Do not recreate already-integrated
-prefetch, COW, borders or worker fixes, or add historical percentages.
+**Next:** establish actual original-client image/canonical-backing overlap or
+identify a relevant owned cost/ordering change before choosing an optimization.
+Only a justified candidate returns to original-client >=900-original hardware
+qualification. Original896/888 Source900 failures, original filter-EOF scope,
+source pixels/chroma/clocks/cadence, GPU return and lifetime/endurance remain
+open under the existing accepted renderer/QoS policy.
 
 The [completed actual discard/debt study](https://github.com/ahnhy1324/crystalhd/issues/477#issuecomment-6685232470)
 retains all 1,800 qualified decisions, all 16 closed before-VA omission windows
