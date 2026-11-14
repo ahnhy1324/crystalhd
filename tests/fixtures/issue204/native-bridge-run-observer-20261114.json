@@ -1,0 +1,970 @@
+{
+  "schema": 1,
+  "date": "2026-11-14",
+  "status": "PASS_ONE_BRIDGE_RECEIPT_OFFICIAL20_RESTORED_RECOVERY180_EOS",
+  "scope": "Fixed ordinary fresh INIT command observation plus the normal downloader existing bridge read/write arguments. No added MMIO, bridge readback or general visibility claim.",
+  "candidate_source": "6cae385602820cddc180aae6ca93328b520ac66c",
+  "candidate_module": {
+    "version": "3.10.25",
+    "srcversion": "F01FBA89C2264C1DD51E5BB",
+    "build_id": "4079dacb372848061b29bcdd980a629f9f4d62b3"
+  },
+  "probe_build_id": "040ca37cd0ad1156d58492b01792081a78db4436",
+  "ordinary_sequence": [
+    {
+      "phase": "unload-stable",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "load-candidate",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "info",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "bridge-observation",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "unload-candidate",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "restore-stable",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "recovery",
+      "exit": 0,
+      "retired": true
+    },
+    {
+      "phase": "kernel-check",
+      "exit": 0,
+      "retired": true
+    }
+  ],
+  "receipt": {
+    "version": 1,
+    "bridge_run_observation": true,
+    "command": {
+      "version": 1,
+      "command_observation": true,
+      "control": {
+        "version": 1,
+        "selector": 2,
+        "generation": "1",
+        "status": 0,
+        "expected_firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+        "firmware_hash_valid": true,
+        "observed_firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+        "download_attempted": true,
+        "download_status": 0,
+        "cleanup_attempted": true,
+        "cleanup_status": 0,
+        "retained": false,
+        "command_count": 5,
+        "replies": [
+          {
+            "command": 1937125377,
+            "sequence": 1,
+            "transport_status": 0,
+            "raw_response_valid": true,
+            "header_matches": true,
+            "raw_response_words": [
+              1937125377,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decoded_response": null
+          },
+          {
+            "command": 1937125380,
+            "sequence": 2,
+            "transport_status": 0,
+            "raw_response_valid": true,
+            "header_matches": true,
+            "raw_response_words": [
+              1937125380,
+              2,
+              0,
+              79360,
+              1377059,
+              458773,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decoded_response": {
+              "stream_firmware_version": 79360,
+              "decoder_firmware_version": 1377059,
+              "firmware_reported_chip_hw_version": 458773
+            }
+          },
+          {
+            "command": 1937125632,
+            "sequence": 3,
+            "transport_status": 0,
+            "raw_response_valid": true,
+            "header_matches": true,
+            "raw_response_words": [
+              1937125632,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              865024,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decoded_response": null
+          },
+          {
+            "command": 1937125635,
+            "sequence": 4,
+            "transport_status": 0,
+            "raw_response_valid": true,
+            "header_matches": true,
+            "raw_response_words": [
+              1937125635,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decoded_response": null
+          },
+          {
+            "command": 1937125633,
+            "sequence": 5,
+            "transport_status": 0,
+            "raw_response_valid": true,
+            "header_matches": true,
+            "raw_response_words": [
+              1937125633,
+              5,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decoded_response": null
+          }
+        ]
+      },
+      "in_flight": {
+        "attempted": true,
+        "status": 0,
+        "read_complete": true,
+        "generation": "1",
+        "request_words": [
+          1937125377,
+          1,
+          64
+        ],
+        "response_words": [
+          1937125377,
+          1,
+          0
+        ],
+        "header_matches": true,
+        "host_interrupt": {
+          "timestamp_ns": "1641996848573419",
+          "arm_mbox0": 0
+        },
+        "sample_flags": 1,
+        "sample_count": 64,
+        "samples": [
+          {
+            "cpudma_ns": "1641996848131033",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848134735",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848138856",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848142627",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848145910",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848149821",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848153662",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848157364",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848161066",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848164837",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848168539",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848172241",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848175523",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848178317",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848181600",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848191238",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848193962",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848202972",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848206115",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848209816",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848213029",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848216032",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848219734",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848222947",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848226369",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848230001",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848232934",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848235798",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848238522",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848242223",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848245436",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848248719",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848252141",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848255494",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848258776",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848261710",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848264992",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848268205",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848271348",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848274491",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848278193",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848281405",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848284339",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848287971",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848291672",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848295374",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848299006",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848302707",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848305850",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848309063",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848312136",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848315279",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848318213",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848321216",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848324778",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848327641",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848330854",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848334067",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848337210",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848340353",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848344054",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848347756",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848351528",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848354671",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848357953",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848361585",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848365217",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848369757",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848372690",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848375763",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848378627",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848382328",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848386030",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848389243",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848392246",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848395948",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848399300",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848402164",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848405377",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848409148",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848412920",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848416202",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848419904",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848423676",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848427377",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848430520",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848434222",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848437435",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848441136",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848444349",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848447632",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848450844",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848454057",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848456781",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848460483",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848464184",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848467467",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848470610",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848474032",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848477036",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848480179",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848483391",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848486674",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848489887",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848493099",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848496242",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848499944",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848503646",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848507347",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848510560",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848514262",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848517475",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848521176",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848524738",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848527742",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848531024",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848534237",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848537939",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848541640",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848544644",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848547577",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848551279",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848554631",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848557844",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848560987",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848564200",
+            "sdram_busy": 0
+          },
+          {
+            "cpudma_ns": "1641996848567412",
+            "cpudma_active": 0,
+            "sdram_ns": "1641996848570555",
+            "sdram_busy": 0
+          }
+        ]
+      },
+      "boundary_after_init": {
+        "attempted": true,
+        "status": 0,
+        "read_complete": true,
+        "root_before": 885668,
+        "root_after": 885668,
+        "image_before": [
+          1142784,
+          1142784,
+          1048576,
+          1
+        ],
+        "image_after": [
+          1142784,
+          1142784,
+          1048576,
+          1
+        ],
+        "packet_before": [
+          1601536,
+          1601536,
+          1601536
+        ],
+        "packet_after": [
+          1601536,
+          1601536,
+          1601536
+        ],
+        "packet_address": 1601536,
+        "header_words": [
+          1937113089,
+          0,
+          1377059,
+          1635848,
+          1635860
+        ],
+        "slots_before": [
+          1635848,
+          1635860
+        ],
+        "slots_after": [
+          1635848,
+          1635860
+        ]
+      },
+      "scope": {
+        "command": "fresh_init",
+        "max_samples": 64,
+        "first_pair_post_mailbox_same_lock": true,
+        "remaining_pairs_relock": true,
+        "mailbox_data_or_status_read": false,
+        "in_flight_packet_read": false,
+        "avd_cpu_status_read": false,
+        "action_register_access": false,
+        "caller_selected_address": false,
+        "queue_mutation": false,
+        "ppb_retention": false,
+        "ordinary_irq_authoritative": true,
+        "runtime_transfer_established": false,
+        "cross_cpu_visibility_established": false,
+        "physical_generation_established": false,
+        "source_lease_established": false
+      }
+    },
+    "bridge_run": {
+      "attempted": true,
+      "status": 0,
+      "read_complete": true,
+      "generation": "1",
+      "raw_control_before": 262384,
+      "issued_control": 262386,
+      "io_sync_en": true,
+      "prefetch_en": true,
+      "gather_en": true,
+      "ccb_space_alias_en": false
+    },
+    "scope": {
+      "additional_mmio_reads": 0,
+      "additional_mmio_writes": 0,
+      "write_readback": false,
+      "boot_run_bridge_flags_only": true,
+      "cross_cpu_visibility_established": false,
+      "physical_generation_established": false,
+      "source_lease_established": false
+    }
+  },
+  "official_stable_recovery": {
+    "source": "24a5182b988bb0fead4440d57ed0f72e4f70b68d",
+    "module": "3.10.20",
+    "srcversion": "0D63A770766C0ABB982FAB5",
+    "full_baseline_before_after_equal": true,
+    "whole_userspace_provenance_guard": "passed before unload, after restoration, and after recovery",
+    "recovery_frames": 180,
+    "expected_frames": 180,
+    "eos": true,
+    "metadata_sha256": "f4609625494a81765d8d6a0b9a9d356f5dc045cb485d2c53f3e7fd95f42135bc",
+    "pixel_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "actual_stable_mapping_captured": true,
+    "kernel_check_exit": 0,
+    "refcount": 0,
+    "pin_net": 0,
+    "new_aer": false
+  },
+  "live_resource_handoff": null,
+  "preparation_failures": [
+    "Before any module/device action, an incorrect candidate-version20 assumption was refused; actual candidate was current-source25.",
+    "Before any module/device action, the userspace program-header ELF reader refused an ET_REL module; module build identity was checked with its unique GNU readelf note instead."
+  ],
+  "preparation_failures_are_native_runs": false
+}
