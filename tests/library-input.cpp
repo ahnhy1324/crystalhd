@@ -279,6 +279,129 @@ static void Framing()
     }
 }
 
+static void SingleByteEndMarkers()
+{
+    // End-of-sequence/end-of-stream have a legal empty RBSP: their complete
+    // NAL is just 0x0a/0x0b. Framing tests do not feed these synthetic AUs to
+    // a decoder or claim historical PowerVLC fault reproduction.
+    for (unsigned length : {1U, 2U, 4U}) for (uint8_t marker : {0x0a, 0x0b}) {
+        for (unsigned position = 0; position < 3; ++position) {
+            Fixture f(length);
+            Bytes input, expected;
+            auto unit = [&](const Bytes &nal) {
+                append(input, nal, length); append(expected, nal, 0);
+            };
+            if (position == 0) unit(Bytes{marker});
+            unit(sps);
+            if (position == 1) unit(Bytes{marker});
+            unit(pps); unit(idr);
+            if (position == 2) unit(Bytes{marker});
+            check(DtsCheckRecoverySpsPps(&f.context, input.data(), input.size()),
+                  "single-byte end NAL does not hide the AVC1 SPS/PPS pair");
+            check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+                  payload(packets[0]) == expected && pts(packets[0]) == 66,
+                  "one-byte end NAL preserves exact converted bytes and first PTS");
+            check(f.context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
+                  !f.context.PESConvParams.m_lStartCodeDataSize,
+                  "one-byte end NAL leaves AVC1 conversion enabled");
+            packets.clear();
+            check(f.send(access_unit(length, false)) == BC_STS_SUCCESS &&
+                  packets.size() == 1 && payload(packets[0]) == access_unit(0, false),
+                  "following AVC1 input still converts after an end NAL");
+        }
+        {
+            Fixture f(length);
+            f.context.PESConvParams.m_bAddSpsPps = false;
+            Bytes input, expected;
+            append(input, Bytes{marker}, length); append(expected, Bytes{marker}, 0);
+            check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+                  payload(packets[0]) == expected &&
+                  f.context.PESConvParams.m_bIsAdd_SCode_CodeIn,
+                  "standalone one-byte end NAL keeps framed mode");
+            packets.clear();
+            check(f.send(access_unit(length, true)) == BC_STS_SUCCESS &&
+                  packets.size() == 1 && payload(packets[0]) == access_unit(0, true),
+                  "standalone end NAL does not change the next AU's framing");
+        }
+        {
+            Fixture f(length);
+            f.context.PESConvParams.m_bAddSpsPps = false;
+            Bytes first, whole;
+            append(first, Bytes{marker}, length);
+            append(whole, Bytes{marker}, 0); append(whole, idr, 0);
+            Bytes framed_idr; append(framed_idr, idr, length);
+            // Keep the legacy converter's first-call admission condition:
+            // declared payload size must be below the whole input size.
+            const unsigned split = 6;
+            first.insert(first.end(), framed_idr.begin(), framed_idr.begin() + length + split);
+            Bytes last(idr.begin() + split, idr.end());
+            check(f.send(first) == BC_STS_SUCCESS &&
+                  f.context.PESConvParams.m_lStartCodeDataSize == idr.size() - split,
+                  "end NAL followed by a split payload retains the pending byte count");
+            check(f.send(last) == BC_STS_SUCCESS && packets.size() == 2 &&
+                  pts(packets[0]) == 66 && pts(packets[1]) == 66,
+                  "pending payload continuation after an end NAL is accepted");
+            Bytes reconstructed;
+            for (const Bytes &packet : packets) {
+                const Bytes bytes = payload(packet);
+                reconstructed.insert(reconstructed.end(), bytes.begin(), bytes.end());
+            }
+            check(reconstructed == whole &&
+                  f.context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
+                  !f.context.PESConvParams.m_lStartCodeDataSize,
+                  "split payload reconstructs the exact original Annex-B projection");
+        }
+    }
+    {
+        Fixture f(1);
+        Bytes input, expected;
+        for (unsigned n = 0; n < 600; ++n) {
+            append(input, Bytes{static_cast<uint8_t>(n & 1 ? 0x0b : 0x0a)}, 1);
+            append(expected, Bytes{static_cast<uint8_t>(n & 1 ? 0x0b : 0x0a)}, 0);
+        }
+        for (const Bytes &nal : {sps, pps, idr}) {
+            append(input, nal, 1); append(expected, nal, 0);
+        }
+        check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+              payload(packets[0]) == expected &&
+              f.context.PESConvParams.m_bIsAdd_SCode_CodeIn,
+              "one-byte length framing reserves all 2-to-5-byte end-NAL expansion");
+    }
+    for (uint8_t marker : {0x0a, 0x0b}) {
+        Fixture f(4);
+        Bytes input; append(input, Bytes{marker}, 0);
+        const Bytes rest = access_unit(0, true);
+        input.insert(input.end(), rest.begin(), rest.end());
+        check(DtsCheckRecoverySpsPps(&f.context, input.data(), input.size()),
+              "marker-first legacy Annex-B still detects both parameter sets");
+        check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+              payload(packets[0]) == input && pts(packets[0]) == 66 &&
+              !f.context.PESConvParams.m_bIsAdd_SCode_CodeIn,
+              "marker-first Annex-B keeps original bytes and legacy fallback");
+    }
+    {
+        Fixture f(4);
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        Bytes input = access_unit(4, true);
+        append(input, Bytes{0x65}, 4); // Existing non-end-marker fallback.
+        check(!DtsCheckRecoverySpsPps(&f.context, input.data(), input.size()),
+              "later fallback selects whole-buffer Annex-B detection before an early SPS result");
+        check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+              payload(packets[0]) == input && pts(packets[0]) == 66 &&
+              !f.context.PESConvParams.m_bIsAdd_SCode_CodeIn,
+              "later non-marker fallback retains all original bytes and PTS");
+    }
+    for (uint8_t header : {0x2a, 0x4b, 0x8a}) {
+        Fixture f(4);
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        Bytes input; append(input, Bytes{header}, 4);
+        check(f.send(input) == BC_STS_SUCCESS && packets.size() == 1 &&
+              payload(packets[0]) == input &&
+              !f.context.PESConvParams.m_bIsAdd_SCode_CodeIn,
+              "end-NAL type bits with invalid ref/forbidden bits retain the old fallback");
+    }
+}
+
 static void RecoverySingleThreadConfig()
 {
 	{
@@ -744,6 +867,10 @@ static void DetectorBounds()
     Bytes length_collision; append(length_collision, long_idr, 4);
     check(!DtsCheckSpsPps(&f.context, length_collision.data(), length_collision.size()),
           "0x00000107 NAL length is not mistaken for an Annex-B SPS marker");
+    Bytes marker_collision; append(marker_collision, Bytes{0x0a}, 4);
+    marker_collision.insert(marker_collision.end(), length_collision.begin(), length_collision.end());
+    check(!DtsCheckSpsPps(&f.context, marker_collision.data(), marker_collision.size()),
+          "end marker does not make a following 263-byte NAL length into a false SPS");
     Bytes preceded; append(preceded, Bytes{0x09, 0xf0}, 4); append(preceded, sps, 4);
     check(DtsCheckSpsPps(&f.context, preceded.data(), preceded.size()),
           "SPS after another bounded length-prefixed NAL is found");
@@ -1874,6 +2001,7 @@ int main(int argc, char **argv)
         return 0;
     }
     Framing();
+    SingleByteEndMarkers();
     RecoverySingleThreadConfig();
     NestedInputAcrossLifecycleOwner();
     WmvBFrameMetadata();
