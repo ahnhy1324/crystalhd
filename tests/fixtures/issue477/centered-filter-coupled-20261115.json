@@ -569,5 +569,13 @@
     "safe buffer/CPU threshold",
     "causal performance gain from observer contrast",
     "timing-mode1798 individually pixel-verified outputs"
-  ]
+  ],
+  "packaged_build": {
+    "status": "PASS_STRICT_COMPILE_ONLY",
+    "artifact_root": "/home/mache/.cache/crystalhd-centered-filter-coupling-package-build-20261115",
+    "commands": "/home/mache/.cache/crystalhd-centered-filter-coupling-package-build-20261115/build-commands.json",
+    "both_compiler_stderr_empty": true,
+    "new900_execution": false,
+    "installed": false
+  }
 }

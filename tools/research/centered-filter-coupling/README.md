@@ -188,8 +188,10 @@ other project CPU/device/application workloads idle for measured conditions.
 The original scalar8-input reference still runs before each paced trial.
 The admitted-IDR history control's actual command and raw receipt remain in
 the recorded artifact root; its source entry is --history-admission-control.
-The small packaged build/run path adapters are not an additional execution
-claim: original commands, exact sources, ELFs and failures remain archived.
+The packaged build recipe was compiled once in a fresh output directory with
+empty strict compiler stderr. The packaged run path adapter is not an
+additional900 execution claim: original commands, exact sources, ELFs and
+failures remain archived.
 
 The captured graph retains time_base=1/1 and its original synthetic PTS
 coordinates. Nominal30000/1001 cadence comes from the explicit external paced

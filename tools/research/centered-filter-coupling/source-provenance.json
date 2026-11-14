@@ -26,5 +26,7 @@
   "product_changes": false,
   "external_product_changes": false,
   "hardware_access": false,
-  "install_changes": false
+  "install_changes": false,
+  "packaged_build_commands": "/home/mache/.cache/crystalhd-centered-filter-coupling-package-build-20261115/build-commands.json",
+  "packaged_runner_additional900_execution": false
 }
