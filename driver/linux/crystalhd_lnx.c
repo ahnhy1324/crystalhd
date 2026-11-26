@@ -19,6 +19,7 @@
 #include "crystalhd_compat_ioctl.h"
 #include "crystalhd_fw_research.h"
 #include "crystalhd_rx_receipt.h"
+#include "crystalhd_pm_research.h"
 
 #include <linux/capability.h>
 #include <linux/overflow.h>
@@ -2010,9 +2011,19 @@ static int __init chd_dec_module_init(void)
 		return rc;
 	}
 #endif
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	rc = crystalhd_pm_research_init();
+	if (rc) {
+		crystalhd_v4l2_cleanup();
+		return rc;
+	}
+#endif
 	rc = pci_register_driver(&bc_chd_driver);
 
 	if (rc < 0) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_cleanup();
+#endif
 		printk(KERN_ERR "%s: Could not find any devices. err:%d\n",
 		       __func__, rc);
 #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -2035,6 +2046,9 @@ static void __exit chd_dec_module_cleanup(void)
 	crystalhd_fw_research_cleanup();
 #endif
 	pci_unregister_driver(&bc_chd_driver);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	crystalhd_pm_research_cleanup();
+#endif
 	crystalhd_v4l2_cleanup();
 }
 module_exit(chd_dec_module_cleanup);
@@ -2042,7 +2056,11 @@ module_exit(chd_dec_module_cleanup);
 MODULE_AUTHOR("Naren Sankar <nsankar@broadcom.com>");
 MODULE_AUTHOR("Prasad Bolisetty <prasadb@broadcom.com>");
 MODULE_DESCRIPTION(CRYSTAL_HD_NAME);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION "-pmfinite1");
+#else
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION);
+#endif
 MODULE_INFO(crystalhd_bundle, CRYSTALHD_BUNDLE_VERSION);
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE(CRYSTALHD_LINK_FIRMWARE_NAME);

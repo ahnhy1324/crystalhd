@@ -11,7 +11,7 @@ cleanup()
         "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h" \
         "$test_dir/flea-power-fll.h" "$test_dir/flea-power-up.h" \
         "$test_dir/flea-power-registers.h" "$test_dir/flea-power-fault.h" \
-        "$test_dir/flea-cleanup.h"
+        "$test_dir/flea-cleanup.h" "$test_dir/flea-pm-research-core.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
@@ -99,6 +99,19 @@ awk '
     "$repo_dir/include/bc_dts_defs.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     > "$test_dir/flea-power-types.h"
 
+test_source="$repo_dir/tests/flea-power.c"
+research_flag=
+if [ "${FLEA_PM_RESEARCH_CHECK:-0}" = 1 ]; then
+    test_source="$repo_dir/tests/flea-pm-research.c"
+    research_flag=-DCRYSTALHD_ENABLE_PM_RESEARCH
+    awk '
+        /^\/\* PM research core begin:/ { copying=1; found++; next }
+        /^\/\* PM research core end\./ { copying=0; ended++ }
+        copying { print }
+        END { if (found != 1 || ended != 1 || copying) exit 1 }
+    ' "$repo_dir/driver/linux/crystalhd_pm_research.c" > "$test_dir/flea-pm-research-core.h"
+fi
+
 for sanitize in no yes; do
     extra=
     if [ "$sanitize" = yes ]; then
@@ -110,9 +123,9 @@ for sanitize in no yes; do
             watchdog_flag=-D_POWER_HANDLE_AVD_WATCHDOG_
         fi
         "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
-            $extra $watchdog_flag -I"$test_dir" \
+            $extra $watchdog_flag $research_flag -I"$test_dir" \
             -I"$repo_dir/include/flea/70015/magnum/basemodules/chp/70015/rdb/a0" \
-            "$repo_dir/tests/flea-power.c" -o "$test_dir/check"
+            "$test_source" -o "$test_dir/check"
         printf 'Flea power selector/transitions: sanitizers=%s watchdog=%s\n' \
             "$sanitize" "$watchdog"
         timeout --kill-after=5s 20s env \

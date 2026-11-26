@@ -64,3 +64,19 @@ ccflags-y += -DCRYSTALHD_ENABLE_V4L2
 crystalhd-objs += crystalhd_v4l2.o crystalhd_v4l2_node.o \
 	crystalhd_v4l2_buffers.o crystalhd_v4l2_decoder.o crystalhd_v4l2_output.o
 endif
+
+# Isolated finite PM experiment; absent from the default/release module.
+CRYSTALHD_PM_RESEARCH ?= 0
+ifneq ($(CRYSTALHD_PM_RESEARCH),0)
+ifneq ($(CRYSTALHD_PM_RESEARCH),1)
+$(error CRYSTALHD_PM_RESEARCH must be 0 or 1)
+endif
+ifneq ($(CONFIG_DEBUG_FS),y)
+$(error CRYSTALHD_PM_RESEARCH=1 requires CONFIG_DEBUG_FS=y)
+endif
+ifneq ($(CRYSTALHD_FW_RESEARCH)$(CRYSTALHD_V4L2),00)
+$(error CRYSTALHD_PM_RESEARCH must run separately from FW_RESEARCH and V4L2)
+endif
+ccflags-y += -DCRYSTALHD_ENABLE_PM_RESEARCH
+crystalhd-objs += crystalhd_pm_research.o
+endif
