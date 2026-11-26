@@ -41,9 +41,11 @@ static void research_resume(struct crystalhd_hw *hw)
 
 static void limits_and_claim(void)
 {
-    check(pm_limits_valid(0, 0) && pm_limits_valid(1, 1) && pm_limits_valid(8, 5000),
+    check(pm_limits_valid(0, 0) && pm_limits_valid(1, 1) &&
+          pm_limits_valid(CHD_PM_MAX_ATTEMPTS, CHD_PM_MAX_MS),
           "OFF and finite hard endpoints are accepted");
-    const unsigned invalid[][2] = {{0,1},{1,0},{9,1},{1,5001},{UINT32_MAX,1},{1,UINT32_MAX}};
+    const unsigned invalid[][2] = {{0,1},{1,0},{CHD_PM_MAX_ATTEMPTS+1,1},
+        {1,CHD_PM_MAX_MS+1},{UINT32_MAX,1},{1,UINT32_MAX}};
     for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++)
         check(!pm_limits_valid(invalid[i][0],invalid[i][1]), "partial/unbounded options are rejected");
     struct crystalhd_hw hw = research_setup(0, 0);
@@ -305,8 +307,31 @@ static void selection_observation(void)
           "saturating observer counters never wrap or prevent ordinary wake");
 }
 
+static void full_profile_budget(void)
+{
+    struct crystalhd_hw hw = research_setup(CHD_PM_MAX_ATTEMPTS, CHD_PM_MAX_MS);
+    for (unsigned i=0; i<CHD_PM_MAX_ATTEMPTS; ++i) {
+        research_enter(&hw);
+        research_time += 500000000ULL;
+        research_resume(&hw);
+        research_time += 1000000ULL;
+    }
+    const unsigned reads=device.reads, writes=device.writes;
+    check(real_set_next_power_state(&hw,FLEA_EVT_PAUSE)==BC_STS_SUCCESS &&
+          pm_ledger.stop==CHD_PM_LIMIT && pm_ledger.attempts==CHD_PM_MAX_ATTEMPTS &&
+          pm_ledger.up_completed==CHD_PM_MAX_ATTEMPTS &&
+          pm_ledger.fll_completed==CHD_PM_MAX_ATTEMPTS &&
+          device.reads==reads && device.writes==writes && !pm_ledger.dropped,
+          "complete profile budget retains each wake/FLL and blocks further physical IO");
+    crystalhd_pm_research_retire(&hw);
+    check(pm_ledger.retired && pm_ledger.count==5*CHD_PM_MAX_ATTEMPTS+3 &&
+          pm_ledger.count<CHD_PM_RECORDS && !pm_ledger.dropped,
+          "full profile and terminal retirement fit the fixed receipt array");
+}
+
 int main(void)
 {
+    full_profile_budget();
     selection_observation();
     limits_and_claim();
     finite_cycles();
