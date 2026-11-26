@@ -5,6 +5,9 @@ MPEG-2 pictures byte-identical to the native reference and full official 1.3
 restoration.** This is bounded research for [#689](https://github.com/ahnhy1324/crystalhd/issues/689),
 not thermal/endurance qualification or production enablement.
 
+The subsequent [H.264 source900 comparison](native900-20261126.md) uses a
+separate private profile and preserves these original 180-picture results.
+
 ## Results and cause
 
 | Attempt | Module / client | Native comparison | Physical down / wake |
@@ -135,5 +138,7 @@ case, identified card-temperature measurements, long-idle/endurance and any
 future experimental playback promotion still require their own evidence.
 Host thermal-zone maxima are not identified BCM70015 sensor or wattage readings.
 These 180-picture initial controls do not satisfy or replace the separate
-900-source-original experimental playback criterion. Runtime PWM remains
+900-source-original experimental playback criterion. The separate H.264
+follow-up completes 900 pictures per arm, with its own timing/PTS and promotion
+limits recorded in the linked result. Runtime PWM remains
 disabled by default, and #689 remains open.
