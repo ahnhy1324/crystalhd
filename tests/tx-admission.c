@@ -69,7 +69,8 @@ static bool refcount_dec_and_test(refcount_t *ref)
 #define time_after_eq(a, b) ((long)((a) - (b)) >= 0)
 #define current NULL
 #define printk(...) ((void)0)
-#define dev_err(dev, ...) ((void)(dev))
+static void discard_cleanup_log(const char *format, ...) { (void)format; }
+#define dev_err(dev, ...) ((void)(dev), discard_cleanup_log(__VA_ARGS__))
 #define dev_dbg(dev, ...) ((void)(dev))
 #define lockdep_assert_held(lock) \
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
@@ -178,6 +179,8 @@ struct crystalhd_hw {
     bool WakeUpDecodeDone, SingleThreadAppFIFOEmpty;
     bool FleaEnablePWM, FleaPowerTransition, hw_pause_issued;
     uint32_t FleaTxActive;
+    uint32_t FleaCleanupActive;
+    struct { bool valid; } FleaPowerSaved;
     enum FLEA_POWER_STATES FleaPowerState;
     uint32_t tx_list_post_index, tx_ioq_tag_seed;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
@@ -366,6 +369,7 @@ static struct device *chddev(void) { return &endpoint.dev; }
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 static BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *, uint32_t, BC_STATUS);
 static void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *);
+void crystalhd_hw_publish_fault(struct crystalhd_hw *);
 static void disable_irq(int);
 static void enable_irq(int);
 static void synchronize_irq(int);
@@ -938,6 +942,7 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw, bool cleanu
 
 #include "tx-admission-flea.h"
 #include "tx-admission-buffer.h"
+#include "flea-cleanup.h"
 #include "tx-admission-hardware.h"
 static BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *hw, u32 bytes)
 {
@@ -1002,11 +1007,15 @@ static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
           "DMA starts only after request, callback, opaque cookie, tag and length publication");
     run.starts++;
 }
+static unsigned cleanup_stop_depth;
 static BC_STATUS Stop(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware && run.irq_depth && !hardware.lock &&
           (run.mapped || !QueueCount(&activeq)),
           "cancel stops DMA with IRQ drained, buffer still mapped and no spinlock held");
+    if (cleanup_stop_depth)
+        Check(hw->FleaCleanupActive == cleanup_stop_depth,
+              "TX stop is inside both the outer and local cleanup holds");
     run.stops++;
     return run.stop_status;
 }
@@ -3332,6 +3341,56 @@ static void FleaPowerNestedAndBypass(void)
     }
 }
 
+static void CancelPowerRetention(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned mode = 0; mode < 4; mode++) {
+            uint32_t tag = 0;
+            Reset();
+            run.mapped = true;
+            request.uinfo.xfr_len = run.transfer_size;
+            request.tx_buffer = (struct crystalhd_tx_buffer){
+                .bytes = run.transfer_size, .cookie = &request,
+            };
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                      &opaque_cookie, &tag, run.transfer_flags) == BC_STS_SUCCESS,
+                  "prepare actual TX owner before cleanup rejection");
+            hardware.FleaEnablePWM = pwm;
+            hardware.FleaPowerState = mode == 0 ? FLEA_PS_LP_COMPLETE :
+                                      mode == 2 ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+            hardware.FleaPowerSaved.valid = mode == 1 || mode == 2;
+            hardware.FleaPowerTransition = mode == 3;
+            Check(crystalhd_hw_cancel_all_tx(&hardware) ==
+                      (mode == 3 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
+                  !run.stops && !run.callback_calls && !run.irq_disables &&
+                  !hardware.FleaCleanupActive && !hardware.lock &&
+                  QueueHead(&activeq) == packet0 &&
+                  packet0->buffer == &request.tx_buffer &&
+                  packet0->cb_context == &opaque_cookie && packet0->list_tag == tag &&
+                  hardware.dma_fault == (mode != 3) &&
+                  hardware.FleaPowerSaved.valid == (mode == 1 || mode == 2),
+                  "asleep or moving TX cleanup preserves exact packet/buffer/callback ownership");
+        }
+    for (unsigned fail = 0; fail < 2; fail++) {
+        bool held;
+        Reset();
+        hardware.FleaEnablePWM = true;
+        hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        run.stop_status = fail ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+        Check(crystalhd_flea_cleanup_begin(&hardware, &held) == BC_STS_SUCCESS && held,
+              "clocked pending context accepts outer cleanup hold");
+        cleanup_stop_depth = 2;
+        Check(crystalhd_hw_cancel_all_tx(&hardware) ==
+                  (fail ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              hardware.FleaCleanupActive == 1 && !hardware.lock && !run.irq_depth,
+              "TX success and stop failure both release only their own cleanup hold");
+        cleanup_stop_depth = 0;
+        crystalhd_flea_cleanup_end(&hardware, held);
+        Check(!hardware.FleaCleanupActive && hardware.dma_fault == !!fail,
+              "outer TX cleanup release preserves terminal fault");
+    }
+}
+
 int main(void)
 {
     Admission(); OpaqueCookie(); CancelWithoutQueues(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); FileReleaseCancellation(); BusyAndFlush(); Cancellation();
@@ -3353,6 +3412,7 @@ int main(void)
     FleaPowerRejections();
     FleaPowerRollback();
     FleaPowerNestedAndBypass();
+    CancelPowerRetention();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -5,6 +5,8 @@ set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dma_test_dir=$(mktemp -d)
 trap 'rm -rf "$dma_test_dir"' EXIT HUP INT TERM
+awk -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-cleanup.h"
 
 # The probe must make one checked combined streaming/coherent-mask attempt per
 # width. A separate dma_set_mask() call can conceal coherent-mask failure.
@@ -108,7 +110,7 @@ for register_sanitize in no address undefined; do
 done
 
 awk '
-/^enum list_sts \{/ { copy = 1 }
+/^enum (list_sts|FLEA_POWER_STATES) \{/ { copy = 1 }
 /^union FLEA_INTR_BITS_COMMON$/ { copy = 1 }
 copy { print }
 copy && /^};/ { copy = 0 }

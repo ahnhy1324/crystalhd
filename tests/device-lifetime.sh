@@ -9,12 +9,29 @@ cleanup()
     rm -f "$lifetime_test_dir/check" "$lifetime_test_dir/lifetime-functions.h" \
         "$lifetime_test_dir/lifetime-command.h" "$lifetime_test_dir/lifetime-binding.h" \
         "$lifetime_test_dir/lifetime-owner.h" \
+        "$lifetime_test_dir/lifetime-power-types.h" "$lifetime_test_dir/lifetime-cleanup.h" \
+        "$lifetime_test_dir/lifetime-fault.h" \
         "$lifetime_test_dir/access-check" "$lifetime_test_dir/access-binding.h" \
         "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
     rmdir "$lifetime_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+awk '
+    /^enum FLEA_POWER_STATES[[:space:]{]/ { copying = 1; found++ }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/FleaDefs.h" > "$lifetime_test_dir/lifetime-power-types.h"
+awk -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$lifetime_test_dir/lifetime-cleanup.h"
+awk '
+    /^void crystalhd_hw_publish_fault\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.c" > "$lifetime_test_dir/lifetime-fault.h"
 
 # Exercise the production removal/close paths, including their resource helpers.
 awk '

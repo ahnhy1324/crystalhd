@@ -10,11 +10,13 @@ cleanup()
         "$tx_test_dir/tx-admission-hardware.h" "$tx_test_dir/tx-admission-command.h" \
         "$tx_test_dir/tx-admission-buffer.h" "$tx_test_dir/tx-admission-flea-types.h" \
         "$tx_test_dir/tx-admission-flea.h" "$tx_test_dir/tx-admission-queue-types.h" \
-        "$tx_test_dir/tx-admission-queue.h"
+        "$tx_test_dir/tx-admission-queue.h" "$tx_test_dir/flea-cleanup.h"
     rmdir "$tx_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+awk -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$tx_test_dir/flea-cleanup.h"
 
 # Retain the driver state values and the exact command/hardware TX paths.
 # The fixture supplies node allocation, DMA mapping and hardware/IRQ boundaries.

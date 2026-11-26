@@ -10,11 +10,14 @@
 
 #define BC_BIT(bit) (UINT32_C(1) << (bit))
 #define dev_dbg(dev, ...) ((void)(dev))
-#define dev_err(dev, ...) ((void)(dev))
+static void discard_cleanup_log(const char *format, ...) { (void)format; }
+#define dev_err(dev, ...) ((void)(dev), discard_cleanup_log(__VA_ARGS__))
 #define dev_info(dev, ...) ((void)(dev))
 #define printk(...) ((void)0)
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
+#define spin_lock_irqsave(lock, flags) (assert(!*(lock)), *(lock) = 1, (flags) = 0)
+#define spin_unlock_irqrestore(lock, flags) (assert(*(lock)), *(lock) = 0, (void)(flags))
 #define EPOLLERR 0x008U
 #define EPOLLHUP 0x010U
 
@@ -38,6 +41,10 @@ struct crystalhd_hw {
     void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     enum FLEA_POWER_STATES FleaPowerState;
     bool FleaEnablePWM;
+    bool FleaPowerTransition;
+    uint32_t FleaCleanupActive;
+    struct { bool valid; } FleaPowerSaved;
+    unsigned lock;
     bool dma_fault, dev_started;
     int fwcmd_trans_mutex;
     bool (*pfnStopDevice)(struct crystalhd_hw *);
@@ -49,6 +56,7 @@ static struct pci_dev endpoint = { .irq = 17, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static unsigned clear_at, reset_reads, reset_writes, other_reads, other_writes;
 static unsigned sleeps, sleep_ms, callbacks, cases;
+static unsigned cleanup_stop_depth;
 static uint32_t unrelated_bits;
 static bool reset_complete;
 static bool require_reset, detected_ddr3;
@@ -186,6 +194,8 @@ static int msleep_interruptible(unsigned delay)
 static void callback(struct crystalhd_hw *hw, enum callback_id id)
 {
     assert(hw->adp == &adapter && reset_complete);
+    if (id == TEMPERATURE_OFF && hw->FleaEnablePWM)
+        assert(hw->FleaCleanupActive == (cleanup_stop_depth ? cleanup_stop_depth : 1));
     callback_count[id]++;
     record(CALL, id, 0);
     if (id != DETECT_DDR && id != CONTROLLER && id != ARBITER)
@@ -231,6 +241,8 @@ static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
     return BC_STS_SUCCESS;
 }
 
+void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
+#include "flea-cleanup.h"
 #include "flea-reset-functions.h"
 
 static void mutex_lock(int *lock)
@@ -636,6 +648,7 @@ static void run_stop(unsigned idle_at, unsigned cke_at, uint32_t noise)
 static void stop_caller(unsigned idle_at, bool closing, bool drained)
 {
     struct crystalhd_hw hw;
+    bool held;
     unsigned completed_events;
     const bool idle = idle_at && idle_at <= 100;
     const struct event failure[] = {
@@ -655,8 +668,14 @@ static void stop_caller(unsigned idle_at, bool closing, bool drained)
     require_reset = true;
     reset_complete = false;
     cases++;
+    assert(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_SUCCESS && held);
+    cleanup_stop_depth = 2;
     assert((closing ? crystalhd_hw_close(&hw) : crystalhd_hw_suspend(&hw)) ==
            (idle ? BC_STS_SUCCESS : BC_STS_ERROR));
+    assert(hw.FleaCleanupActive == 1);
+    crystalhd_flea_cleanup_end(&hw, held);
+    cleanup_stop_depth = 0;
+    assert(!hw.FleaCleanupActive && !hw.lock);
     assert(!irq_depth && !hw.fwcmd_trans_mutex);
     assert(hw.dev_started == !(idle && closing));
     assert(hw.dma_fault == !idle && adapter.present == idle &&
@@ -890,6 +909,28 @@ static void rejected_lifecycle_events(void)
         }
 }
 
+static void asleep_stop_retains_context(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned mode = 0; mode < 4; mode++) {
+            setup();
+            struct crystalhd_hw hw = hardware();
+            hw.FleaEnablePWM = pwm;
+            hw.FleaPowerState = mode == 0 ? FLEA_PS_LP_COMPLETE :
+                                mode == 2 ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+            hw.FleaPowerSaved.valid = mode == 1 || mode == 2;
+            hw.FleaPowerTransition = mode == 3;
+            hw.rx_freeq = &endpoint;
+            assert(!crystalhd_flea_stop_device(&hw));
+            assert(!reset_reads && !reset_writes && !other_reads && !other_writes &&
+                   !hw.FleaCleanupActive && !hw.lock && hw.rx_freeq == &endpoint &&
+                   hw.FleaPowerSaved.valid == (mode == 1 || mode == 2) &&
+                   hw.dma_fault == (mode != 3) &&
+                   callback_count[DISABLE] == (mode != 3) && !callback_count[STOP]);
+            cases++;
+        }
+}
+
 static void fault_cannot_reset(void)
 {
     for (unsigned state = 0; state < 2; state++) {
@@ -928,6 +969,7 @@ int main(void)
     stop_cases();
     rejected_lifecycle_events();
     fault_cannot_reset();
+    asleep_stop_retains_context();
     printf("Flea reset/DDR: %u production reset/poll/init/start/stop scenarios passed\n", cases);
     return 0;
 }

@@ -1590,10 +1590,16 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 	BC_STATUS retire_sts;
 	unsigned int count;
 	unsigned int i;
+	bool power_held = false;
 
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
+	}
+	if (!READ_ONCE(hw->dma_fault)) {
+		sts = crystalhd_flea_cleanup_begin(hw, &power_held);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
 	}
 
 	/* Backend stop callbacks sleep. The caller excludes process submissions;
@@ -1632,6 +1638,7 @@ out:
 	 * caller releases TX serialization and a fixed list tag can be reused.
 	 */
 	synchronize_irq(hw->adp->pdev->irq);
+	crystalhd_flea_cleanup_end(hw, power_held);
 
 	return hw->dma_fault ? BC_STS_IO_ERROR : sts;
 }
@@ -2028,6 +2035,8 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	unsigned int retired_count;
 	unsigned int queue_index;
 	struct crystalhd_rx_dma_pkt *packet;
+	BC_STATUS sts;
+	bool power_held;
 
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -2035,9 +2044,14 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	}
 	if (READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
+	sts = crystalhd_flea_cleanup_begin(hw, &power_held);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 	/* A monitor handle never creates capture queues or posts DMA. */
-	if (!hw->rx_actq && !hw->rx_rdyq && !hw->rx_freeq)
+	if (!hw->rx_actq && !hw->rx_rdyq && !hw->rx_freeq) {
+		crystalhd_flea_cleanup_end(hw, power_held);
 		return BC_STS_SUCCESS;
+	}
 	/* A fetch may own a mapped packet outside every queue. Invalidate it
 	 * before a destructive RX stop/cancel attempt so it cannot be requeued.
 	 */
@@ -2071,6 +2085,7 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 
 out:
 	enable_irq(hw->adp->pdev->irq);
+	crystalhd_flea_cleanup_end(hw, power_held);
 	return hw->dma_fault ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
 }
 
