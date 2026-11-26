@@ -116,6 +116,17 @@ the exact input preflight. Independent reviews cover source, actual native
 ledgers, input/output/lease reconstruction and complete restoration. Device-free
 controls remain distinct from these actual hardware results.
 
+The initial integration documentation check failed with `undocumented module:
+pm_research_attempts, pm_research_ms`: its broad source scan counted the isolated
+research object as a production configuration surface. The inventory now asks
+the actual Kbuild for its default object list, without building a module, and
+scans those sources. Temporary source controls confirm that a newly linked
+production parameter is included, and linking the research object into the
+default would expose its parameters to the check again. There is no parameter
+name exclusion. The corrected check retains 44 production surfaces; all 16
+existing schema checks pass. Research controls remain documented separately in
+[CONFIGURATION.md](../../../CONFIGURATION.md).
+
 ## Remaining scope
 
 This establishes two finite current-source transitions, not sustained automatic

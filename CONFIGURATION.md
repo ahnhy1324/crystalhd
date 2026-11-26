@@ -424,11 +424,16 @@ they must not be presented as CrystalHD config keys or silently persisted.
 | `GST_PLUGIN_PATH`, `GST_PLUGIN_PATH_1_0`, `LD_LIBRARY_PATH` | GStreamer/dynamic loader | Source-tree wrapper plumbing; installed use should rely on installed discovery | Process start; stale checkout paths can select mismatched components | External public interfaces |
 | `XDG_CONFIG_HOME`, `HOME` | desktop/shell environment | Locate the default Chromium launcher config when no explicit path is set | Evaluated before that trusted config is sourced | External public interfaces |
 
-Build switches (`LEGACY_CPU`, `CRYSTALHD_FW_RESEARCH`, `CRYSTALHD_V4L2`),
+Build switches (`LEGACY_CPU`, `CRYSTALHD_FW_RESEARCH`, `CRYSTALHD_PM_RESEARCH`, `CRYSTALHD_V4L2`),
 test-only `CRYSTALHD_TEST_*` variables, `CRYSTALHD_CHECK_ROOT`, and controls
 under `tests/` or `tools/fw-research/` are intentionally outside this runtime
-inventory. The V4L2 and firmware-research builds are not supported production
-configuration presets.
+inventory. The V4L2 and firmware/PM research builds are not supported production
+configuration presets. In particular, `pm_research_attempts` and
+`pm_research_ms` exist only in the separately built finite PM research module;
+they are absent from the default and released module. They default to zero,
+are read-only after load, and must both be explicitly set for an isolated
+experiment. See the [research mechanism and limits](tests/fixtures/issue689/finite-mechanism-20261126.md),
+not the ordinary module-parameter table, for their bounded use.
 
 ## Keeping the inventory in sync
 
@@ -438,7 +443,8 @@ Run the device-free check after adding or removing a production setting:
 make configuration-check
 ```
 
-It compares this document's hidden surface identifiers with module parameters,
+It compares this document's hidden surface identifiers with parameters in the
+default module's actual Kbuild source list (without compiling a kernel module),
 literal library/VA environment reads, CrystalHD-named variables in installed
 scripts, production GStreamer properties and explicit `crystalhd-play` options.
 Missing and stale rows both fail.
