@@ -65,6 +65,8 @@ static struct {
     unsigned sequence, dma_retired, last_flush, last_stop;
     unsigned firmware_mode;
     unsigned control_calls, release_calls, join_calls;
+    uint8_t dma_flags;
+    BC_STATUS dma_status;
     bool stop_while_owned, close_while_owned, release_while_owned, fail_first_flush;
 } run;
 
@@ -429,11 +431,12 @@ BC_STATUS DtsGetDrvStat(HANDLE device, BC_DTS_STATS *status)
 }
 
 BC_STATUS DtsTxDmaText(HANDLE device, uint8_t *bytes, uint32_t size,
-                      uint32_t *, uint8_t)
+                      uint32_t *, uint8_t flags)
 {
     if (!worker_thread || device != observed)
         std::abort();
     ++run.dma_calls;
+    run.dma_flags = flags;
     run.packet_ok = size == sizeof(packet) && !std::memcmp(bytes, packet, size);
     if (run.point == Point::Dma)
         pause_worker();
@@ -441,7 +444,45 @@ BC_STATUS DtsTxDmaText(HANDLE device, uint8_t *bytes, uint32_t size,
         std::lock_guard<std::mutex> lock(gate);
         run.dma_retired = ++run.sequence;
     }
-    return BC_STS_SUCCESS;
+    return run.dma_status;
+}
+
+static void test_byte_only_ring_worker_flags()
+{
+    for (uint32_t algorithm : {uint32_t(BC_VID_ALGO_H264), uint32_t(BC_VID_ALGO_VC1MP)}) {
+        for (bool encrypted : {false, true}) {
+            for (BC_STATUS status : {BC_STS_SUCCESS, BC_STS_IO_ERROR}) {
+                run = {}; run.point = Point::Dma; run.release = true; run.dma_status = status;
+                bc_dil_glob_s globals = {}; bc_dil_glob_ptr = &globals;
+                DTS_LIB_CONTEXT context = {}; observed = &context;
+                context.Sig = LIB_CTX_SIG; context.ProcessID = getpid();
+                context.DevId = BC_PCI_DEVID_FLEA; context.State = BC_DEC_STATE_START;
+                context.VidParams.VideoAlgo = algorithm;
+                pthread_mutexattr_t attr;
+                pthread_mutexattr_init(&attr);
+                pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+                pthread_mutex_init(&context.thLock, &attr);
+                pthread_mutexattr_destroy(&attr);
+                if (posix_memalign(reinterpret_cast<void **>(&context.txScratch), 128, CIRC_TX_BUF_SIZE) != 0 ||
+                    txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS) std::abort();
+                check(DtsSendData(&context, const_cast<uint8_t *>(packet), sizeof(packet), 0, encrypted) == BC_STS_SUCCESS,
+                      "paired caller flags enqueue the same actual byte-only ring packet");
+                worker_thread = true;
+                txThreadProc(&context); // Two scripted status calls bound the actual worker.
+                worker_thread = false;
+                check(run.status_calls == 2 && run.dma_calls == 1 && run.packet_ok &&
+                      run.dma_flags == (algorithm == BC_VID_ALGO_VC1MP ? 2U : 0U),
+                      "actual worker creates independent flags: zero for H264, only legacy bit0x02 for VC1MP");
+                check(context.txBytesEnqueued == sizeof(packet) && context.txBytesRetired == sizeof(packet) &&
+                      !context.txPending && context.circBuf.busySize == 0 &&
+                      context.txDmaFault == (status != BC_STS_SUCCESS),
+                      "both DMA outcomes retire the ring owner; failure latches the existing fault");
+                txBufFree(&context.circBuf); std::free(context.txScratch);
+                pthread_mutex_destroy(&context.thLock);
+                observed = nullptr; bc_dil_glob_ptr = nullptr;
+            }
+        }
+    }
 }
 
 static void firmware_boundary(unsigned kind)
@@ -2160,6 +2201,7 @@ static void test_join_publishes_worker_retirement()
 
 int main()
 {
+	test_byte_only_ring_worker_flags();
 	test_setup_hardware_initialization_state();
 	test_join_publishes_worker_retirement();
     test_device_close_control_race();

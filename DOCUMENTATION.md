@@ -81,6 +81,7 @@ live support matrix or the recommended setup procedure.
 | [Archived TODO](docs/history/TODO-2026-11-03.md) | Preserved completed milestones and earlier work descriptions; superseded live status stays historical. |
 | [Archived status text](docs/history/STATUS-2026-10-31-through-2026-11-03.md) | Preserved dated claims and evidence, including their original limits. |
 | [Centered payload protocol](tests/vaapi-centered-payload-protocol.md), [VPP payload protocol](tests/vaapi-vpp-payload-protocol.md) | Explicit OWN diagnostic observations; their results do not qualify the normal backend or a release. |
+| [Linux encrypted-input Stage A](tests/fixtures/issue690/linux-input-20261126.md) | Current API/transport matrix and device-free regression results; no protected playback support or hardware-decryption claim. |
 
 Fixture notes preserve the original inputs, failures and interpretation:
 [VA/Kodi](tests/fixtures/issue445/README.md),

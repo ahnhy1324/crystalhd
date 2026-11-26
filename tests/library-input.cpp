@@ -199,11 +199,11 @@ struct Fixture {
         pthread_mutex_destroy(&context.thLock);
         bc_dil_glob_ptr = nullptr;
     }
-    BC_STATUS send(Bytes input)
+    BC_STATUS send(Bytes input, BOOL encrypted = false)
     {
         const uint32_t size = input.size();
         input.resize(input.size() + 16, 0); // Defensive padding for the legacy converter.
-        return DtsProcInput(&context, input.data(), size, 666671, false);
+        return DtsProcInput(&context, input.data(), size, 666671, encrypted);
     }
 };
 
@@ -276,6 +276,30 @@ static void Framing()
         check(packets.size() == 1 && pts(packets.front()) == 66 &&
               payload(packets.front()) == access_unit(0, true), "Annex-B input keeps one timestamped AU");
         check(!f.context.PESConvParams.m_bIsAdd_SCode_CodeIn, "existing Annex-B converter autodetection remains intact");
+    }
+}
+
+// #469's existing byte-only ring boundary, exercised on identical clear bytes.
+// This records legacy behavior; it does not qualify encrypted decoding.
+static void EncryptionArgumentKeepsByteOnlyQueue()
+{
+    for (unsigned length : {0U, 4U}) {
+        for (bool headers : {false, true}) {
+            std::vector<Bytes> clear_packets;
+            Bytes clear_ring;
+            for (bool encrypted : {false, true}) {
+                Fixture fixture(length);
+                check(fixture.send(access_unit(length, headers), encrypted) == BC_STS_SUCCESS,
+                      "paired caller encryption arguments retain ordinary input admission");
+                Bytes queued(fixture.context.circBuf.busySize);
+                check(!queued.empty() && txBufPop(&fixture.context.circBuf, queued.data(), queued.size()) == BC_STS_SUCCESS &&
+                      fixture.context.txBytesEnqueued == queued.size() && fixture.context.inputCalls == 0,
+                      "actual input releases admission and queues only the accounted byte sequence");
+                if (!encrypted) { clear_packets = packets; clear_ring = queued; }
+                else check(packets == clear_packets && queued == clear_ring,
+                           "encrypted=true does not add a flag channel or change the ordinary byte-only ring");
+            }
+        }
     }
 }
 
@@ -2001,6 +2025,7 @@ int main(int argc, char **argv)
         return 0;
     }
     Framing();
+    EncryptionArgumentKeepsByteOnlyQueue();
     SingleByteEndMarkers();
     RecoverySingleThreadConfig();
     NestedInputAcrossLifecycleOwner();
