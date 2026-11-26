@@ -41,6 +41,11 @@ both `library-check` and `userspace32-check`. No entire library/VA suite rerun
 or native playback result is implied by these local results. Standard CI
 continues to select the required broader checks.
 
+Integration with #689's cleanup guards also passes the combined TX admission
+suite: **11,548 checks, zero failures** in each normal and ASan/UBSan run.
+This is the affected overlap check; the individual results above remain scoped
+to the Stage A change.
+
 ## Remaining experiment
 
 Stage A's mandatory transport/output/negative-test work is complete. Optional
