@@ -15,8 +15,8 @@ namespace finite_pm {
 const unsigned width = 640, height = 360, expected = 180, seconds = 60;
 const size_t input_bytes = 1777511;
 const char input_sha[] = "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b";
-static bool active, host_only, dwell50, failed, acquired, pending_pixels, pause_done;
-static unsigned inputs, outputs, released_pictures, setter_calls, pause_calls, dwell_calls;
+static bool active, host_only, dwell50, dwell_twice, failed, acquired, pending_pixels;
+static unsigned inputs, outputs, released_pictures, setter_calls, pause_calls, dwell_calls, pause_pairs;
 static BC_STATUS paused_status = BC_STS_ERROR, resumed_status = BC_STS_ERROR;
 static size_t submitted_bytes;
 static HANDLE output_owner;
@@ -70,13 +70,20 @@ static bool CloseFiles()
     return ok;
 }
 
+static unsigned NextPauseOutput()
+{
+    if (!pause_pairs) return 1;
+    return dwell_twice && pause_pairs == 1 ? 90 : 0;
+}
+
 static bool PauseAndResume(HANDLE owner)
 {
-    if (failed || acquired || !owner || !pause_call || released_pictures != 1 || pause_done) {
+    const unsigned target = NextPauseOutput();
+    if (failed || acquired || !owner || !pause_call || !target || released_pictures != target) {
         failed = true;
         return false;
     }
-    pause_done = true;
+    ++pause_pairs;
     // Preserve e38a2f8 HostPauseAndResume's command semantics: OFF is
     // attempted once even if ON failed after a possibly committed command.
     const gint64 before = g_get_monotonic_time();
@@ -116,7 +123,8 @@ extern "C" BC_STATUS __wrap_DtsSetColorSpace(HANDLE owner, BC_OUTPUT_FORMAT form
     }
     // Host mode keeps the DIL's existing YUY2 cache; no target setter call.
     const BC_STATUS status = host_only ? BC_STS_SUCCESS : colour_call(owner, format);
-    Event("COLOR\tmode=%s\trequested=%u\tcalled=%u\tstatus=%u", dwell50 ? "host-dwell50" : host_only ? "host" : "reference",
+    Event("COLOR\tmode=%s\trequested=%u\tcalled=%u\tstatus=%u",
+          dwell_twice ? "host-dwell50-twice" : dwell50 ? "host-dwell50" : host_only ? "host" : "reference",
           unsigned(format), unsigned(!host_only), unsigned(status));
     return status;
 }
@@ -187,7 +195,7 @@ extern "C" BC_STATUS __wrap_DtsReleaseOutputBuffs(HANDLE owner, PVOID reserved, 
     if (picture && status == BC_STS_SUCCESS) ++released_pictures;
     Event("RELEASE\treleased_pictures=%u\tstatus=%u\tpicture=%u",
           released_pictures, unsigned(status), unsigned(picture));
-    if (picture && status == BC_STS_SUCCESS && released_pictures == 1 &&
+    if (picture && status == BC_STS_SUCCESS && released_pictures == NextPauseOutput() &&
         !PauseAndResume(owner)) interrupted = 1;
     // The original host-only sequence pauses after release, before writing
     // this already owned copy. Preserve that copy even when pause fails.
@@ -206,9 +214,9 @@ int main(int argc, char **argv)
     const bool preflight = argc == 3 && !std::strcmp(argv[1], "--preflight");
     const bool hardware = argc == 5 && !std::strcmp(argv[1], "--hardware") &&
         (!std::strcmp(argv[3], "reference") || !std::strcmp(argv[3], "host") ||
-         !std::strcmp(argv[3], "host-dwell50")) && argv[4][0] == '/';
+         !std::strcmp(argv[3], "host-dwell50") || !std::strcmp(argv[3], "host-dwell50-twice")) && argv[4][0] == '/';
     if (!preflight && !hardware) {
-        std::fprintf(stderr, "usage: %s --preflight INPUT | --hardware INPUT reference|host|host-dwell50 ABSOLUTE_NEW_DIR\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --preflight INPUT | --hardware INPUT reference|host|host-dwell50|host-dwell50-twice ABSOLUTE_NEW_DIR\n", argv[0]);
         return 2;
     }
     std::signal(SIGINT, Interrupt); std::signal(SIGTERM, Interrupt);
@@ -224,7 +232,8 @@ int main(int argc, char **argv)
     std::printf("INPUT_ADMISSION bytes=%zu sha256=%s packets=%zu width=%u height=%u native=NOT_RUN\n",
                 bytes, digest.c_str(), input.packets.size(), input.width, input.height);
     if (preflight) return 0;
-    dwell50 = !std::strcmp(argv[3], "host-dwell50");
+    dwell_twice = !std::strcmp(argv[3], "host-dwell50-twice");
+    dwell50 = dwell_twice || !std::strcmp(argv[3], "host-dwell50");
     host_only = dwell50 || !std::strcmp(argv[3], "host"); admitted = &input;
     if (!Prepare(argv[4])) { CloseFiles(); std::fprintf(stderr, "FAIL: output preparation; no device opened\n"); return 2; }
     Options options; options.mode = Mode::Hardware; options.path = argv[2];
@@ -238,9 +247,11 @@ int main(int argc, char **argv)
     active = false;
     const bool resources = SampleResources(&after) && SameHandleRetainedResources(before, after);
     const bool capture = pixels.Finish(ok && !failed && !acquired);
+    const unsigned expected_pairs = dwell_twice ? 2U : 1U;
     ok = ok && resources && capture && !failed && !acquired && inputs == expected &&
         outputs == expected && input_tokens.empty() && submitted_bytes == input_bytes &&
-        pause_done && pause_calls == 2 && setter_calls == 1 && dwell_calls == (dwell50 ? 1U : 0U);
+        pause_pairs == expected_pairs && pause_calls == 2*expected_pairs && setter_calls == 1 &&
+        dwell_calls == (dwell50 ? expected_pairs : 0U);
     Event("END\tresult=%s\tinputs=%u\toutputs=%u\tinput_bytes=%zu\tpause_calls=%u\tsetter_calls=%u\tobserver_failed=%u\towned=%u\tfds_before=%u\tfds_after=%u\tthreads_before=%u\tthreads_after=%u",
           ok ? "PASS" : "FAIL", inputs, outputs, submitted_bytes, pause_calls, setter_calls,
           unsigned(failed), unsigned(acquired), before.fds, after.fds, before.threads, after.threads);

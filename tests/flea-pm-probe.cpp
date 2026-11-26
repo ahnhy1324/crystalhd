@@ -25,11 +25,14 @@ static BC_STATUS Release(HANDLE, PVOID, BOOL)
 static BC_STATUS Pause(HANDLE, uint32_t operation)
 {
     using namespace finite_pm;
-    Check(released == 1 && !acquired && released_pictures == 1 && !pixels.written,
-          "pause sequence follows first actual release before owned file write");
-    Check(operation == (pause_order++ ? 0U : 1U), "ON then OFF exactly once");
+    const unsigned pair = pause_order / 2;
+    const unsigned target = pair ? 90 : 1;
+    Check(pair < (dwell_twice ? 2U : 1U) && released == target && !acquired &&
+          released_pictures == target && pixels.written == (target-1)*pixels.frame_bytes,
+          "each pause follows its selected actual release before that owned file write");
+    Check(operation == (pause_order++ % 2 ? 0U : 1U), "each pair has one ON then one OFF");
     if (!operation)
-        Check(waited == (dwell50 && pause_status == BC_STS_SUCCESS ? 1U : 0U),
+        Check(waited == (dwell50 ? pair + (pause_status == BC_STS_SUCCESS ? 1U : 0U) : 0U),
               "OFF follows the requested successful-pause dwell, never a failed-pause dwell");
     return operation ? pause_status : resume_status;
 }
@@ -37,9 +40,11 @@ static void Dwell(gulong microseconds)
 {
     using namespace finite_pm;
     ++waited;
-    Check(microseconds == 50000 && waited == 1 && pause_order == 1 &&
-          paused_status == BC_STS_SUCCESS && !acquired && released_pictures == 1 && !pixels.written,
-          "one explicit 50ms wait follows successful pause and precedes resume and pixel write");
+    const unsigned target = waited == 1 ? 1 : 90;
+    Check(microseconds == 50000 && waited <= (dwell_twice ? 2U : 1U) &&
+          pause_order == 2*waited-1 && paused_status == BC_STS_SUCCESS && !acquired &&
+          released_pictures == target && pixels.written == (target-1)*pixels.frame_bytes,
+          "each explicit 50ms wait follows successful pause and precedes resume and pixel write");
     if (interrupt_dwell) interrupted = 1;
 }
 static BC_STATUS InputLeaf(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL encrypted)
@@ -50,9 +55,9 @@ static BC_STATUS InputLeaf(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL encrypted
 static void Reset()
 {
     using namespace finite_pm;
-    active = true; host_only = dwell50 = failed = acquired = pending_pixels = pause_done = false;
+    active = true; host_only = dwell50 = dwell_twice = failed = acquired = pending_pixels = false;
     interrupted = 0;
-    inputs = outputs = released_pictures = setter_calls = pause_calls = dwell_calls = 0;
+    inputs = outputs = released_pictures = setter_calls = pause_calls = dwell_calls = pause_pairs = 0;
     released = colours = pause_order = waited = 0; submitted_bytes = 0; interrupt_dwell = false;
     output_status = release_status = pause_status = resume_status = BC_STS_SUCCESS;
     input_status = BC_STS_IO_ERROR;
@@ -158,6 +163,36 @@ int main()
               "invalid first output releases once without exercising pause");
         Finish();
     }
+    // Exercise the real wrappers through both trigger positions, including
+    // the intervening leases. A second-pair failure must retain its first
+    // successful pair, make one OFF attempt and never open a third pair.
+    for (unsigned fault : {0U,1U,2U}) {
+        Reset(); host_only = dwell50 = dwell_twice = true;
+        picture.PoutFlags = BC_POUT_FLAGS_PIB_VALID; picture.Ybuff = image.data();
+        for (unsigned index = 0; index < 91; ++index) {
+            picture.PicInfo.timeStamp = Token(0,index);
+            input_tokens.insert(Token(0,index));
+            if (index == 89 && fault == 1) pause_status = BC_STS_IO_ERROR;
+            if (index == 89 && fault == 2) resume_status = BC_STS_IO_ERROR;
+            Check(__wrap_DtsProcOutputNoCopy(owner,0,&out) == BC_STS_SUCCESS && acquired,
+                  "repeated-mode output has a real owned lease");
+            Check(__wrap_DtsReleaseOutputBuffs(owner,nullptr,FALSE) == BC_STS_SUCCESS &&
+                  !acquired && outputs == index+1 && released_pictures == index+1 &&
+                  pause_calls == (index < 89 ? 2U : 4U),
+                  "only released outputs one and ninety trigger two bounded pairs");
+            if (index == 89 && fault) break;
+        }
+        Check(pause_pairs == 2 && pause_calls == 4 && pause_order == 4 &&
+              dwell_calls == (fault == 1 ? 1U : 2U) && waited == dwell_calls &&
+              failed == bool(fault) && bool(interrupted) == bool(fault) &&
+              paused_status == pause_status && resumed_status == resume_status,
+              "second-pair error keeps actual statuses, skip-on-error dwell and single OFF");
+        const unsigned calls_before = pause_calls, waits_before = dwell_calls;
+        Check(!PauseAndResume(owner) && pause_calls == calls_before && dwell_calls == waits_before,
+              "completed or failed repeated stimulus cannot issue a third pair");
+        Finish();
+    }
+    picture.PicInfo.timeStamp = Token(0,0);
     Reset(); output_status = BC_STS_NO_DATA;
     Check(__wrap_DtsProcOutputNoCopy(owner,0,&out) == BC_STS_NO_DATA && !acquired &&
           !failed && !pause_calls, "no-data return creates no lease or pause");

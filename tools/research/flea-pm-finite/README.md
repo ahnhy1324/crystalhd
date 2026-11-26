@@ -15,12 +15,13 @@ The two historical 82,944,000-byte captures remain historical evidence.
 
 ## Explicit modes
 
-All modes submit the same clear input and issue exactly one existing
-`DtsFWPauseVideo(handle, 1)` / `DtsFWPauseVideo(handle, 0)` pair immediately
-after the first valid picture's successful actual release, before writing
-its owned pixel copy. OFF is attempted once even if ON failed. The command
-order and failure handling follow `e38a2f8:tests/flea-power-observer.h`,
-`HostPauseAndResume`; no register observer is imported.
+All modes submit the same clear input. Each existing
+`DtsFWPauseVideo(handle, 1)` / `DtsFWPauseVideo(handle, 0)` pair follows a
+selected valid picture's successful actual release, before writing its owned
+pixel copy. OFF is attempted once even if ON failed. The command order and
+failure handling follow `e38a2f8:tests/flea-power-observer.h`,
+`HostPauseAndResume`; no register observer is imported. The first three modes
+issue one pair after output 1; the explicit repeat mode issues two pairs.
 
 - `reference` forwards the ordinary `DtsSetColorSpace(YUY2)` call.
 - `host` skips that setter, retaining the DIL's initialized YUY2 cache.
@@ -30,6 +31,19 @@ order and failure handling follow `e38a2f8:tests/flea-power-observer.h`,
   A failed pause skips this wait and still attempts resume once. A signal
   during the wait does not skip resume; the original drain observes the
   interruption and retains its normal cleanup/result handling.
+- `host-dwell50-twice` uses that same pair and wait after released outputs
+  **1 and 90** within the same 180-picture decoder session. Each successful
+  pause requests its own 50,000-microsecond wait. A pause or resume failure
+  stops the ordinary drain; the pair already attempted keeps its actual
+  statuses, and the current pair still attempts OFF exactly once. There is
+  no third pair, module reload, session restart or physical-budget reset.
+
+The repeat mode tests whether the unchanged finite2 mechanism can admit and
+complete two physical transitions in one session with its existing
+`attempts=2, window_ms=5000` ceiling. Four successful API calls and two waits
+alone cannot establish two transitions: only the separate physical ledger
+can do that. This 180-picture research stimulus is neither a 900-picture
+integration qualification nor thermal/endurance acceptance.
 
 The additional mode is an explicit idle stimulus for the finite2 observation.
 The retained finite2 run completed its pause with RX0 still awaiting its Y
@@ -70,7 +84,7 @@ first failure in a new directory. It never opens a decoder or loads a module.
 Only the separately reviewed native coordinator invokes:
 
 ```text
-probe --hardware INPUT reference|host|host-dwell50 ABSOLUTE_NEW_OUTPUT_DIRECTORY
+probe --hardware INPUT reference|host|host-dwell50|host-dwell50-twice ABSOLUTE_NEW_OUTPUT_DIRECTORY
 ```
 
 There is one 180-picture run with the maintained 60-second deadline. The
@@ -84,9 +98,11 @@ modules, read debugfs, restart a faulted device or decide safe restoration.
 `events.tsv` records exact input tokens/lengths/status, returned output
 metadata and flags, release status, pause/resume status and monotonic host
 timestamps, color-setter selection, capture counts and process resources.
-Only `host-dwell50` adds a `DWELL` row between the successful pause and resume,
+The dwell modes add a `DWELL` row between each successful pause and resume,
 with `requested_us=50000`, actual monotonic begin/end times and the released
-picture count. The requested wait is not a hard scheduling-latency bound;
+picture count. The repeat mode requires two rows with
+`after_released_outputs=1` and `90`, four `PAUSE` rows in ON/OFF/ON/OFF order,
+and `pause_calls=4` in the final `END` row. The requested wait is not a hard scheduling-latency bound;
 the existing process and playback deadlines still apply.
 `input.bin` contains the exact ordered submitted access units. `output.yuy2`
 contains 180 tightly packed 640×360 pictures (82,944,000 bytes) on completion.
@@ -100,7 +116,10 @@ adds the exact footer:
 PM_EXERCISE result=PASS frames=180 inputs=180 pause=0 resume=0 mode=host
 ```
 
-The other footers end in `mode=reference` or `mode=host-dwell50`. Failure preserves the actual
+The other footers name their selected mode, including `mode=host-dwell50-twice`.
+Pause/resume footer statuses are the last pair's statuses; every pair's actual
+statuses remain in `events.tsv`, and any pair's failure prevents PASS.
+Failure preserves the actual
 statuses and partial files. PASS is a transport/count/EOS/cleanup/capture result,
 not proof of a physical down/up cycle, thermal benefit or product qualification.
 Actual transitions must be established independently from the finite-PM ledger;
