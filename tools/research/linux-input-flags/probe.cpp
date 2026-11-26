@@ -128,7 +128,10 @@ extern "C" int ioctl(int fd, unsigned long request, ...) noexcept
     {
         std::lock_guard<std::mutex> guard(lock);
         id = ++io_calls;
-        if (id > 200000U || ((tx || fw) && (!io || io->IoctlDataSz != sizeof(*io)))) {
+        // DtsAllocIoctlData clears this legacy field. DtsFWInitialize leaves
+        // it zero; only DtsTxDmaText explicitly sets the TX envelope size.
+        if (id > 200000U || ((tx || fw) && !io) ||
+            (tx && io->IoctlDataSz != sizeof(*io))) {
             failed = true; errno = EINVAL; return -1;
         }
         if (tx) {

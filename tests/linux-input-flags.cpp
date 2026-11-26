@@ -2,12 +2,15 @@
 // Observer controls only. The actual device/kernel call is replaced by a leaf.
 #define ISSUE690_UNIT
 #include "../tools/research/linux-input-flags/probe.cpp"
+#include "libcrystalhd_fwcmds.h"
+#include "libcrystalhd_priv.h"
 
 static unsigned checks, failures, native_calls;
 static BOOL seen_flag;
 static uint8_t source_bytes[] = {0,0,0,1,0x65,0x42};
 static BC_STATUS output_status = BC_STS_SUCCESS, release_status = BC_STS_SUCCESS;
 static BC_DTS_PROC_OUT scripted_output;
+static bool initialize_control;
 static void Check(bool value, const char *message) {
     ++checks;
     if (!value) { ++failures; std::fprintf(stderr, "FAIL %s\n", message); }
@@ -24,6 +27,17 @@ static BC_STATUS ReleaseLeaf(HANDLE, PVOID, BOOL) { return release_status; }
 static int IoctlLeaf(int, unsigned long command, void *pointer) {
     ++native_calls;
     auto *io = static_cast<BC_IOCTL_DATA *>(pointer);
+    if (initialize_control) {
+        const auto *init = reinterpret_cast<const C011CmdInit *>(io->u.fwCmd.cmd);
+        Check(command == BCM_IOC_FW_CMD && io->IoctlDataSz == 0 &&
+              init->command == eCMD_C011_INIT && init->sequence == 1 &&
+              init->memSizeMBytes == 64 && init->inputClkFreq == 200000000 &&
+              init->uartBaudRate == 38400 && init->initArcs == (C011_STREAM_ARC|C011_VDEC_ARC),
+              "unmodified actual initialization envelope with legacy header0 reaches syscall seam");
+        io->RetSts=BC_STS_SUCCESS;
+        io->u.fwCmd.rsp[0]=init->command; io->u.fwCmd.rsp[1]=init->sequence; io->u.fwCmd.rsp[2]=0;
+        return 0;
+    }
     if (command == BCM_IOC_PROC_INPUT) {
         Check(io->u.ProcInput.Encrypted == 0 && io->u.ProcInput.BuffSz == sizeof(source_bytes) &&
               !std::memcmp(io->u.ProcInput.pDmaBuff, source_bytes, sizeof(source_bytes)),
@@ -42,6 +56,23 @@ int main() {
     p.size=sizeof(source_bytes); input.packets.push_back(p); admitted=&input;
     HANDLE owner=reinterpret_cast<HANDLE>(0x1234);
     active=true;
+    {
+        // Execute the unmodified library's initialize -> pool -> DtsDrvCmd
+        // path, including this diagnostic ioctl observer. Only syscall is a seam.
+        DTS_LIB_CONTEXT context={}; BC_IOCTL_DATA pooled={};
+        context.Sig=LIB_CTX_SIG; context.ProcessID=getpid(); context.DevHandle=99;
+        context.DevId=BC_PCI_DEVID_FLEA; context.pIoDataFreeHd=&pooled;
+        pthread_mutexattr_t attr; pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&context.thLock,&attr); pthread_mutexattr_destroy(&attr);
+        initialize_control=true;
+        Check(DtsFWInitialize(&context,0)==BC_STS_SUCCESS && native_calls==1 && !failed,
+              "actual normal initialization passes observer without rewriting header0");
+        Check(pooled.IoctlDataSz==0 && context.pIoDataFreeHd==&pooled && !pooled.next,
+              "actual initialization returns original zero-header envelope to pool");
+        initialize_control=false; native_calls=0;
+        pthread_mutex_destroy(&context.thLock);
+    }
     for (unsigned value : {0U,1U}) {
         flag=value; inputs=0;
         Check(__wrap_DtsProcInput(owner,source_bytes,sizeof(source_bytes),Token(0,0),FALSE)==BC_STS_SUCCESS &&
@@ -56,6 +87,10 @@ int main() {
     Check(ioctl(99,BCM_IOC_PROC_INPUT,&io)==-1 && errno==EIO && io.RetSts==BC_STS_IO_ERROR &&
           io.u.ProcInput.DramOffset==0x123400 && native_calls==1 && tx_bytes==sizeof(source_bytes),
           "actual failure errno/status/offset and full TX copy retained");
+    io.IoctlDataSz=0;
+    Check(ioctl(99,BCM_IOC_PROC_INPUT,&io)==-1 && errno==EINVAL && native_calls==1 && failed,
+          "invalid TX envelope size still rejected before syscall");
+    io.IoctlDataSz=sizeof(io); failed=false;
     io.u.ProcInput.Encrypted=1;
     Check(ioctl(99,BCM_IOC_PROC_INPUT,&io)==-1 && native_calls==1 && failed,
           "unexpected direct TX bit1 never sent");

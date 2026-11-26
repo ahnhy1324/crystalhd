@@ -1,5 +1,11 @@
 # Clear input flag observation for #690
 
+**Prepared; native qualification is pending.** See the owning
+[#690](https://github.com/ahnhy1324/crystalhd/issues/690) and the completed
+[device-free Stage A](../../../tests/fixtures/issue690/linux-input-20261126.md)
+for the established API/driver boundary. Build and observer-test success below
+must not be presented as B0/B1 playback or hardware-decryption results.
+
 This isolated diagnostic reuses the current `tests/library-drain.cpp` input,
 decode, count/PTS/EOS, STOP/CLOSE and ownership implementation. It changes only
 the public `DtsProcInput` argument from 0 to the selected 0 or 1. It does not
@@ -11,6 +17,8 @@ The only input admitted is the retained project synthetic
 640×360, 180 H.264 packets/pictures. The digest is checked over the actual
 demuxed packets which the existing drain will submit. The old fixture's
 identity does not establish that today's generation script reproduces it.
+
+## Build and use
 
 Build without opening hardware:
 
@@ -38,6 +46,8 @@ handoff and official-1.3 recovery are the coordinator's responsibility. Reuse
 ordinary 180-picture controls before and after; no runtime-marker or custom
 register/memory observation is required. `--preflight` opens no device and
 creates no output files.
+
+## Recorded evidence and its limits
 
 | File | Actual evidence |
 | --- | --- |
@@ -69,11 +79,25 @@ same clear bytes and correct output cannot establish hardware decryption.
 The probe contains no encrypted fixture, key/session operations or positive
 protected-session experiment.
 
-Preparation on 2026-11-26: current DIL/probe `-Werror` builds, 20 focused
+## Preparation results
+
+Preparation on 2026-11-26: current DIL/probe `-Werror` builds, 24 focused
 observer checks in normal and ASan/UBSan/leak builds, and the exact fixture
-preflight pass in `crystalhd-linux-input-flags-build04-20261126`. No native
-result follows. The first two compiler failures remain in build01/build02:
-missing `include/link`, then the UAPI's `7411d.h` prerequisite and explicit
-arguments to the reused `Load`. Build03 passed before the final receipt-error
-handling refinement; build04 is the executable handoff and contains source
-snapshots, commands, raw logs and exits. No original failure was relabelled.
+preflight pass in `crystalhd-linux-input-flags-build05-20261126`. This is the
+corrected executable handoff; source snapshots, commands, logs and exits are
+retained. These checks do not qualify native playback.
+
+The first native attempt used `3caaf35`/build04 and stopped at initialization,
+before input or TX: its diagnostic observer wrongly required `IoctlDataSz`
+on firmware-command envelopes. The real pooled allocator zeros the structure,
+`DtsFWInitialize` leaves that legacy field zero, and the normal kernel ABI
+accepts it. The observer now checks the field only for TX, where
+`DtsTxDmaText` explicitly sets it. A new control executes the actual shared
+DIL initialization/pool/command path through the observer; another preserves
+invalid-TX-size refusal. No product or decoder fix is claimed. The complete
+first attempt and its original source/build remain unchanged.
+
+Earlier compiler failures also remain in build01/build02: missing
+`include/link`, then the UAPI's `7411d.h` prerequisite and explicit arguments
+to the reused `Load`. Build03 passed before the final receipt-error handling
+refinement; it does not replace any native result. No failure was relabelled.
