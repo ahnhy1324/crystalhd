@@ -20,6 +20,7 @@
 #include "crystalhd_fw_research.h"
 #include "crystalhd_rx_receipt.h"
 #include "crystalhd_pm_research.h"
+#include "crystalhd_tx_notify.h"
 
 #include <linux/capability.h>
 #include <linux/overflow.h>
@@ -2018,9 +2019,20 @@ static int __init chd_dec_module_init(void)
 		return rc;
 	}
 #endif
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	rc = crystalhd_tx_notify_init();
+	if (rc) {
+		crystalhd_pm_research_cleanup();
+		crystalhd_v4l2_cleanup();
+		return rc;
+	}
+#endif
 	rc = pci_register_driver(&bc_chd_driver);
 
 	if (rc < 0) {
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+		crystalhd_tx_notify_cleanup();
+#endif
 #ifdef CRYSTALHD_ENABLE_PM_RESEARCH
 		crystalhd_pm_research_cleanup();
 #endif
@@ -2046,6 +2058,9 @@ static void __exit chd_dec_module_cleanup(void)
 	crystalhd_fw_research_cleanup();
 #endif
 	pci_unregister_driver(&bc_chd_driver);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	crystalhd_tx_notify_cleanup();
+#endif
 #ifdef CRYSTALHD_ENABLE_PM_RESEARCH
 	crystalhd_pm_research_cleanup();
 #endif
@@ -2056,7 +2071,9 @@ module_exit(chd_dec_module_cleanup);
 MODULE_AUTHOR("Naren Sankar <nsankar@broadcom.com>");
 MODULE_AUTHOR("Prasad Bolisetty <prasadb@broadcom.com>");
 MODULE_DESCRIPTION(CRYSTAL_HD_NAME);
-#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+MODULE_VERSION("3.10.26-txnotify1");
+#elif defined(CRYSTALHD_ENABLE_PM_RESEARCH)
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION "-pmfinite2");
 #else
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION);

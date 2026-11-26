@@ -80,3 +80,16 @@ endif
 ccflags-y += -DCRYSTALHD_ENABLE_PM_RESEARCH
 crystalhd-objs += crystalhd_pm_research.o
 endif
+
+# Isolated copied-value TX notification observation; never a default module.
+CRYSTALHD_TX_NOTIFY_RESEARCH ?= 0
+ifneq ($(CRYSTALHD_TX_NOTIFY_RESEARCH),0)
+ifneq ($(CRYSTALHD_TX_NOTIFY_RESEARCH),1)
+$(error CRYSTALHD_TX_NOTIFY_RESEARCH must be 0 or 1)
+endif
+ifneq ($(CRYSTALHD_PM_RESEARCH),1)
+$(error CRYSTALHD_TX_NOTIFY_RESEARCH=1 requires the isolated PM research module)
+endif
+ccflags-y += -DCRYSTALHD_TX_NOTIFY_RESEARCH
+crystalhd-objs += crystalhd_tx_notify.o
+endif
