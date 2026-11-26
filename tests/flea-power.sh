@@ -10,11 +10,15 @@ cleanup()
         "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h" \
         "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h" \
         "$test_dir/flea-power-fll.h" "$test_dir/flea-power-up.h" \
-        "$test_dir/flea-power-registers.h" "$test_dir/flea-power-fault.h"
+        "$test_dir/flea-power-registers.h" "$test_dir/flea-power-fault.h" \
+        "$test_dir/flea-cleanup.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+awk -v with_fault=0 -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-cleanup.h"
 
 awk '
     /^\/\* Runtime power register helpers\./ { copying = 1; found++ }

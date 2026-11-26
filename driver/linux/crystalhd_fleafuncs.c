@@ -967,7 +967,7 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 		    !READ_ONCE(hw->dev_started))
 			sts = BC_STS_IO_ERROR;
 		else if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
-			 hw->FleaPowerTransition)
+			 hw->FleaPowerTransition || hw->FleaCleanupActive)
 			sts = BC_STS_BUSY;
 		else {
 			hw->FleaPowerTransition = true;
@@ -1005,7 +1005,7 @@ static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 		 * work while another caller is bringing the device back up.
 		 */
 		if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
-		    (hw->FleaPowerTransition && !reserved)) {
+		    hw->FleaCleanupActive || (hw->FleaPowerTransition && !reserved)) {
 			sts = BC_STS_BUSY;
 			goto unlock;
 		}
@@ -1047,7 +1047,58 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 	hw->FleaTxActive = 0;
 	hw->FleaIrqActive = 0;
 	hw->FleaRawActive = 0;
+	hw->FleaCleanupActive = 0;
 	hw->FleaPowerSaved.valid = false;
+}
+
+/* Callers retain their existing process/IRQ and queue serialization. This
+ * hold only closes the check-to-act race with optional runtime PM. Nested
+ * stop helpers must release it before the context itself can be freed.
+ */
+BC_STATUS crystalhd_flea_cleanup_begin(struct crystalhd_hw *hw, bool *held)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	*held = false;
+	if (hw->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return BC_STS_SUCCESS;
+	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault) || hw->FleaPowerState == FLEA_PS_FAULT) {
+		sts = BC_STS_IO_ERROR;
+	} else if (hw->FleaPowerTransition) {
+		/* A reserved transition may temporarily own a valid snapshot.
+		 * Do not turn its in-progress state into a terminal fault.
+		 */
+		sts = BC_STS_BUSY;
+	} else if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE ||
+		   hw->FleaPowerSaved.valid) {
+		/* Check even if PWM has been disabled: a flag cannot prove wake. */
+		sts = flea_pm_fault(hw, "cleanup while asleep");
+	} else if (hw->FleaEnablePWM) {
+		if (hw->FleaCleanupActive == ~0U)
+			sts = BC_STS_BUSY;
+		else {
+			hw->FleaCleanupActive++;
+			*held = true;
+		}
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return sts;
+}
+
+void crystalhd_flea_cleanup_end(struct crystalhd_hw *hw, bool held)
+{
+	unsigned long flags;
+
+	if (!held)
+		return;
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->FleaCleanupActive--;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	/* Cleanup never initiates a physical transition on return. A subsequent
+	 * normal PM event evaluates the current owners and pause intent again.
+	 */
 }
 
 /* Only the selector's transition reservation owner may call this helper. */
@@ -1066,6 +1117,10 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
 	    !READ_ONCE(hw->dev_started)) {
 		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
+	if (hw->FleaCleanupActive) {
+		sts = BC_STS_BUSY;
 		goto unlock;
 	}
 
@@ -1167,7 +1222,7 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT ||
 	    READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
-	if (!READ_ONCE(hw->FleaEnablePWM)) {
+	if (!READ_ONCE(hw->FleaEnablePWM) && !READ_ONCE(hw->FleaCleanupActive)) {
 		/* Preserve the supported, runtime-PWM-disabled path. */
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
 		return BC_STS_SUCCESS;
@@ -1180,6 +1235,10 @@ retry:
 	spin_lock_irqsave(&hw->lock, flags);
 	if (hw->FleaPowerState == FLEA_PS_FAULT || READ_ONCE(hw->dma_fault)) {
 		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
+	if (hw->FleaCleanupActive && PowerEvt != FLEA_EVT_STOP_DEVICE) {
+		sts = BC_STS_BUSY;
 		goto unlock;
 	}
 	if (hw->FleaPowerTransition) {
@@ -1740,13 +1799,17 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 {
 	uint32_t regVal=0, pollCnt=0;
+	bool power_held, stopped = false;
+
+	if (crystalhd_flea_cleanup_begin(hw, &power_held) != BC_STS_SUCCESS)
+		return false;
 
 	/*
 	-- Issue the core reset so that we
 	-- make sure there is nothing running.
 	*/
 	if (!crystalhd_flea_core_reset(hw))
-		return false;
+		goto out;
 
 	crystalhd_flea_init_temperature_measure(hw, false);
 
@@ -1796,7 +1859,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 
 	if (!(regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK)) {
 		dev_err(&hw->adp->pdev->dev, "MEMC did not become idle during shutdown\n");
-		return false;
+		goto out;
 	}
 
 	/*First Disable the AVD and ARM before disabling the DRAM*/
@@ -1920,8 +1983,11 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 
 	hw->pfnWriteDevRegister(hw->adp, BCHP_CLK_PM_CTRL, regVal);
 
-	return crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE) ==
+	stopped = crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE) ==
 		BC_STS_SUCCESS;
+out:
+	crystalhd_flea_cleanup_end(hw, power_held);
+	return stopped;
 }
 
 bool

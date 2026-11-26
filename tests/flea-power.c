@@ -36,7 +36,7 @@ struct crystalhd_hw {
     uint32_t FleaEnablePWM;
     enum FLEA_POWER_STATES FleaPowerState;
     bool FleaPowerTransition, FleaPowerRecheck, hw_pause_issued;
-    unsigned FleaIrqActive, FleaTxActive, FleaRawActive;
+    unsigned FleaIrqActive, FleaTxActive, FleaRawActive, FleaCleanupActive;
     struct crystalhd_flea_power_snapshot FleaPowerSaved;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t EmptyCnt, SingleThreadAppFIFOEmpty, FwCmdCnt;
@@ -449,6 +449,7 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 #undef crystalhd_flea_set_power_state
 
 #include "flea-power-registers.h"
+#include "flea-cleanup.h"
 
 #define crystalhd_flea_set_power_state private_set_power_state
 #include "flea-power-transitions.h"
@@ -2163,6 +2164,101 @@ static void observed_register_baseline(void)
     }
 }
 
+static void cleanup_holds(void)
+{
+    bool held, nested;
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned state = FLEA_PS_NONE; state <= FLEA_PS_FAULT; state++)
+            for (unsigned snapshot = 0; snapshot < 2; snapshot++) {
+                struct crystalhd_hw hw = transition_setup(state);
+                hw.FleaEnablePWM = pwm;
+                hw.FleaPowerSaved.valid = snapshot;
+                bool fault = state == FLEA_PS_FAULT;
+                bool asleep = state == FLEA_PS_LP_COMPLETE || snapshot;
+                BC_STATUS sts = crystalhd_flea_cleanup_begin(&hw, &held);
+                check(sts == (fault || asleep ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+                      "cleanup admission confused clocked, asleep or fault states");
+                check(held == (!fault && !asleep && pwm) &&
+                      hw.FleaCleanupActive == held && !hw.lock &&
+                      !device.reads && !device.writes && !device.dram_writes,
+                      "cleanup admission touched power/FLL or lost its hold");
+                if (!fault && asleep)
+                    check(hw.FleaPowerState == FLEA_PS_FAULT && hw.dma_fault &&
+                          !device.present && device.fault_wakes == 1 &&
+                          hw.FleaPowerSaved.valid == !!snapshot,
+                          "asleep cleanup lost snapshot or omitted terminal fault");
+                crystalhd_flea_cleanup_end(&hw, held);
+                check(!hw.FleaCleanupActive, "cleanup release leaked a hold");
+                sequence_cases++;
+            }
+
+    for (unsigned snapshot = 0; snapshot < 2; snapshot++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_COMPLETE);
+        hw.FleaPowerSaved.valid = snapshot;
+        hw.FleaPowerTransition = true;
+        check(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_BUSY && !held &&
+              !hw.dma_fault && !device.fault_wakes && hw.FleaPowerTransition,
+              "cleanup faulted an in-progress reserved wake");
+        hw.dma_fault = true;
+        check(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_IO_ERROR,
+              "transition reservation hid a terminal fault");
+        sequence_cases++;
+    }
+
+    /* The real selector is called at the IRQ-tail CMD_COMP boundary after
+     * cleanup has released hw->lock, before its caller has stopped engines.
+     * Both nesting levels must keep the same runtime transition excluded.
+     */
+    for (unsigned initial = 0; initial < 2; initial++) {
+        struct crystalhd_hw hw = transition_setup(initial ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE);
+        hw.hw_pause_issued = true;
+        check(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_SUCCESS && held &&
+              crystalhd_flea_cleanup_begin(&hw, &nested) == BC_STS_SUCCESS && nested,
+              "nested cleanup failed to hold a clocked context");
+        for (unsigned depth = 2; depth; depth--) {
+            check(hw.FleaCleanupActive == depth &&
+                  real_set_next_power_state(&hw, FLEA_EVT_CMD_COMP) == BC_STS_BUSY &&
+                  !device.dram_writes && !device.power_writes && !hw.FleaPowerTransition,
+                  "completion IRQ entered runtime PM during cleanup");
+            check(private_set_power_state(&hw, FLEA_PS_LP_COMPLETE) == BC_STS_BUSY &&
+                  !device.dram_writes && !device.power_writes,
+                  "setter backstop allowed a stale runtime request");
+            check(crystalhd_flea_publish_fll(&hw, false) == BC_STS_BUSY &&
+                  crystalhd_flea_publish_fll(&hw, true) == BC_STS_BUSY &&
+                  !device.cleanup_probes && !device.dram_writes,
+                  "cleanup hold allowed FLL or a heartbeat reservation");
+            crystalhd_flea_cleanup_end(&hw, depth == 2 ? nested : held);
+        }
+        check(!device.power_writes && !device.dram_writes,
+              "cleanup release itself initiated physical PM");
+        check(real_set_next_power_state(&hw, FLEA_EVT_CMD_COMP) == BC_STS_SUCCESS &&
+              hw.FleaPowerState == FLEA_PS_LP_COMPLETE,
+              "normal later completion could not reevaluate the released hold");
+        sequence_cases++;
+    }
+
+    struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+    check(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_SUCCESS && held,
+          "STOP fixture did not acquire outer hold");
+    check(real_set_next_power_state(&hw, FLEA_EVT_STOP_DEVICE) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_STOPPED && hw.FleaCleanupActive == 1,
+          "STOP publication discarded the outer cleanup hold");
+    hw.FleaEnablePWM = false;
+    check(real_set_next_power_state(&hw, FLEA_EVT_CMD_COMP) == BC_STS_BUSY &&
+          real_set_next_power_state(&hw, FLEA_EVT_START_DEVICE) == BC_STS_BUSY &&
+          hw.FleaPowerState == FLEA_PS_STOPPED,
+          "disabled PWM or START bypassed the remaining cleanup hold");
+    crystalhd_flea_cleanup_end(&hw, held);
+    check(!hw.FleaCleanupActive && !device.power_writes && !device.dram_writes,
+          "STOP cleanup release performed runtime PM");
+
+    hw = transition_setup(FLEA_PS_ACTIVE);
+    hw.FleaCleanupActive = UINT32_MAX;
+    check(crystalhd_flea_cleanup_begin(&hw, &held) == BC_STS_BUSY && !held &&
+          hw.FleaCleanupActive == UINT32_MAX, "cleanup count overflowed");
+    sequence_cases++;
+}
+
 int main(void)
 {
     idle_matrix();
@@ -2189,6 +2285,7 @@ int main(void)
     actual_wake_failures();
     snapshot_failure_cases();
     observed_register_baseline();
+    cleanup_holds();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
            "%u integrated event sequences; %u targeted register cycles; "
            "%u MEMC refusal cases; %u integrated power fault cases; no device access\n",

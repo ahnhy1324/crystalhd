@@ -14,11 +14,14 @@ cleanup()
 		"$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
-        "$rx_test_dir/rx-post.h" "$rx_test_dir/rx-reject-repost.h"
+        "$rx_test_dir/rx-post.h" "$rx_test_dir/rx-reject-repost.h" \
+        "$rx_test_dir/flea-cleanup.h"
     rmdir "$rx_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+awk -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$rx_test_dir/flea-cleanup.h"
 awk '
     /^BC_STATUS crystalhd_flea_hw_post_cap_buff\(/ ||
     /^BC_STATUS crystalhd_hw_repost_cap_buffer\(/ { copying = 1; found++ }

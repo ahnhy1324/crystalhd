@@ -8,7 +8,7 @@
 
 typedef enum {
 	BC_STS_SUCCESS, BC_STS_INV_ARG, BC_STS_ERR_USAGE,
-	BC_STS_IO_ERROR, BC_STS_NO_DATA, BC_STS_IO_USER_ABORT, BC_STS_ERROR
+	BC_STS_IO_ERROR, BC_STS_NO_DATA, BC_STS_IO_USER_ABORT, BC_STS_ERROR, BC_STS_BUSY
 } BC_STATUS;
 #define MAX_VALID_POLL_CNT 2
 #define BCHP_INTR_INTR_STATUS 0
@@ -39,7 +39,8 @@ typedef enum {
 #define EPOLLHUP 0x010U
 #define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) ((void)(lock), (void)(flags))
-#define dev_err(dev, ...) ((void)(dev))
+static void discard_cleanup_log(const char *format, ...) { (void)format; }
+#define dev_err(dev, ...) ((void)(dev), discard_cleanup_log(__VA_ARGS__))
 #define dev_dbg(dev, ...) ((void)(dev))
 #define printk(...) ((void)0)
 #include "dma-stop-types.h"
@@ -86,6 +87,11 @@ struct crystalhd_hw {
 	enum list_sts rx_list_sts[2];
 	int rx_lock, fetch_sem;
 	bool dma_fault;
+	int lock;
+	bool FleaEnablePWM, FleaPowerTransition;
+	unsigned FleaCleanupActive;
+	enum FLEA_POWER_STATES FleaPowerState;
+	struct { bool valid; } FleaPowerSaved;
 	struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
 	struct crystalhd_dioq *tx_actq, *tx_freeq;
 	struct tx_dma_pkt tx_pkt_pool[BC_TX_LIST_CNT];
@@ -386,6 +392,8 @@ static void stop_success(struct crystalhd_hw *hw)
 { assert(hw->fetch_sem == 1); stops++; }
 static void stop_failure(struct crystalhd_hw *hw)
 { assert(hw->fetch_sem == 1); crystalhd_hw_dma_fatal_stop(hw); stops++; }
+void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
+#include "flea-cleanup.h"
 #include "dma-stop-functions.h"
 
 static BC_STATUS flush_capture(struct crystalhd_cmd *ctx, bool direct,

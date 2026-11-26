@@ -73,6 +73,8 @@ struct crystalhd_hw {
     int lock, rx_lock, fetch_sem;
     bool hw_pause_issued, dma_fault, WakeUpDecodeDone;
     bool FleaEnablePWM, FleaPowerTransition, FleaPowerRecheck, dev_started;
+    uint32_t FleaCleanupActive;
+    struct { bool valid; } FleaPowerSaved;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
     uint32_t FleaFLLUpdateAddr, PicQSts;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
@@ -217,6 +219,7 @@ static const struct crystalhd_rx_buffer_ops legacy_buffer_ops;
 static const struct crystalhd_rx_buffer_ops direct_buffer_ops;
 static const struct crystalhd_rx_buffer_ops crystalhd_retained_ops;
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
+void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
 
 static void check(bool condition, const char *message)
 {
@@ -772,9 +775,12 @@ static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
     hardware_notifications++;
     return notify_ok;
 }
+static unsigned cleanup_stop_depth;
 static void stop_dma(struct crystalhd_hw *hw)
 {
     assert(hw == &hardware && irq_depth == 1 && !hw->fetch_sem);
+    if (cleanup_stop_depth)
+        assert(hw->FleaCleanupActive == cleanup_stop_depth);
     lifecycle_event('S');
     stop_observed_state = context.state;
     stop_observed_active = active.count;
@@ -922,6 +928,7 @@ static BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
 #define CRYSTALHD_ENABLE_FW_RESEARCH 1
 #include "rx-post.h"
 #undef CRYSTALHD_ENABLE_FW_RESEARCH
+#include "flea-cleanup.h"
 #include "rx-hardware.h"
 #include "rx-flea-fll.h"
 #include "rx-command.h"
@@ -1104,6 +1111,40 @@ static void drain(void)
     for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) released += unmaps[i];
     check(released == maps, "all successfully mapped registrations are released exactly once");
     check(irq_disables == irq_enables, "capture drain restores IRQ state");
+}
+
+/* Only fixtures that explicitly supplied LP_COMPLETE, or checked its terminal
+ * refusal, use this path. Ordinary drain() must still reject any new failure.
+ */
+static void retire_expected_asleep(enum FLEA_POWER_STATES expected_state)
+{
+    unsigned active_before = active.count, ready_before = ready.count;
+    unsigned free_before = available.count, stops_before = stop_calls;
+    check(endpoint.device == BC_PCI_DEVID_FLEA &&
+          (expected_state == FLEA_PS_LP_COMPLETE || expected_state == FLEA_PS_FAULT) &&
+          hardware.FleaPowerState == expected_state &&
+          hardware.dma_fault == (expected_state == FLEA_PS_FAULT) &&
+          !hardware.FleaPowerTransition && !hardware.FleaCleanupActive,
+          "terminal fixture cleanup is explicitly tied to its supplied asleep state");
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_IO_ERROR &&
+          active.count == active_before && ready.count == ready_before &&
+          available.count == free_before && stop_calls == stops_before &&
+          hardware.dma_fault && hardware.FleaPowerState == FLEA_PS_FAULT,
+          "expected asleep cleanup retains owners without a hardware stop");
+    /* The existing memory-only API takes a separately supplied global-writer,
+     * PCI-drain and IRQ-retired precondition, as in quiesced_retirement_cases.
+     * This fixture does not infer that proof from the cleanup refusal.
+     */
+    adapter.dma_terminal_quiesced = true;
+    checking_quiesced_retire = true;
+    quiesced_epoch = hardware.rx_cancel_epoch + 1;
+    crystalhd_hw_retire_rx_quiesced(&hardware);
+    checking_quiesced_retire = false;
+    inventory(0, 0, 0);
+    unsigned released = 0;
+    for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) released += unmaps[i];
+    check(released == maps && hardware.dma_fault && !adapter.present,
+          "terminal fixture retirement releases each owner while retaining the fault");
 }
 static void fill_ready_pib(struct crystalhd_rx_dma_pkt *packet)
 {
@@ -2702,7 +2743,19 @@ static void format_wait_flush_race_cases(uint32_t device)
         }
         context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
         wait_full_flush = true;
-        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+        BC_STATUS dequeue_status = crystalhd_rx_dequeue(&context, &result);
+        if (device == BC_PCI_DEVID_FLEA && !(variant & 1)) {
+            check(dequeue_status == BC_STS_IO_ERROR && wait_flush_status == BC_STS_IO_ERROR &&
+                  !wait_full_flush && memory_is_zero(&result, sizeof(result)) &&
+                  !hardware.rx_cancel_epoch && context.state == BC_LINK_INIT &&
+                  hardware.dma_fault && !pause_calls && !unmaps[0] &&
+                  fallback_count() == 1 && hardware.rx_fallback_head->buffer == buffer &&
+                  hardware.rx_fallback_head->cookie == &cookies[0],
+                  "asleep flush faults before stop and retains the detached ready packet for terminal retirement");
+            retire_expected_asleep(FLEA_PS_FAULT);
+            continue;
+        }
+        check(dequeue_status == BC_STS_SUCCESS &&
               wait_flush_status == BC_STS_SUCCESS && !wait_full_flush &&
               result.buffer == buffer && result.cookie == &cookies[0] &&
               result.capture_epoch == 0 &&
@@ -2739,15 +2792,20 @@ static void empty_wait_flush_race_cases(uint32_t device)
             wait_signal = signalled;
             wait_full_flush = true;
             memset(&result, 0xa5, sizeof(result));
+            if (!power)
+                expected = BC_STS_IO_ERROR;
             check(crystalhd_rx_dequeue(&context, &result) == expected &&
-                  wait_flush_status == BC_STS_SUCCESS && !wait_full_flush &&
+                  wait_flush_status == (power ? BC_STS_SUCCESS : BC_STS_IO_ERROR) && !wait_full_flush &&
                   memory_is_zero(&result, sizeof(result)) &&
-                  hardware.rx_cancel_epoch == 1 &&
+                  hardware.rx_cancel_epoch == power && hardware.dma_fault == !power &&
                   context.state == BC_LINK_INIT && !pause_calls &&
                   hardware.hw_pause_issued,
-                  "full flush suppresses FLEA wake after an empty or signalled wait");
+                  "clocked flush or asleep refusal suppresses FLEA wake after an empty or signalled wait");
             inventory(0, 0, 0);
-            drain();
+            if (power)
+                drain();
+            else
+                retire_expected_asleep(FLEA_PS_FAULT);
         }
     }
 }
@@ -2789,7 +2847,10 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
                   context.state == BC_LINK_READY,
                   "fresh post-restart format ownership remains consumable");
             inventory(1, 0, 0);
-            drain();
+            if (power)
+                drain();
+            else
+                retire_expected_asleep(FLEA_PS_LP_COMPLETE);
         }
     }
 }
@@ -3880,8 +3941,12 @@ static void try_dequeue_cancellation_cases(uint32_t device)
                       "faulted dequeue moves the exact detached owner into retained fallback inventory");
                 inventory(0, has_packet && !after_pop, 0);
                 checking_try_release = false;
-                if (adapter.present && !hardware.dma_fault)
-                    drain();
+                if (adapter.present && !hardware.dma_fault) {
+                    if (device == BC_PCI_DEVID_FLEA)
+                        retire_expected_asleep(FLEA_PS_LP_COMPLETE);
+                    else
+                        drain();
+                }
             }
         }
     }
@@ -3961,7 +4026,10 @@ static void flea_pause_result_cases(bool pwm)
                               "empty dequeue remains empty after resume rejection");
                     }
                     inventory(0, 0, 0);
-                    drain();
+                    if (power == 0)
+                        retire_expected_asleep(FLEA_PS_LP_COMPLETE);
+                    else
+                        drain();
                 }
             }
         }
@@ -4434,6 +4502,52 @@ static void retained_admission_and_controls(void)
     retained_finish();
 }
 
+static void cleanup_power_retention_cases(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned mode = 0; mode < 4; mode++) {
+            reset(BC_PCI_DEVID_FLEA);
+            check(add(0) == BC_STS_SUCCESS, "prepare RX owner before cleanup rejection");
+            struct crystalhd_rx_buffer *buffer = active.packets[0]->buffer;
+            void *cookie = active.packets[0]->cookie;
+            const uint64_t epoch = hardware.rx_cancel_epoch;
+            hardware.FleaEnablePWM = pwm;
+            hardware.FleaPowerState = mode == 0 ? FLEA_PS_LP_COMPLETE :
+                                      mode == 2 ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+            hardware.FleaPowerSaved.valid = mode == 1 || mode == 2;
+            hardware.FleaPowerTransition = mode == 3;
+            check(crystalhd_hw_stop_capture(&hardware, true) ==
+                      (mode == 3 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
+                  !stop_calls && !unmaps[0] && !hardware.FleaCleanupActive &&
+                  hardware.rx_cancel_epoch == epoch &&
+                  active.count == 1 && active.packets[0]->buffer == buffer &&
+                  active.packets[0]->cookie == cookie && !hardware.lock &&
+                  hardware.fetch_sem == 1 && !irq_depth &&
+                  hardware.dma_fault == (mode != 3),
+                  "asleep or reserved RX cleanup preserves registrations, epoch and backing");
+        }
+    for (unsigned fail = 0; fail < 2; fail++) {
+        bool held;
+        reset(BC_PCI_DEVID_FLEA);
+        check(add(0) == BC_STS_SUCCESS, "prepare nested RX cleanup owner");
+        hardware.FleaEnablePWM = true;
+        hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        stop_fault = fail;
+        check(crystalhd_flea_cleanup_begin(&hardware, &held) == BC_STS_SUCCESS && held,
+              "clocked pending RX accepts an outer hold");
+        cleanup_stop_depth = 2;
+        check(crystalhd_hw_stop_capture(&hardware, true) ==
+                  (fail ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              hardware.FleaCleanupActive == 1 && !hardware.lock && !irq_depth &&
+              unmaps[0] == !fail,
+              "RX success and stop fault release only the local hold and preserve backing on fault");
+        cleanup_stop_depth = 0;
+        crystalhd_flea_cleanup_end(&hardware, held);
+        check(!hardware.FleaCleanupActive && hardware.dma_fault == !!fail,
+              "outer RX cleanup release preserves fault state");
+    }
+}
+
 int main(void)
 {
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
@@ -4497,6 +4611,7 @@ int main(void)
     retained_failure_cases();
     retained_pm_and_quarantine_cases();
     retained_admission_and_controls();
+    cleanup_power_retention_cases();
     check(receipt_return_calls > 0,
           "the extracted Flea post wrapper exercised the receipt return hook");
     check(receipt_complete_calls > 0,
