@@ -3035,15 +3035,13 @@ static void crystalhd_flea_update_tx_done_to_fw(struct crystalhd_hw *hw)
 	uint32_t				regVal		= 0;
 	uint32_t				seqNumAddr	= 0;
 	uint32_t				seqVal		= 0;
-	TX_INPUT_BUFFER_INFO	*pTxBuffInfo;
 
 	dev = &hw->adp->pdev->dev;
 	/*
 	-- first update the sequence number and then update the
 	-- scratch.
 	*/
-	pTxBuffInfo = (TX_INPUT_BUFFER_INFO *) (0);
-	seqNumAddr = hw->TxBuffInfoAddr + ((uintptr_t) (&pTxBuffInfo->SeqNum));
+	seqNumAddr = hw->TxBuffInfoAddr + offsetof(TX_INPUT_BUFFER_INFO, SeqNum);
 
 	/*Read the seqnece number */
 	hw->pfnDevDRAMRead(hw, seqNumAddr, 1, &regVal);
