@@ -9,6 +9,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "flea-power-types.h"
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+typedef uint64_t u64;
+typedef uint32_t u32;
+#include "../driver/linux/crystalhd_pm_research.h"
+#endif
 #include "bchp_clk.h"
 #include "bchp_pri_arb_control_regs.h"
 #include "bchp_ddr23_ctl_regs_0.h"
@@ -37,6 +42,10 @@ struct crystalhd_hw {
     enum FLEA_POWER_STATES FleaPowerState;
     bool FleaPowerTransition, FleaPowerRecheck, hw_pause_issued;
     unsigned FleaIrqActive, FleaTxActive, FleaRawActive, FleaCleanupActive;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+    uint64_t FleaResearchSession;
+    uint64_t FleaResearchContext;
+#endif
     struct crystalhd_flea_power_snapshot FleaPowerSaved;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t EmptyCnt, SingleThreadAppFIFOEmpty, FwCmdCnt;
@@ -257,6 +266,10 @@ static void unlock_hw(unsigned *lock)
 
 #define spin_lock_irqsave(lock, flags) do { (flags) = 0; lock_hw(lock); } while (0)
 #define spin_unlock_irqrestore(lock, flags) do { (void)(flags); unlock_hw(lock); } while (0)
+
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+#include "flea-pm-research-test.h"
+#endif
 
 static uint32_t register_value(struct mock_device *dev, uint32_t addr)
 {

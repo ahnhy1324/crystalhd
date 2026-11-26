@@ -32,6 +32,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_linkfuncs.h"
 #include "crystalhd_fleafuncs.h"
+#include "crystalhd_pm_research.h"
 #include "crystalhd_rx_receipt.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
@@ -1732,6 +1733,9 @@ void crystalhd_hw_publish_fault(struct crystalhd_hw *hw)
 		crystalhd_flea_disable_interrupts(hw);
 	else if (hw->adp->pdev->device == BC_PCI_DEVID_LINK)
 		crystalhd_link_disable_interrupts(hw);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	crystalhd_pm_research_fault(hw);
+#endif
 }
 
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)

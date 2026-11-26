@@ -44,6 +44,7 @@
 #include "crystalhd_flea_ddr.h"
 #include "crystalhd_fw_research.h"
 #include "crystalhd_rx_receipt.h"
+#include "crystalhd_pm_research.h"
 #include "../../include/crystalhd_fw_research.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
@@ -1049,6 +1050,9 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 	hw->FleaRawActive = 0;
 	hw->FleaCleanupActive = 0;
 	hw->FleaPowerSaved.valid = false;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	hw->FleaEnablePWM = crystalhd_pm_research_session(hw);
+#endif
 }
 
 /* Callers retain their existing process/IRQ and queue serialization. This
@@ -1134,7 +1138,18 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 			break;
 		}
 		if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			if (!crystalhd_pm_research_up_begin(hw)) {
+				sts = flea_pm_fault(hw, "research wake claim");
+				break;
+			}
+#endif
 			sts = crystalhd_flea_runtime_power_up(hw);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			sts = crystalhd_pm_research_up_end(hw, sts);
+			if (sts != BC_STS_SUCCESS)
+				sts = flea_pm_fault(hw, "research wake result");
+#endif
 			if (sts != BC_STS_SUCCESS)
 				break;
 			/* Clocks are on; admission still needs FLL publication. */
@@ -1142,12 +1157,21 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		}
 		/* Restore the current count, not a snapshot from before wake. */
 		freeListLen = crystalhd_hw_count_free_rx_pkts_locked(hw);
-		if (hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1,
-				      &freeListLen) != BC_STS_SUCCESS) {
+		sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
+		if (sts != BC_STS_SUCCESS) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			crystalhd_pm_research_fll(hw, sts, freeListLen);
+#endif
 			sts = BC_STS_IO_ERROR;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			sts = flea_pm_fault(hw, "research FLL restore");
+#endif
 			break;
 		}
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_fll(hw, BC_STS_SUCCESS, freeListLen);
+#endif
 		replay_pic = hw->PwrDwnPiQIntr;
 		replay_tx = hw->PwrDwnTxIntr;
 		hw->PwrDwnPiQIntr = false;
@@ -1172,14 +1196,22 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 			sts = BC_STS_ERR_USAGE;
 			break;
 		}
-		if (hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1,
-				      &tempFLL) != BC_STS_SUCCESS) {
+		sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &tempFLL);
+		if (sts != BC_STS_SUCCESS) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			crystalhd_pm_research_fll(hw, sts, tempFLL);
+			flea_pm_fault(hw, "research zero FLL");
+#endif
 			sts = BC_STS_IO_ERROR;
 			break;
 		}
 		hw->FleaPowerState = FLEA_PS_LP_PENDING;
 		if (NewState == FLEA_PS_LP_PENDING)
 			break;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_SETTER, FLEA_EVT_NONE,
+			NewState, sts);
+#endif
 		/* Recheck owners under their admission lock. A newly busy owner
 		 * defers optional power-down, but the pause request was accepted.
 		 * These host checks do not prove physical source quiescence.
@@ -1192,10 +1224,19 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		    hw->EmptyCnt || hw->SingleThreadAppFIFOEmpty)
 			break;
 		/* A refusal preserves zero-FLL; an unconfirmed recovery is terminal. */
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		if (!crystalhd_pm_research_down_begin(hw))
+			break;
+#endif
 		down = crystalhd_flea_runtime_power_dn(hw);
 		if (down == FLEA_PD_ENTERED)
 			hw->FleaPowerState = FLEA_PS_LP_COMPLETE;
-		else if (down == FLEA_PD_FAULT)
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		down = crystalhd_pm_research_down_end(hw, down);
+		if (down == FLEA_PD_FAULT)
+			flea_pm_fault(hw, "research down result");
+#endif
+		if (down == FLEA_PD_FAULT)
 			sts = BC_STS_IO_ERROR;
 		break;
 	default:
@@ -1218,6 +1259,9 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 	BC_STATUS request_sts = BC_STS_SUCCESS;
 	unsigned long flags;
 	bool repost, recheck, followup = false;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	u32 observed_reason = CHD_PM_SEL_TARGET;
+#endif
 
 	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT ||
 	    READ_ONCE(hw->dma_fault))
@@ -1232,13 +1276,24 @@ retry:
 	repost = false;
 	recheck = false;
 	sts = BC_STS_SUCCESS;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	observed_reason = CHD_PM_SEL_TARGET;
+#endif
 	spin_lock_irqsave(&hw->lock, flags);
 	if (hw->FleaPowerState == FLEA_PS_FAULT || READ_ONCE(hw->dma_fault)) {
 		sts = BC_STS_IO_ERROR;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_FAULT, PowerEvt,
+			hw->FleaPowerState, sts);
+#endif
 		goto unlock;
 	}
 	if (hw->FleaCleanupActive && PowerEvt != FLEA_EVT_STOP_DEVICE) {
 		sts = BC_STS_BUSY;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_CLEANUP, PowerEvt,
+			hw->FleaPowerState, sts);
+#endif
 		goto unlock;
 	}
 	if (hw->FleaPowerTransition) {
@@ -1250,25 +1305,45 @@ retry:
 		     hw->hw_pause_issued))
 			hw->FleaPowerRecheck = true;
 		sts = BC_STS_BUSY;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_TRANSITION, PowerEvt,
+			hw->FleaPowerState, sts);
+#endif
 		goto unlock;
 	}
 	if (PowerEvt == FLEA_EVT_STOP_DEVICE) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_STOP, PowerEvt,
+			FLEA_PS_STOPPED, sts);
+#endif
 		hw->FleaPowerState = FLEA_PS_STOPPED;
 		goto unlock;
 	}
 	if (PowerEvt == FLEA_EVT_START_DEVICE) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_START, PowerEvt,
+			FLEA_PS_ACTIVE, sts);
+#endif
 		hw->FleaPowerState = FLEA_PS_ACTIVE;
 		goto unlock;
 	}
 	if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
 	    !READ_ONCE(hw->dev_started)) {
 		sts = BC_STS_IO_ERROR;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_UNAVAILABLE, PowerEvt,
+			hw->FleaPowerState, sts);
+#endif
 		goto unlock;
 	}
 	if (hw->FleaPowerState != FLEA_PS_ACTIVE &&
 	    hw->FleaPowerState != FLEA_PS_LP_PENDING &&
 	    hw->FleaPowerState != FLEA_PS_LP_COMPLETE) {
 		sts = BC_STS_ERR_USAGE;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_observe(hw, CHD_PM_SEL_STATE, PowerEvt,
+			hw->FleaPowerState, sts);
+#endif
 		goto unlock;
 	}
 
@@ -1285,32 +1360,51 @@ retry:
 		if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE ||
 		    (PowerEvt == FLEA_EVT_CMD_COMP &&
 		     hw->FleaPowerState != FLEA_PS_LP_PENDING &&
-		     !hw->hw_pause_issued))
+		     !hw->hw_pause_issued)) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			observed_reason = hw->FleaPowerState == FLEA_PS_LP_COMPLETE ?
+				CHD_PM_SEL_ASLEEP : CHD_PM_SEL_NO_INTENT;
+#endif
 			break;
+		}
 		/* Do not revoke a temporary wake before its command or TX
 		 * producer reaches the doorbell. That owner retries on release.
 		 */
 		if (PowerEvt == FLEA_EVT_CMD_COMP &&
 		    hw->FleaPowerState == FLEA_PS_ACTIVE &&
 		    (hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
-		     hw->FleaTxActive))
+		     hw->FleaTxActive)) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			observed_reason = CHD_PM_SEL_PRODUCER;
+#endif
 			break;
+		}
 		/* A firmware command may have woken an RX-paused device.
 		 * Recheck current intent here, not a caller's stale observation.
 		 */
 		next = FLEA_PS_LP_PENDING;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		observed_reason = CHD_PM_SEL_DOWN_BUSY;
+#endif
 		if (hw->TxList0Sts == ListStsFree && hw->TxList1Sts == ListStsFree &&
 		    !hw->EmptyCnt && !hw->SingleThreadAppFIFOEmpty &&
 		    hw->rx_list_sts[0] == sts_free && hw->rx_list_sts[1] == sts_free &&
 		    !hw->FleaTxActive && !hw->FleaIrqActive && !hw->FleaRawActive &&
 		    !hw->FwCmdCnt && !hw->fwcmd_active && !hw->fwcmd_trans_active &&
-		    !hw->fwcmd_poisoned)
+		    !hw->fwcmd_poisoned) {
 			next = FLEA_PS_LP_COMPLETE;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+			observed_reason = CHD_PM_SEL_DOWN_READY;
+#endif
+		}
 		break;
 	default:
 		/* FLL_CHANGE no longer carries an ambiguous pause/resume request. */
 		break;
 	}
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	crystalhd_pm_research_observe(hw, observed_reason, PowerEvt, next, sts);
+#endif
 	if (next == hw->FleaPowerState) {
 		if (PowerEvt == FLEA_EVT_RX_PAUSE || PowerEvt == FLEA_EVT_RX_RESUME)
 			hw->hw_pause_issued = PowerEvt == FLEA_EVT_RX_PAUSE;

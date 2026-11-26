@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 
@@ -18,11 +19,12 @@ DOCUMENT = ROOT / "CONFIGURATION.md"
 # * tests/ and tools/fw-research/ controls are test/research inputs;
 # * CRYSTALHD_CHECK_ROOT is an alternate-root seam for crystalhd-check tests;
 # * CRYSTALHD_SOURCE_ID is an installer/archive identity input, not runtime policy;
-# * CRYSTALHD_FW_RESEARCH and CRYSTALHD_V4L2 are build-time feature switches;
+# * CRYSTALHD_FW_RESEARCH, CRYSTALHD_PM_RESEARCH and CRYSTALHD_V4L2 are build-time feature switches;
 # * LEGACY_CPU is a build choice, documented with the build instructions.
 EXCLUDED_SCRIPT_ENVIRONMENTS = {"CRYSTALHD_CHECK_ROOT", "CRYSTALHD_SOURCE_ID"}
 EXCLUDED_BUILD_CONTROLS = {
     "CRYSTALHD_FW_RESEARCH",
+    "CRYSTALHD_PM_RESEARCH",
     "CRYSTALHD_V4L2",
     "LEGACY_CPU",
 }
@@ -77,9 +79,24 @@ def production_environments() -> set[str]:
 
 
 def module_parameters() -> set[str]:
+    # Ask the maintained Kbuild which sources belong to the default module.
+    # This only prints its object list; it needs no kernel headers or build.
+    # Scanning every .c would publish isolated research controls as ordinary
+    # runtime settings. A newly linked production source must still be scanned.
+    directory = ROOT / "driver/linux"
+    result = subprocess.run(
+        ["make", "--no-print-directory", "-s", "-f", str(directory / "Kbuild"),
+         "--eval=configuration-inventory:;@printf '%s\\n' $(crystalhd-objs)",
+         "configuration-inventory", "src=" + str(directory),
+         "CRYSTALHD_FW_RESEARCH=0", "CRYSTALHD_PM_RESEARCH=0", "CRYSTALHD_V4L2=0"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    objects = result.stdout.split()
+    if not objects or any(not re.fullmatch(r"[A-Za-z0-9_]+\.o", name) for name in objects):
+        raise ValueError("unrecognized default module object list")
     names: set[str] = set()
-    for path in (ROOT / "driver/linux").glob("*.c"):
-        names.update(MODULE_PARAMETER.findall(read(path)))
+    for name in objects:
+        names.update(MODULE_PARAMETER.findall(read(directory / (name[:-2] + ".c"))))
     return names
 
 

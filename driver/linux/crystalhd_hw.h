@@ -528,6 +528,10 @@ struct crystalhd_hw {
 	uint32_t		FleaRawActive;
 	/* Nested cleanup holds exclude runtime PM, not other cleanup callers. */
 	uint32_t		FleaCleanupActive;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	u64 FleaResearchSession;
+	u64 FleaResearchContext;
+#endif
 	struct crystalhd_flea_power_snapshot FleaPowerSaved;
 	uint32_t			EmptyCnt;
 	bool				SingleThreadAppFIFOEmpty;

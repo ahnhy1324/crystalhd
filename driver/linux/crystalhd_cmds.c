@@ -33,6 +33,7 @@
 #include "crystalhd_hw.h"
 #include "crystalhd_fleafuncs.h"
 #include "crystalhd_stream.h"
+#include "crystalhd_pm_research.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 
@@ -247,6 +248,9 @@ static BC_STATUS crystalhd_ensure_hw_context(struct crystalhd_cmd *ctx)
 
 	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
 	if (sts != BC_STS_SUCCESS) {
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_retire(ctx->hw_ctx);
+#endif
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 	}
@@ -323,6 +327,9 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 	}
 	ctx->state = BC_LINK_INVALID;
 	crystalhd_flea_cleanup_end(ctx->hw_ctx, power_held);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	crystalhd_pm_research_retire(ctx->hw_ctx);
+#endif
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -3220,6 +3227,9 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
 	if (sts == BC_STS_SUCCESS)
 		sts = crystalhd_hw_close(ctx->hw_ctx);
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+	crystalhd_pm_research_retire(ctx->hw_ctx);
+#endif
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -3251,6 +3261,9 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 			return sts;
 		if (!crystalhd_retained_cleanup(ctx, true))
 			return BC_STS_IO_ERROR;
+#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+		crystalhd_pm_research_retire(ctx->hw_ctx);
+#endif
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 	}
