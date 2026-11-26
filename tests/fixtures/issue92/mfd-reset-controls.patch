@@ -24,14 +24,16 @@ index 441ea9e..77913d0 100644
  #endif
  void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
  void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
-@@ -75,5 +76,5 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+@@ -91,7 +92,7 @@
+ 	    READ_ONCE(hw->FleaPowerState) == FLEA_PS_FAULT)
+ 		return false;
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
  		return false;
  #endif
  
-@@ -91,14 +92,14 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+@@ -109,14 +110,14 @@
  		msleep_interruptible(1);
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -49,7 +51,7 @@ index 441ea9e..77913d0 100644
  			return false;
  #endif
  
-@@ -122,7 +123,7 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+@@ -140,7 +141,7 @@
  	msleep_interruptible(5);
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -58,10 +60,13 @@ index 441ea9e..77913d0 100644
  		return false;
  #endif
  	return true;
-@@ -1854,6 +1855,158 @@ static BC_STATUS crystalhd_flea_scl_size_retire(struct crystalhd_hw *hw)
- 	return BC_STS_SUCCESS;
- }
- 
+@@ -2134,6 +2135,158 @@
+ 			 "issue92 scl-size-reset: phase=pre-clock-retire word=%u first=%08x second=%08x\n",
+ 			 i, first[i], second[i]);
+ 	hw->research_scl_reset_corroborated = true;
++	return BC_STS_SUCCESS;
++}
++
 +/* Pending observations preserve context until checked stock stop. They are
 + * neither an active-bank observation nor a source/downstream buffer lease.
 + */
@@ -211,12 +216,9 @@ index 441ea9e..77913d0 100644
 +	if (sts != BC_STS_SUCCESS)
 +		return sts;
 +	hw->research_mfd_reset_post_sampled = true;
-+	return BC_STS_SUCCESS;
-+}
-+
- static BC_STATUS crystalhd_flea_mfd_packed_input_guard(struct crystalhd_hw *hw,
- 		uint64_t generation, const void *owner, uint32_t ctrl,
- 		uint32_t stride, uint32_t test, uint32_t hsize, uint32_t window,
+ 	return BC_STS_SUCCESS;
+ }
+ 
 @@ -2975,7 +3128,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
  	bool mfd_packed_scl_input_probe = hw && hw->research_mfd_packed_scl_input_probe;
  	bool scl_config_only_probe = hw && hw->research_scl_config_probe;
@@ -273,7 +275,7 @@ index 441ea9e..77913d0 100644
  		return false;
  #endif
  	return true;
-@@ -3557,12 +3718,12 @@ static bool crystalhd_flea_stop_write(struct crystalhd_hw *hw,
+@@ -3842,12 +4003,12 @@
  		uint32_t address, uint32_t value)
  {
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -288,8 +290,8 @@ index 441ea9e..77913d0 100644
  		return false;
  #endif
  	return true;
-@@ -3573,8 +3734,10 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
- 	uint32_t regVal=0, pollCnt=0;
+@@ -3862,8 +4023,10 @@
+ 		return false;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty &&
@@ -298,61 +300,61 @@ index 441ea9e..77913d0 100644
 +	    (hw->research_scl_config_dirty && hw->research_scl_reset_corroborated) ||
 +	    (hw->research_mfd_reset_pending &&
 +	     (!hw->research_mfd_reset_cold_sampled || hw->research_mfd_reset_post_sampled)))
- 		return false;
+ 		goto out;
  #endif
  
-@@ -3586,13 +3749,13 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
- 		return false;
+@@ -3875,13 +4038,13 @@
+ 		goto out;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
- 		return false;
+ 		goto out;
  #endif
  	crystalhd_flea_init_temperature_measure(hw, false);
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
- 		return false;
+ 		goto out;
  #endif
  
-@@ -3634,15 +3797,15 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -3924,15 +4087,15 @@
  	while (1)
  	{
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -		if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +		if (!crystalhd_flea_research_stop_current(hw))
- 			return false;
+ 			goto out;
  #endif
  		if (!crystalhd_flea_stop_read(hw, BCHP_DDR23_CTL_REGS_0_CTL_STATUS, &regVal))
- 			return false;
+ 			goto out;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -		if (hw->research_scl_config_dirty &&
 -		    (!crystalhd_flea_scl_size_current(hw) || regVal == 0xffffffff))
 +		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
 +		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
- 			return false;
+ 			goto out;
  #endif
  
-@@ -3666,6 +3829,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -3955,6 +4118,9 @@
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
  	if (hw->research_scl_config_dirty &&
  	    crystalhd_flea_scl_size_retire(hw) != BC_STS_SUCCESS)
- 		return false;
++		goto out;
 +	if (hw->research_mfd_reset_pending &&
 +	    crystalhd_flea_mfd_reset_post(hw) != BC_STS_SUCCESS)
-+		return false;
+ 		goto out;
  #endif
  	if (!crystalhd_flea_stop_read(hw, BCHP_CLK_PM_CTRL, &regVal))
- 		return false;
-@@ -3686,14 +3852,14 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -3976,14 +4142,14 @@
  	*/
  	crystalhd_flea_clear_interrupts(hw);
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
- 		return false;
+ 		goto out;
  #endif
  	crystalhd_flea_disable_interrupts(hw);
  
@@ -360,62 +362,64 @@ index 441ea9e..77913d0 100644
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty && !crystalhd_flea_scl_size_current(hw))
 +	if (!crystalhd_flea_research_stop_current(hw))
- 		return false;
+ 		goto out;
  #endif
  	if (!crystalhd_flea_stop_read(hw, BCHP_DDR23_CTL_REGS_0_PARAMS2, &regVal))
-@@ -3727,7 +3893,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -4017,7 +4183,7 @@
  
  	/* * Enable DDR clock, DM and READ_ENABLE pads power down and force into the power down */
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -	if (hw->research_scl_config_dirty &&
 +	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
  	    (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
- 		return false;
+ 		goto out;
  #endif
-@@ -3827,6 +3993,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -4118,6 +4284,9 @@
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
  	if (hw->research_scl_config_dirty &&
  	    (!hw->research_scl_reset_corroborated || !crystalhd_flea_scl_size_current(hw)))
- 		return false;
++		goto out;
 +	if (hw->research_mfd_reset_pending &&
 +	    (!hw->research_mfd_reset_post_sampled || !crystalhd_flea_mfd_reset_current(hw)))
-+		return false;
+ 		goto out;
  #endif
- 	return true;
- }
+ 	stopped = true;
 diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
 index 1e9bdd8..4ffb09c 100644
 --- a/driver/linux/crystalhd_fw_research.c
 +++ b/driver/linux/crystalhd_fw_research.c
-@@ -63,6 +63,10 @@ static const u8 crystalhd_fw_research_owner;
- #error "SCL size/reset contrast must be built without other peripheral experiments"
- #endif
+@@ -71,6 +71,10 @@
  
-+#if defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) && (defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE))
-+#error "MFD reset-control observation must be built without other peripheral experiments"
+ #if defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) && (defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE))
+ #error "SCL size/reset contrast must be built without other peripheral experiments"
 +#endif
 +
++#if defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) && (defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE))
++#error "MFD reset-control observation must be built without other peripheral experiments"
+ #endif
+ 
  /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
- #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
- #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
-@@ -1057,5 +1061,5 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+@@ -1724,7 +1728,7 @@
+ 		rc = -EINVAL;
+ 		goto refuse;
  	}
 -#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE)
 +#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE)
  	/* This volatile pre-boot mode never reaches a decoder command or any
  	 * of the firmware/state inspection routes in the ordinary harness.
  	 */
-@@ -1204,6 +1208,11 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+@@ -1871,6 +1875,11 @@
+ #endif
+ #ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE
  	ctx->hw_ctx->research_scl_size_reset_probe = true;
- 	ctx->hw_ctx->research_mfd_generation = generation;
- 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
 +#endif
 +#ifdef CRYSTALHD_MFD_RESET_CONTROLS_PROBE
 +	ctx->hw_ctx->research_mfd_reset_probe = true;
-+	ctx->hw_ctx->research_mfd_generation = generation;
-+	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
  #endif
- 	sts = crystalhd_fw_download_locked(ctx, &crystalhd_fw_research_owner,
- 					  firmware->data, firmware->size);
 @@ -1218,6 +1227,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	ctx->hw_ctx->research_mfd_packed_scl_input_probe = false;
  	ctx->hw_ctx->research_scl_config_probe = false;
@@ -447,10 +451,11 @@ index 22a42be..06ff7cc 100644
  	if (hw->research_scl_config_dirty) {
  		/* No BAR/SCL reads after stock stop has disabled its clocks. */
  		if (!hw->dev_started || !hw->research_mfd_pci_isolated ||
-@@ -384,6 +389,28 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+@@ -411,6 +416,28 @@
+ 		hw->research_scl_reset_corroborated = false;
  		hw->research_scl_duty_generation = 0;
  		hw->research_scl_duty_owner = NULL;
- 	}
++	}
 +	if (hw->research_mfd_reset_pending) {
 +		/* Scalars only after stock stop: the tuple is not a consumer fence. */
 +		if (!hw->dev_started || !hw->research_mfd_pci_isolated ||
@@ -472,11 +477,10 @@ index 22a42be..06ff7cc 100644
 +		hw->research_mfd_reset_post_sampled = false;
 +		hw->research_mfd_reset_generation = 0;
 +		hw->research_mfd_reset_owner = NULL;
-+	}
+ 	}
  #endif
  
- 	hw->dev_started = false;
-@@ -599,7 +626,7 @@ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+@@ -651,7 +678,7 @@
  		return;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -485,7 +489,7 @@ index 22a42be..06ff7cc 100644
  		return;
  #endif
  
-@@ -802,7 +829,7 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+@@ -871,7 +898,7 @@
  		return BC_STS_INV_ARG;
  	}
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -525,7 +529,7 @@ diff --git a/driver/linux/crystalhd_lnx.c b/driver/linux/crystalhd_lnx.c
 index 2aec530..c979d5d 100644
 --- a/driver/linux/crystalhd_lnx.c
 +++ b/driver/linux/crystalhd_lnx.c
-@@ -1157,7 +1157,8 @@ static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
+@@ -1509,7 +1509,8 @@
  		adp->dma_terminal_quiesced = true;
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
  	/* Host PCI containment cannot retire an unresolved on-card config. */
@@ -544,7 +548,7 @@ index 2aec530..c979d5d 100644
  			return false;
  #endif
  		resources |= !ctx->adp || hw->rx_pkt_pool_head ||
-@@ -1240,7 +1241,8 @@ static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+@@ -1593,7 +1594,8 @@
  	}
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
  	/* A delete refusal must not be classified as successful retirement. */
@@ -578,7 +582,7 @@ diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
 index 91287bb..cd05038 100644
 --- a/tests/device-lifetime.c
 +++ b/tests/device-lifetime.c
-@@ -64,6 +64,10 @@ struct crystalhd_hw {
+@@ -73,6 +73,10 @@
  	bool research_scl_config_dirty, research_scl_reset_corroborated;
  	uint64_t research_scl_duty_generation;
  	const void *research_scl_duty_owner;
@@ -587,8 +591,8 @@ index 91287bb..cd05038 100644
 +	uint64_t research_mfd_reset_generation;
 +	const void *research_mfd_reset_owner;
  #endif
- 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
- 	void *rx_pkt_pool_head, *rx_fallback_head;
+ 	struct crystalhd_adp *adp;
+ 	int lock;
 @@ -191,7 +195,8 @@ static void assert_quiesced(void)
  	assert_excluded();
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -690,7 +694,7 @@ index 91287bb..cd05038 100644
  	switch (which) {
  	case 0: /* No pin and no host DMA inventory cannot retire a dirty context. */
  		down_write(&chd_device_lock);
-@@ -1314,7 +1346,7 @@ static void test_dirty_duty(unsigned int which)
+@@ -1444,7 +1476,7 @@
  		assert(!chd_dec_fail_closed(adp, -EIO));
  		assert(command_reads + status_reads == reads);
  		assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
@@ -708,7 +712,7 @@ index 91287bb..cd05038 100644
  		hw->rx_freeq = NULL;
  		chd_dec_pci_remove(&pci);
  		break;
-@@ -1345,7 +1377,7 @@ static void test_dirty_duty(unsigned int which)
+@@ -1475,7 +1507,7 @@
  		assert(!adp->present && adp->cmds.cin_wait_exit && adp->hw_accessible);
  		assert(chd_dma_quarantine == adp && pci.data == adp && g_adp_info == adp);
  		assert(adp->cmds.state == (which == 7 ? BC_LINK_INVALID : BC_LINK_SUSPEND));
@@ -726,15 +730,16 @@ index 91287bb..cd05038 100644
  	if (which >= 2 && which <= 8) {
  		assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1);
  		assert(!g_adp_info && !pci.data && !frontend_live && !chdev_live && !class_live);
-@@ -1370,10 +1402,14 @@ static void test_dirty_duty(unsigned int which)
+@@ -1500,10 +1532,14 @@
  		reads = command_reads + status_reads;
  		chd_dec_pci_remove(&pci);
  		assert(command_reads + status_reads == reads && pci_gets == 1);
 -		assert_dirty_retained(adp, hw, playback);
-+		assert_observer_retained(adp, hw, playback, mfd_pending, which);
- 	}
+-	}
 -	printf("Device lifetime research: dirty-duty %s passed (retained, not reset proof)\n",
 -	       dirty_cases[which]);
++		assert_observer_retained(adp, hw, playback, mfd_pending, which);
++	}
 +	if (mfd_pending)
 +		printf("Device lifetime research: observations-pending-retained %s passed (host context/backing, not consumer proof)\n",
 +		       dirty_cases[which]);
@@ -792,7 +797,9 @@ index 04d9ddd..652682d 100644
  	bool research_scl_config_dirty;
  	bool research_scl_reset_corroborated;
  	u64 research_scl_duty_generation;
-@@ -132,4 +138,6 @@ struct crystalhd_hw {
+@@ -131,6 +137,8 @@
+ 	bool dev_started, fwcmd_pending, fwcmd_poisoned;
+ 	enum FLEA_POWER_STATES FleaPowerState;
  	int fwcmd_trans_mutex;
 +	int fetch_sem;
 +	uint64_t rx_cancel_epoch;
@@ -1075,10 +1082,12 @@ index 04d9ddd..652682d 100644
  
  static void size_retention_results(void)
  {
-@@ -6640,6 +6806,443 @@ static void size_sample_results(void)
+@@ -6639,6 +6805,443 @@
+ 	check(crystalhd_flea_scl_size_sample(&hardware,adapter.generation,&research_owner,sizes,values)==BC_STS_IO_ERROR&&
+ 	      size_reads==34&&size_mismatch_logs==1&&!size_writes,
  	      "complete current defined geometry mismatch reports exactly its differing word without writing/relaxation");
- }
- 
++}
++
 +static void reset_controls_fixture(void)
 +{
 +	reset();queues[2].count=0;reset_controls_active=true;
@@ -1514,11 +1523,9 @@ index 04d9ddd..652682d 100644
 +	reset();check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_SUCCESS&&
 +		!reset_controls_calls&&!reset_controls_reads&&!reset_controls_writes&&!hardware.research_mfd_reset_pending&&
 +		cmac_writes==4&&arm_run_writes==1&&heartbeats==1,"ordinary default-off original firmware download remains unchanged");
-+}
-+
+ }
+ 
  int main(void)
- {
- 	reset();
 @@ -6708,6 +7311,12 @@ int main(void)
  	size_clean();size_probe_faults();size_profile_faults();size_stop_results();
  	size_sample_results();size_retention_results();size_download_results();size_scope_results();
@@ -1579,10 +1586,11 @@ index be2c64c..cccd983 100755
  	copying { print }
  	copying && /^#endif$/ { copying = 0 }
  	END { if (found != 1 || copying) exit 1 }
-@@ -209,6 +220,54 @@ for block in version setup; do
+@@ -208,6 +219,54 @@
+ 		}
  		END { if (found != 1 || copying) exit 1 }
  	' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$size_block_file"
- done
++done
 +awk '
 +	/^#if defined\(CRYSTALHD_MFD_RESET_CONTROLS_PROBE\)/ { copying=1; found++ }
 +	copying { print }
@@ -1630,7 +1638,6 @@ index be2c64c..cccd983 100755
 +	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_RESET_CONTROLS_PROBE "$@" \
 +		-include "$test_dir/mfd-reset-build-config.h" -include "$test_dir/scl-size-build-config.h" \
 +		"$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
-+done
+ done
  "${CC:-cc}" -E -P -x c -DCRYSTALHD_SCL_SIZE_RESET_PROBE \
  	-include "$test_dir/scl-size-build-config.h" "$test_dir/packed-config.h" > /dev/null
- "${CC:-cc}" -E -P -x c -DCRYSTALHD_SCL_CONFIG_PROBE "$test_dir/packed-config.h" > /dev/null

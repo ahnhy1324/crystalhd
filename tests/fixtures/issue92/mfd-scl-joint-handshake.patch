@@ -24,7 +24,7 @@ index 7a759d0..eb5ee29 100644
  static bool crystalhd_flea_research_stop_current(struct crystalhd_hw *hw);
  #endif
  void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
-@@ -98,7 +99,8 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+@@ -116,7 +117,8 @@
  		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL);
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -43,10 +43,13 @@ index 7a759d0..eb5ee29 100644
  	if ((hw->research_mfd_hsize_dirty && !hw->research_mfd_reset_pending) ||
  	    (!hw->research_mfd_hsize_dirty &&
  	     (hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)))
-@@ -2233,6 +2237,292 @@ static BC_STATUS crystalhd_flea_mfd_reset_post(struct crystalhd_hw *hw)
- 	return BC_STS_SUCCESS;
- }
- 
+@@ -2513,6 +2517,292 @@
+ 	if (sts != BC_STS_SUCCESS)
+ 		return sts;
+ 	hw->research_mfd_reset_post_sampled = true;
++	return BC_STS_SUCCESS;
++}
++
 +/* Fixed control-only namespace. No pointer, coefficient or pixel-port access.
 + * All 10 programmed MFD controls (including colour and STRIDE) and all five
 + * SCL controls are included in the indivisible reset reference.
@@ -330,12 +333,9 @@ index 7a759d0..eb5ee29 100644
 +		dev_info(&hw->adp->pdev->dev,
 +			 "issue92 joint: phase=pre-powerdown-retire word=%u first=%08x second=%08x\n", i, first[i], second[i]);
 +	hw->research_joint_reset_corroborated = true;
-+	return BC_STS_SUCCESS;
-+}
-+
- static BC_STATUS crystalhd_flea_mfd_packed_input_guard(struct crystalhd_hw *hw,
- 		uint64_t generation, const void *owner, uint32_t ctrl,
- 		uint32_t stride, uint32_t test, uint32_t hsize, uint32_t window,
+ 	return BC_STS_SUCCESS;
+ }
+ 
 @@ -3355,10 +3645,13 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
  	bool scl_config_only_probe = hw && hw->research_scl_config_probe;
  	bool scl_size_reset_probe = hw && hw->research_scl_size_reset_probe;
@@ -391,7 +391,7 @@ index 7a759d0..eb5ee29 100644
  	} else if (mfd_scl_probe || mfd_packed_scl_input_probe) {
  		uint32_t scl_status;
  
-@@ -3499,7 +3802,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+@@ -3782,7 +4085,7 @@
  		if (sts != BC_STS_SUCCESS)
  			return sts;
  		if (mfd_packed_scl_input_probe &&
@@ -472,7 +472,7 @@ index 7a759d0..eb5ee29 100644
  		return BC_STS_IO_ERROR;
  #endif
  
-@@ -3634,7 +3937,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+@@ -3917,7 +4220,7 @@
  		bridge_before = hw->pfnReadDevRegister(hw->adp,
  			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
  		if (scl_config_probe &&
@@ -499,7 +499,7 @@ index 7a759d0..eb5ee29 100644
  				return BC_STS_IO_ERROR;
  			if (sts != BC_STS_SUCCESS)
  				return sts;
-@@ -3674,7 +3977,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+@@ -3957,7 +4260,7 @@
  		bridge_after = hw->pfnReadDevRegister(hw->adp,
  			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
  		if (scl_config_probe &&
@@ -517,7 +517,7 @@ index 7a759d0..eb5ee29 100644
  		if (mfd_hsize_reset_probe)
  			return crystalhd_flea_mfd_hsize_probe(hw, mfd_generation, mfd_owner);
  		if (scl_size_reset_probe)
-@@ -3982,7 +4287,8 @@ static bool crystalhd_flea_stop_read(struct crystalhd_hw *hw,
+@@ -4267,7 +4572,8 @@
  #endif
  	*value = hw->pfnReadDevRegister(hw->adp, address);
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -535,27 +535,27 @@ index 7a759d0..eb5ee29 100644
  	    (hw->research_scl_config_dirty && hw->research_scl_reset_corroborated) ||
  	    (hw->research_mfd_hsize_dirty &&
  	     (!hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)) ||
-@@ -4081,7 +4388,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
- 			return false;
+@@ -4371,7 +4678,8 @@
+ 			goto out;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 -		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
 +		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
 +	     crystalhd_hw_research_joint_pending(hw)) &&
  		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
- 			return false;
+ 			goto out;
  #endif
-@@ -4103,6 +4411,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -4393,6 +4701,9 @@
  
  	/*First Disable the AVD and ARM before disabling the DRAM*/
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	if (crystalhd_hw_research_joint_pending(hw) &&
 +	    crystalhd_flea_joint_retire(hw) != BC_STS_SUCCESS)
-+		return false;
++		goto out;
  	if (hw->research_scl_config_dirty &&
  	    crystalhd_flea_scl_size_retire(hw) != BC_STS_SUCCESS)
- 		return false;
-@@ -4170,7 +4481,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 		goto out;
+@@ -4460,7 +4771,8 @@
  
  	/* * Enable DDR clock, DM and READ_ENABLE pads power down and force into the power down */
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -563,16 +563,18 @@ index 7a759d0..eb5ee29 100644
 +	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
 +	     crystalhd_hw_research_joint_pending(hw)) &&
  	    (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
- 		return false;
+ 		goto out;
  #endif
-@@ -4269,4 +4581,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -4559,6 +4871,9 @@
+ 	    BC_STS_SUCCESS)
+ 		goto out;
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	if (crystalhd_hw_research_joint_pending(hw) &&
 +	    (!hw->research_joint_reset_corroborated || !crystalhd_flea_joint_current(hw)))
-+		return false;
++		goto out;
  	if (hw->research_scl_config_dirty &&
  	    (!hw->research_scl_reset_corroborated || !crystalhd_flea_scl_size_current(hw)))
- 		return false;
+ 		goto out;
 diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
 index 291972e..74a7f04 100644
 --- a/driver/linux/crystalhd_fw_research.c
@@ -607,10 +609,13 @@ index 291972e..74a7f04 100644
  #ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE
  	/* A fixed pre-boot size-only experiment, never a codec or state request. */
  	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
-@@ -1235,6 +1251,16 @@ static void crystalhd_fw_research_run_internal(u64 generation,
- 	ctx->hw_ctx->research_mfd_generation = generation;
- 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+@@ -1901,6 +1917,16 @@
  #endif
+ #ifdef CRYSTALHD_MFD_RESET_CONTROLS_PROBE
+ 	ctx->hw_ctx->research_mfd_reset_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
 +#ifdef CRYSTALHD_JOINT_CONFIG_RESET_PROBE
 +	ctx->hw_ctx->research_joint_config_probe = true;
 +	ctx->hw_ctx->research_mfd_generation = generation;
@@ -618,12 +623,9 @@ index 291972e..74a7f04 100644
 +#endif
 +#ifdef CRYSTALHD_JOINT_FEED_PROBE
 +	ctx->hw_ctx->research_joint_feed_probe = true;
-+	ctx->hw_ctx->research_mfd_generation = generation;
-+	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
-+#endif
- #ifdef CRYSTALHD_MFD_HSIZE_RESET_PROBE
- 	ctx->hw_ctx->research_mfd_hsize_reset_probe = true;
  	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+ #endif
 @@ -1254,6 +1280,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
  	ctx->hw_ctx->research_scl_config_probe = false;
  	ctx->hw_ctx->research_scl_size_reset_probe = false;
@@ -638,9 +640,10 @@ index 880045c..1d77e6a 100644
 --- a/driver/linux/crystalhd_hw.c
 +++ b/driver/linux/crystalhd_hw.c
 @@ -35,6 +35,15 @@
+ #include "crystalhd_rx_receipt.h"
  
  #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
- 
++
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +bool crystalhd_hw_research_joint_pending(const struct crystalhd_hw *hw)
 +{
@@ -649,10 +652,9 @@ index 880045c..1d77e6a 100644
 +		hw->research_joint_attempts || hw->research_joint_generation || hw->research_joint_owner);
 +}
 +#endif
-+
+ 
  BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
  {
- 	unsigned long flags;
 @@ -352,6 +361,7 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
  	    && !hw->research_mfd_pci_isolated && !hw->research_scl_config_dirty
@@ -699,7 +701,7 @@ index 880045c..1d77e6a 100644
  	if (hw->research_scl_config_dirty &&
  	    (hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)) {
  		crystalhd_hw_dma_fatal_stop(hw);
-@@ -646,7 +687,8 @@ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+@@ -698,7 +739,8 @@
  		return;
  
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -709,7 +711,7 @@ index 880045c..1d77e6a 100644
  		return;
  #endif
  
-@@ -849,7 +891,8 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+@@ -918,7 +960,8 @@
  		return BC_STS_INV_ARG;
  	}
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -748,7 +750,7 @@ index 7c323e4..4de0e6a 100644
  #endif
  	struct tx_dma_pkt		tx_pkt_pool[DMA_ENGINE_CNT];
  	spinlock_t		lock;
-@@ -728,4 +739,7 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
+@@ -782,6 +793,9 @@
   * barrier. Rings/queues remain allocated; no hardware/IRQ callback runs here.
   */
  void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
@@ -756,11 +758,13 @@ index 7c323e4..4de0e6a 100644
 +bool crystalhd_hw_research_joint_pending(const struct crystalhd_hw *hw);
 +#endif
  bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
+ void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
+ void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
 diff --git a/driver/linux/crystalhd_lnx.c b/driver/linux/crystalhd_lnx.c
 index 964f928..6faab99 100644
 --- a/driver/linux/crystalhd_lnx.c
 +++ b/driver/linux/crystalhd_lnx.c
-@@ -1159,7 +1159,8 @@ static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
+@@ -1511,7 +1511,8 @@
  	/* Host PCI containment cannot retire an unresolved on-card config. */
  	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
  	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
@@ -780,7 +784,7 @@ index 964f928..6faab99 100644
  			return false;
  #endif
  		resources |= !ctx->adp || hw->rx_pkt_pool_head ||
-@@ -1244,7 +1246,8 @@ static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+@@ -1597,7 +1599,8 @@
  	/* A delete refusal must not be classified as successful retirement. */
  	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
  	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
@@ -814,7 +818,7 @@ diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
 index 18ac047..6154369 100644
 --- a/tests/device-lifetime.c
 +++ b/tests/device-lifetime.c
-@@ -72,6 +72,13 @@ struct crystalhd_hw {
+@@ -81,6 +81,13 @@
  	bool research_mfd_hsize_reset_probe, research_mfd_hsize_dirty;
  	bool research_mfd_hsize_request_sampled, research_mfd_hsize_reset_corroborated;
  	uint32_t research_mfd_hsize_saved[20];
@@ -826,9 +830,11 @@ index 18ac047..6154369 100644
 +	const void *research_joint_owner;
 +	uint32_t research_joint_saved[25];
  #endif
- 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
- 	void *rx_pkt_pool_head, *rx_fallback_head;
-@@ -133,4 +140,7 @@ struct crystalhd_adp {
+ 	struct crystalhd_adp *adp;
+ 	int lock;
+@@ -150,6 +157,9 @@
+ 	bool receipts_cleaned;
+ };
  #include "lifetime-binding.h"
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +#include "lifetime-joint.h"
@@ -866,7 +872,7 @@ index 18ac047..6154369 100644
  		assert(g_adp_info->dma_terminal_quiesced == dma_drained);
  	else
  #endif
-@@ -1234,7 +1247,39 @@ enum retained_duty {
+@@ -1364,7 +1377,39 @@
  	RETAIN_MFD_HSIZE_ORPHAN,
  	RETAIN_SCL_ENABLE_BOUND,
  	RETAIN_SCL_ENABLE_ORPHAN,
@@ -879,13 +885,13 @@ index 18ac047..6154369 100644
 +	RETAIN_JOINT_ATTEMPTS_ONLY,
 +	RETAIN_JOINT_GENERATION_ONLY,
 +	RETAIN_JOINT_OWNER_ONLY,
-+};
+ };
 +
 +struct joint_duty_case {
 +	const char *prefix;
 +	bool pending, original, corroborated, start, generation, owner;
 +	unsigned int attempts;
- };
++};
 +static const struct joint_duty_case joint_duty_cases[] = {
 +	{ "joint-bound-", true, true, false, true, true, true, 16 },
 +	{ "joint-orphan-", true, true, false, true, false, false, 16 },
@@ -1003,9 +1009,9 @@ diff --git a/tests/device-lifetime.sh b/tests/device-lifetime.sh
 index 26048fc..e865310 100644
 --- a/tests/device-lifetime.sh
 +++ b/tests/device-lifetime.sh
-@@ -11,13 +11,20 @@ cleanup()
-         "$lifetime_test_dir/lifetime-owner.h" \
-         "$lifetime_test_dir/lifetime-pm-command.h" "$lifetime_test_dir/lifetime-pm.h" \
+@@ -13,7 +13,8 @@
+         "$lifetime_test_dir/lifetime-power-types.h" "$lifetime_test_dir/lifetime-cleanup.h" \
+         "$lifetime_test_dir/lifetime-fault.h" \
          "$lifetime_test_dir/access-check" "$lifetime_test_dir/access-binding.h" \
 -        "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
 +        "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h" \
@@ -1013,7 +1019,8 @@ index 26048fc..e865310 100644
      rmdir "$lifetime_test_dir"
  }
  trap cleanup EXIT
- trap 'exit 1' HUP INT TERM
+@@ -35,6 +36,12 @@
+ ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$lifetime_test_dir/lifetime-fault.h"
  
  # Exercise the production removal/close paths, including their resource helpers.
 +awk '
