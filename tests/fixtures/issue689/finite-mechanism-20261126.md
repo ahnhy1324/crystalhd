@@ -2,8 +2,9 @@
 
 This is the isolated mechanism for [#689](https://github.com/ahnhy1324/crystalhd/issues/689),
 based on maintained master `5e9dd72`. Production runtime PWM remains disabled.
-No module was installed or loaded and no hardware trial was performed here.
 This document records the finite1 mechanism and device-free qualification.
+See the [native result and remaining scope](native-finite-20261126.md) for
+the subsequent controlled hardware trials and complete official restoration.
 The current build adds the [finite2 selector observation](finite2-selector-20261126.md);
 the finite1 native result remains separate evidence.
 
@@ -118,6 +119,8 @@ patches check and apply in order; their full staging suite was not rerun here.
 Local raw logs and preserved development failures are indexed by
 `/home/mache/.cache/crystalhd-pm-finite-final-20261126.json`.
 
-Temperature collection, repeated native playback, recovery orchestration,
-thermal benefit, long-idle/endurance and production enablement are outside this
-mechanism. The #376 180-frame one-cycle receipt is not a result of this source.
+The separate native coordinator supplies playback and recovery orchestration;
+the mechanism itself does not. Temperature collection, thermal benefit,
+long-idle/endurance and production enablement are not qualified by these
+device-free checks. The #376 180-frame one-cycle receipt is not a result of
+this source.

@@ -106,8 +106,10 @@ host compile's signed-enum comparison warning and its correction are preserved
 with the final logs in
 `/home/mache/.cache/crystalhd-pm-finite2-final-20261126.json`.
 
-The next experiment must use a fresh finite2 module and preserve the same
-clear input, owned-pixel comparison, ordinary cleanup and complete official
-1.3 restoration. The finite1 playback adapter and DIL can be reused unchanged
-as explicitly identified `83f1e9c` comparison components. Native observation,
-residency, temperature and endurance conclusions require their own evidence.
+The [subsequent native comparison](native-finite-20261126.md) uses fresh finite2
+loads, the same clear input, owned-pixel comparison, ordinary cleanup and full
+official 1.3 restoration. Run2 reuses the original `83f1e9c` client/DIL and
+identifies RX0 waiting for completion before the immediate resume. Run3 keeps
+that exact module/DIL and changes only the diagnostic client's pause interval;
+it records an actual down/wake/current-FLL cycle. Native timing and remaining
+temperature/endurance limits belong to that separate evidence.

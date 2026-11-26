@@ -4,6 +4,12 @@ This isolated #689 diagnostic runs the current maintained `library-drain.cpp`
 input, decoder lifecycle, source-token/count/EOS checks and output leases.
 It imports no old drain implementation and makes no installed-runtime changes.
 
+The [native comparison and remaining scope](../../../tests/fixtures/issue689/native-finite-20261126.md)
+records two actual down/wake/current-FLL cycles in one 180-picture session
+using `host-dwell50-twice`, with matched OFF controls and official restoration.
+Use that result to distinguish the immediate, single-dwell and repeated-dwell
+stimuli below; none qualifies thermal benefit or normal product enablement.
+
 The retained synthetic MPEG-2 fixture is `mpeg2.m2v`, 640×360 progressive,
 180 pictures, 1,777,511 submitted bytes, SHA-256
 `32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b`.
