@@ -49,6 +49,29 @@ void crystalhd_rx_receipt_parse(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *pkt, bool parsed);
 void crystalhd_rx_receipt_disposition(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *pkt, uint32_t disposition);
+#elif defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
+/* Isolated copied-value backend at the same ownership-safe hook sites.
+ * No ARM/SEAL/READ ioctl, RCU store, packet mutation or firmware access. */
+static inline void crystalhd_rx_receipt_cleanup(struct crystalhd_adp *adp)
+{ (void)adp; }
+static inline void crystalhd_rx_receipt_descriptors(
+ struct crystalhd_rx_dma_pkt *pkt, uint32_t uv_descriptor_index)
+{ (void)pkt; (void)uv_descriptor_index; }
+void crystalhd_rx_receipt_reserve(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *pkt, uint32_t list_index,
+	uint32_t rx_sequence, uint32_t channel_id,
+	struct crystalhd_rx_receipt_key *key);
+void crystalhd_rx_receipt_fire_return(struct crystalhd_hw *hw,
+	const struct crystalhd_rx_receipt_key *key);
+uint64_t crystalhd_rx_receipt_irq_entry(struct crystalhd_hw *hw);
+void crystalhd_rx_receipt_irq(struct crystalhd_hw *hw, uint32_t list_index,
+	uint64_t irq_entry_ns, BC_STATUS completion_status);
+void crystalhd_rx_receipt_complete(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *pkt, BC_STATUS completion_status);
+void crystalhd_rx_receipt_parse(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *pkt, bool parsed);
+void crystalhd_rx_receipt_disposition(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *pkt, uint32_t disposition);
 #else
 static inline void crystalhd_rx_receipt_cleanup(struct crystalhd_adp *adp)
 {

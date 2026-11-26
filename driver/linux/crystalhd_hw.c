@@ -1324,6 +1324,11 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		crystalhd_rx_receipt_complete(hw, rx_pkt, comp_sts);
 		sts = crystalhd_dioq_add(hw->rx_rdyq, rx_pkt, true,
 					 hw->rx_pkt_tag_seed + list_index);
+		/* Do not dereference rx_pkt after ready publication. It can be
+		 * consumed concurrently. list/status are stable local values. */
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+		CHD_RX_NOTE(hw, CHD_RX_READY, list_index, sts);
+#endif
 		if (sts != BC_STS_SUCCESS) {
 			/* Keep the buffer reachable for process-context cancellation. */
 			crystalhd_hw_retain_rx_pkt(hw, rx_pkt);
@@ -2224,5 +2229,11 @@ void crystalhd_hw_stats(struct crystalhd_hw *hw, struct crystalhd_hw_stats *stat
 
 	hw->stats.freeq_count = crystalhd_hw_count_free_rx_pkts(hw);
 	hw->stats.rdyq_count  = crystalhd_dioq_count(hw->rx_rdyq);
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	CHD_RX_NOTE(hw, CHD_RX_STATUS, hw->stats.freeq_count,
+		hw->stats.rdyq_count, READ_ONCE(hw->PicQSts),
+		READ_ONCE(hw->RxCaptureState), READ_ONCE(hw->rx_list_sts[0]),
+		READ_ONCE(hw->rx_list_sts[1]), READ_ONCE(hw->DrvTotalFrmCaptured));
+#endif
 	memcpy(stats, &hw->stats, sizeof(*stats));
 }

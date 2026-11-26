@@ -69,7 +69,7 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *pic_number,
 	uint64_t *metadata, bool prepare_output);
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 	struct crystalhd_rx_dma_pkt *rx_pkt,
 	struct crystalhd_rx_receipt_key *receipt_key
 #else
@@ -903,6 +903,10 @@ void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
 	newChBitmap = hw->pfnReadDevRegister(hw->adp, RX_DMA_PIC_QSTS_MBOX);
 
 	hw->PicQSts = newChBitmap;
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	CHD_RX_NOTE(hw, CHD_RX_PICQ, RX_DMA_PIC_QSTS_MBOX, newChBitmap,
+		hw->RxCaptureState);
+#endif
 
 	/* -- For link we were enabling the capture on format change
 	   -- For Flea, we will get a PicQSts interrupt where we will
@@ -2453,6 +2457,11 @@ BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw
 			st_rsp = (struct DecRspChannelStartVideo *)fw_cmd->rsp;
 			hw->pib_del_Q_addr = st_rsp->picInfoDeliveryQ;
 			hw->pib_rel_Q_addr = st_rsp->picInfoReleaseQ;
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+			CHD_RX_NOTE(hw, CHD_RX_START, fw_cmd->cmd[1],
+				hw->pib_del_Q_addr, hw->pib_rel_Q_addr, hw->FleaRxPicDelAddr,
+				hw->RxSeqNum, hw->PicQSts);
+#endif
 
 			dev_dbg(&hw->adp->pdev->dev, "Snooping CHAN_START_VIDEO command to get the Addr of Del/Rel Queue\n");
 			dev_dbg(&hw->adp->pdev->dev, "DelQAddr:%x RelQAddr:%x\n",
@@ -2781,7 +2790,7 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 }
 
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 					   struct crystalhd_rx_dma_pkt *rx_pkt,
 					   struct crystalhd_rx_receipt_key *receipt_key
 #else
@@ -2793,7 +2802,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	addr_64 desc_addr;
 	unsigned long rx_flags, hw_flags;
 	PIC_DELIVERY_HOST_INFO	PicDeliInfo = {0};
-	uint32_t BuffSzInDwords, pkt_tag, channel;
+	uint32_t BuffSzInDwords, pkt_tag, channel, pic_del_addr;
 	BC_STATUS sts;
 
 	if (!hw || !rx_pkt || !rx_pkt->buffer) {
@@ -2874,8 +2883,15 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 			goto unlock;
 		}
 	}
-	sts = hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords,
+	pic_del_addr = hw->FleaRxPicDelAddr;
+	sts = hw->pfnDevDRAMWrite(hw, pic_del_addr, BuffSzInDwords,
 				(uint32_t *)&PicDeliInfo);
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	CHD_RX_NOTE(hw, CHD_RX_META, pic_del_addr, BuffSzInDwords,
+		sts, PicDeliInfo.ListIndex, PicDeliInfo.RxSeqNumber, channel,
+		PicDeliInfo.HostDescMemLowAddr_Y, PicDeliInfo.HostDescMemHighAddr_Y,
+		PicDeliInfo.HostDescMemLowAddr_UV, PicDeliInfo.HostDescMemHighAddr_UV);
+#endif
 	if (sts != BC_STS_SUCCESS)
 		goto unlock;
 
@@ -2884,7 +2900,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	if (sts != BC_STS_SUCCESS)
 		goto unlock;
 	rx_pkt->pkt_tag = pkt_tag;
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 	crystalhd_rx_receipt_reserve(hw, rx_pkt, hw->rx_list_post_index,
 				     hw->RxSeqNum, channel, receipt_key);
 #endif
@@ -2895,6 +2911,10 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	hw->rx_list_post_index = (hw->rx_list_post_index + 1) % DMA_ENGINE_CNT;
 
 	crystalhd_rx_buffer_sync_for_device(hw->adp, rx_pkt->buffer);
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	CHD_RX_NOTE(hw, CHD_RX_DOORBELL, RX_POST_MAILBOX, channel,
+		PicDeliInfo.ListIndex, PicDeliInfo.RxSeqNumber, pkt_tag);
+#endif
 	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, channel);
 	hw->RxSeqNum++;
 
@@ -2906,7 +2926,7 @@ unlock:
 
 BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *rx_pkt)
 {
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 	struct crystalhd_rx_receipt_key receipt_key = { };
 	BC_STATUS sts = crystalhd_flea_hw_fire_rxdma(hw, rx_pkt, &receipt_key);
 
@@ -3368,6 +3388,10 @@ void crystalhd_flea_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON 
 
 	y_err_sts = hw->pfnReadDevRegister(hw->adp, BCHP_MISC1_Y_RX_ERROR_STATUS);
 	uv_err_sts = hw->pfnReadDevRegister(hw->adp, BCHP_MISC1_HIF_RX_ERROR_STATUS);
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	CHD_RX_NOTE(hw, CHD_RX_IRQ_RAW, intr_sts.WholeReg, y_err_sts,
+		uv_err_sts, hw->rx_list_sts[0], hw->rx_list_sts[1]);
+#endif
 
 	for (i = 0; i < DMA_ENGINE_CNT; i++) {
 		/* Update States..*/

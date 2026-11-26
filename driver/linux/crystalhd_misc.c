@@ -642,7 +642,7 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 	uint32_t picture;
 
 	if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE)) {
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 		crystalhd_rx_receipt_parse(hw, pkt, true);
 		crystalhd_rx_receipt_disposition(hw, pkt,
 			CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE);
@@ -656,7 +656,7 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 		/* Flea discovers geometry and format changes in the picture PIB. */
 		picture = flea_GetRptDropParam(hw, pkt);
 		if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE)) {
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 			crystalhd_rx_receipt_disposition(hw, pkt,
 				CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_FORMAT_CHANGE);
 #endif
@@ -672,7 +672,7 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 	}
 	if (!picture || picture == hw->LastPicNo ||
 	    picture == hw->LastTwoPicNo) {
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 		uint32_t disposition =
 			CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_RECYCLE_ZERO;
 
@@ -705,7 +705,7 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 			 picture - hw->LastPicNo);
 	hw->LastTwoPicNo = hw->LastPicNo;
 	hw->LastPicNo = picture;
-#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+#if defined(CRYSTALHD_ENABLE_FW_RESEARCH) || defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
 	crystalhd_rx_receipt_disposition(hw, pkt,
 		CRYSTALHD_FW_RESEARCH_RX_DISPOSITION_OUTPUT);
 #endif

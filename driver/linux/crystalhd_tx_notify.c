@@ -42,7 +42,7 @@ void crystalhd_tx_notify(struct crystalhd_hw *hw, uint32_t event,
 	else
 		tx_store.saturated = true;
 	if (!values || !count || count > CHD_TX_NOTIFY_VALUES ||
-	    event < CHD_TX_OPEN || event > CHD_TX_DONE) {
+	    event < CHD_TX_OPEN || event > CHD_TX_NOTIFY_LAST) {
 		tx_store.invalid = true;
 		goto drop;
 	}
@@ -83,6 +83,9 @@ static int tx_show(struct seq_file *seq, void *unused)
 	seq_printf(seq, "tx-notify=1 capacity=%u count=%u calls=%llu dropped=%llu saturated=%u invalid=%u read_ns=%llu extra_device_reads=0 extra_device_writes=0\n",
 		CHD_TX_NOTIFY_CAPACITY, snapshot->count, snapshot->calls,
 		snapshot->dropped, snapshot->saturated, snapshot->invalid, tx_now());
+#ifdef CRYSTALHD_RX_NOTIFY_RESEARCH
+	seq_puts(seq, "rx-notify=1 backend=existing-receipt-hooks fifo_queries_added=0\n");
+#endif
 	for (i = 0; i < snapshot->count; i++) {
 		const struct chd_tx_notify_record *r = &snapshot->records[i];
 		seq_printf(seq, "record=%u time_ns=%llu context=%llx event=%u values=%u",

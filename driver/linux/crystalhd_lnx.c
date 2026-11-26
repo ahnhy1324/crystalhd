@@ -2071,7 +2071,9 @@ module_exit(chd_dec_module_cleanup);
 MODULE_AUTHOR("Naren Sankar <nsankar@broadcom.com>");
 MODULE_AUTHOR("Prasad Bolisetty <prasadb@broadcom.com>");
 MODULE_DESCRIPTION(CRYSTAL_HD_NAME);
-#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+#if defined(CRYSTALHD_RX_NOTIFY_RESEARCH)
+MODULE_VERSION("3.10.27-rxnotify1");
+#elif defined(CRYSTALHD_TX_NOTIFY_RESEARCH)
 MODULE_VERSION("3.10.26-txnotify1");
 #elif defined(CRYSTALHD_ENABLE_PM_RESEARCH)
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION "-pmfinite2");
