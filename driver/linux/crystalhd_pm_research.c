@@ -14,13 +14,13 @@ static unsigned int pm_research_attempts;
 static unsigned int pm_research_ms;
 module_param(pm_research_attempts, uint, 0400);
 #ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
-MODULE_PARM_DESC(pm_research_attempts, "Isolated sustained PM attempts, 1..64; explicit milliseconds required; default OFF");
+MODULE_PARM_DESC(pm_research_attempts, "Isolated five-minute PM attempts, 1..256; explicit milliseconds required; default OFF");
 #else
 MODULE_PARM_DESC(pm_research_attempts, "Isolated PM research attempts, 1..8; requires explicit milliseconds; default OFF");
 #endif
 module_param(pm_research_ms, uint, 0400);
 #ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
-MODULE_PARM_DESC(pm_research_ms, "New-down admission window, 1..60000 milliseconds; not a forced-wake deadline");
+MODULE_PARM_DESC(pm_research_ms, "New-down admission window, 1..360000 milliseconds; not a forced-wake deadline");
 #else
 MODULE_PARM_DESC(pm_research_ms, "New-down admission window, 1..5000 milliseconds; not a forced-wake deadline");
 #endif

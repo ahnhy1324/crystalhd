@@ -1,35 +1,38 @@
-# Isolated sustained-admission profile
+# Isolated five-minute admission profile
 
-This research branch adds `CRYSTALHD_PM_SUSTAINED_RESEARCH=1` alongside the
-existing `CRYSTALHD_PM_RESEARCH=1`. It does not change either the default
-production module or the original finite2 build. It includes the separately
-reviewed RX list-phase correction from PR #705.
+This branch extends the separately frozen sustained1 profile (`7632ab6`) for
+one five-minute, 7,200-picture 720p24 experiment. The original default module
+and finite2 build remain unchanged. The earlier sustained1 source and its
+64-attempt / 60,000-ms / 416-record bounds remain preserved on their own branch;
+its initial native preflight was refused before playback because host temperature
+exceeded the existing 55-degree Celsius start condition.
 
-The explicit sustained1 profile permits at most 64 physical down admissions
-within at most 60,000 ms from the first actual admission. Both runtime arguments
-are mandatory to enable it; the default 0/0 remains OFF. The module identity is
-`3.10.29-pmsustain1`, and both debugfs headers identify `sustained1`, so frozen
-finite2 guards cannot silently accept this different experiment.
+Building requires both `CRYSTALHD_PM_RESEARCH=1` and
+`CRYSTALHD_PM_SUSTAINED_RESEARCH=1`. The new module is
+`3.10.30-pmendurance1`; both debugfs headers identify `endurance1`. Its explicit
+runtime limits are at most 256 physical down admissions within 360,000 ms from
+the first actual admission. Zero/zero remains OFF. The fixed array contains
+1,600 records, exceeding six reserved slots per possible admission plus four
+terminal slots (1,540). The actual selector/down/up/FLL, once-only module claim,
+fault/cleanup ownership and retirement code are unchanged. Expiry stops new
+down admissions without forcing wake or preventing an outstanding ordinary wake.
 
-The profile only changes finite limits and reserves 416 static receipt slots.
-An admission already requires six spare slots plus terminal headroom; the
-compile-time bound retains six slots per permitted cycle plus four terminal
-slots. No ring overwriting, dynamic growth, register access, retry, transition
-or ownership change is added. The original actual selector/down/up/FLL paths,
-once-only module claim, failed-wake retention and checked terminal cleanup
-remain. Expiry stops new down admissions; it neither forces wake nor prevents
-an outstanding ordinary wake/FLL from completing.
+The planned single-HANDLE workload has 7,200 original packet timestamps over
+300 seconds and 150 ready-pressure windows at input ordinals 0, 48, ..., 7152.
+It stream-copies the exact earlier 900-picture source eight times; visual content
+repeats every 37.5 seconds. New source PTS/DTS are continuous. There is no seek,
+reopen, explicit pause, claim reset or forced physical transition. Requested
+windows are separate from the actual cycle count. The client retains default
+YUY2 without invoking the colour setter.
 
-The first planned workload is one original-PTS 900-picture / 37.5-second 720p24
-stream with 19 bounded ready-pressure windows distributed at input ordinals
-0, 48, ..., 864. There is one device/session/clock epoch and no explicit pause,
-seek, reopen or budget reset. Actual physical cycles and their distribution
-must come from the native ledger; requested windows are not completed cycles.
-Source pictures, full pixels, release, EOS, current-process cleanup and complete
-official 1.3 restoration keep their existing requirements. The caller explicitly
-retains default YUY2 without invoking the colour setter.
+The new client shares one 330-second deadline from before source loading; the
+owned process controller has a distinct 345-second limit for endurance arms,
+while ordinary recovery controls retain 75 seconds. Original monitors remain
+unchanged. Initial host temperature at most 55 degrees Celsius, runtime below
+75 degrees, AC supply, process/memory bounds, once-release/EOS, current-process
+cleanup and full official 1.3 restoration retain their existing requirements.
 
-This extends gating observation across playback. It is not five-minute or
-hour-scale endurance, calibrated thermal benefit, electrical power measurement,
-smooth physical display or production promotion. No native result is claimed
-by this source description.
+These are source limits and planned stimulus, not a native result. Source-frame
+and pixel comparisons must cover all 7,200 pictures in each arm. Five-minute
+operation cannot establish hour-scale reliability, calibrated thermal benefit,
+electrical power consumption, smooth display or production promotion.

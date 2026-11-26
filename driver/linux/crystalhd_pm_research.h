@@ -8,10 +8,10 @@
 #ifndef CRYSTALHD_ENABLE_PM_RESEARCH
 #error "Sustained profile requires isolated PM research"
 #endif
-#define CHD_PM_MAX_ATTEMPTS 64U
-#define CHD_PM_MAX_MS 60000U
-#define CHD_PM_RECORDS 416U
-#define CHD_PM_PROFILE "sustained1"
+#define CHD_PM_MAX_ATTEMPTS 256U
+#define CHD_PM_MAX_MS 360000U
+#define CHD_PM_RECORDS 1600U
+#define CHD_PM_PROFILE "endurance1"
 #else
 #define CHD_PM_MAX_ATTEMPTS 8U
 #define CHD_PM_MAX_MS 5000U
