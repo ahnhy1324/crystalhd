@@ -33,6 +33,7 @@
 #include "crystalhd_linkfuncs.h"
 #include "crystalhd_fleafuncs.h"
 #include "crystalhd_pm_research.h"
+#include "crystalhd_tx_notify.h"
 #include "crystalhd_rx_receipt.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
@@ -1503,6 +1504,11 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 						   &tx_dma_packet->desc_mem,
 						   &dummy_index, dev,
 						   destDRAMaddr);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	CHD_TX_NOTE(hw, CHD_TX_DESCRIPTOR, destDRAMaddr, buffer->bytes,
+		local_flags, sts, hw->TxBuffInfoAddr, buffer->dma_nents,
+		buffer->tail_size);
+#endif
 	if (sts != BC_STS_SUCCESS)
 		goto requeue;
 
@@ -1561,6 +1567,11 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	/* Save the transfer length */
 	hw->TxFwInputBuffInfo.HostXferSzInBytes = buffer->bytes;
 
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	CHD_TX_NOTE(hw, CHD_TX_START, list_posted, *list_id,
+		desc_addr.low_part, desc_addr.high_part, destDRAMaddr, buffer->bytes,
+		hw->TxBuffInfoAddr);
+#endif
 	hw->pfnStartTxDMA(hw, list_posted, desc_addr);
 
 	spin_unlock_irqrestore(&hw->lock, flags);

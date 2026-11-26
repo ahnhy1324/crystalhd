@@ -45,6 +45,7 @@
 #include "crystalhd_fw_research.h"
 #include "crystalhd_rx_receipt.h"
 #include "crystalhd_pm_research.h"
+#include "crystalhd_tx_notify.h"
 #include "../../include/crystalhd_fw_research.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
@@ -917,11 +918,18 @@ void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 {
 	TX_INPUT_BUFFER_INFO	TxBuffInfo = {0};
 	uint32_t ReadSzInDWords=0;
+	uint32_t info_addr = hw->TxBuffInfoAddr;
 	BC_STATUS sts;
 
 	ReadSzInDWords = (sizeof(TxBuffInfo) - sizeof(TxBuffInfo.Reserved))/4;
-	sts = hw->pfnDevDRAMRead(hw, hw->TxBuffInfoAddr, ReadSzInDWords,
+	sts = hw->pfnDevDRAMRead(hw, info_addr, ReadSzInDWords,
 			       (uint32_t *)&TxBuffInfo);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	CHD_TX_NOTE(hw, CHD_TX_ADVERTISEMENT, info_addr, sts,
+		TxBuffInfo.DramBuffAdd, TxBuffInfo.DramBuffSzInBytes,
+		TxBuffInfo.HostXferSzInBytes, TxBuffInfo.Flags,
+		TxBuffInfo.SeqNum, TxBuffInfo.ChannelID);
+#endif
 	if (sts != BC_STS_SUCCESS)
 		goto invalidate;
 
@@ -2429,6 +2437,13 @@ BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw
 			hw->PwrDwnPiQIntr = false;
 			hw->EmptyCnt = 0;
 			hw->SingleThreadAppFIFOEmpty = false;
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+			CHD_TX_NOTE(hw, CHD_TX_OPEN, fw_cmd->cmd[1], channel,
+				hw->TxBuffInfoAddr, hw->TxFwInputBuffInfo.DramBuffAdd,
+				hw->TxFwInputBuffInfo.DramBuffSzInBytes,
+				hw->TxFwInputBuffInfo.HostXferSzInBytes,
+				hw->TxFwInputBuffInfo.Flags, hw->TxFwInputBuffInfo.SeqNum);
+#endif
 
 			dev_dbg(&hw->adp->pdev->dev, "Snooped ChOpen Cmd For ChNo:%x TxBuffAddr:%x\n",
 					hw->channelNum,
@@ -2919,6 +2934,8 @@ BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crysta
 BC_STATUS crystalhd_flea_prepare_tx_dma(struct crystalhd_hw *hw, uint32_t bytes)
 {
 	TX_INPUT_BUFFER_INFO TxBuffInfo = { 0 };
+	uint32_t info_addr = hw->TxBuffInfoAddr;
+	BC_STATUS status;
 	uint32_t WrSzInDWords = (sizeof(TxBuffInfo.DramBuffAdd) +
 				 sizeof(TxBuffInfo.DramBuffSzInBytes) +
 				 sizeof(TxBuffInfo.HostXferSzInBytes)) / 4;
@@ -2928,8 +2945,14 @@ BC_STATUS crystalhd_flea_prepare_tx_dma(struct crystalhd_hw *hw, uint32_t bytes)
 	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
 	TxBuffInfo.HostXferSzInBytes = bytes;
 
-	return hw->pfnDevDRAMWrite(hw, hw->TxBuffInfoAddr, WrSzInDWords,
-				 (uint32_t *)&TxBuffInfo);
+	status = hw->pfnDevDRAMWrite(hw, info_addr, WrSzInDWords,
+				   (uint32_t *)&TxBuffInfo);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	CHD_TX_NOTE(hw, CHD_TX_PREPARE, info_addr, WrSzInDWords,
+		status, TxBuffInfo.DramBuffAdd, TxBuffInfo.DramBuffSzInBytes,
+		TxBuffInfo.HostXferSzInBytes);
+#endif
+	return status;
 }
 
 void crystalhd_flea_start_tx_dma_engine(struct crystalhd_hw *hw, uint8_t list_id, addr_64 desc_addr)
@@ -3035,6 +3058,10 @@ static void crystalhd_flea_update_tx_done_to_fw(struct crystalhd_hw *hw)
 	uint32_t				regVal		= 0;
 	uint32_t				seqNumAddr	= 0;
 	uint32_t				seqVal		= 0;
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	BC_STATUS read_status, write_status;
+	uint32_t written_sequence, scratch_before;
+#endif
 
 	dev = &hw->adp->pdev->dev;
 	/*
@@ -3044,17 +3071,33 @@ static void crystalhd_flea_update_tx_done_to_fw(struct crystalhd_hw *hw)
 	seqNumAddr = hw->TxBuffInfoAddr + offsetof(TX_INPUT_BUFFER_INFO, SeqNum);
 
 	/*Read the seqnece number */
-	hw->pfnDevDRAMRead(hw, seqNumAddr, 1, &regVal);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	read_status =
+#endif
+		hw->pfnDevDRAMRead(hw, seqNumAddr, 1, &regVal);
 
 	seqVal = regVal;
 	regVal++;
 
 	/*Increment and Write back to same memory location. */
-	hw->pfnDevDRAMWrite(hw,	seqNumAddr, 1, &regVal);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	written_sequence = regVal;
+	write_status =
+#endif
+		hw->pfnDevDRAMWrite(hw, seqNumAddr, 1, &regVal);
 
 	regVal = hw->pfnReadDevRegister(hw->adp, INDICATE_TX_DONE_REG);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	scratch_before = regVal;
+#endif
 	regVal++;
 	hw->pfnWriteDevRegister(hw->adp, INDICATE_TX_DONE_REG, regVal);
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	CHD_TX_NOTE(hw, CHD_TX_DONE,
+		seqNumAddr - offsetof(TX_INPUT_BUFFER_INFO, SeqNum), seqNumAddr,
+		read_status, seqVal, written_sequence, write_status,
+		scratch_before, regVal);
+#endif
 
 	dev_dbg(dev, "TxUpdate[SeqNum DRAM Addr:%x] SeqNum:%x ScratchValue:%x\n",
 		seqNumAddr, seqVal, regVal);
@@ -3483,6 +3526,12 @@ awake:
 
 
 	/* Tx interrupts*/
+#ifdef CRYSTALHD_TX_NOTIFY_RESEARCH
+	if (IntrStsValue.L0TxDMADone || IntrStsValue.L1TxDMADone ||
+	    IntrStsValue.L0TxDMAErr || IntrStsValue.L1TxDMAErr)
+		CHD_TX_NOTE(hw, CHD_TX_IRQ, IntrStsValue.WholeReg,
+			hw->tx_ioq_tag_seed, hw->TxBuffInfoAddr);
+#endif
 	crystalhd_flea_tx_isr(hw, IntrStsValue);
 
 	/*
