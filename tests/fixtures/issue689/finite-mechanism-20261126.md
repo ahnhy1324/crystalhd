@@ -3,6 +3,9 @@
 This is the isolated mechanism for [#689](https://github.com/ahnhy1324/crystalhd/issues/689),
 based on maintained master `5e9dd72`. Production runtime PWM remains disabled.
 No module was installed or loaded and no hardware trial was performed here.
+This document records the finite1 mechanism and device-free qualification.
+The current build adds the [finite2 selector observation](finite2-selector-20261126.md);
+the finite1 native result remains separate evidence.
 
 ## Build and controls
 
@@ -14,7 +17,7 @@ make -C driver/linux -f Makefile.in W=1 CRYSTALHD_PM_RESEARCH=1
 make flea-pm-research-check
 ```
 
-Its module identity has the suffix `-pmfinite1`. Research builds require debugfs
+The current module identity has the suffix `-pmfinite2`. Research builds require debugfs
 and reject simultaneous `CRYSTALHD_FW_RESEARCH` or `CRYSTALHD_V4L2`. The same
 research binary defaults to the OFF control: `pm_research_attempts=0` and
 `pm_research_ms=0`. Both immutable, read-only parameters must be explicitly

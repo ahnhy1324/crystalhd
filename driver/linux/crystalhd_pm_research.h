@@ -7,6 +7,40 @@
 #define CHD_PM_MAX_ATTEMPTS 8U
 #define CHD_PM_MAX_MS 5000U
 #define CHD_PM_RECORDS 64U
+#define CHD_PM_BANK_SELECTIONS 32U
+#define CHD_PM_SELECTIONS (2U * CHD_PM_BANK_SELECTIONS)
+
+enum chd_pm_selection_reason {
+	CHD_PM_SEL_FAULT, CHD_PM_SEL_CLEANUP, CHD_PM_SEL_TRANSITION,
+	CHD_PM_SEL_STOP, CHD_PM_SEL_START, CHD_PM_SEL_UNAVAILABLE,
+	CHD_PM_SEL_STATE, CHD_PM_SEL_TARGET, CHD_PM_SEL_SETTER,
+	CHD_PM_SEL_NO_INTENT, CHD_PM_SEL_PRODUCER, CHD_PM_SEL_ASLEEP,
+	CHD_PM_SEL_DOWN_BUSY, CHD_PM_SEL_DOWN_READY,
+};
+enum chd_pm_blocker {
+	CHD_PM_BLOCK_TX0 = 1U << 0, CHD_PM_BLOCK_TX1 = 1U << 1,
+	CHD_PM_BLOCK_RX0 = 1U << 2, CHD_PM_BLOCK_RX1 = 1U << 3,
+	CHD_PM_BLOCK_TX = 1U << 4, CHD_PM_BLOCK_IRQ = 1U << 5,
+	CHD_PM_BLOCK_RAW = 1U << 6, CHD_PM_BLOCK_FW_TRANS = 1U << 7,
+	CHD_PM_BLOCK_FW_ACTIVE = 1U << 8, CHD_PM_BLOCK_FW_COUNT = 1U << 9,
+	CHD_PM_BLOCK_FW_POISON = 1U << 10, CHD_PM_BLOCK_EMPTY = 1U << 11,
+	CHD_PM_BLOCK_SINGLE = 1U << 12,
+};
+struct chd_pm_selection {
+	u64 context, count, first_ns, last_ns;
+	u32 bank, reason, event, state, target, status, blockers;
+	u32 enabled, cleanup, transition, snapshot, pause, present, started, fault;
+	u32 tx0, tx1, rx0, rx1, tx, irq, raw, fw_transaction, fw_active;
+	u32 fw_count, fw_poisoned, empty, single;
+};
+struct chd_pm_observation {
+	u64 initializations, enabled_initializations, calls, overflow;
+	u64 routine_calls, intent_calls, routine_overflow, intent_overflow;
+	u32 count;
+	u32 routine_count, intent_count;
+	bool saturated;
+	struct chd_pm_selection selections[CHD_PM_SELECTIONS];
+};
 
 enum chd_pm_phase {
 	CHD_PM_IDLE, CHD_PM_DOWN, CHD_PM_ASLEEP, CHD_PM_UP,
@@ -50,5 +84,7 @@ BC_STATUS crystalhd_pm_research_up_end(struct crystalhd_hw *hw, BC_STATUS status
 void crystalhd_pm_research_fll(struct crystalhd_hw *hw, BC_STATUS status, u32 count);
 void crystalhd_pm_research_fault(struct crystalhd_hw *hw);
 void crystalhd_pm_research_retire(struct crystalhd_hw *hw);
+void crystalhd_pm_research_observe(struct crystalhd_hw *hw, u32 reason,
+	u32 event, u32 target, BC_STATUS status);
 #endif
 #endif

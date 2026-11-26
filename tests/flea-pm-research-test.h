@@ -16,4 +16,6 @@ static void pm_unlock(unsigned long flags)
     check(research_locked && !flags, "ledger lock balances");
     research_locked = false;
 }
+#define lockdep_assert_held(lock) check(*(lock) && device.lock_held, "observer copies only under hardware lock")
 #include "flea-pm-research-core.h"
+#undef lockdep_assert_held

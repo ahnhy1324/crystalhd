@@ -25,6 +25,95 @@ static void pm_unlock(unsigned long flags) { spin_unlock_irqrestore(&research_lo
 
 /* PM research core begin: exercised verbatim by the device-free harness. */
 static struct chd_pm_ledger pm_ledger;
+static struct chd_pm_observation pm_observation;
+
+static void pm_count(u64 *count)
+{
+	if (*count != ~(u64)0)
+		(*count)++;
+	else
+		pm_observation.saturated = true;
+}
+
+/* Caller already holds hw->lock. This records the existing down-owner terms,
+ * not a new admission predicate. Raw fields are the first sample for a key;
+ * later equal keys update only the bounded counter and last observation time. */
+void crystalhd_pm_research_observe(struct crystalhd_hw *hw, u32 reason,
+	u32 event, u32 target, BC_STATUS status)
+{
+	struct chd_pm_selection *r;
+	unsigned long flags;
+	u32 i, blockers = 0;
+	u64 now;
+	bool intent;
+
+	lockdep_assert_held(&hw->lock);
+	intent = event == FLEA_EVT_PAUSE || event == FLEA_EVT_RX_PAUSE ||
+		reason == CHD_PM_SEL_SETTER || hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+		hw->hw_pause_issued;
+#define PM_BLOCK(test, bit) do { if (test) blockers |= bit; } while (0)
+	PM_BLOCK(hw->TxList0Sts != ListStsFree, CHD_PM_BLOCK_TX0);
+	PM_BLOCK(hw->TxList1Sts != ListStsFree, CHD_PM_BLOCK_TX1);
+	PM_BLOCK(hw->rx_list_sts[0] != sts_free, CHD_PM_BLOCK_RX0);
+	PM_BLOCK(hw->rx_list_sts[1] != sts_free, CHD_PM_BLOCK_RX1);
+	PM_BLOCK(hw->FleaTxActive, CHD_PM_BLOCK_TX);
+	PM_BLOCK(hw->FleaIrqActive, CHD_PM_BLOCK_IRQ);
+	PM_BLOCK(hw->FleaRawActive, CHD_PM_BLOCK_RAW);
+	PM_BLOCK(hw->fwcmd_trans_active, CHD_PM_BLOCK_FW_TRANS);
+	PM_BLOCK(hw->fwcmd_active, CHD_PM_BLOCK_FW_ACTIVE);
+	PM_BLOCK(hw->FwCmdCnt, CHD_PM_BLOCK_FW_COUNT);
+	PM_BLOCK(hw->fwcmd_poisoned, CHD_PM_BLOCK_FW_POISON);
+	PM_BLOCK(hw->EmptyCnt, CHD_PM_BLOCK_EMPTY);
+	PM_BLOCK(hw->SingleThreadAppFIFOEmpty, CHD_PM_BLOCK_SINGLE);
+#undef PM_BLOCK
+	pm_lock(&flags);
+	pm_count(&pm_observation.calls);
+	pm_count(intent ? &pm_observation.intent_calls : &pm_observation.routine_calls);
+	now = pm_now();
+	for (i = 0; i < pm_observation.count; i++) {
+		r = &pm_observation.selections[i];
+		if (r->context == hw->FleaResearchContext && r->bank == intent && r->reason == reason &&
+		    r->event == event && r->state == hw->FleaPowerState &&
+		    r->target == target && r->status == (u32)status && r->blockers == blockers &&
+		    r->enabled == hw->FleaEnablePWM && r->cleanup == hw->FleaCleanupActive &&
+		    r->transition == hw->FleaPowerTransition &&
+		    r->snapshot == hw->FleaPowerSaved.valid && r->pause == hw->hw_pause_issued &&
+		    r->present == hw->adp->present && r->started == hw->dev_started &&
+		    r->fault == hw->dma_fault) {
+			pm_count(&r->count);
+			r->last_ns = now;
+			goto out;
+		}
+	}
+	if ((intent ? pm_observation.intent_count : pm_observation.routine_count) ==
+	    CHD_PM_BANK_SELECTIONS) {
+		pm_count(&pm_observation.overflow);
+		pm_count(intent ? &pm_observation.intent_overflow : &pm_observation.routine_overflow);
+		goto out;
+	}
+	if (intent)
+		pm_observation.intent_count++;
+	else
+		pm_observation.routine_count++;
+	r = &pm_observation.selections[pm_observation.count++];
+	*r = (struct chd_pm_selection) {
+		.context = hw->FleaResearchContext, .count = 1, .first_ns = now, .last_ns = now,
+		.bank = intent, .reason = reason, .event = event, .state = hw->FleaPowerState,
+		.target = target, .status = status, .blockers = blockers,
+		.enabled = hw->FleaEnablePWM, .cleanup = hw->FleaCleanupActive,
+		.transition = hw->FleaPowerTransition, .snapshot = hw->FleaPowerSaved.valid,
+		.pause = hw->hw_pause_issued, .present = hw->adp->present,
+		.started = hw->dev_started, .fault = hw->dma_fault,
+		.tx0 = hw->TxList0Sts, .tx1 = hw->TxList1Sts,
+		.rx0 = hw->rx_list_sts[0], .rx1 = hw->rx_list_sts[1],
+		.tx = hw->FleaTxActive, .irq = hw->FleaIrqActive, .raw = hw->FleaRawActive,
+		.fw_transaction = hw->fwcmd_trans_active, .fw_active = hw->fwcmd_active,
+		.fw_count = hw->FwCmdCnt, .fw_poisoned = hw->fwcmd_poisoned,
+		.empty = hw->EmptyCnt, .single = hw->SingleThreadAppFIFOEmpty,
+	};
+out:
+	pm_unlock(flags);
+}
 
 static bool pm_limits_valid(u32 attempts, u32 milliseconds)
 {
@@ -111,6 +200,10 @@ bool crystalhd_pm_research_session(struct crystalhd_hw *hw)
 	pm_lock(&flags);
 	enabled = pm_limits_valid(pm_research_attempts, pm_research_ms) &&
 		pm_research_attempts && (!pm_ledger.claimed || pm_owned(hw));
+	pm_count(&pm_observation.initializations);
+	if (enabled)
+		pm_count(&pm_observation.enabled_initializations);
+	hw->FleaResearchContext = pm_observation.initializations;
 	pm_unlock(flags);
 	return enabled;
 }
@@ -286,6 +379,7 @@ void crystalhd_pm_research_retire(struct crystalhd_hw *hw)
 static int research_show(struct seq_file *seq, void *unused)
 {
 	struct chd_pm_ledger *snapshot;
+	struct chd_pm_observation *observation;
 	unsigned long flags;
 	u32 i, j;
 	(void)unused;
@@ -293,10 +387,16 @@ static int research_show(struct seq_file *seq, void *unused)
 	snapshot = kmalloc(sizeof(*snapshot), GFP_KERNEL);
 	if (!snapshot)
 		return -ENOMEM;
+	observation = kmalloc(sizeof(*observation), GFP_KERNEL);
+	if (!observation) {
+		kfree(snapshot);
+		return -ENOMEM;
+	}
 	pm_lock(&flags);
 	*snapshot = pm_ledger;
+	*observation = pm_observation;
 	pm_unlock(flags);
-	seq_printf(seq, "pm-research=finite1 attempts_limit=%u window_ms=%u capacity=%u claimed=%u retired=%u phase=%u stop=%u count=%u dropped=%u start_ns=%llu deadline_ns=%llu stop_ns=%llu read_ns=%llu attempts=%u entered=%u refused=%u failed=%u up_attempts=%u up_completed=%u up_failed=%u fll_completed=%u fll_failed=%u\n",
+	seq_printf(seq, "pm-research=finite2 attempts_limit=%u window_ms=%u capacity=%u claimed=%u retired=%u phase=%u stop=%u count=%u dropped=%u start_ns=%llu deadline_ns=%llu stop_ns=%llu read_ns=%llu attempts=%u entered=%u refused=%u failed=%u up_attempts=%u up_completed=%u up_failed=%u fll_completed=%u fll_failed=%u\n",
 		pm_research_attempts, pm_research_ms, CHD_PM_RECORDS,
 		snapshot->claimed, snapshot->retired, snapshot->phase, snapshot->stop,
 		snapshot->count, snapshot->dropped, snapshot->start_ns,
@@ -316,6 +416,23 @@ static int research_show(struct seq_file *seq, void *unused)
 			seq_printf(seq, "%s%08x", j ? "," : "", r->saved[j]);
 		seq_putc(seq, '\n');
 	}
+	seq_printf(seq, "observations=finite2 capacity=%u count=%u calls=%llu overflow=%llu saturated=%u initializations=%llu enabled_initializations=%llu routine_capacity=%u intent_capacity=%u routine_count=%u intent_count=%u routine_calls=%llu intent_calls=%llu routine_overflow=%llu intent_overflow=%llu\n",
+		CHD_PM_SELECTIONS, observation->count, observation->calls,
+		observation->overflow, observation->saturated, observation->initializations,
+		observation->enabled_initializations, CHD_PM_BANK_SELECTIONS, CHD_PM_BANK_SELECTIONS,
+		observation->routine_count, observation->intent_count, observation->routine_calls,
+		observation->intent_calls, observation->routine_overflow, observation->intent_overflow);
+	for (i = 0; i < observation->count; i++) {
+		const struct chd_pm_selection *r = &observation->selections[i];
+		seq_printf(seq, "selection=%u context=%llu count=%llu first_ns=%llu last_ns=%llu bank=%u reason=%u event=%u state=%u target=%u status=%u blockers=%u enabled=%u cleanup=%u transition=%u snapshot=%u pause=%u present=%u started=%u fault=%u tx0=%u tx1=%u rx0=%u rx1=%u tx=%u irq=%u raw=%u fw_transaction=%u fw_active=%u fw_count=%u fw_poisoned=%u empty=%u single=%u\n",
+			i, r->context, r->count, r->first_ns, r->last_ns,
+			r->bank, r->reason, r->event, r->state, r->target, r->status, r->blockers,
+			r->enabled, r->cleanup, r->transition, r->snapshot, r->pause,
+			r->present, r->started, r->fault, r->tx0, r->tx1, r->rx0, r->rx1,
+			r->tx, r->irq, r->raw, r->fw_transaction, r->fw_active,
+			r->fw_count, r->fw_poisoned, r->empty, r->single);
+	}
+	kfree(observation);
 	kfree(snapshot);
 	return 0;
 }

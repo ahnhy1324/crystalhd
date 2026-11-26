@@ -44,6 +44,7 @@ struct crystalhd_hw {
     unsigned FleaIrqActive, FleaTxActive, FleaRawActive, FleaCleanupActive;
 #ifdef CRYSTALHD_ENABLE_PM_RESEARCH
     uint64_t FleaResearchSession;
+    uint64_t FleaResearchContext;
 #endif
     struct crystalhd_flea_power_snapshot FleaPowerSaved;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
