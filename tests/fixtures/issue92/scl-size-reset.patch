@@ -1729,16 +1729,6 @@ index e2393f9..91287bb 100644
  	assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
  	pci.refs++;
  	pci_gets++;
-@@ -440,6 +477,9 @@
- 	if (!ignore_master_clear)
- 		master = false;
- 	dma_drained = false;
-+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
-+	pm_callback = false;
-+#endif
- 	master_clears++;
- }
- static int pci_wait_for_pending_transaction(struct pci_dev *dev)
 @@ -577,6 +614,26 @@ static void crystalhd_stream_release(struct crystalhd_cmd *cmd)
  }
  #include "lifetime-command.h"
@@ -1774,6 +1764,16 @@ index e2393f9..91287bb 100644
  	adp->irq_registered = true;
  	adp->msi = msi;
  	adp->chd_dec_major = 240;
+@@ -734,6 +794,9 @@ static void reset(void)
+ 	receipt_cleanups = 0;
+ 	cleanup_fault_masks = 0;
+ 	dma_drained = false;
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	pm_callback = false;
++#endif
+ 	scenarios++;
+ }
+ 
 @@ -1280,8 +1341,189 @@
  	assert_released();
  }
