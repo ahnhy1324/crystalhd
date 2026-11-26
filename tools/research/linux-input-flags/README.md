@@ -1,10 +1,19 @@
 # Clear input flag observation for #690
 
-**Prepared; native qualification is pending.** See the owning
-[#690](https://github.com/ahnhy1324/crystalhd/issues/690) and the completed
-[device-free Stage A](../../../tests/fixtures/issue690/linux-input-20261126.md)
-for the established API/driver boundary. Build and observer-test success below
-must not be presented as B0/B1 playback or hardware-decryption results.
+**B0/B1 clear-input observation PASS, 2026-11-26.** Both public arguments
+return 180 pictures with firmware EOS and clean release/STOP/CLOSE. Actual
+IOCTL flag is **0 in both arms**; this does not demonstrate hardware
+decryption. See the [portable native result](../../../tests/fixtures/issue690/native-clear-flags-20261126.json)
+and owning [#690](https://github.com/ahnhy1324/crystalhd/issues/690).
+The [device-free Stage A](../../../tests/fixtures/issue690/linux-input-20261126.md)
+supplies the separate source/driver-boundary evidence.
+
+The two complete 180-frame YUY2 outputs are identical, and every luma plane
+matches the Linux software reference. Saved pictures 0, 89 and 179 per arm
+also show the expected pattern/time/frame counters. This is a sampled saved
+picture comparison, not physical display, full-movie or A/V qualification.
+Both attempts restored the full official 1.3 baseline and passed ordinary
+180-picture/EOS recovery. B2/C remain `NOT_RUN / PROTOCOL_UNKNOWN`.
 
 This isolated diagnostic reuses the current `tests/library-drain.cpp` input,
 decode, count/PTS/EOS, STOP/CLOSE and ownership implementation. It changes only
@@ -81,7 +90,7 @@ protected-session experiment.
 
 ## Preparation results
 
-Preparation on 2026-11-26: current DIL/probe `-Werror` builds, 24 focused
+Preparation on 2026-11-26: current DIL build, probe `-Werror` build, 24 focused
 observer checks in normal and ASan/UBSan/leak builds, and the exact fixture
 preflight pass in `crystalhd-linux-input-flags-build05-20261126`. This is the
 corrected executable handoff; source snapshots, commands, logs and exits are

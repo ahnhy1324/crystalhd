@@ -46,18 +46,21 @@ suite: **11,548 checks, zero failures** in each normal and ASan/UBSan run.
 This is the affected overlap check; the individual results above remain scoped
 to the Stage A change.
 
-## Remaining experiment
+## Native follow-up and remaining scope
 
-Stage A's mandatory transport/output/negative-test work is complete. Optional
-offline OEM interface research has not run in this change. Stage B remains a
-separate isolated hardware experiment on self-authored clear H.264; Stage C
-remains `NOT_RUN / PROTOCOL_UNKNOWN` until a supported session/packet contract
-is identified. No security configuration, key/session operation, firmware
-change or installed-runtime change was made.
+Stage A's mandatory transport/output/negative-test work is complete. The
+later [B0/B1 clear-input observation](native-clear-flags-20261126.json) on
+maintained source `5e9dd72` confirms public arguments 0 and 1 both reach the
+actual IOCTL as flag 0. Each returns 180 pictures with firmware EOS and clean
+leases; complete native outputs match, all software-reference luma planes
+match, and saved pictures 0/89/179 pass visual comparison. Full official 1.3
+restoration and ordinary 180-picture/EOS recovery pass. Its diagnostic
+initialization failure is preserved separately. These native results do not
+change the original device-free Stage A scope or establish physical DMA
+observation, card decryption, physical display or A/V behavior.
 
-For a future public-API B1, record both the caller argument and actual TX flag:
-H.264 caller `1` is expected to become TX `0`. A separately chosen direct
-internal flag1 diagnostic must establish active state and completed wake
-before admission. Correct visible output from unchanged clear bytes would
-not establish card decryption. Keep the same clear control, byte identity,
-finite lifecycle and full official-1.3 restore/recovery required by #690.
+Optional offline OEM interface research has not run in either change. B2
+and Stage C remain `NOT_RUN / PROTOCOL_UNKNOWN` until a supported BCM70015
+session/packet contract is identified. A direct internal flag1 native
+diagnostic was not run; it would require separately established active state
+and completed wake. No guessed protocol or security configuration was used.
