@@ -33,6 +33,7 @@
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_fwcmds.h"
 #include "crystalhd_ioctl_limits.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_clk.h"
 
 #include <emmintrin.h>
 
@@ -42,8 +43,6 @@
 
 // FLEA
 #define BCHP_MISC2_GLOBAL_CTRL 0x00502100 /* Global Control Register */
-#define BCHP_CLK_TEMP_MON_CTRL 0x00070040 /* Temperature monitor control. */
-#define BCHP_CLK_TEMP_MON_STATUS 0x00070044 /* Temperature monitor status. */
 
 class DtsColorControlCall {
 	DTS_LIB_CONTEXT *context;
@@ -1219,6 +1218,8 @@ DtsGetCoreTemperature(
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 	BC_STATUS	sts = BC_STS_ERROR;
 	uint32_t	Val = 0;
+	if (!pTemperature)
+		return BC_STS_INV_ARG;
 	*pTemperature = 0;
 
 	DTS_GET_CTX(hDevice,Ctx);
@@ -1231,7 +1232,9 @@ DtsGetCoreTemperature(
 	sts = DtsDevRegisterRead(hDevice,BCHP_CLK_TEMP_MON_STATUS,&Val);
 	if( sts != BC_STS_SUCCESS )
 		return sts;
-	Val = Val & 0x0000ffff;
+	/* Only DATA[8:0] is the sensor code; reserved and status bits are not. */
+	Val = (Val & BCHP_CLK_TEMP_MON_STATUS_DATA_MASK) >>
+		BCHP_CLK_TEMP_MON_STATUS_DATA_SHIFT;
 
 	*pTemperature = 267.2 - 0.7 * (float)Val;
 

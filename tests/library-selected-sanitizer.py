@@ -82,6 +82,8 @@ def check():
         ("planar", (internal,), (), (), ((),)),
         ("format", (internal, private, public),
          ("-DLIBRARY_SANITIZER_TEST_IOCTL_GUARD",), (), ((),)),
+        ("temperature", (internal, private),
+         ("-DLIBRARY_SANITIZER_TEST_IOCTL_GUARD",), (), ((),)),
     )
     invocations = 0
     with tempfile.TemporaryDirectory(prefix="crystalhd-library-sanitized-") as temporary:

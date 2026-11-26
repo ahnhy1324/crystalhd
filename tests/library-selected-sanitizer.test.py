@@ -97,11 +97,12 @@ class SanitizerRunnerContract(unittest.TestCase):
         runs = [(event["case"], event["arguments"])
                 for event in self.events() if event["kind"] == "run"]
         self.assertEqual([event["case"] for event in builds],
-                         ["library-" + name for name in ("tx-ring", "tx-concurrency", "copy", "planar", "format")])
+                         ["library-" + name for name in ("tx-ring", "tx-concurrency", "copy", "planar", "format", "temperature")])
         self.assertEqual(runs, [("library-tx-ring", []), ("library-tx-concurrency", []),
                                 ("library-tx-concurrency", ["status"]),
                                 ("library-tx-concurrency", ["serial"]),
-                                ("library-copy", []), ("library-planar", []), ("library-format", [])])
+                                ("library-copy", []), ("library-planar", []), ("library-format", []),
+                                ("library-temperature", [])])
         for event in builds:
             flags = event["arguments"]
             for flag in ("-fsanitize=address,undefined", "-fno-sanitize-recover=all",
