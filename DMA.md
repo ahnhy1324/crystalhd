@@ -79,6 +79,21 @@ cleanup with checked PCI quiescence may release the retained backing. If that
 proof fails, quarantine also retains the PCI device reference and blocks reprobe;
 do not force module unloading to bypass it.
 
+FLEA cleanup must also exclude optional runtime power transitions. Context
+retirement, TX cancellation, RX stop and device stop acquire nested cleanup
+holds before destructive work, retaining the outer hold through pool release
+and dropping it before context storage is freed. IRQ completion and FLL
+publication cannot enter runtime PM during a hold. A later normal event may
+reevaluate power state; releasing a hold does not itself power the device down.
+
+An already-asleep device or a remaining power snapshot faults and retains its
+resources, even if the PWM flag was disabled. An in-progress transition returns
+busy; clocked `LP_PENDING` with no saved snapshot can still be cleaned up.
+These holds do not replace existing caller/IRQ serialization or the checked,
+globally serialized PCI-removal proof above. Terminal cleanup can release an
+asleep or faulted context only after that proof. Runtime PWM remains disabled
+by default; the guards do not qualify enabled operation or thermal benefits.
+
 ## Verification
 
 Run `sh tests/dma-descriptors.sh` without hardware. It compiles the production

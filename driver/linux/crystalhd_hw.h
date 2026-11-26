@@ -526,6 +526,8 @@ struct crystalhd_hw {
 	uint32_t		FleaIrqActive;
 	/* External raw reads retain admission until their last MMIO access. */
 	uint32_t		FleaRawActive;
+	/* Nested cleanup holds exclude runtime PM, not other cleanup callers. */
+	uint32_t		FleaCleanupActive;
 	struct crystalhd_flea_power_snapshot FleaPowerSaved;
 	uint32_t			EmptyCnt;
 	bool				SingleThreadAppFIFOEmpty;
@@ -732,6 +734,8 @@ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
 bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 void crystalhd_hw_publish_fault(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_flea_cleanup_begin(struct crystalhd_hw *hw, bool *held);
+void crystalhd_flea_cleanup_end(struct crystalhd_hw *hw, bool held);
 BC_STATUS crystalhd_flea_raw_enter(struct crystalhd_hw *hw, bool write,
 				 bool *owned);
 void crystalhd_flea_raw_leave(struct crystalhd_hw *hw, bool owned);

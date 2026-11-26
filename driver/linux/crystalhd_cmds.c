@@ -290,9 +290,13 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 					bool retire_session_resources)
 {
+	bool power_held;
+
 	if (!ctx->hw_ctx)
 		goto retired;
 	if (READ_ONCE(ctx->hw_ctx->dma_fault))
+		return false;
+	if (crystalhd_flea_cleanup_begin(ctx->hw_ctx, &power_held) != BC_STS_SUCCESS)
 		return false;
 
 	if (retire_session_resources) {
@@ -318,6 +322,7 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 		crystalhd_delete_elem_pool(ctx->adp);
 	}
 	ctx->state = BC_LINK_INVALID;
+	crystalhd_flea_cleanup_end(ctx->hw_ctx, power_held);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -329,6 +334,7 @@ retired:
 	return true;
 
 retained:
+	crystalhd_flea_cleanup_end(ctx->hw_ctx, power_held);
 	enable_irq(ctx->adp->pdev->irq);
 	return false;
 }

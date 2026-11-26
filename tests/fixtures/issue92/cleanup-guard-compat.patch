@@ -1,0 +1,47 @@
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -2,6 +2,7 @@
+ /* Execute the production Flea and Link firmware download functions with all
+  * hardware accesses mocked. No module is loaded and no device is opened.
+  */
++#include <assert.h>
+ #include <stdbool.h>
+ #include <errno.h>
+ #include <stddef.h>
+@@ -1985,7 +1986,35 @@
+ {check(hw==&hardware,"opaque stock IRQ-disable contract");size_batch();}
+ static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,unsigned event)
+ {check(hw==&hardware&&event==FLEA_EVT_STOP_DEVICE,"opaque stock final-power-state contract");size_batch();return BC_STS_SUCCESS;}
++/* This diagnostic models cleanup admission, not the PM selector itself.
++ * Actual cleanup-state/IRQ interleaves are covered by flea-power/command-pm.
++ * Every extracted stop return must balance its admitted hold, including each
++ * injected research refusal. Keep these asserts outside legacy check counts.
++ */
++static unsigned diagnostic_cleanup_holds;
++static BC_STATUS crystalhd_flea_cleanup_begin(struct crystalhd_hw *hw, bool *held)
++{
++	assert(hw && held && !diagnostic_cleanup_holds);
++	*held = true;
++	diagnostic_cleanup_holds++;
++	return BC_STS_SUCCESS;
++}
++static void crystalhd_flea_cleanup_end(struct crystalhd_hw *hw, bool held)
++{
++	assert(hw && held && diagnostic_cleanup_holds == 1);
++	diagnostic_cleanup_holds--;
++}
++#define crystalhd_flea_stop_device diagnostic_stop_device
+ #include "size-stop_device.h"
++#undef crystalhd_flea_stop_device
++static bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
++{
++	bool stopped;
++	assert(!diagnostic_cleanup_holds);
++	stopped = diagnostic_stop_device(hw);
++	assert(!diagnostic_cleanup_holds);
++	return stopped;
++}
+ static void mutex_lock(int *lock){check(!*lock,"stock suspend mutex is acquired once");*lock=1;}
+ static void mutex_unlock(int *lock){check(*lock==1,"stock suspend mutex is balanced");*lock=0;}
+ static void disable_irq(int irq){check(irq==pci.irq,"stock suspend disables admitted IRQ");}

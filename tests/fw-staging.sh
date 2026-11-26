@@ -24,7 +24,7 @@ cleanup()
 		"$test_dir/driver/linux/crystalhd_fw_if.h" \
 		"$test_dir/tests/fw-download.c" "$test_dir/tests/fw-download.sh" \
 		"$test_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.sh" \
-		"$test_dir/tests/device-access.c" \
+		"$test_dir/tests/device-access.c" "$test_dir/tests/flea-cleanup.awk" \
 		"$test_dir/tests/fw-probe.c" "$test_dir/tests/fw-probe.sh" \
 		"$test_dir/tests/fw-probe-cli.c" \
 		"$test_dir/VERSION" "$test_dir/dkms.conf" \
@@ -48,6 +48,7 @@ cp "$repo_dir/tests/fw-download.sh" "$test_dir/tests/fw-download.sh"
 cp "$repo_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.c"
 cp "$repo_dir/tests/device-lifetime.sh" "$test_dir/tests/device-lifetime.sh"
 cp "$repo_dir/tests/device-access.c" "$test_dir/tests/device-access.c"
+cp "$repo_dir/tests/flea-cleanup.awk" "$test_dir/tests/flea-cleanup.awk"
 cp "$repo_dir/tests/fw-probe.c" "$test_dir/tests/fw-probe.c"
 cp "$repo_dir/tests/fw-probe.sh" "$test_dir/tests/fw-probe.sh"
 cp "$repo_dir/tests/fw-probe-cli.c" "$test_dir/tests/fw-probe-cli.c"
@@ -139,6 +140,10 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/command-observer-compat.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/command-observer-compat.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/cleanup-guard-compat.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/cleanup-guard-compat.patch"
 sh "$test_dir/tests/fw-download.sh"
 sh "$test_dir/tests/device-lifetime.sh"
 sh "$test_dir/tests/fw-probe.sh"

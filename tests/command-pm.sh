@@ -8,7 +8,8 @@ cleanup()
 {
     rm -f "$pm_test_dir/check" "$pm_test_dir/command-pm-types.h" \
         "$pm_test_dir/command-pm-hardware.h" "$pm_test_dir/command-pm-functions.h" \
-        "$pm_test_dir/command-pm-request.h" "$pm_test_dir/command-pm-close.h"
+        "$pm_test_dir/command-pm-request.h" "$pm_test_dir/command-pm-close.h" \
+        "$pm_test_dir/command-pm-cleanup.h"
     rmdir "$pm_test_dir"
 }
 trap cleanup EXIT
@@ -92,7 +93,7 @@ awk '
 # Use the real state constants and the exact command/hardware PM functions.
 # Only device callbacks and allocation primitives are replaced by the test.
 awk '
-    /^enum (_crystalhd_state|crystalhd_decoder_phase|crystalhd_decoder_codec|_BC_PCI_DEV_IDS|_BC_DTS_GLOBALS|list_sts|LIST_STATUS|eC011_TS_CMD|BRCM_EVENT)[[:space:]{]/ {
+    /^enum (_crystalhd_state|crystalhd_decoder_phase|crystalhd_decoder_codec|_BC_PCI_DEV_IDS|_BC_DTS_GLOBALS|list_sts|LIST_STATUS|eC011_TS_CMD|BRCM_EVENT|FLEA_POWER_STATES)[[:space:]{]/ {
         copying = 1; found++
     }
     /^struct (crystalhd_session_owner_ops|crystalhd_decoder_config|crystalhd_fw_init_cmd|crystalhd_fw_channel_open_cmd|crystalhd_fw_input_params_cmd|crystalhd_fw_channel_activate_cmd|crystalhd_fw_channel_start_video_cmd|crystalhd_fw_channel_stop_close_cmd|DecRspChannelChannelOpen|DecRspChannelStartVideo)[[:space:]{]/ {
@@ -105,11 +106,13 @@ awk '
     /^#define[[:space:]]+CRYSTALHD_FW_INIT_[A-Z_]+[[:space:]]/ { print }
     /^#define[[:space:]]+CRYSTALHD_FW_(CHANNEL_OPEN_WORDS|INPUT_PARAMS_WORDS|CHANNEL_ACTIVATE_WORDS|CHANNEL_START_VIDEO_WORDS|CHANNEL_STOP_CLOSE_WORDS|STREAM_TYPE_PES|VIDEO_ALGORITHM_H264|SYNC_MODE_SYNCPIN|DISPLAY_TIMING_IGNORE_PTS|USER_DATA_MODE_ON|PROGRESSIVE_OUTPUT|PICTURE_RELEASE_INTERNAL|LAST_PICTURE_DISPLAY_ON)[[:space:]]/ { print }
     /^#define[[:space:]]+eCMD_C011_CMD_BASE[[:space:]]/ { print }
-    END { if (found != 19 || copying) exit 1 }
+    END { if (found != 20 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
-    "$repo_dir/driver/linux/crystalhd_fw_if.h" \
+    "$repo_dir/driver/linux/crystalhd_fw_if.h" "$repo_dir/driver/linux/FleaDefs.h" \
     > "$pm_test_dir/command-pm-types.h"
+awk -f "$repo_dir/tests/flea-cleanup.awk" \
+    "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$pm_test_dir/command-pm-cleanup.h"
 awk '
     /^BC_STATUS crystalhd_hw_(close|suspend|resume)\(/ { copying = 1; found++ }
     /^void crystalhd_hw_(dma_fatal_stop|publish_fault)\(/ { copying = 1; found++ }

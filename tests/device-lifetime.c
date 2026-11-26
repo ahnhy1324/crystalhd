@@ -20,6 +20,9 @@ typedef int BC_STATUS;
 #define BC_STS_INV_ARG 1
 #define BC_STS_ERR_USAGE 2
 #define BC_STS_IO_ERROR 3
+#define BC_STS_BUSY 4
+#define BC_PCI_DEVID_FLEA 0x1615
+#define BC_PCI_DEVID_LINK 0x1612
 #define BC_LINK_INVALID 0
 #define BC_HW_RUNNING 0
 #define EPOLLERR 0x008U
@@ -31,8 +34,8 @@ typedef int BC_STATUS;
 #define KERN_ERR ""
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
-#define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
-#define spin_unlock_irqrestore(lock, flags) ((void)(lock), (void)(flags))
+#define spin_lock_irqsave(lock, flags) do { assert(!*(lock)); *(lock) = 1; (flags) = 0; } while (0)
+#define spin_unlock_irqrestore(lock, flags) do { assert(*(lock) == 1 && !(flags)); *(lock) = 0; } while (0)
 #define MKDEV(major, minor) (((major) << 8) | (minor))
 #define printk(...) ((void)0)
 #define dev_dbg(...) mock_log(__VA_ARGS__)
@@ -50,6 +53,7 @@ struct device { int unused; };
 struct pci_dev {
 	struct device dev;
 	int irq;
+	uint32_t device;
 	void *data;
 	unsigned int refs;
 	bool state_saved, saved_master;
@@ -58,8 +62,15 @@ struct inode { int unused; };
 struct file { void *private_data; };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_adp;
+#include "lifetime-power-types.h"
 struct crystalhd_hw {
 	bool dma_fault;
+	struct crystalhd_adp *adp;
+	int lock;
+	bool FleaEnablePWM, FleaPowerTransition;
+	enum FLEA_POWER_STATES FleaPowerState;
+	uint32_t FleaCleanupActive;
+	struct { bool valid; } FleaPowerSaved;
 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
 	void *rx_pkt_pool_head, *rx_fallback_head;
 	struct {
@@ -150,6 +161,7 @@ static struct {
 static unsigned int pci_gets, pci_puts;
 static unsigned int saved_invalidations, core_restores;
 static unsigned int receipt_cleanups;
+static unsigned int cleanup_fault_masks;
 static bool dma_drained;
 static bool ignore_master_clear, express;
 static int command_error, status_error;
@@ -321,6 +333,9 @@ static void kfree(void *ptr)
 				assert(!adp->cmds.fw_sequence &&
 				       !adp->cmds.decoder_channel_id);
 			} else if (kind != BINDING) {
+				if (kind == HARDWARE)
+					assert(!((struct crystalhd_hw *)ptr)->FleaCleanupActive &&
+					       !((struct crystalhd_hw *)ptr)->lock);
 				if (kind == IODATA)
 					assert_excluded();
 				else
@@ -610,6 +625,18 @@ static bool crystalhd_retained_cleanup(struct crystalhd_cmd *cmd, bool destroy)
 	assert(cmd && !cmd->retained_rx);
 	return true;
 }
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+{
+	/* Fault publication may mask the chip but cannot reset/wake it or
+	 * establish terminal PCI/IRQ quiescence. The MMIO leaf is a boundary. */
+	assert(hw == g_adp_info->cmds.hw_ctx && hw->dma_fault &&
+	       !hw->adp->present && hw->adp->cmds.cin_wait_exit);
+	cleanup_fault_masks++;
+}
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{ (void)hw; abort(); }
+#include "lifetime-fault.h"
+#include "lifetime-cleanup.h"
 static void crystalhd_rx_receipt_cleanup(struct crystalhd_adp *adp)
 {
 	unsigned int i;
@@ -657,6 +684,8 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 		adp->cmds.session_owner = &adp->cmds.user[0];
 		adp->cmds.retain_rx_on_suspend = true;
 		adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
+		adp->cmds.hw_ctx->adp = adp;
+		adp->cmds.hw_ctx->FleaPowerState = FLEA_PS_ACTIVE;
 		adp->cmds.hw_ctx->rx_freeq = adp;
 		adp->fill_byte_pool = allocate(1, DIO_POOL);
 		adp->elem_pool_head = allocate(1, ELEM_POOL);
@@ -685,7 +714,7 @@ static void reset(void)
 	memset(allocated, 0, sizeof(allocated));
 	memset(released, 0, sizeof(released));
 	chd_device_lock = (struct mock_lock){0};
-	pci = (struct pci_dev){.irq = 19};
+	pci = (struct pci_dev){.irq = 19, .device = BC_PCI_DEVID_FLEA};
 	pending_result = 1;
 	ignore_master_clear = false;
 	express = true;
@@ -703,6 +732,7 @@ static void reset(void)
 	pci_gets = pci_puts = 0;
 	saved_invalidations = core_restores = 0;
 	receipt_cleanups = 0;
+	cleanup_fault_masks = 0;
 	dma_drained = false;
 	scenarios++;
 }
@@ -819,6 +849,54 @@ static void test_fail_stop_then_remove(void)
 		assert(module_puts == 1 && !module_refs);
 		assert(pci_gets == !which && pci_puts == !which);
 		assert_released();
+	}
+}
+
+static void test_asleep_cleanup_requires_terminal_proof(void)
+{
+	for (unsigned blocked = 0; blocked != 6; ++blocked) {
+		for (unsigned proof = 0; proof != 2; ++proof) {
+			reset();
+			struct crystalhd_adp *adp = attach(true, true);
+			struct file binding = bind_user(adp, 0);
+			struct crystalhd_hw *hw = adp->cmds.hw_ctx;
+			void *dio = adp->fill_byte_pool, *elements = adp->elem_pool_head;
+			hw->FleaEnablePWM = (blocked & 1) != 0;
+			hw->FleaPowerState = blocked < 2 ? FLEA_PS_LP_COMPLETE : FLEA_PS_ACTIVE;
+			hw->FleaPowerSaved.valid = blocked >= 2;
+			hw->FleaPowerTransition = blocked >= 4;
+			/* Actual private retirement runs under the ordinary owner's
+			 * exclusion. Any reset/stop/IRQ-disable callback would abort. */
+			adp->user_lock.writers = 1;
+			assert(!crystalhd_retire_hw_context(&adp->cmds, true));
+			adp->user_lock.writers = 0;
+			assert(!hw->FleaCleanupActive && !hw->lock && master && irq_live && msi_live);
+			assert(!released[HARDWARE] && !released[DIO_POOL] && !released[ELEM_POOL]);
+			assert(adp->cmds.hw_ctx == hw && adp->fill_byte_pool == dio && adp->elem_pool_head == elements);
+			assert(adp->cmds.session_owner == &adp->cmds.user[0] &&
+			       adp->cmds.session_module_pinned && module_refs == 1 && !module_puts && stream_live);
+			if (blocked < 4)
+				assert(hw->dma_fault && hw->FleaPowerState == FLEA_PS_FAULT &&
+				       !adp->present && cleanup_fault_masks == 1);
+			else
+				assert(!hw->dma_fault && adp->present && hw->FleaPowerTransition &&
+				       hw->FleaPowerSaved.valid && !cleanup_fault_masks);
+			pending_result = proof;
+			assert(chd_dec_fail_closed(adp, -EIO) == (bool)proof);
+			assert(adp->dma_terminal_quiesced == (bool)proof &&
+			       released[HARDWARE] == proof && dma_frees == proof && module_puts == proof);
+			assert(module_refs == !proof && stream_live == !proof);
+			if (!proof)
+				assert(chd_dma_quarantine == adp && adp->cmds.hw_ctx == hw &&
+				       adp->fill_byte_pool == dio && adp->elem_pool_head == elements &&
+				       adp->cmds.session_owner == &adp->cmds.user[0]);
+			assert(chd_dec_close(NULL, &binding) == 0 && !binding.private_data);
+			/* A later complete PCI/IRQ proof can release quarantine; no
+			 * source state is forged back to awake and no wake is retried. */
+			pending_result = 1;
+			chd_dec_pci_remove(&pci);
+			assert_released();
+		}
 	}
 }
 
@@ -1206,6 +1284,7 @@ int main(void)
 {
 	test_remove();
 	test_fail_stop_then_remove();
+	test_asleep_cleanup_requires_terminal_proof();
 	test_external_owner_teardown();
 	test_stale_close();
 	test_unpinned_context();

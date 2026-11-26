@@ -70,6 +70,10 @@ struct crystalhd_hw {
     void *rx_freeq;
     int lock;
     bool dma_fault, dev_started;
+    bool FleaEnablePWM, FleaPowerTransition;
+    enum FLEA_POWER_STATES FleaPowerState;
+    uint32_t FleaCleanupActive;
+    struct { bool valid; } FleaPowerSaved;
     enum list_sts rx_list_sts[2];
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t rx_list_post_index, tx_list_post_index;
@@ -248,6 +252,8 @@ static struct crystalhd_hw hardware;
 #define context adapter.cmds
 static struct crystalhd_file bindings[BC_LINK_MAX_OPENS * 2];
 static bool binding_live[BC_LINK_MAX_OPENS * 2], adapter_visible;
+static bool check_cleanup_hold;
+static unsigned cleanup_hold_observations;
 static uint64_t chd_device_generation;
 static int chd_device_lock;
 static bool Start(struct crystalhd_hw *hw);
@@ -279,6 +285,14 @@ static void Check(bool ok, const char *why)
 {
     checks++;
     if (!ok) { failures++; fprintf(stderr, "FAIL: %s\n", why); }
+}
+static void CheckCleanupHold(void)
+{
+    if (!check_cleanup_hold)
+        return;
+    Check(hardware.FleaCleanupActive == 1 && !hardware.lock,
+          "actual context retirement keeps its cleanup reservation across callbacks");
+    cleanup_hold_observations++;
 }
 static bool try_module_get(const void *module)
 {
@@ -478,6 +492,7 @@ static void up_write(int *lock)
 static void ConfigureHardware(struct crystalhd_hw *hw)
 {
     *hw = (struct crystalhd_hw){ .adp = &adapter, .dev_started = true, .pfnStartDevice = Start,
+        .FleaPowerState = FLEA_PS_ACTIVE,
         .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
         .pfnIssuePause = IssuePause, .pfnDoFirmwareCmd = FirmwareCommand,
         .pfnNotifyHardware = NotifyHardware,
@@ -532,6 +547,8 @@ static void kfree(void *memory)
     }
     Check(memory == &hardware && hardware_allocated,
           "session teardown frees its hardware context exactly once");
+    Check(!hardware.FleaCleanupActive && !hardware.lock,
+          "context retirement releases the cleanup hold before freeing its storage");
     ModuleCallback();
     hardware_allocated = false;
     hardware_frees++;
@@ -598,6 +615,7 @@ static bool Start(struct crystalhd_hw *hw)
 }
 static bool Stop(struct crystalhd_hw *hw)
 {
+    CheckCleanupHold();
     Check(hw == &hardware, "stop receives the owned hardware context");
     stops++; Event('S'); return stop_ok;
 }
@@ -840,6 +858,7 @@ static BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw,
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
+    CheckCleanupHold();
     ModuleCallback();
     Check(hw == &hardware, "capture stop receives the owned hardware context");
     captures++;
@@ -860,6 +879,7 @@ static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
 }
 static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 {
+    CheckCleanupHold();
     Check(hw == &hardware, "suspend cancels every TX-list owner");
     cancels++; Event('X');
     if (cancel_status != BC_STS_SUCCESS)
@@ -945,6 +965,7 @@ static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 }
 static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
 {
+    CheckCleanupHold();
     ModuleCallback();
     Check(adp == &adapter, "element-pool teardown receives the adapter");
     elem_deletes++; elem_live = false; adp->elem_pool_head = NULL;
@@ -962,6 +983,7 @@ static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 }
 static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 {
+    CheckCleanupHold();
     ModuleCallback();
     Check(adp == &adapter, "DMA-pool teardown receives the adapter");
     dio_destroys++; dio_live = false; adp->fill_byte_pool = NULL;
@@ -980,6 +1002,7 @@ static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 }
 static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
+    CheckCleanupHold();
     ModuleCallback();
     Check(hw == &hardware, "DMA-ring teardown receives the hardware context");
     if (hw->dma_fault && !adapter.dma_terminal_quiesced &&
@@ -1075,6 +1098,12 @@ static bool crystalhd_retained_cleanup(struct crystalhd_cmd *ctx, bool destroy)
 #define crystalhd_hw_close crystalhd_hw_close_actual
 #include "command-pm-hardware.h"
 #undef crystalhd_hw_close
+/* Retain the new fault helper's diagnostic arguments in this source unit. */
+#undef dev_err
+#define dev_err(dev, ...) do { (void)(dev); if (false) fprintf(stderr, __VA_ARGS__); } while (0)
+#include "command-pm-cleanup.h"
+#undef dev_err
+#define dev_err(dev, ...) ((void)(dev))
 #include "command-pm-functions.h"
 /* The kernel release signature has an unused inode argument. */
 #pragma GCC diagnostic push
@@ -1093,6 +1122,8 @@ static void Reset(uint32_t state, bool with_hardware)
     hardware_alloc_attempts = 0;
     hardware_alloc_fail = admission_pending = open_pending = false;
     expect_retire_irq = false;
+    check_cleanup_hold = false;
+    cleanup_hold_observations = 0;
     binding_count = binding_frees = device_reads = user_writes = 0;
     memset(binding_live, 0, sizeof(binding_live));
     chd_device_lock = 0;
@@ -4550,6 +4581,78 @@ static void ReferencedOwnerFaultRetention(void)
     }
 }
 
+/* Execute the actual cleanup begin/end and context-retirement caller. The
+ * lower RX/TX/device callbacks remain the existing deterministic boundaries;
+ * their own nested holds and physical PM selector are outside this fixture.
+ */
+static void CleanupGuardRetainsOwner(void)
+{
+    for (unsigned blocked = 0; blocked != 6; ++blocked) {
+        struct frontend_owner *owner = &frontend_owners[0];
+        ResetReferencedOwner();
+        Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) == BC_STS_SUCCESS,
+              "prepare a referenced session before the cleanup admission failure");
+        context.stream = &stream_cookie;
+        hardware.FleaEnablePWM = (blocked & 1) != 0;
+        hardware.FleaPowerState = blocked < 2 ? FLEA_PS_LP_COMPLETE : FLEA_PS_ACTIVE;
+        hardware.FleaPowerSaved.valid = blocked >= 2;
+        hardware.FleaPowerTransition = blocked >= 4;
+        struct crystalhd_cmd before = context;
+        const unsigned disables_before = irq_disables, enables_before = irq_enables;
+        if (blocked < 4) before.cin_wait_exit = 1; /* Expected fault publication. */
+        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_IO_ERROR,
+              "blocked cleanup cannot report session retirement");
+        Check(!memcmp(&before, &context, sizeof(context)) &&
+              context.session_owner == owner && context.session_lifetime_owner == owner &&
+              owner->refs == 2 && !owner->retired && !owner->puts && module_refs == 1 && !module_puts &&
+              elem_live && dio_live && rings_live && hardware_allocated && context.stream == &stream_cookie &&
+              !hardware_frees && !stream_releases && !captures && !cancels && !stops &&
+              irq_disables == disables_before && irq_enables == enables_before &&
+              !hardware.FleaCleanupActive && !hardware.lock,
+              "guard rejection preserves resources, lifetime owner and module pin before destructive callbacks");
+        Check(blocked < 4 ? hardware.dma_fault && !adapter.present &&
+                  hardware.FleaPowerState == FLEA_PS_FAULT && fatal_chip_masks == 1 :
+                  !hardware.dma_fault && adapter.present && hardware.FleaPowerTransition &&
+                  hardware.FleaPowerSaved.valid && !fatal_chip_masks,
+              "asleep/saved state faults even with PWM off; an in-progress transition remains nonfatal");
+    }
+}
+
+static void CleanupHoldAcrossRetirement(void)
+{
+    for (unsigned failure = 0; failure != 4; ++failure) {
+        struct frontend_owner *owner = &frontend_owners[0];
+        ResetReferencedOwner();
+        Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) == BC_STS_SUCCESS,
+              "prepare a referenced active session for cleanup hold lifetime");
+        context.stream = &stream_cookie;
+        hardware.FleaEnablePWM = true;
+        check_cleanup_hold = true;
+        if (failure == 1) capture_status = BC_STS_TIMEOUT;
+        if (failure == 2) cancel_status = BC_STS_IO_ERROR;
+        if (failure == 3) stop_ok = false;
+        const BC_STATUS status = crystalhd_session_release_locked(&context, owner);
+        Check(status == (failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              !hardware.FleaCleanupActive && !hardware.lock && !irq_depth &&
+              irq_disables == irq_enables,
+              "successful and retained retirement paths balance the actual cleanup and IRQ reservations");
+        Check(cleanup_hold_observations == (failure ? failure : 6),
+              "the hold spans every reached RX, TX, stop, ring, DIO and element callback");
+        if (failure)
+            Check(context.hw_ctx == &hardware && elem_live && dio_live && rings_live &&
+                  context.stream == &stream_cookie && !hardware_frees && !stream_releases &&
+                  context.session_owner == owner && context.session_lifetime_owner == owner &&
+                  owner->refs == 2 && !owner->retired && !owner->puts && module_refs == 1 && !module_puts,
+                  "failed child cleanup releases its reservation but retains the complete session");
+        else
+            Check(!context.hw_ctx && !elem_live && !dio_live && !rings_live &&
+                  !context.stream && hardware_frees == 1 && stream_releases == 1 &&
+                  !context.session_owner && !context.session_lifetime_owner &&
+                  owner->refs == 1 && owner->retired == 1 && owner->puts == 1 && !module_refs && module_puts == 1,
+                  "successful cleanup retires storage before exactly-once owner and module release");
+    }
+}
+
 static void ReferencedOwnerPowerLifetime(void)
 {
     struct frontend_owner *owner = &frontend_owners[0];
@@ -5991,6 +6094,8 @@ int main(void)
         {"reference-backed safe and uncertain setup rollback", ReferencedOwnerSetupRollback},
         {"reference-backed normal and terminal exact-once retirement", ReferencedOwnerRetirement},
         {"reference-backed fatal ownership retention", ReferencedOwnerFaultRetention},
+        {"asleep and in-progress cleanup retains the referenced owner", CleanupGuardRetainsOwner},
+        {"cleanup hold spans actual context retirement and every failure exit", CleanupHoldAcrossRetirement},
         {"reference-backed owner lifetime across suspend and RX retirement", ReferencedOwnerPowerLifetime},
         {"quiesced RX retirement policy and early states", QuiescedRxPolicy},
         {"RX retention frontend admission and release", RxRetentionAdmission},

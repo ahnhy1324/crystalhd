@@ -8,3 +8,7 @@ scl-enable-reset.patch -whitespace
 mfd-scl-joint-handshake.patch -whitespace
 mfd-px-read-state.patch -whitespace
 mfd-px-bvb-state.patch -whitespace
+scl-size-reset.patch -whitespace
+mfd-reset-controls.patch -whitespace
+mfd-hsize-reset.patch -whitespace
+cleanup-guard-compat.patch -whitespace
