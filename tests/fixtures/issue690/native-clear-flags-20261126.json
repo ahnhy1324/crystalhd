@@ -1,0 +1,235 @@
+{
+  "schema": 1,
+  "date": "2026-11-26",
+  "issue": "https://github.com/ahnhy1324/crystalhd/issues/690",
+  "status": "PASS_B0_B1_CLEAR_PUBLIC_FLAG_OBSERVATIONS",
+  "scope": "Isolated project diagnostic on BCM70015; same clear H.264 with public DtsProcInput Encrypted=0 versus 1. No product behavior change.",
+  "source": {
+    "product_base": "5e9dd72eca5f2a37426da3c87ee786ce7c611b72",
+    "diagnostic_commit": "9b03147a47a7127c6970a4d887c2101a5aa6256b",
+    "module_version": "3.10.25",
+    "module_srcversion": "F8877295BC8F781076E5BAB",
+    "build_ids": {
+      "probe": "d89e3981b81ea52b6deff3cbecb4af711ce45b9c",
+      "dil": "4534386ebaf11ee0c0c521cbb6db7730960f8aed",
+      "module": "635f4a1aade0c263d72a3224a382ce6d3f63e580",
+      "recovery": "44718c76011bb9b2a8f315fa8efb400b0f197587",
+      "official_dil": "d624ad77011b6ffb55696a411c7c51a41869f8c1"
+    }
+  },
+  "fixture": {
+    "description": "Retained project synthetic high-annexb.h264 with recognizable bars, moving pattern and burned-in time/frame counters",
+    "bytes": 787883,
+    "sha256": "767d0fc307052fe995ca0921aaf01b48b4e6477698188e1e7a4e42da690f304e",
+    "codec": "H.264 AnnexB",
+    "width": 640,
+    "height": 360,
+    "pictures": 180,
+    "current_generation_recipe_reproducibility_claim": false
+  },
+  "arms": {
+    "B0": {
+      "public_flag": 0,
+      "public_bytes": 787883,
+      "ioctl_flag": 0,
+      "tx_calls": 5,
+      "tx_call_bytes": [
+        68540,
+        172139,
+        414134,
+        131616,
+        4209
+      ],
+      "tx_bytes": 790638,
+      "clear_AUs_reconstructed": 180,
+      "PES_header_bytes": 14,
+      "remaining_serialized_tail_bytes": 235,
+      "PES_PTS_first_last": [
+        10,
+        1800
+      ],
+      "firmware_command_values": [
+        1937125377,
+        1937125632,
+        1937125640,
+        1937125634,
+        1937125658,
+        1937125659,
+        1937125633
+      ],
+      "firmware_calls": 7,
+      "firmware_statuses": [
+        0
+      ],
+      "outputs": 180,
+      "unique_tokens": 180,
+      "successful_owned_releases": 180,
+      "output_bytes": 82944000,
+      "plain_layout": {
+        "width": 640,
+        "height": 360,
+        "format": "YUY2",
+        "pitch": 1280,
+        "frame_bytes": 460800
+      },
+      "firmware_EOS": true,
+      "cleanup": "PASS",
+      "fds": 7,
+      "threads": 1,
+      "software_reference_luma_exact_frames": 180,
+      "TX_syscall_errno_driver_status_values": [
+        0
+      ],
+      "source_tokens_first_last": [
+        100000,
+        18000000
+      ]
+    },
+    "B1": {
+      "public_flag": 1,
+      "public_bytes": 787883,
+      "ioctl_flag": 0,
+      "tx_calls": 4,
+      "tx_call_bytes": [
+        10429,
+        302766,
+        459061,
+        18382
+      ],
+      "tx_bytes": 790638,
+      "clear_AUs_reconstructed": 180,
+      "PES_header_bytes": 14,
+      "remaining_serialized_tail_bytes": 235,
+      "PES_PTS_first_last": [
+        10,
+        1800
+      ],
+      "firmware_command_values": [
+        1937125377,
+        1937125632,
+        1937125640,
+        1937125634,
+        1937125658,
+        1937125659,
+        1937125633
+      ],
+      "firmware_calls": 7,
+      "firmware_statuses": [
+        0
+      ],
+      "outputs": 180,
+      "unique_tokens": 180,
+      "successful_owned_releases": 180,
+      "output_bytes": 82944000,
+      "plain_layout": {
+        "width": 640,
+        "height": 360,
+        "format": "YUY2",
+        "pitch": 1280,
+        "frame_bytes": 460800
+      },
+      "firmware_EOS": true,
+      "cleanup": "PASS",
+      "fds": 7,
+      "threads": 1,
+      "software_reference_luma_exact_frames": 180,
+      "TX_syscall_errno_driver_status_values": [
+        0
+      ],
+      "source_tokens_first_last": [
+        100000,
+        18000000
+      ]
+    }
+  },
+  "paired_bytes": {
+    "public_inputs_identical": true,
+    "joined_ioctl_inputs_identical": true,
+    "full_180_frame_YUY2_outputs_identical": true,
+    "native_output_bytes_per_arm": 82944000,
+    "equal_TX_call_grouping_required": false
+  },
+  "output_oracle": {
+    "software_reference": "Unmodified Linux FFmpeg 8.0.1-3ubuntu2, original clear input, 180 YUV420P pictures",
+    "software_reference_bytes": 62208000,
+    "software_luma_exact_frames_per_arm": 180,
+    "software_chroma_exact_claim": false,
+    "native_pair_full_YUY2_equal_frames": 180,
+    "sampled_saved_picture_comparison": "PASS_SAMPLED_SAVED_PICTURE_COMPARISON",
+    "sampled_indices_per_arm": [
+      0,
+      89,
+      179
+    ],
+    "full_movie_viewed": false,
+    "physical_display_or_AV_claim": false
+  },
+  "boundary": {
+    "observed": "Actual userspace-to-kernel BCM_IOC_PROC_INPUT buffers, flags and syscall/driver returns",
+    "actual_ioctl_flags_both_arms": [
+      0
+    ],
+    "physical_DMA_observed": false,
+    "firmware_facing_bit_mapping": "Existing Stage A source/actual-helper evidence; not independently observed at the physical card TX boundary",
+    "stage_A": "linux-input-20261126.md",
+    "public_flag_disposition": "H.264 public flag1 is lost before the observed TX syscall; both arms submit flag0",
+    "direct_internal_flag1_native_test": "NOT_RUN",
+    "hardware_decryption": "NOT_TESTED / clear input only"
+  },
+  "recovery": {
+    "official_source": "24a5182b988b",
+    "official_module_version": "3.10.20",
+    "full_official_before_restored_after_equal": true,
+    "full_candidate_before_after_each_arm_equal": true,
+    "official_recovery_before_after": {
+      "frames_each": 180,
+      "firmware_EOS": true,
+      "cleanup": "PASS",
+      "kernel_and_AER_checks": "PASS"
+    },
+    "all_run2_processes_retired": true,
+    "forced_shutdown": false,
+    "live_resource_handoff": null
+  },
+  "preparation": {
+    "final_build": "build05",
+    "normal_observer_controls": 24,
+    "ASan_UBSan_leak_controls": 24,
+    "exact_fixture_preflight": "PASS",
+    "module_W1_build": "PASS; complete raw output was execution transcript only, no separate full logfile"
+  },
+  "first_attempt": {
+    "status": "FAIL_OFFICIAL_RESTORED",
+    "diagnostic_commit": "3caaf35",
+    "build": "build04",
+    "cause": "Diagnostic observer wrongly rejected legacy initialization IoctlDataSz=0 before input; not a decoder failure",
+    "public_inputs": 0,
+    "TX_calls": 0,
+    "observed_FW_calls": 0,
+    "B1": "NOT_RUN",
+    "official_before_restored_after_equal": true,
+    "official_before_after_180_EOS": "PASS",
+    "fix": "Validate IoctlDataSz only on TX; preserve unchanged legacy initialization envelope and invalid-TX refusal",
+    "preserved": true
+  },
+  "remaining": {
+    "B2_negative": "NOT_RUN / PROTOCOL_UNKNOWN: no supported BCM70015 encryption/packetization route identified",
+    "C_positive": "NOT_RUN / PROTOCOL_UNKNOWN: no supported protected session/key/IV/cipher/packet route identified",
+    "optional_OEM_interface_research": "NOT_RUN in this change",
+    "issue_closed": false
+  },
+  "evidence": {
+    "repository": "ahnhy1324/crystalhd-firmware-research",
+    "commit": "faa7a88f046d68cb3c9dc2809b3ab0f48f510f27",
+    "directory": "results/native-clear-flags-2026-11-26",
+    "readme": "https://github.com/ahnhy1324/crystalhd-firmware-research/blob/faa7a88f046d68cb3c9dc2809b3ab0f48f510f27/results/native-clear-flags-2026-11-26/README.md",
+    "coordinator": "run2/result.json",
+    "analysis": "run2/analysis.json",
+    "visual": "run2/visual-review.json",
+    "independent": "independent/independent.json",
+    "first_failure": "run1/result.json",
+    "original_coordinator_status": "CAPTURED_OFFICIAL_RESTORED_PENDING_ANALYSIS",
+    "later_conclusions": "Separate final byte, visual and independent receipts; original pending fields are unchanged",
+    "compressed_raw_streams": true
+  }
+}
