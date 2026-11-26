@@ -3,7 +3,8 @@
 #define FINITE_PM_UNIT
 #include "../tools/research/flea-pm-finite/probe.cpp"
 
-static unsigned checks, failures, released, colours, pause_order;
+static unsigned checks, failures, released, colours, pause_order, waited;
+static bool interrupt_dwell;
 static BC_STATUS output_status, release_status, pause_status, resume_status, input_status;
 static BC_DTS_PROC_OUT picture;
 static void Check(bool condition, const char *message)
@@ -27,7 +28,19 @@ static BC_STATUS Pause(HANDLE, uint32_t operation)
     Check(released == 1 && !acquired && released_pictures == 1 && !pixels.written,
           "pause sequence follows first actual release before owned file write");
     Check(operation == (pause_order++ ? 0U : 1U), "ON then OFF exactly once");
+    if (!operation)
+        Check(waited == (dwell50 && pause_status == BC_STS_SUCCESS ? 1U : 0U),
+              "OFF follows the requested successful-pause dwell, never a failed-pause dwell");
     return operation ? pause_status : resume_status;
+}
+static void Dwell(gulong microseconds)
+{
+    using namespace finite_pm;
+    ++waited;
+    Check(microseconds == 50000 && waited == 1 && pause_order == 1 &&
+          paused_status == BC_STS_SUCCESS && !acquired && released_pictures == 1 && !pixels.written,
+          "one explicit 50ms wait follows successful pause and precedes resume and pixel write");
+    if (interrupt_dwell) interrupted = 1;
 }
 static BC_STATUS InputLeaf(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL encrypted)
 {
@@ -37,10 +50,10 @@ static BC_STATUS InputLeaf(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL encrypted
 static void Reset()
 {
     using namespace finite_pm;
-    active = true; host_only = failed = acquired = pending_pixels = pause_done = false;
+    active = true; host_only = dwell50 = failed = acquired = pending_pixels = pause_done = false;
     interrupted = 0;
-    inputs = outputs = released_pictures = setter_calls = pause_calls = 0;
-    released = colours = pause_order = 0; submitted_bytes = 0;
+    inputs = outputs = released_pictures = setter_calls = pause_calls = dwell_calls = 0;
+    released = colours = pause_order = waited = 0; submitted_bytes = 0; interrupt_dwell = false;
     output_status = release_status = pause_status = resume_status = BC_STS_SUCCESS;
     input_status = BC_STS_IO_ERROR;
     input_tokens.clear();
@@ -51,6 +64,7 @@ static void Reset()
     pixels.frame_bytes = uint64_t(width)*height*2U; pixels.total_bytes = pixels.frame_bytes*expected;
     pixels.expected = expected; pixels.frames = 0; pixels.written = 0;
     colour_call = Colour; output_call = Fetch; release_call = Release; pause_call = Pause;
+    dwell_call = Dwell;
     input_call = InputLeaf;
 }
 static void Finish()
@@ -71,8 +85,8 @@ int main()
     picture.b422Mode = OUTPUT_MODE422_YUY2; picture.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
     picture.PicInfo.width = width; picture.PicInfo.height = height;
     picture.PicInfo.timeStamp = Token(0,0);
-    for (unsigned mode : {0U, 1U}) {
-        Reset(); host_only = mode != 0;
+    for (unsigned mode : {0U, 1U, 2U}) {
+        Reset(); host_only = mode != 0; dwell50 = mode == 2;
         Check(__wrap_DtsSetColorSpace(owner, OUTPUT_MODE422_YUY2) == BC_STS_SUCCESS &&
               setter_calls == 1 && colours == (mode ? 0U : 1U),
               "reference executes setter; host leaves existing cache untouched");
@@ -81,7 +95,8 @@ int main()
               pending_pixels && !pause_calls, "fetch only acquires and copies the output");
         image[0] = 0x19;
         Check(__wrap_DtsReleaseOutputBuffs(owner,nullptr,FALSE) == BC_STS_SUCCESS &&
-              released == 1 && outputs == 1 && pause_calls == 2 && !failed && !acquired,
+              released == 1 && outputs == 1 && pause_calls == 2 && !failed && !acquired &&
+              dwell_calls == (mode == 2 ? 1U : 0U) && waited == dwell_calls,
               "first real release executes the single pair and writes owned pixels");
         std::rewind(pixels.file);
         Check(std::fgetc(pixels.file) == 0x81, "capture retains owned pre-release bytes");
@@ -89,22 +104,32 @@ int main()
         picture.PicInfo.timeStamp = Token(0,1); input_tokens.insert(Token(0,1));
         __wrap_DtsProcOutputNoCopy(owner,0,&out);
         __wrap_DtsReleaseOutputBuffs(owner,nullptr,FALSE);
-        Check(outputs == 2 && released == 2 && pause_calls == 2 && !failed,
-              "later frames never add pause commands");
+        Check(outputs == 2 && released == 2 && pause_calls == 2 && !failed &&
+              dwell_calls == (mode == 2 ? 1U : 0U) && waited == dwell_calls,
+              "later frames never add pause commands or dwell");
         Finish();
         picture.PicInfo.timeStamp = Token(0,0);
     }
-    for (unsigned fault : {0U,1U}) {
-        Reset();
+    for (bool wait_mode : {false,true}) for (unsigned fault : {0U,1U}) {
+        Reset(); host_only = dwell50 = wait_mode;
         if (fault) resume_status = BC_STS_IO_ERROR; else pause_status = BC_STS_IO_ERROR;
         BC_DTS_PROC_OUT out = {};
         __wrap_DtsProcOutputNoCopy(owner,0,&out);
         Check(__wrap_DtsReleaseOutputBuffs(owner,nullptr,FALSE) == BC_STS_SUCCESS &&
               pause_calls == 2 && pause_order == 2 && failed && interrupted && outputs == 1 &&
-              paused_status == pause_status && resumed_status == resume_status,
+              paused_status == pause_status && resumed_status == resume_status &&
+              dwell_calls == (wait_mode && fault ? 1U : 0U),
               "ON failure still attempts OFF once; actual statuses and first copy survive");
         Finish();
     }
+    Reset(); host_only = dwell50 = interrupt_dwell = true;
+    BC_DTS_PROC_OUT interrupted_out = {};
+    __wrap_DtsProcOutputNoCopy(owner,0,&interrupted_out);
+    Check(__wrap_DtsReleaseOutputBuffs(owner,nullptr,FALSE) == BC_STS_SUCCESS &&
+          interrupted && !acquired && outputs == 1 && pause_calls == 2 &&
+          pause_order == 2 && dwell_calls == 1 && waited == 1 && resumed_status == BC_STS_SUCCESS,
+          "a signal during host dwell still performs one ordinary resume and preserves owned output");
+    Finish();
     Reset(); release_status = BC_STS_IO_ERROR;
     BC_DTS_PROC_OUT out = {};
     __wrap_DtsProcOutputNoCopy(owner,0,&out);

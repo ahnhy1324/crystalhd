@@ -13,9 +13,9 @@ and the earlier #376 experiment at
 `/home/mache/crystalhd-issue376-shadow.pY8ZL5/`.
 The two historical 82,944,000-byte captures remain historical evidence.
 
-## Two explicit modes
+## Explicit modes
 
-Both modes submit the same clear input and issue exactly one existing
+All modes submit the same clear input and issue exactly one existing
 `DtsFWPauseVideo(handle, 1)` / `DtsFWPauseVideo(handle, 0)` pair immediately
 after the first valid picture's successful actual release, before writing
 its owned pixel copy. OFF is attempted once even if ON failed. The command
@@ -25,9 +25,30 @@ order and failure handling follow `e38a2f8:tests/flea-power-observer.h`,
 - `reference` forwards the ordinary `DtsSetColorSpace(YUY2)` call.
 - `host` skips that setter, retaining the DIL's initialized YUY2 cache.
   Actual output must still satisfy the existing YUY2/payload/geometry checks.
+- `host-dwell50` uses the same host path and requests one 50,000-microsecond
+  host wait after a successful pause return, before the ordinary resume.
+  A failed pause skips this wait and still attempts resume once. A signal
+  during the wait does not skip resume; the original drain observes the
+  interruption and retains its normal cleanup/result handling.
 
-The adapter adds no raw register or memory accesses in either mode. The
-reference's existing public setter retains its own implementation. Neither
+The additional mode is an explicit idle stimulus for the finite2 observation.
+The retained finite2 run completed its pause with RX0 still awaiting its Y
+completion, then resumed about 35 microseconds after transaction retirement.
+The driver posts that RX list only after a picture-available indication;
+the waiting bit establishes outstanding ownership, not whether the bus was
+transferring bytes at the sampled instant. While PENDING, normal IRQ handling
+can retire that RX list and re-evaluate the unchanged physical-down conditions.
+The wait tests whether that retirement occurs before the client resumes.
+
+This wait follows the pause acknowledgement and host zero-FLL transition.
+The historical `e38a2f8` driver waited after command posting, before that host
+transition. These are different schedules. The new mode restores no product
+delay, changes no driver or clock policy, and does not guarantee RX retirement
+or entry. The previous `reference` and `host` modes retain their immediate
+resume sequence. All compared OFF/ON/OFF arms must use the same selected mode.
+
+The adapter adds no raw register or memory accesses in any mode. The
+reference's existing public setter retains its own implementation. No
 mode selects `capture_path` in the original drain, so `PackingState` is not
 called. Pixel capture is a separate validated owned copy. The original
 `OutputLease` releases every successful fetch once, including invalid output;
@@ -49,7 +70,7 @@ first failure in a new directory. It never opens a decoder or loads a module.
 Only the separately reviewed native coordinator invokes:
 
 ```text
-probe --hardware INPUT reference|host ABSOLUTE_NEW_OUTPUT_DIRECTORY
+probe --hardware INPUT reference|host|host-dwell50 ABSOLUTE_NEW_OUTPUT_DIRECTORY
 ```
 
 There is one 180-picture run with the maintained 60-second deadline. The
@@ -63,6 +84,10 @@ modules, read debugfs, restart a faulted device or decide safe restoration.
 `events.tsv` records exact input tokens/lengths/status, returned output
 metadata and flags, release status, pause/resume status and monotonic host
 timestamps, color-setter selection, capture counts and process resources.
+Only `host-dwell50` adds a `DWELL` row between the successful pause and resume,
+with `requested_us=50000`, actual monotonic begin/end times and the released
+picture count. The requested wait is not a hard scheduling-latency bound;
+the existing process and playback deadlines still apply.
 `input.bin` contains the exact ordered submitted access units. `output.yuy2`
 contains 180 tightly packed 640×360 pictures (82,944,000 bytes) on completion.
 Pixels are copied while leased and written only after successful release.
@@ -75,7 +100,7 @@ adds the exact footer:
 PM_EXERCISE result=PASS frames=180 inputs=180 pause=0 resume=0 mode=host
 ```
 
-The reference footer ends in `mode=reference`. Failure preserves the actual
+The other footers end in `mode=reference` or `mode=host-dwell50`. Failure preserves the actual
 statuses and partial files. PASS is a transport/count/EOS/cleanup/capture result,
 not proof of a physical down/up cycle, thermal benefit or product qualification.
 Actual transitions must be established independently from the finite-PM ledger;

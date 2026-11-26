@@ -15,8 +15,8 @@ namespace finite_pm {
 const unsigned width = 640, height = 360, expected = 180, seconds = 60;
 const size_t input_bytes = 1777511;
 const char input_sha[] = "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b";
-static bool active, host_only, failed, acquired, pending_pixels, pause_done;
-static unsigned inputs, outputs, released_pictures, setter_calls, pause_calls;
+static bool active, host_only, dwell50, failed, acquired, pending_pixels, pause_done;
+static unsigned inputs, outputs, released_pictures, setter_calls, pause_calls, dwell_calls;
 static BC_STATUS paused_status = BC_STS_ERROR, resumed_status = BC_STS_ERROR;
 static size_t submitted_bytes;
 static HANDLE output_owner;
@@ -31,6 +31,7 @@ static auto colour_call = __real_DtsSetColorSpace;
 static auto output_call = __real_DtsProcOutputNoCopy;
 static auto release_call = __real_DtsReleaseOutputBuffs;
 static auto pause_call = DtsFWPauseVideo;
+static auto dwell_call = g_usleep;
 
 static void Event(const char *format, ...)
 {
@@ -84,6 +85,16 @@ static bool PauseAndResume(HANDLE owner)
     const gint64 paused_at = g_get_monotonic_time();
     Event("PAUSE\toperation=1\tstatus=%u\tbegin_us=%lld\tend_us=%lld\tafter_released_outputs=%u",
           unsigned(paused), static_cast<long long>(before), static_cast<long long>(paused_at), released_pictures);
+    if (dwell50 && paused == BC_STS_SUCCESS) {
+        // Explicit client stimulus after pause acknowledgement and zero FLL.
+        // This is not the historical driver delay before its pause transition.
+        const gint64 dwell_before = g_get_monotonic_time();
+        ++dwell_calls;
+        dwell_call(50000);
+        const gint64 dwell_after = g_get_monotonic_time();
+        Event("DWELL\trequested_us=50000\tbegin_us=%lld\tend_us=%lld\tafter_released_outputs=%u",
+              static_cast<long long>(dwell_before), static_cast<long long>(dwell_after), released_pictures);
+    }
     const gint64 resume_before = g_get_monotonic_time();
     ++pause_calls;
     const BC_STATUS resumed = resumed_status = pause_call(owner, 0);
@@ -105,7 +116,7 @@ extern "C" BC_STATUS __wrap_DtsSetColorSpace(HANDLE owner, BC_OUTPUT_FORMAT form
     }
     // Host mode keeps the DIL's existing YUY2 cache; no target setter call.
     const BC_STATUS status = host_only ? BC_STS_SUCCESS : colour_call(owner, format);
-    Event("COLOR\tmode=%s\trequested=%u\tcalled=%u\tstatus=%u", host_only ? "host" : "reference",
+    Event("COLOR\tmode=%s\trequested=%u\tcalled=%u\tstatus=%u", dwell50 ? "host-dwell50" : host_only ? "host" : "reference",
           unsigned(format), unsigned(!host_only), unsigned(status));
     return status;
 }
@@ -194,9 +205,10 @@ int main(int argc, char **argv)
     using namespace finite_pm;
     const bool preflight = argc == 3 && !std::strcmp(argv[1], "--preflight");
     const bool hardware = argc == 5 && !std::strcmp(argv[1], "--hardware") &&
-        (!std::strcmp(argv[3], "reference") || !std::strcmp(argv[3], "host")) && argv[4][0] == '/';
+        (!std::strcmp(argv[3], "reference") || !std::strcmp(argv[3], "host") ||
+         !std::strcmp(argv[3], "host-dwell50")) && argv[4][0] == '/';
     if (!preflight && !hardware) {
-        std::fprintf(stderr, "usage: %s --preflight INPUT | --hardware INPUT reference|host ABSOLUTE_NEW_DIR\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --preflight INPUT | --hardware INPUT reference|host|host-dwell50 ABSOLUTE_NEW_DIR\n", argv[0]);
         return 2;
     }
     std::signal(SIGINT, Interrupt); std::signal(SIGTERM, Interrupt);
@@ -212,7 +224,8 @@ int main(int argc, char **argv)
     std::printf("INPUT_ADMISSION bytes=%zu sha256=%s packets=%zu width=%u height=%u native=NOT_RUN\n",
                 bytes, digest.c_str(), input.packets.size(), input.width, input.height);
     if (preflight) return 0;
-    host_only = !std::strcmp(argv[3], "host"); admitted = &input;
+    dwell50 = !std::strcmp(argv[3], "host-dwell50");
+    host_only = dwell50 || !std::strcmp(argv[3], "host"); admitted = &input;
     if (!Prepare(argv[4])) { CloseFiles(); std::fprintf(stderr, "FAIL: output preparation; no device opened\n"); return 2; }
     Options options; options.mode = Mode::Hardware; options.path = argv[2];
     options.expected = expected; options.seconds = seconds; options.iterations = 1;
@@ -227,7 +240,7 @@ int main(int argc, char **argv)
     const bool capture = pixels.Finish(ok && !failed && !acquired);
     ok = ok && resources && capture && !failed && !acquired && inputs == expected &&
         outputs == expected && input_tokens.empty() && submitted_bytes == input_bytes &&
-        pause_done && pause_calls == 2 && setter_calls == 1;
+        pause_done && pause_calls == 2 && setter_calls == 1 && dwell_calls == (dwell50 ? 1U : 0U);
     Event("END\tresult=%s\tinputs=%u\toutputs=%u\tinput_bytes=%zu\tpause_calls=%u\tsetter_calls=%u\tobserver_failed=%u\towned=%u\tfds_before=%u\tfds_after=%u\tthreads_before=%u\tthreads_after=%u",
           ok ? "PASS" : "FAIL", inputs, outputs, submitted_bytes, pause_calls, setter_calls,
           unsigned(failed), unsigned(acquired), before.fds, after.fds, before.threads, after.threads);
