@@ -30,7 +30,7 @@ library-check: export CRYSTALHD_CONFIG_DISABLE = 1
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring tx-concurrency flush tx-flush eos copy planar format parser-prefix input mpeg4-input input-format status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
+	for lib_test in logging shmem-logging shmem-logging-disabled shmem-lifetime tx-ring tx-concurrency flush tx-flush eos copy planar format parser-prefix input mpeg4-input input-format encrypted-input status color clock devmem device-handle poll-fd capture capture-scaled fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_flags=; \
 		test_file=$$lib_test; \
@@ -54,6 +54,8 @@ library-check:
 			clock) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			devmem) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free; \
+				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
+			encrypted-input) test_wrap=-Wl,--wrap=ioctl; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			device-handle) test_wrap=-Wl,--wrap=open,--wrap=close,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_wrap="$$test_wrap -Wl,--wrap=pthread_create,--wrap=pthread_join,--wrap=shmget,--wrap=shmat,--wrap=shmdt,--wrap=shmctl"; \

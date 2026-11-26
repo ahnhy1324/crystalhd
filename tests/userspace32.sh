@@ -190,7 +190,7 @@ for bits in $build_bits; do
         $cpu_flags -o "$build_dir/library-smoke"
     # Execute production library regressions on the target ABI and CPU.
     # These tests neither open hardware nor load a shared library.
-    for section in logging shmem-logging shmem-logging-disabled shmem-lifetime copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color clock devmem device-handle capture capture-scaled fwload fw-version fwcmds; do
+    for section in logging shmem-logging shmem-logging-disabled shmem-lifetime copy planar format input mpeg4-input input-format encrypted-input tx-ring flush tx-flush eos status color clock devmem device-handle capture capture-scaled fwload fw-version fwcmds; do
         section_wrap=
         section_flags=
         section_file=$section
@@ -224,6 +224,10 @@ for bits in $build_bits; do
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
                 section_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free ;;
+            encrypted-input)
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
+                section_wrap=-Wl,--wrap=ioctl ;;
             device-handle)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \

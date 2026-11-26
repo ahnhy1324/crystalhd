@@ -2989,11 +2989,15 @@ static void FleaPreparationRecoveryAndOwner(void)
 
 static void FleaPreparationFifoPolicy(void)
 {
-    static const uint8_t flags[] = { 0, 0x04, 0x08, 0x0c };
+    /* Pair each existing FIFO mode with input bit0. This is the already-awake
+     * FLEA path, not a protected-content session or a wake-up flag contract. */
+    static const uint8_t flags[] = { 0, 1, 0x04, 0x05, 0x08, 0x09, 0x0c, 0x0d };
     for (unsigned flag = 0; flag < ARRAY_SIZE(flags); flag++) {
         for (unsigned success = 0; success < 2; success++) {
             uint32_t tag = 0xfeedbabe;
             FleaPrepareReset(&tag);
+            Check(hardware.WakeUpDecodeDone,
+                  "input bit0 controls run only after FLEA wake-up has completed");
             struct tx_dma_pkt before = *packet0;
             hardware.SingleThreadAppFIFOEmpty = false;
             hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
@@ -3004,7 +3008,7 @@ static void FleaPreparationFifoPolicy(void)
             Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
                                        packet0, &tag, flags[flag]) == run.prep.status &&
                   run.prep.writes == 1 && run.seen_destination == run.prep.before.DramBuffAdd,
-                  "actual FIFO flags retain their existing reservation and single-thread behavior before fallible preparation");
+                  "actual FIFO modes with or without input bit0 retain the same destination and preparation policy");
             if (success) {
                 Check(hardware.EmptyCnt == run.prep.empty - 1U &&
                       !hardware.SingleThreadAppFIFOEmpty,
