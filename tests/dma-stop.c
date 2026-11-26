@@ -787,6 +787,7 @@ int main(void)
 	struct crystalhd_cmd ctx = { .hw_ctx = &hw, .state = BC_LINK_CAP_EN };
 	crystalhd_ioctl_data data = {0};
 	union FLEA_INTR_BITS_COMMON done = { .WholeReg = 0 };
+	unsigned int phase, reads_before, clears_before;
 	current_hw = &hw;
 	local_pending = master_enabled = true;
 	/* A pending signal cannot collapse TX's hardware drain interval. */
@@ -814,19 +815,34 @@ int main(void)
 	assert(crystalhd_hw_stop_capture(&hw, true) == BC_STS_SUCCESS);
 	assert(!irq_depth && !stops && !releases && !hw.rx_cancel_epoch);
 	irq_depth = 1;
-	hw.rx_list_post_index = 1;
-	crystalhd_flea_stop_rx_dma_engine(&hw);
-	assert(!reads && !hw.rx_list_post_index);
+	/* Both odd/even admission histories must retain their next list. The
+	 * ordinary stop has no hardware service-pointer reset to accompany a
+	 * software index reset; only real device startup initializes it to zero. */
+	for (phase = 0; phase < 2; phase++) {
+		hw.rx_list_post_index = phase;
+		hw.RxSeqNum = 17;
+		hw.RxCaptureState = 1;
+		reads_before = reads;
+		crystalhd_flea_stop_rx_dma_engine(&hw);
+		assert(reads == reads_before && hw.rx_list_post_index == phase);
+		assert(!hw.RxSeqNum && !hw.RxCaptureState && !hw.dma_fault);
+	}
 	done.L0YRxDMADone = 1;
 	done.L0UVRxDMADone = 1;
 	done.L1YRxDMADone = 1;
 	interrupt_bits = done.WholeReg;
-	hw.rx_list_sts[0] = rx_sts_waiting;
-	hw.rx_list_sts[1] = rx_waiting_y_intr;
-	hw.rx_list_post_index = 1;
-	crystalhd_flea_stop_rx_dma_engine(&hw);
-	assert(!hw.rx_list_sts[0] && !hw.rx_list_sts[1]);
-	assert(!hw.rx_list_post_index && !hw.dma_fault && clears == 1);
+	for (phase = 0; phase < 2; phase++) {
+		hw.rx_list_sts[0] = rx_sts_waiting;
+		hw.rx_list_sts[1] = rx_waiting_y_intr;
+		hw.rx_list_post_index = phase;
+		hw.RxSeqNum = 19;
+		hw.RxCaptureState = 1;
+		clears_before = clears;
+		crystalhd_flea_stop_rx_dma_engine(&hw);
+		assert(!hw.rx_list_sts[0] && !hw.rx_list_sts[1]);
+		assert(hw.rx_list_post_index == phase && !hw.dma_fault);
+		assert(clears == clears_before + 1 && !hw.RxSeqNum && !hw.RxCaptureState);
+	}
 	/* Completion needs elapsed time even when release has a pending signal.
 	 * The sleep shim advances only the uninterruptible stop delay.
 	 */
@@ -836,14 +852,15 @@ int main(void)
 	hw.rx_list_sts[1] = rx_waiting_y_intr;
 	crystalhd_flea_stop_rx_dma_engine(&hw);
 	assert(!hw.dma_fault && !hw.rx_list_sts[0] && !hw.rx_list_sts[1]);
-	assert(stop_elapsed_ms == 30);
+	assert(stop_elapsed_ms == 30 && hw.rx_list_post_index == 1);
 	completion_after_ms = 0;
 	/* A missing UV completion must fail without advertising a free list. */
 	hw.rx_list_sts[0] = rx_sts_waiting;
 	done.L0UVRxDMADone = 0;
 	interrupt_bits = done.WholeReg;
 	crystalhd_flea_stop_rx_dma_engine(&hw);
-	assert(hw.dma_fault && hw.rx_list_sts[0] == rx_sts_waiting);
+	assert(hw.dma_fault && hw.rx_list_sts[0] == rx_sts_waiting &&
+		hw.rx_list_post_index == 1);
 	irq_depth = 0;
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
 		1, 1, 0, BC_LINK_CAP_EN);

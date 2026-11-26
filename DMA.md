@@ -63,8 +63,12 @@ and partial-pin failures are not dirtied. No dirty-unpin runs in a hard IRQ.
 TX input ioctls are serialized because they share engine cancellation state.
 Capture mutation, metadata inspection, and process-context wake/repost paths
 share `fetch_sem`; queue waits and firmware command waits do not hold it.
-Successful stop resets RX list bookkeeping, and discard flush notifies capture
-start before reposting. A failed stop retains registrations for teardown.
+Successful RX stop clears completed software busy bits and resets the firmware
+RX sequence, but preserves the next alternating host list: ordinary stop does
+not reset the hardware service pointer. Device/core startup initializes the
+index to zero; existing fatal-error recovery remains separate. Discard flush
+notifies capture start before reposting.
+A failed stop retains registrations for teardown.
 Removal uses a persistent `present == 0` condition, so cancelling one FIFO waiter
 cannot leave another waiting indefinitely. Existing file descriptors are bound
 to a device generation and cannot operate on a later PCI reprobe.

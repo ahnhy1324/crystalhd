@@ -2693,12 +2693,14 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 	uint32_t pollCnt = 0;
 	unsigned long flags;
 
+	/* This drains published lists; it does not reset the RX engine's
+	 * alternating service pointer. Preserve the next host list across
+	 * decoder-only flush/restart, including an already-idle stop. */
 	hw->RxCaptureState = 2;
 
 	if((hw->rx_list_sts[0] == sts_free) && (hw->rx_list_sts[1] == sts_free)) {
 		hw->RxCaptureState = 0;
 		hw->RxSeqNum = 0;
-		hw->rx_list_post_index = 0;
 		return; /* Nothing to be done */
 	}
 
@@ -2760,7 +2762,6 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 		spin_lock_irqsave(&hw->rx_lock, flags);
 		hw->rx_list_sts[0] = sts_free;
 		hw->rx_list_sts[1] = sts_free;
-		hw->rx_list_post_index = 0;
 		spin_unlock_irqrestore(&hw->rx_lock, flags);
 	}
 }
