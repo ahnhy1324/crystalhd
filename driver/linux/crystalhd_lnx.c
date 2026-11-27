@@ -2056,7 +2056,9 @@ module_exit(chd_dec_module_cleanup);
 MODULE_AUTHOR("Naren Sankar <nsankar@broadcom.com>");
 MODULE_AUTHOR("Prasad Bolisetty <prasadb@broadcom.com>");
 MODULE_DESCRIPTION(CRYSTAL_HD_NAME);
-#ifdef CRYSTALHD_ENABLE_PM_RESEARCH
+#ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
+MODULE_VERSION("3.10.30-pmendurance1");
+#elif defined(CRYSTALHD_ENABLE_PM_RESEARCH)
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION "-pmfinite2");
 #else
 MODULE_VERSION(CRYSTALHD_PACKAGE_VERSION);
