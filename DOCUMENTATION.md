@@ -83,6 +83,7 @@ live support matrix or the recommended setup procedure.
 | [Centered payload protocol](tests/vaapi-centered-payload-protocol.md), [VPP payload protocol](tests/vaapi-vpp-payload-protocol.md) | Explicit OWN diagnostic observations; their results do not qualify the normal backend or a release. |
 | [Linux encrypted-input Stage A](tests/fixtures/issue690/linux-input-20261126.md) | Current API/transport matrix and device-free regression results; no protected playback support or hardware-decryption claim. |
 | [FLEA cleanup and PM exclusion](tests/fixtures/issue689/cleanup-20261126.md) | Maintained cleanup guards and device-free fault/ownership checks; automatic gating and thermal/endurance trials remain research. |
+| [Sustained clock-gating results](tests/fixtures/issue689/native-sustained-endurance-20261127.md) | Exact900/7200-picture OFF/ON diagnostics,19/150 physical cycles and restoration; isolated bounded research profile, unchanged production default. |
 
 Fixture notes preserve the original inputs, failures and interpretation:
 [VA/Kodi](tests/fixtures/issue445/README.md),

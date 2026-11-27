@@ -4,9 +4,23 @@
 
 /* Research-only derivative of e38a2f8's one-cycle numeric ledger. No target
  * register access, allocation, scheduling or hardware pointers in records. */
+#ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
+#ifndef CRYSTALHD_ENABLE_PM_RESEARCH
+#error "Sustained profile requires isolated PM research"
+#endif
+#define CHD_PM_MAX_ATTEMPTS 256U
+#define CHD_PM_MAX_MS 360000U
+#define CHD_PM_RECORDS 1600U
+#define CHD_PM_PROFILE "endurance1"
+#else
 #define CHD_PM_MAX_ATTEMPTS 8U
 #define CHD_PM_MAX_MS 5000U
 #define CHD_PM_RECORDS 64U
+#define CHD_PM_PROFILE "finite2"
+#endif
+#if CHD_PM_RECORDS < 6U * CHD_PM_MAX_ATTEMPTS + 4U
+#error "PM receipt capacity must retain all admitted cycles and terminal records"
+#endif
 #define CHD_PM_BANK_SELECTIONS 32U
 #define CHD_PM_SELECTIONS (2U * CHD_PM_BANK_SELECTIONS)
 

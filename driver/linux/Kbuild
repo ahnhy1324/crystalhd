@@ -80,3 +80,15 @@ endif
 ccflags-y += -DCRYSTALHD_ENABLE_PM_RESEARCH
 crystalhd-objs += crystalhd_pm_research.o
 endif
+
+# Separate bounded sustained profile; never selected by the ordinary PM flag.
+CRYSTALHD_PM_SUSTAINED_RESEARCH ?= 0
+ifneq ($(CRYSTALHD_PM_SUSTAINED_RESEARCH),0)
+ifneq ($(CRYSTALHD_PM_SUSTAINED_RESEARCH),1)
+$(error CRYSTALHD_PM_SUSTAINED_RESEARCH must be 0 or 1)
+endif
+ifneq ($(CRYSTALHD_PM_RESEARCH),1)
+$(error CRYSTALHD_PM_SUSTAINED_RESEARCH requires CRYSTALHD_PM_RESEARCH=1)
+endif
+ccflags-y += -DCRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
+endif

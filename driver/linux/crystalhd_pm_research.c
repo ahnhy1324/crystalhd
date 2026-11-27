@@ -13,9 +13,17 @@
 static unsigned int pm_research_attempts;
 static unsigned int pm_research_ms;
 module_param(pm_research_attempts, uint, 0400);
+#ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
+MODULE_PARM_DESC(pm_research_attempts, "Isolated five-minute PM attempts, 1..256; explicit milliseconds required; default OFF");
+#else
 MODULE_PARM_DESC(pm_research_attempts, "Isolated PM research attempts, 1..8; requires explicit milliseconds; default OFF");
+#endif
 module_param(pm_research_ms, uint, 0400);
+#ifdef CRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH
+MODULE_PARM_DESC(pm_research_ms, "New-down admission window, 1..360000 milliseconds; not a forced-wake deadline");
+#else
 MODULE_PARM_DESC(pm_research_ms, "New-down admission window, 1..5000 milliseconds; not a forced-wake deadline");
+#endif
 
 static DEFINE_SPINLOCK(research_lock);
 static struct dentry *research_dir;
@@ -396,7 +404,7 @@ static int research_show(struct seq_file *seq, void *unused)
 	*snapshot = pm_ledger;
 	*observation = pm_observation;
 	pm_unlock(flags);
-	seq_printf(seq, "pm-research=finite2 attempts_limit=%u window_ms=%u capacity=%u claimed=%u retired=%u phase=%u stop=%u count=%u dropped=%u start_ns=%llu deadline_ns=%llu stop_ns=%llu read_ns=%llu attempts=%u entered=%u refused=%u failed=%u up_attempts=%u up_completed=%u up_failed=%u fll_completed=%u fll_failed=%u\n",
+	seq_printf(seq, "pm-research=" CHD_PM_PROFILE " attempts_limit=%u window_ms=%u capacity=%u claimed=%u retired=%u phase=%u stop=%u count=%u dropped=%u start_ns=%llu deadline_ns=%llu stop_ns=%llu read_ns=%llu attempts=%u entered=%u refused=%u failed=%u up_attempts=%u up_completed=%u up_failed=%u fll_completed=%u fll_failed=%u\n",
 		pm_research_attempts, pm_research_ms, CHD_PM_RECORDS,
 		snapshot->claimed, snapshot->retired, snapshot->phase, snapshot->stop,
 		snapshot->count, snapshot->dropped, snapshot->start_ns,
@@ -416,7 +424,7 @@ static int research_show(struct seq_file *seq, void *unused)
 			seq_printf(seq, "%s%08x", j ? "," : "", r->saved[j]);
 		seq_putc(seq, '\n');
 	}
-	seq_printf(seq, "observations=finite2 capacity=%u count=%u calls=%llu overflow=%llu saturated=%u initializations=%llu enabled_initializations=%llu routine_capacity=%u intent_capacity=%u routine_count=%u intent_count=%u routine_calls=%llu intent_calls=%llu routine_overflow=%llu intent_overflow=%llu\n",
+	seq_printf(seq, "observations=" CHD_PM_PROFILE " capacity=%u count=%u calls=%llu overflow=%llu saturated=%u initializations=%llu enabled_initializations=%llu routine_capacity=%u intent_capacity=%u routine_count=%u intent_count=%u routine_calls=%llu intent_calls=%llu routine_overflow=%llu intent_overflow=%llu\n",
 		CHD_PM_SELECTIONS, observation->count, observation->calls,
 		observation->overflow, observation->saturated, observation->initializations,
 		observation->enabled_initializations, CHD_PM_BANK_SELECTIONS, CHD_PM_BANK_SELECTIONS,

@@ -27,3 +27,7 @@ for mode in normal sanitized; do
     "$pm_test_dir/lifecycle"
 done
 FLEA_PM_RESEARCH_CHECK=1 sh "$repo_dir/tests/flea-power.sh"
+
+# Exercise the separately bounded endurance profile in the existing PM gate.
+CFLAGS="${CFLAGS:-} -DCRYSTALHD_ENABLE_PM_SUSTAINED_RESEARCH" \
+    FLEA_PM_RESEARCH_CHECK=1 sh "$repo_dir/tests/flea-power.sh"
