@@ -98,6 +98,8 @@ immutable native 900 payloads only after the complete full-byte equality chain
 passes. New source clocks, events, offsets and results retain their own identity.
 The earlier temperature refusal and preparation-only snapshot remain unchanged.
 
-Next are additional resolutions/codecs, matched card-temperature sampling and
-longer operation. This bounded five-minute result does not qualify stock
-applications, display, hour-scale reliability or default-enabled operation.
+The separate [FHD and card-temperature study](native-fhd-temperature-20261127.md)
+now adds 1080p source/pixel fidelity and three five-minute sensor trajectories.
+Additional codecs, matched thermal/power measurement and longer operation remain.
+This bounded five-minute result does not qualify stock applications, display,
+hour-scale reliability or default-enabled operation.
