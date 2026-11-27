@@ -84,6 +84,7 @@ live support matrix or the recommended setup procedure.
 | [Linux encrypted-input Stage A](tests/fixtures/issue690/linux-input-20261126.md) | Current API/transport matrix and device-free regression results; no protected playback support or hardware-decryption claim. |
 | [FLEA cleanup and PM exclusion](tests/fixtures/issue689/cleanup-20261126.md) | Maintained cleanup guards and device-free fault/ownership checks; automatic gating and thermal/endurance trials remain research. |
 | [Sustained clock-gating results](tests/fixtures/issue689/native-sustained-endurance-20261127.md) | Exact900/7200-picture OFF/ON diagnostics,19/150 physical cycles and restoration; isolated bounded research profile, unchanged production default. |
+| [FHD and card-temperature results](tests/fixtures/issue689/native-fhd-temperature-20261127.md) | Exact1080p source/pixels and three five-minute720p24 sessions, actual card estimates and BUSY gaps; capture timing and thermal limits remain explicit. |
 
 Fixture notes preserve the original inputs, failures and interpretation:
 [VA/Kodi](tests/fixtures/issue445/README.md),
