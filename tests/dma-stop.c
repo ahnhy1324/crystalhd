@@ -86,7 +86,7 @@ struct crystalhd_hw {
 	uint64_t rx_cancel_epoch;
 	enum list_sts rx_list_sts[2];
 	int rx_lock, fetch_sem;
-	bool dma_fault;
+	bool dma_fault, hw_pause_issued;
 	int lock;
 	bool FleaEnablePWM, FleaPowerTransition;
 	unsigned FleaCleanupActive;

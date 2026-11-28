@@ -47,10 +47,11 @@ struct mutex { unsigned locked; };
 static void mutex_lock(struct mutex *lock) { assert(!lock->locked); lock->locked = 1; }
 static void mutex_unlock(struct mutex *lock) { assert(lock->locked); lock->locked = 0; }
 static void test_rx_lock(int *lock);
+static void test_rx_unlock(int *lock);
 #define spin_lock_irqsave(lock, flags) \
     (test_rx_lock(lock), (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) \
-    (assert(*(lock) == 1), *(lock) = 0, (void)(flags))
+    (test_rx_unlock(lock), (void)(flags))
 
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
@@ -132,10 +133,14 @@ static struct crystalhd_hw hardware;
 static unsigned fll_lock_countdown, fll_lock_mutation;
 static struct crystalhd_hw *count_on_lock_hw;
 static uint32_t count_on_lock_value;
+static bool checking_pause_retire, pause_at_lock;
+static unsigned pause_retire_observed;
 static void test_rx_lock(int *lock)
 {
     assert(!*lock);
     *lock = 1;
+    if (checking_pause_retire && lock == &hardware.lock)
+        pause_at_lock = hardware.hw_pause_issued;
     if (count_on_lock_hw && lock == &count_on_lock_hw->lock) {
         count_on_lock_hw->rx_freeq->count = count_on_lock_value;
         count_on_lock_hw = NULL;
@@ -225,6 +230,21 @@ static void check(bool condition, const char *message)
 {
     checks++;
     if (!condition) { failures++; fprintf(stderr, "FAIL: %s\n", message); }
+}
+static void test_rx_unlock(int *lock)
+{
+    assert(*lock == 1);
+    if (checking_pause_retire && lock == &hardware.lock &&
+        pause_at_lock && !hardware.hw_pause_issued) {
+        pause_retire_observed++;
+        check(hardware.FleaCleanupActive && !hardware.fetch_sem && irq_depth == 1 &&
+              !active.count && !ready.count && !available.count &&
+              !hardware.rx_fallback_head,
+              "old pause retires under the hardware lock and cleanup/IRQ/fetch exclusion");
+        for (unsigned i = 0; i < BC_RX_LIST_CNT; i++)
+            check(!mapped[i], "pause retirement follows every old backing release");
+    }
+    *lock = 0;
 }
 static bool memory_is_zero(const void *memory, size_t size)
 {
@@ -1020,6 +1040,8 @@ static void reset(uint32_t device)
     fetch_try_calls = try_mutation_at = try_sem_mutation = try_fetch_mutation = 0;
     checking_try_release = false;
     checking_quiesced_retire = false;
+    checking_pause_retire = pause_at_lock = false;
+    pause_retire_observed = 0;
     quiesced_releases = quiesced_downs = 0;
     quiesced_epoch = 0;
     dram_write_calls = firmware_alive_checks = 0;
@@ -4516,12 +4538,14 @@ static void cleanup_power_retention_cases(void)
                                       mode == 2 ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
             hardware.FleaPowerSaved.valid = mode == 1 || mode == 2;
             hardware.FleaPowerTransition = mode == 3;
+            hardware.hw_pause_issued = true;
             check(crystalhd_hw_stop_capture(&hardware, true) ==
                       (mode == 3 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
                   !stop_calls && !unmaps[0] && !hardware.FleaCleanupActive &&
                   hardware.rx_cancel_epoch == epoch &&
                   active.count == 1 && active.packets[0]->buffer == buffer &&
                   active.packets[0]->cookie == cookie && !hardware.lock &&
+                  hardware.hw_pause_issued &&
                   hardware.fetch_sem == 1 && !irq_depth &&
                   hardware.dma_fault == (mode != 3),
                   "asleep or reserved RX cleanup preserves registrations, epoch and backing");
@@ -4532,6 +4556,7 @@ static void cleanup_power_retention_cases(void)
         check(add(0) == BC_STS_SUCCESS, "prepare nested RX cleanup owner");
         hardware.FleaEnablePWM = true;
         hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        hardware.hw_pause_issued = true;
         stop_fault = fail;
         check(crystalhd_flea_cleanup_begin(&hardware, &held) == BC_STS_SUCCESS && held,
               "clocked pending RX accepts an outer hold");
@@ -4539,6 +4564,7 @@ static void cleanup_power_retention_cases(void)
         check(crystalhd_hw_stop_capture(&hardware, true) ==
                   (fail ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
               hardware.FleaCleanupActive == 1 && !hardware.lock && !irq_depth &&
+              hardware.hw_pause_issued == !!fail &&
               unmaps[0] == !fail,
               "RX success and stop fault release only the local hold and preserve backing on fault");
         cleanup_stop_depth = 0;
@@ -4546,6 +4572,64 @@ static void cleanup_power_retention_cases(void)
         check(!hardware.FleaCleanupActive && hardware.dma_fault == !!fail,
               "outer RX cleanup release preserves fault state");
     }
+}
+
+static void destructive_pause_retirement_cases(void)
+{
+    for (unsigned pending = 0; pending < 2; pending++) {
+        reset(BC_PCI_DEVID_FLEA);
+        for (unsigned i = 0; i < 3; i++)
+            check(add(i) == BC_STS_SUCCESS, "seed old paused generation owners");
+        complete(0);
+        hardware.FleaEnablePWM = true;
+        hardware.FleaPowerState = pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+        hardware.hw_pause_issued = true;
+        const enum FLEA_POWER_STATES state = hardware.FleaPowerState;
+        const uint64_t epoch = hardware.rx_cancel_epoch;
+        checking_pause_retire = true;
+        check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS &&
+              !hardware.hw_pause_issued && pause_retire_observed == 1 &&
+              hardware.rx_cancel_epoch == epoch + 1 &&
+              hardware.FleaPowerState == state && !hardware.FleaPowerSaved.valid &&
+              !hardware.FleaCleanupActive && !dram_write_calls &&
+              !wake_transition_calls && !pause_calls,
+              "destructive retirement clears only old pause intent without waking or writing FLL");
+        checking_pause_retire = false;
+        inventory(0, 0, 0);
+        if (!pending) {
+            const unsigned posted = post_calls;
+            check(add(3) == BC_STS_SUCCESS && post_calls == posted + 1 &&
+                  active.count == 1 && active.packets[0]->capture_epoch == epoch + 1,
+                  "fresh active generation posts immediately without old ready-queue pause");
+            drain();
+        }
+    }
+    for (unsigned mode = 0; mode < 5; mode++) {
+        reset(mode == 4 ? BC_PCI_DEVID_LINK : BC_PCI_DEVID_FLEA);
+        check(add(0) == BC_STS_SUCCESS, "seed pause preservation control");
+        hardware.FleaEnablePWM = mode != 3;
+        hardware.hw_pause_issued = true;
+        stop_fault = mode == 1;
+        if (mode == 2) {
+            drain();
+            hardware.hw_pause_issued = true;
+            hardware.rx_actq = hardware.rx_rdyq = hardware.rx_freeq = NULL;
+        }
+        const BC_STATUS expected = mode == 1 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+        check(crystalhd_hw_stop_capture(&hardware, mode != 0) == expected &&
+              hardware.hw_pause_issued,
+              "discard, failed stop, monitor, default-disabled and Link preserve pause semantics");
+        if (mode == 0 || mode >= 3) drain();
+    }
+    reset(BC_PCI_DEVID_FLEA);
+    hardware.FleaEnablePWM = true;
+    hardware.hw_pause_issued = true;
+    checking_pause_retire = true;
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS &&
+          !hardware.hw_pause_issued && pause_retire_observed == 1,
+          "empty old capture queues can still retire their stale pause intent");
+    checking_pause_retire = false;
+    inventory(0, 0, 0);
 }
 
 int main(void)
@@ -4612,6 +4696,7 @@ int main(void)
     retained_pm_and_quarantine_cases();
     retained_admission_and_controls();
     cleanup_power_retention_cases();
+    destructive_pause_retirement_cases();
     check(receipt_return_calls > 0,
           "the extracted Flea post wrapper exercised the receipt return hook");
     check(receipt_complete_calls > 0,

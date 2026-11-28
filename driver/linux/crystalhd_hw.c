@@ -2041,6 +2041,7 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	struct crystalhd_rx_dma_pkt *packet;
 	BC_STATUS sts;
 	bool power_held;
+	unsigned long flags;
 
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -2086,6 +2087,17 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	retired_count = crystalhd_hw_detach_rx_owners(hw, retired);
 	for (queue_index = 0; queue_index < retired_count; queue_index++)
 		crystalhd_rx_buffer_release(hw->adp, retired[queue_index]);
+
+	/* The retired generation's ready queue no longer owns a pause request.
+	 * Keep the Flea cleanup hold through this host-only intent update; the
+	 * ordinary command/start path still owns wake and current-FLL restore.
+	 */
+	if (power_held) {
+		spin_lock_irqsave(&hw->lock, flags);
+		if (!READ_ONCE(hw->dma_fault))
+			hw->hw_pause_issued = false;
+		spin_unlock_irqrestore(&hw->lock, flags);
+	}
 
 out:
 	enable_irq(hw->adp->pdev->irq);
